@@ -12,6 +12,10 @@
  * 2. 渲染 ShellLayout 全屏外壳，viewport 插槽挂载 dynamic(ssr:false) 的
  *    ClusterCanvas——three/R3F 代码永不进入服务端 bundle，chunk 按需加载
  *    期间展示赛博风加载 Skeleton（扫描线 + 脉冲徽标，主题氛围零割裂）。
+ * 3. 激活 useTelemetryStream：建立 SSE 遥测订阅（含自愈免疫合并、双轨分发
+ *    与本地降级兜底）。Hook 在此挂载而非画布内，保证即使 3D chunk 尚未
+ *    加载完成、或用户切到 Copilot 视图（画布隐藏但常驻 DOM），
+ *    遥测流依然持续工作，HUD/终端/告警面板始终有数据。
  *
  * 【'use client' 边界说明】本文件是客户端组件，metadata 不可从此导出——
  * 页面标题等元数据已由 src/app/layout.tsx（服务端根布局）统一承载。
@@ -23,6 +27,7 @@ import { motion } from 'framer-motion';
 import { Radar } from 'lucide-react';
 
 import ShellLayout from '@/components/layout/ShellLayout';
+import { useTelemetryStream } from '@/hooks/useTelemetryStream';
 import { rehydratePersistedClusterState } from '@/store/useClusterStore';
 
 /**
@@ -82,6 +87,12 @@ export default function HomePage() {
   useEffect(() => {
     rehydratePersistedClusterState();
   }, []);
+
+  /* 遥测流激活：SSE 订阅 + 自愈免疫合并 + 双轨分发 + 本地降级兜底。
+   * Hook 内部依赖严格锁定 [connectionMode, activeChaos]，其余字段变化
+   * 不会重建连接；返回值（传输形态/帧计数）本页暂不消费，
+   * 后续可由 TopBar 的「数据源徽标」接入展示。 */
+  useTelemetryStream();
 
   return <ShellLayout viewport={<ClusterCanvas />} />;
 }
