@@ -13,6 +13,12 @@
  * 3D 画布之上，而画布外层包裹层（ShellLayout 视口槽）为保护 R3F 射线拾取
  * 可能设 pointer-events-none，终端必须自行恢复指针交互（滚动/点击折叠/清空）。
  *
+ * 【层级与避让契约】终端显式声明 z-10（位于相机工具条 z-20 之下、画布之上），
+ * 且挂载类名以 right-[74px] 取代满宽的 inset-x-3：工具条占据 bottom-3 right-3
+ * （宽 50 + 右距 12 ≈ 62px），若终端仍延伸到右边界，两者会在右下角形成
+ * 约 50×128 的重叠区——工具条压在日志滚动区与 clear 按钮上方，既遮挡内容
+ * 又抢走该区域点击。右让 74px（12 右距 + 50 宽 + 12 间隙）使二者并排不相交。
+ *
  * 【滚动性能契约】日志到达时以「scrollTop 直接赋值」滚动到底部，
  * 而非 scrollIntoView（后者会触发布局抖动且可能被浏览器平滑滚动策略延迟）。
  * 自动跟随仅在用户未向上翻阅时生效（贴底判定阈值 24px），
@@ -159,7 +165,7 @@ export default function TerminalEcho({ className, defaultCollapsed = false }: Te
   return (
     <div
       className={cn(
-        'pointer-events-auto flex flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-950/80 backdrop-blur-md shadow-panel transition-[height] duration-300 ease-out',
+        'pointer-events-auto z-10 flex flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-950/80 backdrop-blur-md shadow-panel transition-[height] duration-300 ease-out',
         collapsed ? 'h-8' : 'h-32',
         className,
       )}

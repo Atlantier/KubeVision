@@ -531,7 +531,7 @@ function Sparkline({ series, width = SPARKLINE_WIDTH, height = SPARKLINE_HEIGHT 
  */
 function TopologyLegendPanel() {
   return (
-    <div className="kv-panel pointer-events-auto w-[248px] p-3 shadow-panel">
+    <div className="kv-panel pointer-events-auto w-[248px] max-w-full p-3 shadow-panel">
       {/* 标题 */}
       <div className="mb-2 flex items-center gap-1.5">
         <LayoutGrid className="h-3 w-3 text-cyan-400" aria-hidden />
@@ -626,7 +626,7 @@ function EntityProbeCard({
   return (
     <div
       className={cn(
-        'kv-panel pointer-events-auto w-[288px] overflow-hidden p-3',
+        'kv-panel pointer-events-auto w-[288px] max-w-full overflow-hidden p-3',
         TONE_RING_CLASS[view.statusTone],
         TONE_GLOW_CLASS[view.statusTone],
       )}
@@ -750,6 +750,10 @@ function SparklineBlock({
  * （left-3 top-3），z-20 与 ViewportToolbar 同级——高于画布内 drei <Html>
  * （zIndexRange=[10,0]），低于 PerfHud（z-40）与顶层 Modal（z-50）。
  *
+ * 【小屏护栏】外层附加 max-w-[calc(100%-1.5rem)]：卡片本体固定 288px 宽，
+ * 在 375px 手机竖屏下会贴到视口边缘；约束外层最大宽度后卡片随容器收窄，
+ * 保证左右各留 12px 呼吸间隙且不产生横向溢出。
+ *
  * 【双态渲染】view === null → 空态图例；否则 → 实体探针卡片。
  * 二者由 AnimatePresence mode="wait" 互斥过渡，避免形态交叠。
  */
@@ -816,7 +820,7 @@ export default function NodeInspectHUD({ className }: NodeInspectHUDProps) {
 
   return (
     <div
-      className={cn('pointer-events-none absolute left-3 top-3 z-20', className)}
+      className={cn('pointer-events-none absolute left-3 top-3 z-20 max-w-[calc(100%-1.5rem)]', className)}
       aria-label="实体巡检 HUD"
     >
       <AnimatePresence mode="wait">

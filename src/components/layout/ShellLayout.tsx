@@ -410,8 +410,10 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
           {/* 视口槽位：后续轮次注入 dynamic(ssr:false) R3F Canvas */}
           {viewport ?? <ViewportPlaceholder />}
 
-          {/* 事件流终端：绝对定位于视口底部（外层已设 pointer-events-auto） */}
-          <TerminalEcho className="absolute inset-x-3 bottom-3" />
+          {/* 事件流终端：绝对定位于视口底部，右侧避让相机工具条（z-20）
+              —— right-[74px] = 工具条右距 12 + 宽 50 + 间隙 12，
+              两者在右下角不再重叠，terminal 的 clear 按钮与日志区完整可点 */}
+          <TerminalEcho className="absolute bottom-3 left-3 right-[74px]" />
 
           {/* 性能 HUD：悬浮于视口右上（z-40） */}
           <AnimatePresence>{isPerfHudOpen ? <PerfHudPanel /> : null}</AnimatePresence>
