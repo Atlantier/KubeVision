@@ -1,0 +1,17 @@
+# =============================================================================
+# KubeVision AI — pnpm 构建脚本许可配置（pnpm 11 自动生成脚手架，显式定稿）
+#
+# 【设计意图】显式拒绝以下三个依赖的 install/postinstall 原生构建脚本：
+#   - onnxruntime-node：@huggingface/transformers 的 Node 端可选 ORT 引擎。
+#     本项目仅做浏览器端侧推理（WebGPU/WASM），且 next.config.mjs 已将
+#     'onnxruntime-node$' alias 为 false，无需下载/编译原生二进制。
+#   - sharp：Node 端可选图像处理原生模块，同样已在 webpack alias 中置空。
+#   - protobufjs：其 postinstall 仅生成 CLI 辅助脚本，运行期不依赖。
+# 全部置 false 后 pnpm install 以 exit 0 干净收尾，
+# 杜绝 ERR_PNPM_IGNORED_BUILDS 阻断 CI，也不引入任何未审计的原生编译产物。
+# =============================================================================
+
+allowBuilds:
+  onnxruntime-node: false
+  protobufjs: false
+  sharp: false
