@@ -38,6 +38,33 @@ export interface RagRunbookDoc {
   readonly remediationSteps: string[];
   /** 余弦相似度得分。@range [0, 1]，仅检索命中后回填，1 为完全相似 */
   readonly similarityScore?: number;
+  /**
+   * 故障特征词袋（检索通道二：关键词/子串命中）。
+   *
+   * 【为何需要】端侧 Embedding 模型尚未接入时，纯语义向量不可得；
+   * 此字段提供确定性的**可解释召回依据**：查询串命中越多特征词，
+   * 说明该 Runbook 与该故障表象越贴近。相比黑盒向量，它还能在前端
+   * 「溯源」区直接展示「命中了哪些特征词」，对答辩与排障信任度至关重要。
+   * 词袋使用小写英文与英文术语（kubectl 输出、内核日志原文风格）。
+   */
+  readonly featureVocabulary: string[];
+  /**
+   * 根因机制说明（Linux 内核 / Cgroup / CNI 层的底层原理）。
+   *
+   * 【用途】LLM 增强生成的「技术深度」来源：只给「重启 Pod」这类
+   * 操作步骤无法体现 SRE 专业性，必须讲清 OOM Killer 如何依据
+   * oom_score_adj 选择受害者、cgroup v2 的 memory.max 如何触发、
+   * VXLAN 隧道丢包如何导致 CNI 无法完成 IPAM 分配等机制。
+   */
+  readonly rootCauseMechanism: string;
+  /**
+   * 关联的混沌场景（用于上下文加权）。
+   *
+   * 【检索增强】当 activeChaos 命中该字段时，说明当前演练场景与该
+   * Runbook 的适用故障类型一致，应给予显著加权——这是「用已知的
+   * 故障上下文缩小检索空间」的经典 RAG 增强手法。
+   */
+  readonly relatedChaos?: readonly string[];
 }
 
 /* ========================================================================== */
@@ -225,6 +252,46 @@ export type ChatStreamEvent =
   | ChatStreamTextEvent
   | ChatStreamToolStartEvent
   | ChatStreamToolResultEvent;
+
+/* ========================================================================== */
+/* GenUI 组件 Props（思考链 / 骨架屏）                                           */
+/* ========================================================================== */
+
+/**
+ * AgentThoughtChainProps —— AI 思考与规划过程可视化组件的 Props。
+ *
+ * 【设计意图】把 AgentReasoningStep[] 渲染为可折叠的时间轴：
+ * 折叠态只显示阶段汇总（几步、总耗时），展开态逐条显示
+ * 步骤图标 + 阶段徽标 + mcp:// URI 高亮 + 每步耗时。
+ * 默认折叠是为了不喧宾夺主——用户主要关心结论，思考链是「可信度证据」。
+ */
+export interface AgentThoughtChainProps {
+  /** 推理步骤序列（按 stepIndex 升序；组件内部会再排序防御） */
+  readonly steps: readonly AgentReasoningStep[];
+  /** 是否处于流式接收中（true → 展示「思考中」脉冲点与进行中的光标） */
+  readonly isStreaming?: boolean;
+  /** 初始是否展开，默认 false（折叠态） */
+  readonly defaultExpanded?: boolean;
+  /** 附加容器类名 */
+  readonly className?: string;
+}
+
+/**
+ * GenUISkeletonProps —— 工具调用进行中的生成式 UI 骨架屏 Props。
+ *
+ * 【触发时机】NDJSON 流收到 ChatStreamToolStartEvent（tool-start）后立即挂载，
+ * 待对应 toolCallId 的 tool-result 到达时被真实卡片替换。
+ * 它的存在意义是：**让"AI 正在调用工具"这一中间状态可见**，
+ * 而不是让用户对着空白对话流等待——可感知的进度等于可信的智能。
+ */
+export interface GenUISkeletonProps {
+  /** 工具名（如 'renderPodMetrics'） */
+  readonly toolName: string;
+  /** MCP 工具端点 URI（形如 'mcp://k8s-cluster/tools/renderPodMetrics'） */
+  readonly mcpUri: string;
+  /** 附加容器类名 */
+  readonly className?: string;
+}
 
 /* ========================================================================== */
 /* 端侧日志审计（Transformers.js WebGPU/WASM 浏览器端推理）                      */
