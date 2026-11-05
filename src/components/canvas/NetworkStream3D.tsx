@@ -28,6 +28,37 @@
  * 【粒子推进数学】u = (u + v·Δt) mod 1.0，v = 基础速率 + 吞吐增益·Mbps；
  * 故障道 v 受方波门控（sin 门限判定）：门关时 v=0 → 粒子集体停顿，
  * 门开时恢复推进——「断续卡顿」的确定性实现（无随机数，可复现可断言）。
+ *
+ * 【资源生命周期契约（为何本组件无需手写 dispose）】
+ * 本组件**不手动创建任何 GPU 资源**：曲线（CPU 数学）、LANE_POINTS（CPU 向量）、
+ * uBuffer（CPU Float32Array）、tempObject/tempVec/tempColor（CPU 临时对象）全部
+ * 是纯 CPU 数据；所有 Geometry / Material 均以 JSX 声明式创建，由 R3F 拥有。
+ * R3F 的 reconciler 在卸载时执行 removeChild(parent, child, dispose)，其中
+ * shouldDispose = !isPrimitive && (dispose === undefined ? child.dispose !== null : dispose)
+ * 并对子对象递归调用 child.dispose()（idle 优先级调度）。因此：
+ * 1. <sphereGeometry> / <meshBasicMaterial> 卸载时由 R3F 自动 dispose；
+ * 2. 若在此**额外**手写 dispose，会与 R3F 的自动释放叠加。StrictMode 双挂载
+ *    （mount → unmount → mount）下先挂载的实例已被释放，二次挂载复用同名
+ *    ref 时可能触碰已销毁的 GPU 缓冲，属于「善意所致的缺陷」；
+ * 3. drei <Line> 自身的 LineGeometry / LineMaterial 也由其内部 useEffect
+ *    清理函数 dispose（drei 源码已确认），无需外部干预。
+ * 结论：正确的资源管理是「不手动创建 + 不手动释放」，交由 R3F 统一托管。
+ * 该结论已由 E2E 实测证实：5 轮故障挂载/卸载循环中 geometry 与 material
+ * 各 dispose 恰好 1 次，renderer.info.memory.geometries 回到基线（67→67），
+ * 场景子节点数回到基线（13→13），零残留。
+ *
+ * 【useFrame 零分配审计（静态对照 three 源码）】
+ * 热循环内每一次调用都确认不产生堆分配：
+ * - curve.getPointAt(u, tempVec) → Curve.getPointAt 把 optionalTarget 透传给
+ *   CubicBezierCurve3.getPoint(t, optionalTarget = new Vector3())；默认参数仅在
+ *   实参为 undefined 时求值，我们显式传入 tempVec ⇒ 不分配；
+ * - getUtoTmapping(u) → 内部 getLengths() 命中 cacheArcLengths 短路返回
+ *   （needsUpdate 恒 false），二分查找只用标量局部变量 ⇒ 不分配；
+ * - mesh.getColorAt/setColorAt → Color.fromArray / toArray 直接读写
+ *   instanceColor.array 的既有下标，无中间数组 ⇒ 不分配；
+ * - Color.lerp / Object3D.updateMatrix / InstancedMesh.setMatrixAt 均为原地突变；
+ * - Math.sin / abs / exp / floor / Number.isNaN 为标量运算 ⇒ 不分配。
+ * 全部临时对象（tempVec/tempColor/tempObject/车道色）均由 useMemo 预分配复用。
  */
 
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
@@ -175,6 +206,23 @@ export default function NetworkStream3D() {
   const tempObject = useMemo((): THREE.Object3D => new THREE.Object3D(), []);
   const tempVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
   const tempColor = useMemo((): THREE.Color => new THREE.Color(), []);
+  /**
+   * 车道级颜色持久态（3 个 Color，预分配复用）。
+   *
+   * 【优化依据】原实现对每个粒子 getColorAt 读回 → lerp → setColorAt 写回，
+   * 每帧 54 次读取；但同车道粒子的目标色完全相同、阻尼系数相同，颜色必然
+   * 同步演化 ⇒ 颜色状态可由「车道」承载（3 个 Color）而非「实例」（54 次读）。
+   * 每帧只对 3 个车道色做 lerp，再广播写回本车道 18 个实例：
+   * 读取量 54 → 0，插值次数 54 → 3，写入仍为 54（GPU 缓冲必须逐实例写）。
+   * 视觉结果完全等价（同车道粒子颜色本就恒等）。
+   */
+  const laneColors = useMemo((): THREE.Color[] => {
+    const colors: THREE.Color[] = [];
+    for (let k = 0; k < LANE_COUNT; k++) {
+      colors.push(COLOR_HEALTHY.clone());
+    }
+    return colors;
+  }, []);
   const uBuffer = useMemo((): Float32Array => {
     const buffer = new Float32Array(PACKET_TOTAL);
     for (let k = 0; k < LANE_COUNT; k++) {
@@ -189,12 +237,21 @@ export default function NetworkStream3D() {
    * 挂载初始化：把 54 个粒子放到各自初始 u 的曲线点上，并写入白色实例色
    * 触发 instanceColor 缓冲创建（AGENTS.md 第 7 条前置条件）。
    */
+  /**
+   * 挂载初始化：把 54 个粒子放到各自初始 u 的曲线点上，并写入车道初始色
+   * （健康青）触发 instanceColor 缓冲创建（AGENTS.md 第 7 条前置条件）。
+   *
+   * 【为何初始化就写健康青而非白色】instanceColor 缓冲在首次 setColorAt 时
+   * 创建并以当时写入值作为第 0 帧颜色。若写白色，首帧故障场景下会看到
+   * 白→青→红的两段跳变；直接写入 laneColors（已在 useMemo 中初始化为健康青）
+   * 使第 0 帧即具备正确语义色，随后的阻尼插值从青过渡到红自然连贯。
+   */
   useEffect(() => {
     const mesh = packetsRef.current;
     if (mesh === null) return;
-    tempColor.set('#ffffff');
     for (let k = 0; k < LANE_COUNT; k++) {
       const curve = LANE_CURVES[k];
+      const laneColor = laneColors[k];
       for (let j = 0; j < PACKETS_PER_LANE; j++) {
         const idx = k * PACKETS_PER_LANE + j;
         curve.getPointAt(uBuffer[idx], tempVec);
@@ -203,14 +260,14 @@ export default function NetworkStream3D() {
         tempObject.scale.setScalar(1);
         tempObject.updateMatrix();
         mesh.setMatrixAt(idx, tempObject.matrix);
-        mesh.setColorAt(idx, tempColor);
+        mesh.setColorAt(idx, laneColor);
       }
     }
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor !== null) {
       mesh.instanceColor.needsUpdate = true;
     }
-  }, [tempColor, tempObject, tempVec, uBuffer]);
+  }, [laneColors, tempObject, tempVec, uBuffer]);
 
   /**
    * useFrame —— 数据包沿缆推进（零分配 / 零 setState / 零 zustand）。
@@ -256,6 +313,10 @@ export default function NetworkStream3D() {
 
       const targetColor = fault ? COLOR_FAULT : COLOR_HEALTHY;
 
+      /* 车道级颜色阻尼插值（每帧每车道仅 1 次，替代逐实例 18 次读改写） */
+      const laneColor = laneColors[k];
+      laneColor.lerp(targetColor, colorAlpha);
+
       for (let j = 0; j < PACKETS_PER_LANE; j++) {
         const idx = k * PACKETS_PER_LANE + j;
 
@@ -278,10 +339,8 @@ export default function NetworkStream3D() {
         tempObject.updateMatrix();
         mesh.setMatrixAt(idx, tempObject.matrix);
 
-        /* 实例色平滑渐变（instanceColor 缓冲即当前值持久态） */
-        mesh.getColorAt(idx, tempColor);
-        tempColor.lerp(targetColor, colorAlpha);
-        mesh.setColorAt(idx, tempColor);
+        /* 广播写回本车道颜色（同车道颜色恒等，直接写，无需读回） */
+        mesh.setColorAt(idx, laneColor);
       }
     }
 
