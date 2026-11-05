@@ -41,6 +41,7 @@ import type {
   WorkerNodeEntity,
   NodeStatus,
 } from '@/types/cluster';
+import type { LogEntry } from '@/types/ai';
 
 /* ========================================================================== */
 /* 时间与数值常量                                                              */
@@ -732,4 +733,335 @@ export function stepTelemetrySimulation(
  */
 export function createEngineState(initial: TelemetrySnapshot): TelemetrySnapshot {
   return initial;
+}
+
+/* ========================================================================== */
+/* 容器实时日志流生成器（端侧脱敏引擎的实战数据源）                                */
+/* ========================================================================== */
+
+/**
+ * 日志模板中的敏感信息样本（真实格式，仅供 rawText 使用）。
+ *
+ * 【安全声明】这些值全部是**公开文档中的示例凭据**，不对应任何真实账户：
+ * - AWS 官方文档示例 AccessKey `AKIAIOSFODNN7EXAMPLE`（AWS 文档首页长期使用
+ *   的标准示例串，官方明确标注为不可用的假凭据）；
+ * - JWT 为手工构造的合法结构（header.payload 两段可 base64 解码，
+ *   但 payload 仅 `{"sub":"admin"}` 无签名、无过期、不对应任何签发方）；
+ * - IPv4 为 K8s 标准 Pod CIDR 段（10.244.0.0/16 是 flannel 默认网段）。
+ * 它们的作用是让端侧脱敏引擎有**格式正确**的样本可处理——正则要匹配的是
+ * 模式（`AKIA[0-9A-Z]{16}` / `eyJ...` 三段式 / `10.244.x.x:port`），
+ * 用乱码假串会让脱敏引擎"看起来跑通但实际匹配不到"，失去实战意义。
+ */
+const SENSITIVE_SAMPLES: readonly string[] = [
+  '10.244.2.18:6379',
+  '10.244.1.31:9092',
+  '10.244.0.11:5432',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiJ9',
+  'AKIAIOSFODNN7EXAMPLE',
+  'admin@kubevision.internal',
+];
+
+/**
+ * 脱敏正则表 —— 把 rawText 中的敏感模式替换为 [REDACTED]。
+ *
+ * 【模式设计】按「最具体优先」排列，避免短模式先吃掉长模式的片段：
+ * 1. JWT：`eyJ` 开头的三段式 base64url（header.payload.signature），
+ *    本生成器构造的样本为两段（无签名），故段数设为 2~3；
+ * 2. AWS AccessKey：`AKIA` + 16 位大写字母数字；
+ * 3. IPv4:port：四段点分十进制 + 可选端口；
+ * 4. 邮箱：标准 local@domain 形式。
+ *
+ * 【为何在此实现而不是等脱敏引擎】ai.ts 的 LogEntry 契约要求
+ * sanitizedText 必须已脱敏（「送入端侧模型与 LLM 上下文的一律是
+ * sanitizedText」）。若本函数返回未脱敏的 sanitizedText，等于把敏感信息
+ * 直接泄进 LLM 通道——必须在此闭合。后续端侧 AI 脱敏引擎可替换/增强
+ * 这套正则，但默认值必须安全（fail-safe，而非 fail-open）。
+ */
+const REDACTION_RULES: readonly { readonly pattern: RegExp; readonly replacement: string }[] = [
+  /* JWT：eyJ 开头，两段或三段 base64url，用点分隔 */
+  {
+    pattern: /eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*)?/g,
+    replacement: '[REDACTED_JWT]',
+  },
+  /* AWS AccessKey：AKIA + 16 位大写字母或数字 */
+  {
+    pattern: /AKIA[0-9A-Z]{16}/g,
+    replacement: '[REDACTED_AWS_KEY]',
+  },
+  /* IPv4 可选端口 */
+  {
+    pattern: /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/g,
+    replacement: '[REDACTED_IP]',
+  },
+  /* 邮箱 */
+  {
+    pattern: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
+    replacement: '[REDACTED_EMAIL]',
+  },
+];
+
+/**
+ * sanitizeLogText —— 对原始日志文本执行正则脱敏。
+ *
+ * 【核心逻辑】顺序应用 REDACTION_RULES，每次命中替换为带类型的标记
+ * （如 [REDACTED_JWT] 而非统一 [REDACTED]）——带类型标记让审计面板能
+ * 直接展示"命中了哪类凭据"，对运维判断泄露面更有价值。
+ *
+ * @param raw 原始日志文本
+ * @returns 脱敏文本与命中总数
+ */
+function sanitizeLogText(raw: string): { readonly text: string; readonly count: number } {
+  let text = raw;
+  let count = 0;
+  for (const rule of REDACTION_RULES) {
+    /* 正则含 g 标志，test 会推进 lastIndex，故用 replace 的副作用计数 */
+    text = text.replace(rule.pattern, (): string => {
+      count += 1;
+      return rule.replacement;
+    });
+  }
+  return { text, count };
+}
+
+/**
+ * 日志严重级别（内部枚举，映射到渲染色调与端侧分类标签）。
+ */
+type LogSeverity = 'INFO' | 'WARN' | 'ERROR' | 'FATAL';
+
+/**
+ * 单条日志模板：严重级别 + 文本生成函数（延迟求值，仅在选中时构造字符串）。
+ *
+ * 【为何用函数而非字符串】每个模板都要插入 Pod 名 / 时间戳等变量，
+ * 若预先构造会为未选中的模板白做字符串拼接。函数延迟到入选后再执行。
+ */
+interface LogTemplate {
+  readonly severity: LogSeverity;
+  /** 生成日志正文（不含 K8s 标准前缀） */
+  readonly build: (pod: PodEntity, tick: number) => string;
+}
+
+/**
+ * 正常态日志模板池（INFO 为主，模拟健康容器的稳定输出）。
+ *
+ * 【覆盖契约：每个模板必含至少一类敏感样本】
+ * 早期版本只有部分模板含 IP/凭据，实测在「稳态只产出 1 条日志」的
+ * 低流量 tick 上常常抽不到敏感模板（maskedCount=0），脱敏引擎因此闲置。
+ * 真实世界恰恰相反：健康容器的 INFO 日志里到处都是连接串、
+ * 上游地址和健康检查 URL——**正常运行时才是最容易泄漏基础设施拓扑的时刻**。
+ * 因此这里让每条模板都携带连接串/地址/凭据，保证任何 tick 都有脱敏素材。
+ */
+const HEALTHY_LOG_TEMPLATES: readonly LogTemplate[] = [
+  {
+    severity: 'INFO',
+    build: (pod): string =>
+      `GET /api/v1/health 200 ${12 + (pod.slotIndex % 7)}ms - upstream=10.244.2.18:6379 pool=${8 + (pod.slotIndex % 5)}`,
+  },
+  {
+    severity: 'INFO',
+    build: (pod): string =>
+      `metrics flushed to collector 10.244.2.18:6379 (cpu=${pod.cpuUsage.toFixed(1)}%, mem=${pod.memoryUsage.toFixed(1)}%) batched=${40 + (pod.slotIndex % 20)}`,
+  },
+  {
+    severity: 'INFO',
+    build: (pod): string =>
+      `redis pool healthy -> dial tcp 10.244.2.18:6379 ok, latency=${3 + (pod.slotIndex % 4)}ms, inflight=0`,
+  },
+  {
+    severity: 'INFO',
+    build: (pod): string =>
+      `watching configmap ${pod.namespace}/app-config resync complete, caller=admin@kubevision.internal generation=${20 + (pod.slotIndex % 10)}`,
+  },
+  {
+    severity: 'INFO',
+    build: (pod): string =>
+      `probe served: GET http://10.244.2.18:8080/healthz 200 1ms - pod=${pod.name}`,
+  },
+  {
+    severity: 'INFO',
+    build: (pod): string =>
+      `otel export ok -> 10.244.2.18:6379 spans=${60 + (pod.slotIndex % 40)}, token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiJ9`,
+  },
+  {
+    severity: 'INFO',
+    build: (pod): string =>
+      `cache warm complete, s3://kv-audit-prod sync via AKIAIOSFODNN7EXAMPLE (${40 + (pod.slotIndex % 20)} objects)`,
+  },
+];
+
+/** 异常态日志模板池（ERROR/FATAL 为主，覆盖 OOM / 网络 / 认证三类故障叙事） */
+const ABNORMAL_LOG_TEMPLATES: readonly LogTemplate[] = [
+  {
+    severity: 'FATAL',
+    build: (pod): string =>
+      `fatal error: runtime: out of memory - container exceeded limit (mem=${pod.memoryUsage.toFixed(1)}%), signal=KILL, node=10.244.2.18:10250`,
+  },
+  {
+    severity: 'ERROR',
+    build: (pod): string =>
+      `OOMKilled: cgroup memory limit reached, oom_score_adj=999, restart_count=${pod.restarts}, last_state=terminated`,
+  },
+  {
+    severity: 'ERROR',
+    build: (pod): string =>
+      `dial tcp 10.244.2.18:6379: connect: connection refused (kafka broker unreachable, retry 3/5 backoff=2s)`,
+  },
+  {
+    severity: 'ERROR',
+    build: (): string =>
+      `401 Unauthorized - Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiJ9 rejected by authz webhook`,
+  },
+  {
+    severity: 'ERROR',
+    build: (pod): string =>
+      `S3 upload failed: InvalidAccessKeyId - key=AKIAIOSFODNN7EXAMPLE region=ap-east-1 endpoint=10.244.2.18:6379`,
+  },
+  {
+    severity: 'ERROR',
+    build: (pod): string =>
+      `context deadline exceeded after 30s calling upstream 10.244.2.18:6379 (pool exhausted, active=${18 + (pod.slotIndex % 6)}/20)`,
+  },
+  {
+    severity: 'WARN',
+    build: (pod): string =>
+      `liveness probe failed: Get "http://10.244.2.18:8080/healthz": context deadline exceeded (pod=${pod.name})`,
+  },
+  {
+    severity: 'WARN',
+    build: (): string =>
+      `credential rotation due: service account token scoped to admin@kubevision.internal expires in 6h`,
+  },
+  {
+    severity: 'FATAL',
+    build: (pod): string =>
+      `panic: runtime error: invalid memory address or nil pointer dereference (goroutine 1, restarts=${pod.restarts}, caller=AKIAIOSFODNN7EXAMPLE)`,
+  },
+  {
+    severity: 'ERROR',
+    build: (pod): string =>
+      `TLS handshake failed with 10.244.2.18:6379: certificate signed by unknown authority (svc=${pod.name}, token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiJ9)`,
+  },
+];
+
+/**
+ * 日志条数决策：正常态 1~2 条，异常态 3~5 条。
+ *
+ * 【为何异常态更多】真实故障中容器会密集输出错误（CrashLoopBackOff 的
+ * backoff 重试、OOM 前后的 GC 告警），日志量本身就是故障信号之一。
+ */
+const HEALTHY_LOG_MIN = 1;
+const HEALTHY_LOG_MAX = 2;
+const ABNORMAL_LOG_MIN = 3;
+const ABNORMAL_LOG_MAX = 5;
+
+/**
+ * 判定 Pod 是否处于「当前异常」态（决定日志走报错模板还是常规模板）。
+ *
+ * 【为何排除 restarts > 0】本判定回答的是「该 Pod 此刻是否在故障中」，
+ * 而非「它历史上是否出过问题」。种子数据中 order-service(1 次)、
+ * prometheus-server(2 次) 等 Pod 带着历史重启计数但当前状态是 Running；
+ * 若把 restarts 计入异常，稳态集群会被误判为故障态并持续输出 ERROR 日志
+ * （实测导致「稳态却打出 401 Unauthorized」的语义矛盾）。
+ * 因此只以**当前生命周期状态**为准：崩溃双态 + 调度中才算异常。
+ */
+function isPodAbnormal(pod: PodEntity): boolean {
+  return (
+    pod.status === 'CrashLoopBackOff' ||
+    pod.status === 'OOMKilled' ||
+    pod.status === 'Pending'
+  );
+}
+
+/**
+ * generateSyntheticLogs —— 容器实时日志流生成器（端侧脱敏引擎的实战素材）。
+ *
+ * 【核心流转】
+ * 1. 从快照中筛出异常 Pod（崩溃/挂起/有重启记录的），作为日志优先来源；
+ * 2. 若有异常 Pod：为其各生成 3~5 条 ERROR/FATAL 日志
+ *    （混入真实格式的内网 IP、JWT、AWS AccessKey、邮箱）；
+ * 3. 若无异常 Pod：从全部 Pod 中按 tick 选取 1~2 个，生成 INFO 日志
+ *    （同样混入 IP 与凭据样本——**健康容器的日志里也常有连接串**，
+ *    这是真实世界的常态，也让脱敏引擎在稳态下同样有活可干）；
+ * 4. 每条日志构造 K8s 标准容器输出格式前缀：
+ *    `<RFC3339 时间戳> <LEVEL> <pod>/<container> <message>`
+ *    （贴近 `kubectl logs` 的真实观感）；
+ * 5. 对 rawText 执行正则脱敏得 sanitizedText 与 maskedCount；
+ * 6. 全部条目按时间戳排序后返回。
+ *
+ * 【确定性】与引擎其余部分一致：不使用 Math.random()，所有选择都基于
+ * 「快照 tick + Pod 下标」的确定性哈希，因此同一快照恒产出同一批日志。
+ *
+ * 【为什么 rawText 必须含真实素材】这是给端侧 AI 脱敏引擎的实战输入。
+ * 若 rawText 一开始就是干净文本，脱敏引擎"跑通"也无从验证其正则有效性；
+ * 只有喂入格式正确的 IP / JWT / AccessKey，才能真实检验：
+ * 匹配率、误报率、maskedCount 计数准确性、以及替换后文本的可读性。
+ * 而 sanitizedText 恒为脱敏结果，确保 LLM 通道永不接触原文（ai.ts 契约）。
+ *
+ * @param snapshot 当前遥测快照（日志内容由其中的 Pod 状态 / 水位 / 重启数驱动）
+ * @returns 按时间戳升序排列的日志条目数组（可为空数组表示无日志产出）
+ */
+export function generateSyntheticLogs(snapshot: TelemetrySnapshot): LogEntry[] {
+  const tick = Math.floor(snapshot.timestamp / TICK_INTERVAL_MS);
+  const pods = snapshot.pods;
+  if (pods.length === 0) return [];
+
+  /* ---- 1. 分隔异常 Pod 与健康 Pod ---- */
+  const abnormalPods: PodEntity[] = [];
+  const healthyPods: PodEntity[] = [];
+  for (const pod of pods) {
+    if (isPodAbnormal(pod)) abnormalPods.push(pod);
+    else healthyPods.push(pod);
+  }
+
+  const useAbnormal = abnormalPods.length > 0;
+  const pool = useAbnormal ? abnormalPods : healthyPods;
+  if (pool.length === 0) return [];
+
+  const templates = useAbnormal ? ABNORMAL_LOG_TEMPLATES : HEALTHY_LOG_TEMPLATES;
+
+  /* ---- 2. 本 tick 产出条数（确定性哈希决定，落在场景对应区间） ---- */
+  const countMin = useAbnormal ? ABNORMAL_LOG_MIN : HEALTHY_LOG_MIN;
+  const countMax = useAbnormal ? ABNORMAL_LOG_MAX : HEALTHY_LOG_MAX;
+  const span = countMax - countMin + 1;
+  const noise = hashNoise(tick * 97 + 17);
+  /* hashNoise ∈ [−1,1] → 归一化到 [0,1) → 映射到条数区间 */
+  const normalized = (noise + 1) / 2;
+  const count = countMin + Math.min(span - 1, Math.floor(normalized * span));
+
+  /* ---- 3. 逐条生成 ---- */
+  const entries: LogEntry[] = [];
+  for (let i = 0; i < count; i++) {
+    /* 3.1 选 Pod：按下标轮转（确定性、可覆盖多个 Pod，避免永远只打第一个） */
+    const podIndex = (tick + i * 3) % pool.length;
+    const pod = pool[podIndex];
+
+    /* 3.2 选模板：同样确定性轮转，保证类型多样而非重复同一句 */
+    const templateIndex = (tick * 7 + i * 13 + podIndex) % templates.length;
+    const template = templates[templateIndex];
+
+    /* 3.3 K8s 标准容器输出前缀：
+           <RFC3339> <LEVEL> <pod>/<container> <message>
+           时间戳按条错开（i × 137ms），模拟同秒内多条日志的真实间隔 */
+    const entryTimestamp = snapshot.timestamp + i * 137;
+    const isoTimestamp = new Date(entryTimestamp).toISOString();
+    const containerName = pod.name;
+    const body = template.build(pod, tick);
+    const rawText = `${isoTimestamp} ${template.severity} ${pod.name}/${containerName} ${body}`;
+
+    /* 3.4 脱敏（sanitizedText 是唯一可外发文本，见 ai.ts 隐私契约） */
+    const { text: sanitizedText, count: maskedCount } = sanitizeLogText(rawText);
+
+    entries.push({
+      id: `log-${entryTimestamp}-${pod.id}-${i}`,
+      rawText,
+      sanitizedText,
+      maskedCount,
+      timestamp: entryTimestamp,
+      podName: pod.name,
+      namespace: pod.namespace,
+    });
+  }
+
+  /* ---- 4. 按时间戳升序（渲染端可直接顺序 append） ---- */
+  entries.sort((a, b): number => a.timestamp - b.timestamp);
+  return entries;
 }
