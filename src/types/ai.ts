@@ -258,17 +258,37 @@ export interface ChatStreamToolResultEvent {
 }
 
 /**
+ * ChatStreamEngineEvent —— 引擎标识事件（流内事实声明）。
+ *
+ * 【为何需要】HTTP 响应头在流开始前就已发送，无法反映「流开始后」才发生的
+ * 引擎降级。而 x-kubevision-engine 头只能表达**预判**（有 Key 就是 llm）。
+ * 当引擎 A 调用失败、实际由引擎 B 接管时，必须有一条流内事件说明真相，
+ * 否则调试者与监控会误以为本次回答来自大模型。
+ *
+ * 【消费约定】前端可据此在对话流顶部显示「回答来自：真实模型 / 本地引擎」，
+ * 诚实标注数据来源，而不是让用户误判。
+ */
+export interface ChatStreamEngineEvent {
+  readonly type: 'engine';
+  /** 实际生效的引擎 */
+  readonly engine: 'llm' | 'simulator';
+  /** 选择该引擎的原因（人类可读，仅降级时有值） */
+  readonly reason?: string;
+}
+
+/**
  * ChatStreamEvent —— NDJSON 流式协议行级事件判别联合。
  *
  * 【解析契约】每行一个 JSON 对象，前端 ReadableStreamDefaultReader +
  * TextDecoder 按 '\n' 切分（跨 chunk 半行缓冲），JSON.parse 后以
- * event.type 做 switch 窄化，穷举四个分支即可安全消费。
+ * event.type 做 switch 窄化，穷举五个分支即可安全消费。
  */
 export type ChatStreamEvent =
   | ChatStreamReasoningEvent
   | ChatStreamTextEvent
   | ChatStreamToolStartEvent
-  | ChatStreamToolResultEvent;
+  | ChatStreamToolResultEvent
+  | ChatStreamEngineEvent;
 
 /* ========================================================================== */
 /* GenUI 组件 Props（思考链 / 骨架屏）                                           */
@@ -308,6 +328,103 @@ export interface GenUISkeletonProps {
   readonly mcpUri: string;
   /** 附加容器类名 */
   readonly className?: string;
+}
+
+/* ========================================================================== */
+/* Copilot 对话请求载荷（/api/chat 入参）                                        */
+/* ========================================================================== */
+
+/**
+ * ClusterFaultSnapshot —— 异常 Pod 的精简快照（送入 LLM 上下文的最小必要字段）。
+ *
+ * 【为何不直接传完整 TelemetrySnapshot】24 个 Pod 的完整对象（含 6 点历史、
+ * 时间戳字符串等）序列化后可达数万 token，既昂贵又稀释关键信号。
+ * 此处只保留「诊断必需」的字段：身份、状态、水位、重启数与历史趋势，
+ * 让模型聚焦于异常本身。
+ */
+export interface ClusterFaultSnapshot {
+  /** Pod ID */
+  readonly id: string;
+  /** Pod 名称 */
+  readonly name: string;
+  /** 命名空间 */
+  readonly namespace: string;
+  /** 生命周期状态（Running / Pending / CrashLoopBackOff / OOMKilled / Terminating） */
+  readonly status: string;
+  /** CPU 使用率百分比 */
+  readonly cpuUsage: number;
+  /** 内存使用率百分比 */
+  readonly memoryUsage: number;
+  /** 累计重启次数 */
+  readonly restarts: number;
+  /** 宿主节点 ID */
+  readonly nodeId: string;
+  /** 近 6 点 CPU 历史 */
+  readonly cpuHistory: readonly number[];
+  /** 近 6 点内存历史 */
+  readonly memHistory: readonly number[];
+}
+
+/**
+ * ClusterContext —— 对话请求携带的集群上下文（Agent 的「态势感知」输入）。
+ *
+ * 【设计意图】让 LLM 无需工具调用就能「看见」当前集群快照：
+ * 选中了哪个实体、正在演练什么故障、健康分多少、哪些 Pod 异常。
+ * 这是让回答从「泛泛而谈」变为「针对你这台集群」的关键输入。
+ */
+export interface ClusterContext {
+  /** 当前选中实体 ID（null 表示未选中） */
+  readonly selectedEntityId: string | null;
+  /** 当前选中实体类型（'master' | 'node' | 'pod' | null） */
+  readonly selectedEntityType: string | null;
+  /** 当前混沌演练场景 */
+  readonly activeChaos: string;
+  /** 集群综合健康分。@range [0, 100] */
+  readonly clusterHealthScore: number;
+  /** 集群入口总 QPS */
+  readonly totalQps: number;
+  /** 异常 Pod 快照列表（仅异常态，通常 0~5 条） */
+  readonly faultyPods: readonly ClusterFaultSnapshot[];
+  /** Worker 节点摘要（名称 + 状态 + 水位），供节点级诊断引用 */
+  readonly nodes: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly status: string;
+    readonly cpuUsage: number;
+    readonly memUsage: number;
+    readonly rackIndex: number;
+  }>;
+}
+
+/**
+ * ChatMessage —— 对话历史单条消息（OpenAI 兼容的 role/content 形状）。
+ *
+ * 【为何在此定义而非直接用 ai 包的 Message 类型】路由需要对入参做严格
+ * 校验与窄化（不可信的外部输入），自定义契约便于 zod 校验与错误提示；
+ * 送入 streamText 前再映射为 SDK 期望的 CoreMessage。
+ */
+export interface ChatMessage {
+  /** 角色（system 由服务端注入，客户端只允许 user/assistant） */
+  readonly role: 'user' | 'assistant';
+  /** 消息正文 */
+  readonly content: string;
+}
+
+/**
+ * ChatRequestBody —— /api/chat 的完整请求载荷。
+ *
+ * 【viewportImage 说明】3D 视口快照的 Base64 DataURL（形如
+ * 'data:image/jpeg;base64,...'）。仅在用户点击「📸 多模态快照诊断」时携带；
+ * 存在时引擎会额外推送 MULTIMODAL_VISION 推理步骤，并在有 Key 时
+ * 走多模态模型通道。
+ */
+export interface ChatRequestBody {
+  /** 对话历史（至少一条 user 消息） */
+  readonly messages: readonly ChatMessage[];
+  /** 集群上下文 */
+  readonly clusterContext: ClusterContext;
+  /** 3D 视口快照（Base64 DataURL，可选） */
+  readonly viewportImage?: string;
 }
 
 /* ========================================================================== */
