@@ -28,7 +28,7 @@ import { Radar } from 'lucide-react';
 
 import ShellLayout from '@/components/layout/ShellLayout';
 import { useTelemetryStream } from '@/hooks/useTelemetryStream';
-import { rehydratePersistedClusterState } from '@/store/useClusterStore';
+import { rehydratePersistedClusterState, useClusterStore } from '@/store/useClusterStore';
 
 /**
  * ClusterCanvas 懒加载（SSR 边界核心配置）。
@@ -41,6 +41,22 @@ import { rehydratePersistedClusterState } from '@/store/useClusterStore';
 const ClusterCanvas = dynamic(() => import('@/components/canvas/ClusterCanvas'), {
   ssr: false,
   loading: (): ReactElement => <CanvasSkeleton />,
+});
+
+/**
+ * ChaosControlModal 懒加载（混沌演练模态框）。
+ *
+ * 【为何用 dynamic 而非静态 import】
+ * 1. 首屏零开销：模态框默认关闭，其代码（含 framer-motion 动画、四张卡片
+ *    文案、图标）不应进入首屏 bundle——按需 chunk 加载后才付这笔体积；
+ * 2. SSR 安全：组件使用 window 事件监听（Escape）与 Portal 级 fixed 定位，
+ *    ssr:false 彻底规避服务端求值；
+ * 3. 视觉连续：loading 返回 null 而非骨架屏——模态框的加载发生在用户点击
+ *    「Inject Chaos」的瞬间，chunk 通常在 50ms 内就绪，闪现骨架反而更糟。
+ */
+const ChaosControlModal = dynamic(() => import('@/components/hud/ChaosControlModal'), {
+  ssr: false,
+  loading: (): null => null,
 });
 
 /**
@@ -94,5 +110,17 @@ export default function HomePage() {
    * 后续可由 TopBar 的「数据源徽标」接入展示。 */
   useTelemetryStream();
 
-  return <ShellLayout viewport={<ClusterCanvas />} />;
+  /* 混沌模态框开关（订阅 store，由 TopBar 的 Inject Chaos 按钮写入）。
+   * 仅此一个布尔值参与本页重渲染，开销可忽略。 */
+  const isChaosModalOpen = useClusterStore((s): boolean => s.isChaosModalOpen);
+
+  return (
+    <>
+      <ShellLayout viewport={<ClusterCanvas />} />
+      {/* 顶层混沌演练模态框：仅在开启时挂载，关闭即卸载（配合 dynamic 实现
+          chunk 按需加载 + 卸载释放）。组件内部自带 AnimatePresence 入场动画，
+          且 z-50 位于全站最顶层（高于 PerfHUD z-40 与画布 Html 标注）。 */}
+      {isChaosModalOpen ? <ChaosControlModal /> : null}
+    </>
+  );
 }

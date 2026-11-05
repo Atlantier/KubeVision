@@ -34,15 +34,13 @@
 
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Blocks, Bot, Layers, ShieldCheck, TerminalSquare } from 'lucide-react';
+import { Bot, Layers, ShieldCheck, TerminalSquare } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
-import type { ChaosScenario } from '@/types/cluster';
 import type { RightPanelTab } from '@/types/store';
 import type {
-  ChaosScenarioOption,
   MobileViewKey,
   PerfHudSample,
   RightDrawerSlotProps,
@@ -62,24 +60,9 @@ const PERF_HUD_SAMPLE_HZ = 4;
 /** 性能 HUD 采样间隔（毫秒，由频率换算） */
 const PERF_HUD_SAMPLE_INTERVAL_MS = Math.round(1000 / PERF_HUD_SAMPLE_HZ);
 
-/** 混沌控制台场景选项表（含中文释义，注入即 setActiveChaos(场景)） */
-const CHAOS_SCENARIO_OPTIONS: readonly ChaosScenarioOption[] = [
-  {
-    scenario: 'POD_OOM_SWARM',
-    label: 'Pod OOM 风暴',
-    description: '业务区 Pod 批量内存溢出击杀（OOMKilled 蔓延 + P0 告警风暴）',
-  },
-  {
-    scenario: 'NODE_CPU_SPIKE',
-    label: '节点 CPU 尖峰',
-    description: '单节点 CPU 水位飙升越限（HighLoad 蔓延 + 全局 QPS 抖动）',
-  },
-  {
-    scenario: 'NET_PACKET_LOSS',
-    label: '网络丢包分区',
-    description: '机架间网络丢包失联（NetworkPartition 脑裂渲染 + 遥测延迟上升）',
-  },
-];
+/* 说明：原 CHAOS_SCENARIO_OPTIONS 常量已随内联模态框一同迁出——
+   演练场景卡片的完整数据表现由独立的 ChaosControlModal 组件持有
+   （见 src/components/hud/ChaosControlModal.tsx 的 CHAOS_DRILL_CARDS）。 */
 
 /* ========================================================================== */
 /* 子组件：右侧抽屉页签外壳                                                     */
@@ -221,83 +204,6 @@ function PerfHudPanel() {
 }
 
 /* ========================================================================== */
-/* 子组件：混沌工程控制台模态框（z-50 顶层）                                     */
-/* ========================================================================== */
-
-/**
- * ChaosConsoleModal —— 混沌注入控制台（Inject Chaos 战术按钮的落点）。
- *
- * 【层级契约】z-50 顶层 Modal（AGENTS.md 第 6 条：严禁被画布内 drei <Html>
- * 遮挡，后者 zIndexRange=[10,0]）；backdrop 半透明近黑 + 面板弹性入场；
- * Escape 键与背景点击均可关闭；选择场景即 setActiveChaos(场景) 并关闭。
- */
-function ChaosConsoleModal() {
-  const setActiveChaos = useClusterStore((s): ((scenario: ChaosScenario) => void) => s.setActiveChaos);
-  const setChaosModalOpen = useClusterStore((s): ((open: boolean) => void) => s.setChaosModalOpen);
-
-  /* Escape 关闭（模态框开启期间挂载监听，关闭即卸载） */
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setChaosModalOpen(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return (): void => window.removeEventListener('keydown', onKeyDown);
-  }, [setChaosModalOpen]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="混沌工程控制台">
-      {/* 背景遮罩（点击关闭） */}
-      <button
-        type="button"
-        aria-label="关闭混沌控制台"
-        className="absolute inset-0 cursor-default bg-slate-950/70 backdrop-blur-sm"
-        onClick={(): void => setChaosModalOpen(false)}
-      />
-      {/* 控制台面板 */}
-      <motion.div
-        initial={{ opacity: 0, scale: 0.94, y: 12 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.94, y: 12 }}
-        transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-        className="kv-panel pointer-events-auto relative w-full max-w-lg p-5 shadow-glow-rose"
-      >
-        <div className="mb-4 flex items-center gap-2">
-          <Blocks className="h-4 w-4 text-rose-400" aria-hidden />
-          <h2 className="font-mono text-xs font-bold uppercase tracking-[0.25em] text-rose-300">
-            chaos&nbsp;engineering&nbsp;console
-          </h2>
-        </div>
-        <p className="mb-4 text-xs leading-relaxed text-slate-400">
-          选择故障注入场景，模拟引擎将演算受影响实体并推送异常遥测；
-          顶栏出现 CHAOS ACTIVE 横幅后可一键终止，或在自愈闭环中执行修复动作自动复位。
-        </p>
-        <div className="space-y-2">
-          {CHAOS_SCENARIO_OPTIONS.map((option) => (
-            <button
-              key={option.scenario}
-              type="button"
-              onClick={(): void => {
-                setActiveChaos(option.scenario);
-                setChaosModalOpen(false);
-              }}
-              className="group flex w-full items-start gap-3 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-left transition-all duration-150 hover:border-rose-500/50 hover:bg-rose-500/10 active:scale-[0.99]"
-            >
-              <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-rose-500 shadow-glow-rose transition-transform group-hover:scale-125" aria-hidden />
-              <span className="min-w-0">
-                <span className="block font-mono text-[11px] font-bold tracking-wider text-slate-200 group-hover:text-rose-200">
-                  {option.scenario} · {option.label}
-                </span>
-                <span className="mt-0.5 block text-[11px] leading-relaxed text-slate-500">{option.description}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </motion.div>
-    </div>
-  );
-}
-
-/* ========================================================================== */
 /* 子组件：移动端底部浮动视图切换栏                                              */
 /* ========================================================================== */
 
@@ -362,7 +268,6 @@ function MobileViewSwitcher({ view, onChange }: { readonly view: MobileViewKey; 
 export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
   /* ---- Store 细粒度订阅 ---- */
   const isPerfHudOpen = useClusterStore((s): boolean => s.isPerfHudOpen);
-  const isChaosModalOpen = useClusterStore((s): boolean => s.isChaosModalOpen);
   const activeRightTab = useClusterStore((s): RightPanelTab => s.activeRightTab);
   const setPerfHudOpen = useClusterStore((s): ((open: boolean) => void) => s.setPerfHudOpen);
   const setActiveRightTab = useClusterStore((s): ((tab: RightPanelTab) => void) => s.setActiveRightTab);
@@ -442,8 +347,13 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
       {/* ============ 移动端底部浮动切换栏（< lg 可见） ============ */}
       <MobileViewSwitcher view={mobileView} onChange={setMobileView} />
 
-      {/* ============ 顶层：混沌控制台 Modal（z-50） ============ */}
-      <AnimatePresence>{isChaosModalOpen ? <ChaosConsoleModal /> : null}</AnimatePresence>
+      {/* ============ 顶层：混沌演练 Modal 已迁出 ============
+          原内联 ChaosConsoleModal 已替换为独立组件
+          src/components/hud/ChaosControlModal.tsx，由 page.tsx 经
+          next/dynamic 按需懒加载挂载（首屏零 JS 开销、代码分割）。
+          本外壳不再持有该模态框，只保留联动入口：
+          TopBar 的 Inject Chaos 按钮写入 isChaosModalOpen，
+          page.tsx 订阅该字段决定是否渲染动态组件。 */}
     </div>
   );
 }
