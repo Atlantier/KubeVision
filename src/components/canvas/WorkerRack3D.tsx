@@ -35,6 +35,7 @@ import * as THREE from 'three';
 
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
+import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import {
   RACK_BODY_CENTER_Y,
   RACK_BODY_SIZE,
@@ -158,6 +159,39 @@ const LIGHT_GUIDE_Z = RACK_BODY_SIZE[2] / 2 - 0.1;
 /** 导光柱几何：细长竖直方柱（高度略短于机柜，留出顶盖与底座） */
 const LIGHT_GUIDE_HEIGHT = RACK_BODY_SIZE[1] - 0.5;
 
+/**
+ * isPodHitInRack —— 判定一次射线命中链中是否包含「指定机架名下」的 Pod 实例。
+ *
+ * 【Pod 命中让位协议 · 判定核心】（AGENTS.md 第 6 条射线安全的延伸）
+ * R3F 的 ThreeEvent.intersections 携带本次指针事件的**完整命中列表**
+ * （按距离升序）。其中 instanceId 字段仅 InstancedMesh 命中才会出现——
+ * 本项目唯一的 InstancedMesh 即 PodInstancedMesh，故「命中项带 instanceId」
+ * 等价于「射线穿过了某个 Pod 实例」，无需 instanceof / 类型断言即可判别。
+ *
+ * 【归属校验】进一步以瞬态池快照核对 pods[instanceId].nodeId === rackNodeId：
+ * 只有命中**本机架腔体内**的 Pod 才让位。若不加此校验，点击本机架装甲缝隙
+ * 时视线深处另一机架的 Pod 也在 intersections 里，会导致本机架被错误跳过
+ * （用户明明点的是装甲却选中了远处 Pod）。归属校验把让位范围精确限定在
+ * 「Pod 确实位于本机架内」的几何事实上。
+ *
+ * @param event       R3F 指针/鼠标事件（读取其 intersections 命中列表）
+ * @param rackNodeId  本机架节点 ID（WorkerNodeEntity.id）
+ * @returns 命中链中存在本机架名下 Pod 实例时返回 true（应让位）
+ */
+function isPodHitInRack(
+  event: ThreeEvent<MouseEvent> | ThreeEvent<PointerEvent>,
+  rackNodeId: string,
+): boolean {
+  const pods = telemetryTransientRef.snapshot.pods;
+  for (const hit of event.intersections) {
+    const instanceId = hit.instanceId;
+    if (instanceId === undefined) continue;
+    const pod = pods[instanceId];
+    if (pod !== undefined && pod.nodeId === rackNodeId) return true;
+  }
+  return false;
+}
+
 /* ========================================================================== */
 /* WorkerRack3D 主体                                                           */
 /* ========================================================================== */
@@ -222,9 +256,18 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
    *
    * stopPropagation 阻断射线命中链继续向后传播：既防止一次点击同时选中
    * 前后两个重叠机架，也防止命中穿透到地面 Grid 触发 onPointerMissed 取消选中。
+   *
+   * 【Pod 命中让位协议】（见文件头指针事件契约）Pod 实例位于本机架装甲腔体
+   * 内部，任何命中 Pod 的射线必先穿过更近的装甲面；R3F 按距离升序派发且
+   * stopPropagation 会 break 整个命中循环——若此处无条件抢占，Pod 的 onClick
+   * 将永远收不到事件。故先检查 event.intersections 中是否存在**本机架名下**
+   * 的 Pod 实例命中（instanceId 仅 InstancedMesh 命中才有，且经 nodeId 归属
+   * 校验，杜绝「点击本机架缝隙却误选远处机架 Pod」的跨机架错选）；命中则
+   * 静默 return 放行，由 PodInstancedMesh 接管该次交互。
    */
   const handleSelect = useCallback(
     (event: ThreeEvent<MouseEvent>): void => {
+      if (isPodHitInRack(event, node.id)) return;
       event.stopPropagation();
       selectEntity(node.id, 'node');
     },
@@ -315,6 +358,12 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       rotation={[0, rackTransform.rotationY, 0]}
       onClick={handleSelect}
       onPointerOver={(event): void => {
+        // Pod 命中让位：本机架腔体内有 Pod 被命中时不抢占 hover——
+        // onPointerOver 的 stopPropagation 会 break 距离升序派发链，
+        // 阻断更远处 Pod 实例的 onPointerMove（悬停标签将永不出现）。
+        // 在 stopPropagation 之前 return，localState.stopped 保持 false，
+        // 派发继续抵达 PodInstancedMesh。
+        if (isPodHitInRack(event, node.id)) return;
         event.stopPropagation();
         setHovered(true);
       }}

@@ -24,13 +24,17 @@ import { Canvas, type RootState } from '@react-three/fiber';
 import { Grid, Sparkles } from '@react-three/drei';
 
 import { useClusterStore } from '@/store/useClusterStore';
+import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { dispatchViewPreset, subscribeViewPreset } from '@/utils/viewPresetBus';
 import type { WorkerNodeEntity } from '@/types/cluster';
 import type { ViewPresetKey } from '@/types/canvas';
 import type { SelectedEntityType } from '@/types/store';
 
 import CameraRig from '@/components/canvas/CameraRig';
+import ErrorRippleRing from '@/components/canvas/ErrorRippleRing';
 import MasterNode3D from '@/components/canvas/MasterNode3D';
+import NetworkStream3D from '@/components/canvas/NetworkStream3D';
+import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
 import ViewportToolbar from '@/components/canvas/ViewportToolbar';
 import WorkerRack3D from '@/components/canvas/WorkerRack3D';
 
@@ -68,6 +72,9 @@ const CAMERA_FOV = 45;
  *  ├─ Sparkles（100 颗青色微光悬浮粒子）
  *  ├─ MasterNode3D（控制平面全息模型，锚定 MASTER_POSITION，可点击选中）
  *  ├─ WorkerRack3D × 3（程序化机架：磨砂装甲/托盘隔板/霓虹导光柱/全息铭牌）
+ *  ├─ PodInstancedMesh（单 Draw Call 容器实例渲染器，48 容量，四态实时动画）
+ *  ├─ NetworkStream3D（MASTER→机架拱形光缆 + 54 流动数据包，故障卡顿变红）
+ *  ├─ ErrorRippleRing（故障机架地面警示涟漪，自定义 Shader 三环扩散）
  *  └─ CameraRig（OrbitControls + 防锁死运镜）
  *
  * 【onPointerMissed】点击空白（射线未命中任何实体）→ selectEntity(null) →
@@ -80,17 +87,29 @@ const CAMERA_FOV = 45;
  */
 
 /** window 全局调试句柄的形状声明（避免污染全局 Window 接口，用局部索引签名窄化） */
-type DebuggableWindow = Window & { __KUBEVISION_R3F__?: unknown };
+type DebuggableWindow = Window & {
+  __KUBEVISION_R3F__?: unknown;
+  __KUBEVISION_STORE__?: unknown;
+  __KUBEVISION_TRANSIENT__?: unknown;
+};
 
 /**
  * handleCanvasCreated —— R3F 根 store 创建完成回调（dev-only 调试暴露）。
+ *
+ * 【暴露内容】R3F RootState（gl/camera/scene/controls）+ 双轨 Store 句柄：
+ * 响应轨 useClusterStore 与瞬态轨 telemetryTransientRef。后者使 E2E/开发期
+ * 可直接注入故障快照（如批量 OOMKilled）验证实例化渲染器的四态动画，
+ * 无需等待混沌引擎接线。
  *
  * @param state R3F RootState（含 gl/camera/scene/controls，onCreated 时机
  *              CameraRig 已挂载且 makeDefault 已生效，state.controls 非空）
  */
 function handleCanvasCreated(state: RootState): void {
   if (process.env.NODE_ENV === 'development') {
-    (window as DebuggableWindow).__KUBEVISION_R3F__ = state;
+    const debugWindow = window as DebuggableWindow;
+    debugWindow.__KUBEVISION_R3F__ = state;
+    debugWindow.__KUBEVISION_STORE__ = useClusterStore;
+    debugWindow.__KUBEVISION_TRANSIENT__ = telemetryTransientRef;
   }
 }
 /**
@@ -256,6 +275,18 @@ export default function ClusterCanvas() {
         {nodes.map((node): ReactNode => (
           <WorkerRack3D key={node.id} node={node} />
         ))}
+
+        {/* ---- Pod 容器实例渲染器（单 Draw Call InstancedMesh ×48 容量；
+           每帧从瞬态池读取状态/CPU 负载驱动四态动画，落座隔板插槽零穿模） ---- */}
+        <PodInstancedMesh />
+
+        {/* ---- 集群网络通信流（MASTER→三机架拱形贝塞尔光缆 + 54 个流动数据包；
+           吞吐驱动推进速率，故障车道切换警示红并断续卡顿） ---- */}
+        <NetworkStream3D />
+
+        {/* ---- 机架故障警示涟漪（仅故障机架激活：崩溃 Pod 或节点非 Ready；
+           自定义 ShaderMaterial 三环由内向外扩散，加色混合贴地辉光） ---- */}
+        <ErrorRippleRing />
 
         {/* ---- 相机运镜系统 ---- */}
         <CameraRig />

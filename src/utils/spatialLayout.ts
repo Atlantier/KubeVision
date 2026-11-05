@@ -77,8 +77,17 @@ const COL_SPACING = 0.86;
 /** 同层两行（row 0 前排 / row 1 后排）的纵深中心距（沿局部 Z 轴） */
 const ROW_DEPTH = 0.62;
 
-/** Pod 容器盒子的参考尺寸（仅用于相机取景计算的物体高度基准） */
-const POD_BOX_HEIGHT = 0.92;
+/**
+ * Pod 容器盒子的契约参考高度（世界单位）。
+ *
+ * 【双重职责】
+ * 1. 相机取景计算的高度基准（见 CAMERA_FOCUS_DISTANCE 推导）；
+ * 2. **渲染落座基准**：PodInstancedMesh 的可视盒高（0.38）小于本契约值，
+ *    其落座偏移必须由「契约盒底面 = 隔板顶面」关系推导：
+ *    seatOffset = 可视盒高/2 − POD_BOX_HEIGHT/2 = 0.19 − 0.46 = −0.27，
+ *    导出本常量使渲染器与布局数学共享单一事实源，严禁在组件里硬编码 0.46。
+ */
+export const POD_BOX_HEIGHT = 0.92;
 
 /**
  * 特写相机沿 Pod 正面法线的后退距离（世界单位）。

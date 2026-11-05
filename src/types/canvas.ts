@@ -5,7 +5,7 @@
  * 引用本文件接口，禁止 any / @ts-ignore。
  */
 
-import type { WorkerNodeEntity } from '@/types/cluster';
+import type { PodStatus, RackIndex, WorkerNodeEntity } from '@/types/cluster';
 
 /**
  * MASTER_ENTITY_ID 再导出 —— 定义收敛在 cameraFocus.ts 纯函数层
@@ -50,4 +50,55 @@ export interface CameraFocus {
 export interface WorkerRack3DProps {
   /** 该机架对应的 Worker 节点实体（含状态/负载/Pod 反向索引） */
   readonly node: WorkerNodeEntity;
+}
+
+/**
+ * PodHoverLabelData —— Pod 悬停微型标签视图模型。
+ *
+ * 【消费方】PodInstancedMesh 的悬停层：以 hoveredInstanceId 为键从
+ * snapshotSummary 派生（shallow 比较），仅悬停期间随 1Hz 快照刷新
+ * 实现「实时 CPU/MEM%」；非悬停态选择器恒返回 null（引用稳定），
+ * 遥测流对渲染器零重渲染开销。
+ */
+export interface PodHoverLabelData {
+  /** Pod 展示名 */
+  readonly name: string;
+  /** 生命周期状态（徽标文案与颜色依据） */
+  readonly status: PodStatus;
+  /** CPU 使用率百分比。@range [0, 100] */
+  readonly cpuUsage: number;
+  /** 内存使用率百分比。@range [0, 100] */
+  readonly memoryUsage: number;
+  /** 机架索引（标签世界坐标查表键之一） */
+  readonly rackIndex: RackIndex;
+  /** 槽位索引（标签世界坐标查表键之一）。@range [0, 15] */
+  readonly slotIndex: number;
+}
+
+/**
+ * Pod 状态徽标样式 —— 悬停标签的状态色与文案映射。
+ *
+ * 【配色契约】按 cluster.ts 的 PodStatus 五态映射到深空赛博状态色体系
+ * （AGENTS.md 第 5 条）：Running → emerald-400 正常；Pending/Terminating →
+ * amber-400 过渡；CrashLoopBackOff/OOMKilled → rose-500 崩溃 + 脉冲告警。
+ */
+export interface PodStatusBadgeStyle {
+  /** 徽标文案（PodStatus 原文） */
+  readonly label: PodStatus;
+  /** 徽标圆点/文字色（CSS 颜色字符串） */
+  readonly color: string;
+  /** 附加 Tailwind 类（crash 态脉冲动画等） */
+  readonly extraClass?: string;
+}
+
+/**
+ * RackErrorRingProps —— 单机架故障警示涟漪环 Props。
+ *
+ * 【契约】只接收 rackIndex：环的世界坐标由 getRackTransform(rackIndex)
+ * 在组件内部解算（空间布局单一事实源），激活与否由父级 ErrorRippleRing
+ * 依据快照状态判定——被渲染即激活，组件自身不做条件判断。
+ */
+export interface RackErrorRingProps {
+  /** 机架索引，取值域 {0, 1, 2} */
+  readonly rackIndex: RackIndex;
 }
