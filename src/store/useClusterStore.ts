@@ -319,6 +319,8 @@ function createInitialClusterState(): ClusterState {
     activeRightTab: 'copilot',
     isChaosModalOpen: false,
     isPerfHudOpen: false,
+    isOrbitPatrolActive: false,
+    activeMobileView: 'topology',
     terminalLogs: [],
     quickPromptTrigger: null,
     capturedViewportDataUrl: null,
@@ -565,12 +567,15 @@ export const useClusterStore = create<ClusterStore>()(
       /**
        * triggerQuickPrompt —— 触发 AI 快捷诊断指令。
        *
-       * 【联动契约】写入载荷的同时强制将 activeRightTab 切至 'copilot'：
-       * 用户点击任意快捷诊断按钮（如「分析 OOM 根因」）时，右侧抽屉若停留在
-       * auditor 页签会导致「指令已发出但界面无反馈」的割裂体验，故一并切换。
+       * 【联动契约】写入载荷的同时强制切换两处 Copilot 可见性：
+       * 1. activeRightTab → 'copilot'：桌面端右侧抽屉若停留在 auditor 页签，
+       *    会出现「指令已发出但界面无反馈」的割裂体验；
+       * 2. activeMobileView → 'copilot'：小屏（< 1024px）右抽屉默认隐藏，
+       *    若不联动切换，视口工具条的「快照诊断」在移动端将唤醒失败。
+       * 双联动保证任何视口宽度下指令都能得到即时视觉响应。
        */
       triggerQuickPrompt: (prompt) => {
-        set({ quickPromptTrigger: prompt, activeRightTab: 'copilot' });
+        set({ quickPromptTrigger: prompt, activeRightTab: 'copilot', activeMobileView: 'copilot' });
       },
 
       /** clearQuickPrompt —— 消费侧复位指令载荷（Copilot 读取后调用，防重复触发） */
@@ -586,6 +591,36 @@ export const useClusterStore = create<ClusterStore>()(
        */
       setActiveRightTab: (tab) => {
         set({ activeRightTab: tab });
+      },
+
+      /**
+       * setOrbitPatrolActive —— 切换环绕巡检自动旋转。
+       *
+       * 【声明式契约】本 Action 只翻转布尔状态；CameraRig 以
+       * autoRotate={isOrbitPatrolActive} 声明式绑定 OrbitControls，
+       * 严禁组件侧命令式戳 controls ref（状态与行为单点收敛在 Store）。
+       * 巡检期间用户拖拽鼠标时，CameraRig 的 'start' 监听会自动关闭巡检
+       * （手动操作优先），同样经由本 Action 回写，保持状态一致。
+       */
+      setOrbitPatrolActive: (active) => {
+        set({ isOrbitPatrolActive: active });
+        get().appendTerminalLog(
+          active
+            ? '[system] orbit patrol engaged → auto-rotate ON (drag to take over)'
+            : '[system] orbit patrol disengaged → auto-rotate OFF',
+        );
+      },
+
+      /**
+       * setActiveMobileView —— 切换小屏视图（topology / copilot）。
+       *
+       * 【状态化缘由】原为 ShellLayout 本地 state；提升为 Store 状态后，
+       * 画布视口工具条的「快照诊断」可跨组件唤醒移动端 Copilot 视图
+       * （triggerQuickPrompt 内部联动）。双面板常驻 DOM 仅切可见性，
+       * 避免卸载 R3F Canvas 触发 WebGL 上下文重建。
+       */
+      setActiveMobileView: (view) => {
+        set({ activeMobileView: view });
       },
 
       /**

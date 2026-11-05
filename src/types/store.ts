@@ -88,6 +88,17 @@ export type RightPanelTab = 'copilot' | 'auditor';
 export type StatusFilter = PodStatus | 'ALL';
 
 /**
+ * MobileViewKey —— 小屏（< 1024px）浮动切换栏的二选一视图键。
+ *
+ * 【状态化缘由】原为 ShellLayout 本地 state；自视口工具条的「多模态快照诊断」
+ * 需要在移动端也真正唤醒 Copilot 视图后，提升为 Store 状态——
+ * triggerQuickPrompt 会将其联动切至 'copilot'，跨组件（画布工具条 → 外壳）
+ * 的视图唤醒只有经 Store 才能贯通。定义随状态契约迁入本文件，
+ * layout.ts 以再导出维持既有 import 兼容。
+ */
+export type MobileViewKey = 'topology' | 'copilot';
+
+/**
  * 自愈动作历史记录条目（持久化字段，跨会话留存审计）。
  *
  * 【字段说明】actionType 采用开放 string 而非 RemediationActionType 枚举：
@@ -131,6 +142,14 @@ export interface ClusterState {
   readonly isChaosModalOpen: boolean;
   /** 性能 HUD 面板开关 */
   readonly isPerfHudOpen: boolean;
+  /**
+   * 环绕巡检自动旋转开关（OrbitControls autoRotate 的声明式数据源）。
+   * CameraRig 以 autoRotate={isOrbitPatrolActive} 绑定，用户拖拽夺权时
+   * 由 CameraRig 侧的 'start' 监听自动关闭（巡检让位于手动操作）。
+   */
+  readonly isOrbitPatrolActive: boolean;
+  /** 小屏（< 1024px）当前视图键（topology / copilot），triggerQuickPrompt 会联动切换 */
+  readonly activeMobileView: MobileViewKey;
   /** 底部终端日志行缓冲（运行期上限 200 条 FIFO；持久化仅最近 30 条） */
   readonly terminalLogs: string[];
   /** AI 快捷诊断指令触发载荷（Copilot 消费后置回 null，非持久化） */
@@ -168,10 +187,14 @@ export interface ClusterActions {
   incrementMaskedSecrets: (count: number) => void;
   /** 追加底部终端日志（运行期 FIFO 上限 200 条） */
   appendTerminalLog: (line: string) => void;
-  /** 触发 AI 快捷诊断指令（自动将右侧抽屉切换至 copilot 页签） */
+  /** 触发 AI 快捷诊断指令（自动将右侧抽屉切换至 copilot 页签；小屏联动切至 copilot 视图） */
   triggerQuickPrompt: (prompt: string) => void;
   /** 手动切换右侧抽屉页签（copilot / auditor） */
   setActiveRightTab: (tab: RightPanelTab) => void;
+  /** 切换环绕巡检自动旋转（视口工具条 / CameraRig 拖拽让位共用） */
+  setOrbitPatrolActive: (active: boolean) => void;
+  /** 切换小屏视图（底部浮动切换栏；triggerQuickPrompt 亦会调用） */
+  setActiveMobileView: (view: MobileViewKey) => void;
   /** 消费侧复位快捷指令载荷（Copilot 读取后置回 null，防重复触发） */
   clearQuickPrompt: () => void;
   /** 一键重置本地持久化缓存（clearStorage + 持久化字段回归初始值） */

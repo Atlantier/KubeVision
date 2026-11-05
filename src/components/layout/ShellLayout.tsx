@@ -364,8 +364,11 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
   const setPerfHudOpen = useClusterStore((s): ((open: boolean) => void) => s.setPerfHudOpen);
   const setActiveRightTab = useClusterStore((s): ((tab: RightPanelTab) => void) => s.setActiveRightTab);
 
-  /* ---- 移动端视图键（本地 UI 状态，不持久化） ---- */
-  const [mobileView, setMobileView] = useState<MobileViewKey>('topology');
+  /* ---- 移动端视图键（Store 状态，非持久化）：
+     由本地 useState 提升而来——画布视口工具条的「📸 快照诊断」经
+     triggerQuickPrompt 联动切至 copilot 视图，跨组件唤醒只有经 Store 才能贯通 ---- */
+  const mobileView = useClusterStore((s): MobileViewKey => s.activeMobileView);
+  const setMobileView = useClusterStore((s): ((view: MobileViewKey) => void) => s.setActiveMobileView);
 
   /* ---- 全局键盘：Shift+P 切换性能 HUD ---- */
   useEffect(() => {

@@ -12,7 +12,7 @@
 import type { ReactNode } from 'react';
 
 import type { ChaosScenario, NodeHealthStatus, PodStatus } from '@/types/cluster';
-import type { ConnectionMode, RightPanelTab, StatusFilter } from '@/types/store';
+import type { ConnectionMode, MobileViewKey, RightPanelTab, StatusFilter } from '@/types/store';
 
 /* ========================================================================== */
 /* 健康分视觉分级                                                              */
@@ -33,17 +33,15 @@ import type { ConnectionMode, RightPanelTab, StatusFilter } from '@/types/store'
 export type HealthTier = NodeHealthStatus;
 
 /* ========================================================================== */
-/* 移动端视图切换                                                              */
+/* 移动端视图切换（再导出）                                                      */
 /* ========================================================================== */
 
 /**
- * MobileViewKey —— 小屏（< 1024px）浮动切换栏的二选一视图键。
- *
- * 【设计意图】移动端无法同屏容纳 3D 拓扑与 Copilot 抽屉，故以底部浮动
- * 切换栏在两视图间做不透明度交叉淡入淡出（双面板常驻 DOM，仅切换可见性，
- * 避免反复卸载 R3F Canvas 造成 WebGL 上下文重建的高昂开销）。
+ * MobileViewKey 再导出 —— 类型定义已随「提升为 Store 状态」迁至 store.ts
+ * （状态契约与其类型同源存放）；此处再导出维持既有 import 兼容
+ * （ShellLayout 等组件从 @/types/layout 引用不受影响）。
  */
-export type MobileViewKey = 'topology' | 'copilot';
+export type { MobileViewKey };
 
 /* ========================================================================== */
 /* TopBar 子组件 Props                                                         */
@@ -216,6 +214,34 @@ export interface ChaosScenarioOption {
   readonly label: string;
   /** 故障影响面说明 */
   readonly description: string;
+}
+
+/**
+ * ViewportToolbarProps —— 3D 视口右下角玻璃态相机/多模态控制工具条 Props。
+ *
+ * 【挂载契约】渲染于 ClusterCanvas 的 DOM 包装层（非 R3F 场景内），
+ * 外层容器 pointer-events-auto + z-20：高于画布内 drei <Html> 标注
+ * （zIndexRange=[10,0]），低于 PerfHUD（z-40）与顶层 Modal（z-50）。
+ * 本组件为受控无状态组件：全部视觉状态（当前预设/巡检开关/截图就绪）
+ * 由父层传入，点击回调由父层收敛到 Store Action 与 viewPresetBus。
+ */
+export interface ViewportToolbarProps {
+  /** 当前是否处于全景鸟瞰预设（按钮高亮依据；由父层跟踪最近一次飞行指令） */
+  readonly isOverviewActive: boolean;
+  /** 当前是否处于俯视拓扑预设 */
+  readonly isTopDownActive: boolean;
+  /** 环绕巡检自动旋转开关状态（Store isOrbitPatrolActive） */
+  readonly isPatrolActive: boolean;
+  /** 是否已存在多模态视口截图（Camera 按钮的就绪角标） */
+  readonly hasCapturedViewport: boolean;
+  /** 点击「全景鸟瞰」 */
+  readonly onOverview: () => void;
+  /** 点击「俯视拓扑」 */
+  readonly onTopDown: () => void;
+  /** 点击「环绕巡检」切换自动旋转 */
+  readonly onTogglePatrol: () => void;
+  /** 点击「📸 多模态快照诊断」：截帧 + 唤醒 Copilot */
+  readonly onCaptureDiagnose: () => void;
 }
 
 /**

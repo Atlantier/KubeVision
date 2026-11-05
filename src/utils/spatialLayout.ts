@@ -261,7 +261,7 @@ export function getPodWorldTransform(rackIndex: number, slotIndex: number): PodW
 }
 
 /* ========================================================================== */
-/* 布局自检常量（开发期断言素材，运行期零开销）                                   */
+/* 布局自检常量与机架几何契约（渲染组件与布局数学共享的唯一事实源）                  */
 /* ========================================================================== */
 
 /**
@@ -269,3 +269,25 @@ export function getPodWorldTransform(rackIndex: number, slotIndex: number): PodW
  * 「4 层 × 4 槽」托盘结构说明，避免 UI 层魔法数字。
  */
 export const RACK_TIER_COUNT: number = TIER_COUNT;
+
+/** 首层托盘中心高度导出（WorkerRack3D 隔板与 Pod 槽位 Y 坐标同源） */
+export const RACK_TIER_BASE_Y: number = TIER_BASE_Y;
+
+/** 层间距导出（同上：隔板逐层抬升量必须与 getPodWorldTransform 一致） */
+export const RACK_TIER_HEIGHT: number = TIER_HEIGHT;
+
+/**
+ * RACK_BODY_SIZE —— 机架装甲外框尺寸 [宽, 高, 深]（世界单位）。
+ *
+ * 【同源契约】高度必须容纳 4 层托盘：
+ *   顶层托盘中心 = TIER_BASE_Y + 3 × TIER_HEIGHT = 0.55 + 3.15 = 3.70，
+ *   加托盘半厚与顶盖余量 → 4.4 恰好封顶；宽 2.6 / 深 1.8 为 19 英寸
+ *   标准机柜的视觉比例投影。WorkerRack3D 与 cameraFocus 取景共用本常量。
+ */
+export const RACK_BODY_SIZE: readonly [number, number, number] = [2.6, 4.4, 1.8];
+
+/** 机架装甲外框中心高度（底座落地，柜体沿 +Y 展开） */
+export const RACK_BODY_CENTER_Y: number = RACK_BODY_SIZE[1] / 2;
+
+/** 两侧垂直霓虹导光柱的局部 X 坐标（±宽/2 − 内缩量，嵌在装甲框边角内侧） */
+export const RACK_LIGHT_GUIDE_X: number = RACK_BODY_SIZE[0] / 2 - 0.13;
