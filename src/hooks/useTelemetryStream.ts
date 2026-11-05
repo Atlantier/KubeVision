@@ -82,6 +82,107 @@ const HISTORY_POINTS = 6;
 const ALERT_LOG_LIMIT = 3;
 
 /* ========================================================================== */
+/* 收帧间隔耗时统计（滚动窗口，零分配）                                          */
+/* ========================================================================== */
+
+/**
+ * 延迟统计滚动窗口容量。
+ *
+ * 【取值依据】8 帧 ≈ 8 秒的采样窗口：足够平滑掉单帧抖动（如某帧被
+ * 浏览器主线程阻塞），又能让 HUD 在 2~3 秒内反映链路真实变化。
+ * 容量为 2 的幂，用位掩码取模（比 % 快，且无负数问题）。
+ */
+const LATENCY_WINDOW_SIZE = 8;
+
+/**
+ * LatencyTracker —— 收帧间隔耗时的滚动统计器（模块级单例，零分配）。
+ *
+ * 【为何是模块级而非 Hook 内 ref】`glStats.sseLatencyMs` 是**全局单值**
+ * （瞬态池只有一个），多组件/Hook 实例共享同一物理观测面；
+ * 且性能 HUD 与画布读的是同一个数。若每个 Hook 实例各持一份统计，
+ * 数据来源将取决于「谁最后写」，语义混乱。
+ *
+ * 【为何用环形缓冲而非每次都新建数组】本统计器每秒被调用一次，
+ * 若每次新建数组/求和会产生持续的 GC 压力（虽小，但违反项目零分配纪律）。
+ * 环形缓冲预分配 Float32Array，写入 O(1)、求均值 O(窗口大小)=8。
+ */
+const latencyTracker = {
+  /** 环形缓冲：最近 N 个收帧间隔（毫秒） */
+  buffer: new Float32Array(LATENCY_WINDOW_SIZE),
+  /** 写入游标（0..WINDOW_SIZE-1） */
+  cursor: 0,
+  /** 已写入样本数（上限 WINDOW_SIZE，用于求均值时确定有效长度） */
+  filled: 0,
+  /** 最近一次收帧时刻（epoch 毫秒；首次为 0 表示尚未收到过帧） */
+  lastFrameAt: 0,
+};
+
+/**
+ * recordFrameLatency —— 记录一次收帧并更新 glStats.sseLatencyMs。
+ *
+ * 【核心逻辑】
+ * 1. 若上次收帧时刻为 0（本 Hook 实例的首帧），只记录时刻不产生样本
+ *    ——首帧间隔无意义（可能距页面加载已过去很久）；
+ * 2. 否则 delta = now − lastFrameAt 即「相邻两帧到达的时间间隔」，
+ *    理想值应≈1000ms（服务端 1Hz 推送）；
+ * 3. delta 写入环形缓冲并推进游标；
+ * 4. 求窗口内算术平均写入 glStats.sseLatencyMs。
+ *
+ * 【语义澄清：这里测的是「帧间隔」而非「网络 RTT」】
+ * 真正的端到端网络延迟需要服务端在帧内打发送时间戳、客户端收到后相减，
+ * 当前 SSE 协议未携带该字段。因此本指标的含义是「**收帧间隔抖动**」：
+ * - ≈1000ms → 链路稳定，1Hz 推送准时到达；
+ * - 明显 >1000ms → 推送延迟累积（网络拥塞 / 主线程阻塞 / 服务端卡顿）；
+ * - 明显 <1000ms → 客户端本地降级接管（本地定时器无网络开销，间隔更稳定）。
+ * 这一语义已在 glStats 的消费端（PerfHUD 标签）如实呈现，不做「假 RTT」。
+ *
+ * 【为何写瞬态池而非 React 状态】1Hz 写入 + 每帧读取是典型高频遥测场景，
+ * 走 setState 会造成每秒重渲染；写入 telemetryTransientRef.glStats 是
+ * 原地标量赋值，零分配、零重渲染（AGENTS.md 第 3 条）。
+ *
+ * @param now 当前时刻（epoch 毫秒，由调用方注入，便于测试）
+ */
+function recordFrameLatency(now: number): void {
+  const previous = latencyTracker.lastFrameAt;
+  latencyTracker.lastFrameAt = now;
+
+  /* 首帧：无相邻间隔可比，仅登记时刻 */
+  if (previous === 0) {
+    return;
+  }
+
+  const delta = now - previous;
+
+  /* 写入环形缓冲（位与取模，容量为 2 的幂） */
+  latencyTracker.buffer[latencyTracker.cursor] = delta;
+  latencyTracker.cursor = (latencyTracker.cursor + 1) & (LATENCY_WINDOW_SIZE - 1);
+  if (latencyTracker.filled < LATENCY_WINDOW_SIZE) {
+    latencyTracker.filled += 1;
+  }
+
+  /* 窗口算术平均（有效长度 = filled，避免未填满时被零值拉低） */
+  let sum = 0;
+  for (let i = 0; i < latencyTracker.filled; i++) {
+    sum += latencyTracker.buffer[i];
+  }
+  const average = sum / latencyTracker.filled;
+
+  /* 原地写入瞬态池（唯一写入口，消费端为 PerfHUD 的 4Hz 采样） */
+  telemetryTransientRef.glStats.sseLatencyMs = Math.round(average);
+}
+
+/**
+ * resetFrameLatency —— 连接重建时重置统计基线。
+ *
+ * 【为何需要】切换 chaos / 重连后，首帧与「上一次旧连接的末帧」之间的
+ * 间隔毫无意义（可能长达数秒），若不清零会污染窗口均值长达 8 帧。
+ * 该函数只清 lastFrameAt，保留历史样本（历史链路质量仍有参考价值）。
+ */
+function resetFrameLatency(): void {
+  latencyTracker.lastFrameAt = 0;
+}
+
+/* ========================================================================== */
 /* 纯函数：确定性区间钳制与历史构造                                              */
 /* ========================================================================== */
 
@@ -290,6 +391,34 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
   const transportRef = useRef<TelemetryTransport>('connecting');
 
   /**
+   * evolutionBaseRef —— 演进基准快照（连续性核心）。
+   *
+   * 【解决的问题】降级/重连时本地引擎必须从「最新的真实数据」继续演进，
+   * 但**不能**从 telemetryTransientRef.snapshot 取——因为 deliver 写入
+   * 瞬态池的是**免疫合并后**的快照：若用户刚自愈并按住了 15 秒免疫窗口，
+   * 池中该 Pod 的 memoryUsage 已被强制改为 37.7，而服务端原始值是 96。
+   * 从池中续接会让本地演进沿着「被改写的状态」走，免疫窗口一到期，
+   * 数值会突然从 37.7 跳回 96 附近——视觉上就是一次无解释的突跳。
+   *
+   * 【本 ref 的语义】恒指向**最近一帧未经合并的原始数据**，
+   * 是「客观世界的最新已知状态」。免疫只是展示层滤镜，不改变这个基准。
+   *
+   * 【初始化】以瞬态池初始快照为起点（页面加载时二者相同）。
+   */
+  const evolutionBaseRef = useRef<TelemetrySnapshot>(telemetryTransientRef.snapshot);
+
+  /**
+   * hasReceivedFrameRef —— 是否已收到过至少一帧有效数据。
+   *
+   * 【用途】区分「从未连上过」与「连上后断开」两种降级起点：
+   * 前者无历史可续接，应以瞬态池种子快照起步；
+   * 后者必须从 evolutionBaseRef 的原始帧无缝续接。
+   * 该标志在 Hook 生命周期内单调（一旦为 true 不再复位），
+   * 因为「曾经收到过帧」这件事不会因重连而改变。
+   */
+  const hasReceivedFrameRef = useRef(false);
+
+  /**
    * 配置项镜像 ref —— 让主 Effect 的依赖数组得以严格锁定为
    * [connectionMode, activeChaos]。
    *
@@ -347,15 +476,39 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
    * 1. 读取最新免疫表（getState() 而非闭包，保证拿到用户最新一次自愈）；
    * 2. reconcileSnapshot 执行免疫合并；
    * 3. 双轨分发：瞬态池（R3F 零重渲染）+ 响应轨（低频 UI）；
-   * 4. 告警/混沌变化时推终端日志（去重，避免每秒刷屏）。
+   * 4. 告警/混沌变化时推终端日志（去重，避免每秒刷屏）；
+   * 5. 记录收帧间隔耗时到 glStats.sseLatencyMs（性能 HUD 的数据源）。
    */
   const deliver = useCallback(
     (rawSnapshot: TelemetrySnapshot): void => {
       const store = useClusterStore.getState();
 
       /* ---- 1+2. 免疫合并（读最新免疫表，窗口外自动放行原始数据） ---- */
+      /**
+       * 【客户端时间戳单调保护（第二道防线）】
+       *
+       * 服务端已通过 since 参数保证重连后时钟不回退，但防御性编程要求
+       * 客户端也不信任入站数据：若某帧的时间戳早于当前已知进度
+       * （服务端重启、代理缓存旧帧、多实例负载不均等），则把该帧的
+       * 时间戳钳制到「已知进度 + 一个 tick」，保持单调递增。
+       *
+       * 只改 timestamp 不改数据内容：数据本身仍是新鲜到达的，
+       * 仅是时间轴需要一个合理的落点。
+       */
+      const knownTs = evolutionBaseRef.current.timestamp;
+      const guarded: TelemetrySnapshot =
+        rawSnapshot.timestamp > knownTs
+          ? rawSnapshot
+          : { ...rawSnapshot, timestamp: knownTs + TICK_INTERVAL_MS };
+
+      /* ---- 0. 演进基准留存（连续性核心，详见 evolutionBaseRef 契约） ---- */
+      /* 保存的是**未合并的原始帧**：免疫是「展示层修正」，不应污染演进基准，
+         否则免疫期内的本地降级会从被改写的状态继续，窗口一到期就出现数值跳变 */
+      evolutionBaseRef.current = guarded;
+      hasReceivedFrameRef.current = true;
+
       const { snapshot: reconciled, reconciledCount } = reconcileSnapshot(
-        rawSnapshot,
+        guarded,
         store.healedPodIds,
         immunityWindowMs,
         Date.now(),
@@ -366,6 +519,9 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
       syncSnapshotToTransientRef(reconciled);
       /* 轨二：响应轨快照摘要（驱动 HUD / 告警面板等低频 UI） */
       store.setSnapshotSummary(reconciled);
+
+      /* ---- 3b. 收帧间隔耗时埋点（写入瞬态池，零 React 参与） ---- */
+      recordFrameLatency(Date.now());
 
       /* ---- 4. 终端日志（仅告警集合或混沌场景变化时推送，严格去重） ---- */
       const alertSignature = reconciled.activeAlerts
@@ -423,6 +579,28 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
     setConsecutiveErrors(0);
     setTransportBothRef.current('connecting');
 
+    /**
+     * 重置延迟统计基线：旧连接末帧与新连接首帧之间的间隔无意义
+     * （可能长达数秒），若不清零会污染滚动均值长达 8 帧。
+     */
+    resetFrameLatency();
+
+    /**
+     * 【重连连续性契约】重建连接前确保演进基准可用。
+     *
+     * 场景：用户切换 activeChaos → 本 Effect 重跑 → 新连接建立需要时间
+     * （握手 + 首帧至少 1 秒）。这段空窗期内若发生降级，本地引擎需要起点。
+     *
+     * 判定依据是「是否曾经收到过帧」：deliver 每次都会把 evolutionBaseRef
+     * 指向收到的原始帧，因此只有当它仍严格等于瞬态池初始快照
+     * （即从未收到过任何帧）时，才需要从瞬态池兜底同步一次。
+     * 反之则保留它——因为它持有的是未合并的原始数据，比（可能被免疫
+     * 改写过的）瞬态池更干净，这正是连续性的关键。
+     */
+    if (!hasReceivedFrameRef.current) {
+      evolutionBaseRef.current = telemetryTransientRef.snapshot;
+    }
+
     /* SSR 边界：EventSource 与 setInterval 仅在浏览器可用 */
     if (typeof window === 'undefined') return undefined;
 
@@ -457,9 +635,19 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
 
       fallbackTimer = setInterval((): void => {
         if (disposed) return;
-        /* 从瞬态池当前帧递推（保证演进连续，不跳变） */
+        /**
+         * 【演进连续性契约：从「最新原始帧」续接，而非从瞬态池】
+         *
+         * 取 evolutionBaseRef（最近一帧未合并的真实数据）作基准：
+         * 1. 免疫期内不会沿着被改写的展示态演进（避免窗口到期数值突跳）；
+         * 2. 切换 chaos 后重建的降级定时器能从旧连接收到的最后一帧无缝续接，
+         *    时间戳保持单调递增（stepTelemetrySimulation 内部 +1000ms），
+         *    画面不会出现时间倒退或跳帧；
+         * 3. 若从未收到过任何帧（极端：打开即断网），ref 持有初始种子快照，
+         *    本地引擎仍可从稳态起步，画面依旧鲜活。
+         */
         const next = stepTelemetrySimulation(
-          telemetryTransientRef.snapshot,
+          evolutionBaseRef.current,
           chaosRef.current,
         );
         deliverRef.current(next);
@@ -467,7 +655,15 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
     };
 
     /* ---- 路径一：建立 EventSource ---- */
-    const url = `/api/telemetry?mode=${connectionMode}&chaos=${activeChaos}`;
+    /**
+     * 【重连续接】把「最后已知时间戳」随连接传给服务端（since 参数）。
+     *
+     * 服务端每次新连接都从固定种子快照起步，若不告知进度就会出现
+     * 「切换 chaos 后时钟倒退 12 秒」的跳变（实测 gaps 出现 −12000ms）。
+     * 携带 since 后服务端把起始时间戳抬到该值，保证跨连接单调。
+     */
+    const lastKnownTs = evolutionBaseRef.current.timestamp;
+    const url = `/api/telemetry?mode=${connectionMode}&chaos=${activeChaos}&since=${lastKnownTs}`;
     try {
       eventSource = new EventSource(url);
     } catch {

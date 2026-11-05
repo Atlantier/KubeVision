@@ -180,7 +180,10 @@ function PerfHudPanel() {
       value: sample !== null && sample.triangles > 0 ? sample.triangles.toLocaleString('en-US') : '--',
     },
     {
-      label: 'SSE Latency',
+      /* 标签语义：本指标测量的是「相邻两帧的到达间隔」（理想 1000ms），
+         而非网络 RTT——SSE 帧未携带服务端发送时间戳，无法算真 RTT。
+         如实标注为 Frame Interval 而非误导性的 Latency。 */
+      label: 'Frame Interval',
       value: sample !== null && sample.sseLatencyMs > 0 ? `${sample.sseLatencyMs.toFixed(0)} ms` : '--',
     },
     { label: 'Sim Worker', value: sample !== null ? sample.workerStatus : '--' },

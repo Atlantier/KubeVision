@@ -27,7 +27,11 @@ import type { ChaosScenario, PodStatus, TelemetrySnapshot } from '@/types/cluste
  * - fps：滚动窗口帧率（帧/秒）
  * - frameTimeMs：单帧 CPU+GPU 提交耗时（毫秒）
  * - drawCalls / triangles：WebGLRenderer.info.render 透传值
- * - sseLatencyMs：最近一次遥测推送的端到端延迟（毫秒）
+ * - sseLatencyMs：相邻两帧的到达间隔（毫秒，滚动均值）。
+ *   理想值 ≈1000ms（服务端 1Hz 推送）。**注意语义**：这不是网络 RTT——
+ *   SSE 帧未携带服务端发送时间戳，无法测真往返延迟，故本字段如实反映
+ *   「收帧节奏抖动」：显著 >1000 表示推送延迟累积，显著 <1000 表示
+ *   客户端本地降级引擎接管。由 useTelemetryStream 的 recordFrameLatency 写入。
  * - workerStatus：模拟引擎 Worker 状态描述（如 'idle' / 'streaming' / 'error: ...'）
  *
  * 【可变性说明】本接口字段刻意不加 readonly —— 瞬态轨的全部意义即

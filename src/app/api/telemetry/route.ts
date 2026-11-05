@@ -93,8 +93,30 @@ export function GET(request: Request): Response {
   const mode = url.searchParams.get('mode') === 'live' ? 'live' : 'demo';
   const chaos = parseChaos(url.searchParams.get('chaos'));
 
+  /**
+   * since —— 客户端上一次收到的快照时间戳（epoch 毫秒），用于**重连续接**。
+   *
+   * 【解决的问题：切换 chaos 导致时钟倒退】
+   * SSE 每次重建连接都从 INITIAL_CLUSTER_SNAPSHOT 起步，而该种子快照的
+   * timestamp 是编译期固定常量。若客户端已推进到 T+12s，重连后服务端从
+   * T+0s 重新开始，快照时间戳就会**倒退 12 秒**——实测在 chaos 切换瞬间
+   * 观察到 −12000ms 的跳变。后果：
+   * 1. 依赖时间戳排序的下游（告警时序、日志、趋势图）会出现乱序；
+   * 2. 本地降级引擎以时间戳为演进时钟，倒退会导致重复 tick。
+   *
+   * 因此服务端接受 since 参数，把种子快照的 timestamp 抬升到
+   * max(种子时间戳, since)，保证时钟单调不回退。
+   */
+  const sinceRaw = url.searchParams.get('since');
+  const since = sinceRaw === null ? Number.NaN : Number.parseInt(sinceRaw, 10);
+
   /* 每个连接独立的演进状态：多客户端互不干扰 */
   let snapshot: TelemetrySnapshot = INITIAL_CLUSTER_SNAPSHOT;
+
+  /* 重连续接：把起始时间戳抬到客户端已见过的位置之后（期间的数据形态仍取种子稳态） */
+  if (Number.isFinite(since) && since > snapshot.timestamp) {
+    snapshot = { ...snapshot, timestamp: since };
+  }
 
   /** 文本编码器：SSE 必须以 UTF-8 字节流写入（含中文告警消息） */
   const encoder = new TextEncoder();
