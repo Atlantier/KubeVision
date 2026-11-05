@@ -385,6 +385,20 @@ export interface ClusterContext {
   readonly totalQps: number;
   /** 异常 Pod 快照列表（仅异常态，通常 0~5 条） */
   readonly faultyPods: readonly ClusterFaultSnapshot[];
+  /**
+   * 用户当前在 3D 画布中选中的 Pod 快照（可选，无论该 Pod 健康与否）。
+   *
+   * 【为何必须单独携带】faultyPods 只包含「异常态」Pod。当用户在画布上选中的
+   * 是一个**健康** Pod（如巡检时点开某个 Running 实例）时，服务端无法从
+   * faultyPods 里找到它的真实指标，只能退化为无数据或编造——两者都不可接受。
+   * 因此客户端应把选中 Pod 的完整快照一并送来，让生成式 UI 卡片
+   * （PodMetricsCard / RootCauseAlert / ActionConfirm）能绑定**真实**
+   * id / name / cpuUsage / memoryUsage / cpuHistory / memHistory。
+   *
+   * 【优先级】卡片目标解析时，本字段（配合 selectedEntityId 匹配）优先于
+   * faultyPods[0]，保证「卡片对准用户正在看的那台 Pod」。
+   */
+  readonly selectedPodSnapshot?: ClusterFaultSnapshot;
   /** Worker 节点摘要（名称 + 状态 + 水位），供节点级诊断引用 */
   readonly nodes: ReadonlyArray<{
     readonly id: string;

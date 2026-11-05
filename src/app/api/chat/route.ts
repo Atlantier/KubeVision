@@ -84,6 +84,188 @@ const SIM_LATENCY = {
 const RAG_TOP_K = 2;
 
 /* ========================================================================== */
+/* 引擎 B 的目标解析与数据绑定（三张卡片的唯一数据源）                              */
+/* ========================================================================== */
+
+/**
+ * SimulatorTarget —— 引擎 B 卡片绑定的目标解析结果（Pod 与 Node 互斥）。
+ */
+interface SimulatorTarget {
+  /** 解析出的目标 Pod 真实快照（null 表示本次无 Pod 级目标） */
+  readonly pod: ClusterFaultSnapshot | null;
+  /** 解析出的目标节点真实摘要（null 表示无节点级目标） */
+  readonly node: ClusterContext['nodes'][number] | null;
+}
+
+/**
+ * resolveSimulatorTarget —— 解析三张生成式 UI 卡片应绑定的**真实实体**。
+ *
+ * 【为何需要这个函数：修正一个真实的数据绑定缺陷】
+ * 早期实现直接取 `ctx.faultyPods[0]` 作为目标，导致两类错绑：
+ * 1. 用户在 3D 画布上选中了 Pod B，但 faultyPods[0] 是 Pod A——
+ *    于是卡片展示的是 A 的指标，而用户正盯着 B。**卡片与用户关注对象不一致**，
+ *    这是最危险的错绑：用户可能据此对错误的实例执行自愈动作；
+ * 2. 用户选中的是健康 Pod（不在 faultyPods 中）时直接取不到数据，
+ *    只能退化为无卡片或编造数值，两者都不可接受。
+ *
+ * 【解析优先级（严格按此顺序，已在下文逐条注释）】
+ * P1. 选中实体是 Pod 且能在「异常列表」或「选中快照」中查到 → 用它
+ *     （这是「用户正在看的那台」，优先级最高）；
+ * P2. 否则若有异常 Pod → 取第一个异常 Pod（保证诊断仍聚焦最严重故障）；
+ * P3. 否则若选中实体是 Node → 取该节点的真实摘要（节点级诊断）；
+ * P4. 都不满足 → pod/node 均为 null，上层据此**不产出任何卡片**，
+ *     绝不输出 'unknown-target' 这类占位值（宁可无卡，不可假卡）。
+ *
+ * @param ctx 请求携带的集群上下文
+ * @returns 解析结果（pod 与 node 至多一个非 null）
+ */
+function resolveSimulatorTarget(ctx: ClusterContext): SimulatorTarget {
+  const selectedId = ctx.selectedEntityId;
+  const typeIsPod = ctx.selectedEntityType === 'pod';
+  const typeIsNode = ctx.selectedEntityType === 'node';
+  /**
+   * 【类型缺失的容错】selectedEntityType 可能为 null 或客户端未来新增的
+   * 未知取值。此时不能直接放弃绑定——「selectedEntityId 能匹配到某个 Pod
+   * 快照」本身就是强证据，说明用户选中的就是那台 Pod。
+   * 因此把「显式 pod」与「类型未知」同等对待，都允许走 Pod 分支；
+   * 仅当类型**显式为 node** 时才排斥 Pod 分支（尊重明确意图）。
+   */
+  const maybePod = typeIsPod || (!typeIsPod && !typeIsNode);
+
+  /* ---- P1：用户选中的 Pod（真实指标优先从异常列表取，其次取选中快照） ---- */
+  if (maybePod && selectedId !== null) {
+    const fromFaulty = ctx.faultyPods.find((p): boolean => p.id === selectedId);
+    if (fromFaulty !== undefined) {
+      return { pod: fromFaulty, node: null };
+    }
+    const snapshot = ctx.selectedPodSnapshot;
+    if (snapshot !== undefined && snapshot.id === selectedId) {
+      return { pod: snapshot, node: null };
+    }
+    /* 选中 Pod 但两处都查不到 → 继续往下走 P2，
+       仍可绑定最严重的异常 Pod（总比无卡好，且不会张冠李戴到别的实例） */
+  }
+
+  /* ---- P2：首个异常 Pod（诊断聚焦最严重故障） ---- */
+  if (ctx.faultyPods.length > 0) {
+    return { pod: ctx.faultyPods[0], node: null };
+  }
+
+  /* ---- P3：选中的节点（节点级诊断，名称从 nodes 摘要取真实值） ---- */
+  if (typeIsNode && selectedId !== null) {
+    const node = ctx.nodes.find((n): boolean => n.id === selectedId);
+    if (node !== undefined) {
+      return { pod: null, node };
+    }
+  }
+
+  /* ---- P4：无可用目标 ---- */
+  return { pod: null, node: null };
+}
+
+/**
+ * normalizeHistory —— 把历史序列归一化为契约要求的 6 点。
+ *
+ * 【为何需要】PodMetricsCardProps 契约规定 cpuHistory / memHistory
+ * 「长度恒为 6」。但请求体来自客户端，可能因采集窗口不完整而传入
+ * 少于 6 点（甚至空数组）。若不归一化，卡片折线图的横轴刻度会随输入变化，
+ * 与其它卡片并排时视觉不一致；空数组更会让面积路径退化为空字符串。
+ *
+ * 【归一化规则】
+ * 1. 过滤非有限值并 clamp 到 [0,100]（契约值域）；
+ * 2. 多于 6 点 → 保留最近 6 点（末位是当前值，不可丢）；
+ * 3. 少于 6 点 → 在最前面重复首值补齐（即假定该 Pod 此前水位平稳），
+ *    而不是补 0 —— 补 0 会画出一条误导性的暴跌曲线。
+ *
+ * @param values 原始历史序列
+ * @returns 长度恒为 6、值域 [0,100] 的新数组
+ */
+function normalizeHistory(values: readonly number[]): number[] {
+  const cleaned: number[] = [];
+  for (const raw of values) {
+    if (!Number.isFinite(raw)) continue;
+    cleaned.push(Math.max(0, Math.min(100, raw)));
+  }
+  if (cleaned.length === 0) {
+    return [0, 0, 0, 0, 0, 0];
+  }
+  if (cleaned.length >= 6) {
+    return cleaned.slice(-6);
+  }
+  const padded: number[] = [];
+  const missing = 6 - cleaned.length;
+  for (let i = 0; i < missing; i++) padded.push(cleaned[0]);
+  for (const v of cleaned) padded.push(v);
+  return padded;
+}
+
+/**
+ * clampPercent —— 把任意数值收敛到百分比值域 [0, 100]。
+ *
+ * 【用途】请求体来自客户端，cpuUsage / memoryUsage / clusterHealthScore
+ * 都可能传入越界值（如 118、-3）甚至 NaN。越界值会让进度条宽度超出容器、
+ * 拐点跑出 SVG 视口，因此在校验层统一收敛，渲染层拿到的一定是合法值。
+ *
+ * @param value 原始数值
+ * @returns [0, 100] 区间内的数值
+ */
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+/**
+ * normalizeFaultSnapshot —— 把不可信的 Pod 快照对象规范化为 ClusterFaultSnapshot。
+ *
+ * 【为何不用 `as ClusterFaultSnapshot` 断言】断言只是让编译器闭嘴，
+ * 运行期若客户端少传 name / cpuHistory，卡片渲染时才会炸（且报错位置
+ * 距离真正的问题源很远）。这里逐字段取值 + 类型判定 + 兜底默认值，
+ * 保证下游拿到的对象**形状恒定**：numbers 一定是有限数、数组一定是数组、
+ * 字符串一定非空（name 缺省回退到 id）。
+ *
+ * 返回 null 表示这条快照连最基本的 id 都没有，无法绑定，由调用方过滤掉。
+ *
+ * @param raw 原始未知对象（来自 JSON.parse）
+ * @returns 规范化后的快照；不可用时返回 null
+ */
+function normalizeFaultSnapshot(raw: unknown): ClusterFaultSnapshot | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.id !== 'string' || o.id.length === 0) return null;
+
+  /** 取字符串字段（缺省回退） */
+  const takeString = (value: unknown, fallback: string): string =>
+    typeof value === 'string' && value.length > 0 ? value : fallback;
+
+  /** 取有限数值字段（缺省回退） */
+  const takeNumber = (value: unknown, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
+  /** 取数值数组字段（过滤非有限值） */
+  const takeNumberArray = (value: unknown): number[] => {
+    if (!Array.isArray(value)) return [];
+    const out: number[] = [];
+    for (const item of value) {
+      if (typeof item === 'number' && Number.isFinite(item)) out.push(item);
+    }
+    return out;
+  };
+
+  return {
+    id: o.id,
+    name: takeString(o.name, o.id),
+    namespace: takeString(o.namespace, 'default'),
+    status: takeString(o.status, 'Unknown'),
+    cpuUsage: clampPercent(takeNumber(o.cpuUsage, 0)),
+    memoryUsage: clampPercent(takeNumber(o.memoryUsage, 0)),
+    restarts: Math.max(0, Math.trunc(takeNumber(o.restarts, 0))),
+    nodeId: takeString(o.nodeId, ''),
+    cpuHistory: takeNumberArray(o.cpuHistory),
+    memHistory: takeNumberArray(o.memHistory),
+  };
+}
+
+/* ========================================================================== */
 /* 工具：Zod Schema（三个 MCP 工具的载荷契约）                                    */
 /* ========================================================================== */
 
@@ -568,8 +750,11 @@ async function streamWithSimulator(params: {
     await sleep(delayPerChunk, signal);
   }
 
-  /* ---- 3. 卡片一：Pod 指标（真实数据） ---- */
-  const target: ClusterFaultSnapshot | null = ctx.faultyPods.length > 0 ? ctx.faultyPods[0] : null;
+  /* ---- 3. 目标解析（用户选中优先，修正「卡片张冠李戴」缺陷） ---- */
+  const resolved = resolveSimulatorTarget(ctx);
+  const target: ClusterFaultSnapshot | null = resolved.pod;
+
+  /* ---- 3a. 卡片一：Pod 指标（真实数据，直接取自 clusterContext） ---- */
   if (target !== null) {
     const toolCallId = `sim-metrics-${Date.now()}`;
     emit({
@@ -586,8 +771,9 @@ async function streamWithSimulator(params: {
       cpuUsage: target.cpuUsage,
       memoryUsage: target.memoryUsage,
       restarts: target.restarts,
-      cpuHistory: [...target.cpuHistory],
-      memHistory: [...target.memHistory],
+      /* 历史序列归一化为契约要求的 6 点（防客户端传入残缺窗口） */
+      cpuHistory: normalizeHistory(target.cpuHistory),
+      memHistory: normalizeHistory(target.memHistory),
     };
     emit({ type: 'tool-result', toolCallId, toolName: 'renderPodMetrics', args: metricsArgs });
     await sleep(120, signal);
@@ -596,16 +782,26 @@ async function streamWithSimulator(params: {
   /* ---- 4. 卡片二：根因分析（携带真实 RAG 引用） ---- */
   const severity: RootCauseAlertProps['severity'] =
     ctx.clusterHealthScore < 60 ? 'P0' : ctx.clusterHealthScore < 85 ? 'P1' : 'P2';
+  const nodeTarget = resolved.node;
   const rootCauseTitle =
     target !== null
       ? `${target.name} 触发 ${target.status}，疑似资源超限或依赖异常`
-      : `集群健康分下降至 ${ctx.clusterHealthScore}/100`;
+      : nodeTarget !== null
+        ? `节点 ${nodeTarget.name} 水位异常（CPU ${nodeTarget.cpuUsage.toFixed(1)}% / MEM ${nodeTarget.memUsage.toFixed(1)}%）`
+        : `集群健康分下降至 ${ctx.clusterHealthScore}/100`;
   const evidenceChain: string[] = [];
   if (target !== null) {
     evidenceChain.push(
       `${target.nodeId} 上 ${target.name} 内存水位 ${target.memoryUsage.toFixed(1)}%`,
     );
     evidenceChain.push(`kubelet 记录 ${target.status}，累计重启 ${target.restarts} 次`);
+  } else if (nodeTarget !== null) {
+    evidenceChain.push(
+      `节点 ${nodeTarget.name}（rack-${nodeTarget.rackIndex}）状态 ${nodeTarget.status}`,
+    );
+    evidenceChain.push(
+      `节点水位 CPU ${nodeTarget.cpuUsage.toFixed(1)}% / MEM ${nodeTarget.memUsage.toFixed(1)}%`,
+    );
   }
   evidenceChain.push(`集群健康分 ${ctx.clusterHealthScore}/100，活跃场景 ${ctx.activeChaos}`);
   if (runbooks[0] !== undefined) {
@@ -634,39 +830,81 @@ async function streamWithSimulator(params: {
     impactScope:
       target !== null
         ? `${target.namespace} / ${target.name}（受影响副本 1 个，宿主机 ${target.nodeId}）`
-        : '集群整体（暂无单点故障）',
+        : nodeTarget !== null
+          ? `节点 ${nodeTarget.name}（rack-${nodeTarget.rackIndex}）上的全部工作负载`
+          : '集群整体（暂无单点故障）',
     ragReferences: [...runbooks],
   };
   emit({ type: 'tool-result', toolCallId: rcCallId, toolName: 'renderRootCauseAnalysis', args: rcaArgs });
   await sleep(120, signal);
 
-  /* ---- 5. 卡片三：修复动作建议（真实目标 + 二次确认） ---- */
-  const actionCallId = `sim-action-${Date.now()}`;
-  emit({
-    type: 'tool-start',
-    toolCallId: actionCallId,
-    toolName: 'proposeRemediationAction',
-    mcpUri: 'mcp://k8s-cluster/tools/proposeRemediationAction',
-  });
-  await sleep(TOOL_RESULT_DELAY_MS_B, signal);
+  /* ---- 5. 卡片三：修复动作建议（真实目标 + 二次确认） ----
+   *
+   * 【数据绑定修正】动作卡此前存在两个真实缺陷：
+   * 1. 动作类型取自 `ctx.selectedEntityType === 'node'`，与实际绑定的 target
+   *    可能不一致——例如用户选中节点、但同时存在异常 Pod 时，会输出
+   *    drain_node 却把 Pod 的 id 填进 targetId，语义自相矛盾；
+   * 2. 无 target 时退化为 `ctx.selectedEntityId ?? 'unknown-target'`，
+   *    把裸 ID 同时当作 targetId 与 targetName，甚至产出 'unknown-target'
+   *    这类占位值——用户会看到一张「对未知目标执行操作」的卡片。
+   *
+   * 现统一改为：动作类型与目标全部由 resolveSimulatorTarget 的解析结果决定，
+   * **Pod 优先**（restart_pod），仅当确无 Pod 级目标时才做节点级 drain_node，
+   * 两者都没有则**整张卡不输出**（宁可无卡，不可假卡）。
+   */
+  /* nodeTarget 已在上方「卡片二」处由 resolved.node 解构，此处直接复用 */
 
-  /* 若选中的是节点 → 建议重启其上 Pod；否则重启该 Pod */
-  const isNodeTarget = ctx.selectedEntityType === 'node';
-  const actionType: ActionConfirmProps['actionType'] = isNodeTarget ? 'drain_node' : 'restart_pod';
-  const actionTargetId = target !== null ? target.id : (ctx.selectedEntityId ?? 'unknown-target');
-  const actionTargetName = target !== null ? target.name : (ctx.selectedEntityId ?? 'cluster');
+  /**
+   * 【为何用嵌套分支而非布尔标志 + 断言】
+   * 布尔标志（hasPodTarget）无法让 TS 窄化 target 的类型，
+   * 于是不得不写 `target as ClusterFaultSnapshot` 这类断言——
+   * 断言绕过编译器检查，未来若 target 类型变化不会报错。
+   * 改成 if/else if 分支后，`target !== null` 即可完成窄化，
+   * 全程零类型断言（AGENTS.md 第 2 条的契约精神）。
+   */
+  if (target !== null) {
+    /* ---- Pod 级目标：restart_pod（中危，无需二次确认） ---- */
+    const actionCallId = `sim-action-${Date.now()}`;
+    emit({
+      type: 'tool-start',
+      toolCallId: actionCallId,
+      toolName: 'proposeRemediationAction',
+      mcpUri: 'mcp://k8s-cluster/tools/proposeRemediationAction',
+    });
+    await sleep(TOOL_RESULT_DELAY_MS_B, signal);
 
-  const actionArgs: ActionConfirmProps = {
-    actionType,
-    targetId: actionTargetId,
-    targetName: actionTargetName,
-    paramDescription: isNodeTarget
-      ? `驱逐节点 ${actionTargetName} 上的工作负载，Pod 将平滑迁移至其他节点（预计 30~60s 完成）。`
-      : `重启 Pod ${actionTargetName}，容器将重新拉起（预计恢复时间 8s，期间该副本不可用）。`,
-    mcpEndpoint: `mcp://k8s-cluster/tools/${actionType}`,
-    isHighRisk: isNodeTarget,
-  };
-  emit({ type: 'tool-result', toolCallId: actionCallId, toolName: 'proposeRemediationAction', args: actionArgs });
+    const actionArgs: ActionConfirmProps = {
+      actionType: 'restart_pod',
+      /* 真实 id / name 直接取自解析后的 Pod 快照，绝不使用裸 ID 或占位串 */
+      targetId: target.id,
+      targetName: target.name,
+      paramDescription: `重启 Pod ${target.name}，容器将重新拉起（预计恢复时间 8s，期间该副本不可用）。`,
+      mcpEndpoint: 'mcp://k8s-cluster/tools/restart_pod',
+      isHighRisk: false,
+    };
+    emit({ type: 'tool-result', toolCallId: actionCallId, toolName: 'proposeRemediationAction', args: actionArgs });
+  } else if (nodeTarget !== null) {
+    /* ---- 节点级目标（确无 Pod 级目标时）：drain_node（高危，强制二次确认） ---- */
+    const actionCallId = `sim-action-${Date.now()}`;
+    emit({
+      type: 'tool-start',
+      toolCallId: actionCallId,
+      toolName: 'proposeRemediationAction',
+      mcpUri: 'mcp://k8s-cluster/tools/proposeRemediationAction',
+    });
+    await sleep(TOOL_RESULT_DELAY_MS_B, signal);
+
+    const actionArgs: ActionConfirmProps = {
+      actionType: 'drain_node',
+      targetId: nodeTarget.id,
+      targetName: nodeTarget.name,
+      paramDescription: `驱逐节点 ${nodeTarget.name} 上的工作负载，Pod 将平滑迁移至其他节点（预计 30~60s 完成）。`,
+      mcpEndpoint: 'mcp://k8s-cluster/tools/drain_node',
+      isHighRisk: true,
+    };
+    emit({ type: 'tool-result', toolCallId: actionCallId, toolName: 'proposeRemediationAction', args: actionArgs });
+  }
+  /* 两者皆无 → 整张动作卡不输出（宁可无卡，不可对 'unknown-target' 假卡） */
 }
 
 /* ========================================================================== */
@@ -736,22 +974,51 @@ async function parseRequestBody(request: Request): Promise<ChatRequestBody | nul
   const ctxRaw = obj.clusterContext;
   if (typeof ctxRaw !== 'object' || ctxRaw === null) return null;
   const c = ctxRaw as Record<string, unknown>;
+
+  /* faultyPods / selectedPodSnapshot / nodes 走逐字段规范化，
+     而不是 `as X[]` 断言——断言会把校验责任推给调用方，
+     一旦客户端少传字段就会在渲染层炸开。 */
+  const normalizePodList = (raw: unknown): ClusterFaultSnapshot[] => {
+    if (!Array.isArray(raw)) return [];
+    const out: ClusterFaultSnapshot[] = [];
+    for (const item of raw) {
+      const snap = normalizeFaultSnapshot(item);
+      if (snap !== null) out.push(snap);
+    }
+    return out;
+  };
+
+  const normalizeNodeList = (raw: unknown): ClusterContext['nodes'] => {
+    if (!Array.isArray(raw)) return [];
+    const out: Array<ClusterContext['nodes'][number]> = [];
+    for (const item of raw) {
+      if (typeof item !== 'object' || item === null) continue;
+      const n = item as Record<string, unknown>;
+      if (typeof n.name !== 'string') continue;
+      out.push({
+        id: typeof n.id === 'string' ? n.id : n.name,
+        name: n.name,
+        status: typeof n.status === 'string' ? n.status : 'Unknown',
+        cpuUsage: clampPercent(typeof n.cpuUsage === 'number' ? n.cpuUsage : 0),
+        memUsage: clampPercent(typeof n.memUsage === 'number' ? n.memUsage : 0),
+        rackIndex: typeof n.rackIndex === 'number' ? Math.trunc(n.rackIndex) : 0,
+      });
+    }
+    return out;
+  };
+
+  const selectedPodSnapshot =
+    c.selectedPodSnapshot === undefined ? undefined : normalizeFaultSnapshot(c.selectedPodSnapshot) ?? undefined;
+
   const clusterContext: ClusterContext = {
     selectedEntityId: typeof c.selectedEntityId === 'string' ? c.selectedEntityId : null,
     selectedEntityType: typeof c.selectedEntityType === 'string' ? c.selectedEntityType : null,
     activeChaos: typeof c.activeChaos === 'string' ? c.activeChaos : 'NONE',
-    clusterHealthScore: typeof c.clusterHealthScore === 'number' ? c.clusterHealthScore : 100,
-    totalQps: typeof c.totalQps === 'number' ? c.totalQps : 0,
-    faultyPods: Array.isArray(c.faultyPods)
-      ? (c.faultyPods as ClusterFaultSnapshot[]).filter(
-          (p): boolean => typeof p === 'object' && p !== null && typeof p.id === 'string',
-        )
-      : [],
-    nodes: Array.isArray(c.nodes)
-      ? (c.nodes as ClusterContext['nodes']).filter(
-          (n): boolean => typeof n === 'object' && n !== null && typeof n.name === 'string',
-        )
-      : [],
+    clusterHealthScore: typeof c.clusterHealthScore === 'number' ? clampPercent(c.clusterHealthScore) : 100,
+    totalQps: typeof c.totalQps === 'number' ? Math.max(0, c.totalQps) : 0,
+    faultyPods: normalizePodList(c.faultyPods),
+    ...(selectedPodSnapshot !== undefined ? { selectedPodSnapshot } : {}),
+    nodes: normalizeNodeList(c.nodes),
   };
 
   /* ---- viewportImage：可选，必须是 data URL ---- */
