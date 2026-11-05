@@ -14,8 +14,22 @@
  *    给用户最后一次「反悔」的视觉提示，同时避免重复点击引发幂等风险。
  *
  * 【执行链路】确认 → 600ms 流光 → healEntity(targetId, actionType)
- * → store 登记免疫时间戳 + 派生愈合快照 + 双轨分发 + 终端审计回显
- * → 3D 视口中故障 Pod 当场恢复翠绿。
+ * → store 登记免疫时间戳 + 派生愈合快照 + 双轨分发 + [KUBE-CONTROLLER] 终端回显
+ * → 追加 [MCP-ROUTER] 协议级审计行 → 3D 视口中故障 Pod 当场恢复翠绿
+ * → 回调 onActionExecuted(targetId, actionType) 向上冒泡。
+ *
+ * 【两条终端日志为何都要有】
+ * - `[KUBE-CONTROLLER]`（由 store 的 healEntity 写入，cyan-300）：
+ *   描述「K8s 控制器视角的执行结果」（Status verified: Running）；
+ * - `[MCP-ROUTER]`（由本组件写入，sky-300）：
+ *   描述「Agent 经 MCP 协议路由调用了哪个工具工具端点」。
+ * 前者是编排层的落地事实，后者是协议层的调用凭证——审计时二者互补，
+ * 缺了后者就无法回答「这个自愈动作是谁、通过什么通道发起的」。
+ *
+ * 【props.onActionExecuted 的职责边界】
+ * 卡片只负责「确认 → 执行 → 显示已执行」，执行后的外部副作用
+ * （刷新对话流、上报埋点、触发下一步推理、关闭父面板）通过回调交给调用方，
+ * 卡片因此保持纯展示 + 单一自愈动作，不硬编码父级业务逻辑。
  *
  * 【MCP 协议标识】卡片头展示 mcpEndpoint（如 mcp://k8s-cluster/tools/restartPod），
  * 让用户清楚「这次点击会调用哪个工具」，而不是盲目的一个按钮。
@@ -72,8 +86,10 @@ export default function ActionConfirm({
   paramDescription,
   mcpEndpoint,
   isHighRisk,
+  onActionExecuted,
 }: ActionConfirmProps) {
   const healEntity = useClusterStore((s): ((targetId: string, actionType: string) => void) => s.healEntity);
+  const appendTerminalLog = useClusterStore((s): ((line: string) => void) => s.appendTerminalLog);
 
   /** 高危确认勾选态（非高危动作恒为 true，无需勾选） */
   const [acknowledged, setAcknowledged] = useState<boolean>(!isHighRisk);
@@ -102,11 +118,17 @@ export default function ActionConfirm({
    * 2. 进入 executing 态，启动 600ms 流光动画（不可中断的确认窗）；
    * 3. 动画结束后调用 healEntity(targetId, actionType)：
    *    store 内部执行免疫去重 → 派生愈合快照 → 双轨分发 → 终端审计；
-   * 4. 转入 done 态，展示成功确认。
+   * 4. 追加 [MCP-ROUTER] 审计行——记录本次「经 MCP 路由调用工具」的
+   *    协议级事实（与步骤 3 中 store 写的 [KUBE-CONTROLLER] 控制器行互补：
+   *    前者说「谁调用了什么工具」，后者说「控制器执行结果如何」）；
+   * 5. 转入 done 态，最后回调 onActionExecuted 向上冒泡。
    *
    * 【为何延迟 600ms 再调用 healEntity】这不是无意义的等待：
    * 它给用户一个「操作已受理、正在执行」的确定反馈，且在此期间按钮禁用，
    * 彻底杜绝连点造成的重复自愈与免疫窗口误触发。
+   *
+   * 【回调顺序保证】onActionExecuted 放在 healEntity 与日志之后调用，
+   * 确保父级收到回调时 store 与终端已是最新状态，避免「回调读到旧值」。
    */
   const handleExecute = useCallback((): void => {
     if (phase !== 'idle') return;
@@ -116,11 +138,23 @@ export default function ActionConfirm({
 
     timerRef.current = setTimeout((): void => {
       timerRef.current = null;
-      /* 真正执行自愈：3D 场景中的故障实体当场转绿 */
+
+      /* ---- 步骤 3：执行自愈（3D 场景中的故障实体当场转绿） ---- */
       healEntity(targetId, actionType);
+
+      /* ---- 步骤 4：MCP 路由审计回显 ---- *
+       * 前缀 [MCP-ROUTER] 已被 TerminalEcho 的 TONE_RULES 映射为 router 色调
+       * （sky-300 天蓝），与控制器行（cyan-300）在视觉上明确区分：
+       * 天蓝代表「协议层调用」，青色代表「K8s 控制器动作」。 */
+      appendTerminalLog(
+        `[MCP-ROUTER] Invoked mcp://k8s-cluster/tools/${actionType} -> Target ${targetId} healed`,
+      );
+
+      /* ---- 步骤 5：切换成功态并向上冒泡回调 ---- */
       setPhase('done');
+      onActionExecuted?.(targetId, actionType);
     }, EXECUTION_ANIMATION_MS);
-  }, [acknowledged, actionType, healEntity, isHighRisk, phase, targetId]);
+  }, [acknowledged, actionType, appendTerminalLog, healEntity, isHighRisk, onActionExecuted, phase, targetId]);
 
   const isExecuting = phase === 'executing';
   const isDone = phase === 'done';

@@ -193,6 +193,23 @@ export interface ActionConfirmProps {
   readonly mcpEndpoint: string;
   /** 高危动作标识（true → rose-500 警示样式 + 强制二次确认） */
   readonly isHighRisk: boolean;
+  /**
+   * 动作执行完成回调（可选）。
+   *
+   * 【用途】卡片自身只负责「确认 → 执行 → 展示已执行」这一段，
+   * 而执行之后的外部副作用（刷新对话流、上报埋点、触发下一步 Agent 推理、
+   * 关闭父级面板等）属于调用方职责。通过本回调向上冒泡，
+   * 卡片因此保持**纯展示 + 单一自愈动作**的职责边界，
+   * 不硬编码任何父级业务逻辑。
+   *
+   * 【调用时机】在 healEntity 已提交、且卡片切换到 done 态之后同步触发，
+   * 保证父级收到回调时 3D/store 状态已经是最新的
+   * （不会出现「回调里读到旧状态」的时序陷阱）。
+   *
+   * @param targetId   目标实体 ID（原样回传，便于父级定位）
+   * @param actionType 已执行的 MCP 动作类型
+   */
+  readonly onActionExecuted?: (targetId: string, actionType: string) => void;
 }
 
 /* ========================================================================== */
