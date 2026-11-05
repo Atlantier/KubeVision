@@ -37,6 +37,7 @@ import NetworkStream3D from '@/components/canvas/NetworkStream3D';
 import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
 import ViewportToolbar from '@/components/canvas/ViewportToolbar';
 import WorkerRack3D from '@/components/canvas/WorkerRack3D';
+import NodeInspectHUD from '@/components/hud/NodeInspectHUD';
 
 /* ========================================================================== */
 /* 场景常量（深空赛博氛围参数，集中定义）                                          */
@@ -76,6 +77,10 @@ const CAMERA_FOV = 45;
  *  ├─ NetworkStream3D（MASTER→机架拱形光缆 + 54 流动数据包，故障卡顿变红）
  *  ├─ ErrorRippleRing（故障机架地面警示涟漪，自定义 Shader 三环扩散）
  *  └─ CameraRig（OrbitControls + 防锁死运镜）
+ *
+ * 【DOM 浮层】（Canvas 之外、包装 div 之内）
+ *  ├─ NodeInspectHUD（左上角：拓扑图例 / 实体巡检探针卡片）
+ *  └─ ViewportToolbar（右下角：相机预设 / 环绕巡检 / 多模态快照）
  *
  * 【onPointerMissed】点击空白（射线未命中任何实体）→ selectEntity(null) →
  * 相机平滑飞回全景鸟瞰 [0, 14, 22]（取消选中语义的画布侧入口）。
@@ -291,6 +296,13 @@ export default function ClusterCanvas() {
         {/* ---- 相机运镜系统 ---- */}
         <CameraRig />
       </Canvas>
+
+      {/* ---- 左上角实体巡检 HUD（DOM 层浮层，非 R3F 场景内）：
+         未选中实体 → 拓扑图例 + 相机手势提示；选中 pod/node/master →
+         玻璃态探针卡片（身份/状态/重启/CPU-MEM 波形/AI 诊断/隔离重启）。
+         外层 pointer-events-none 保证不遮挡画布拖拽旋转，内层卡片
+         pointer-events-auto 保证按钮可点（AGENTS.md 第 6 条同源原则）。 ---- */}
+      <NodeInspectHUD />
 
       {/* ---- 右下角玻璃态相机/多模态控制工具条（DOM 层，非 R3F 场景内；
          pointer-events-auto + z-20：高于画布 Html 标注，低于 HUD/Modal） ---- */}
