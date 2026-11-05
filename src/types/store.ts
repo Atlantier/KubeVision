@@ -170,6 +170,8 @@ export interface ClusterActions {
   appendTerminalLog: (line: string) => void;
   /** 触发 AI 快捷诊断指令（自动将右侧抽屉切换至 copilot 页签） */
   triggerQuickPrompt: (prompt: string) => void;
+  /** 手动切换右侧抽屉页签（copilot / auditor） */
+  setActiveRightTab: (tab: RightPanelTab) => void;
   /** 消费侧复位快捷指令载荷（Copilot 读取后置回 null，防重复触发） */
   clearQuickPrompt: () => void;
   /** 一键重置本地持久化缓存（clearStorage + 持久化字段回归初始值） */
