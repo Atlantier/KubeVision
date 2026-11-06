@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
-import { CheckCircle2, Eye, EyeOff, FileSearch, Loader2, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, Eye, EyeOff, FileSearch, Loader2, ShieldCheck, Sparkles } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
@@ -148,6 +148,9 @@ export default function LocalAuditorPanel() {
     (s): ((count: number) => void) => s.incrementMaskedSecrets,
   );
   const totalMaskedSecrets = useClusterStore((s): number => s.totalMaskedSecrets);
+  const triggerQuickPrompt = useClusterStore(
+    (s): ((prompt: string) => void) => s.triggerQuickPrompt,
+  );
 
   const [rawInput, setRawInput] = useState<string>(SAMPLE_LOGS.join('\n'));
   const [showRaw, setShowRaw] = useState<boolean>(false);
@@ -196,6 +199,34 @@ export default function LocalAuditorPanel() {
       setIsAuditing(false);
     }, 420);
   }, [incrementMaskedSecrets, sanitized.maskedCount]);
+
+  /**
+   * escalateToCopilot —— 把端侧审计结论上报给 AI Copilot 做进一步根因分析。
+   *
+   * 【发什么】triggerQuickPrompt 写入一条自包含的中文诊断指令，包含：
+   * 1. 分类结论与置信度（端侧推理的产出，让 Copilot 知道已有什么判断）；
+   * 2. **脱敏后的日志文本**（不是 rawInput！）；
+   * 3. 明确要求给出根因与可执行修复建议。
+   *
+   * 【截断策略】只取脱敏文本的前 600 字符。端侧审计针对的是「本次异常窗口」，
+   * 日志可能长达数千行；把全文塞进 prompt 会稀释关键信号并浪费上下文预算，
+   * 而分类结论已概括了整体性质，600 字符足以让 Copilot 看到典型错误行。
+   *
+   * 【触发链路】triggerQuickPrompt 内部会强制切 activeRightTab→'copilot'
+   * 与 activeMobileView→'copilot'，因此用户点击后**立刻**看到 Copilot 视图，
+   * 随后 CopilotDrawer 的消费 effect 自动发起流式请求并清空载荷。
+   */
+  const escalateToCopilot = useCallback((): void => {
+    const excerpt = sanitized.text.slice(0, 600);
+    /* 直接查表取中文标签，避免依赖下方声明的 labelMeta（TDZ） */
+    const labelText = LABEL_META[classification.label].text;
+    const prompt =
+      `端侧日志审计发现异常，分类为 ${classification.label}（${labelText}），` +
+      `置信度 ${(classification.confidence * 100).toFixed(0)}%，已脱敏 ${sanitized.maskedCount} 处敏感信息。\n` +
+      `以下是脱敏后的日志片段：\n\`\`\`\n${excerpt}\n\`\`\`\n` +
+      `请分析该异常的根因，并给出可执行的修复建议。`;
+    triggerQuickPrompt(prompt);
+  }, [classification.confidence, classification.label, sanitized.maskedCount, sanitized.text, triggerQuickPrompt]);
 
   const labelMeta = LABEL_META[classification.label];
 
@@ -277,6 +308,23 @@ export default function LocalAuditorPanel() {
             <p className="mt-1 font-mono text-[8px] uppercase tracking-wider text-slate-600">
               label:&nbsp;{classification.label}
             </p>
+
+            {/*
+             * EscalateReportButton —— 把端侧审计结论上报给 Copilot。
+             *
+             * 【为何只传脱敏文本】这是本面板隐私契约的延续：端侧可以看见
+             * 原文，但**送出设备边界的内容必须是 sanitizedText**。
+             * 上报指令里若夹带原始凭证，整个"端侧脱敏"的设计就失去意义。
+             */}
+            <button
+              type="button"
+              onClick={escalateToCopilot}
+              aria-label="上报异常至 AI Copilot"
+              className="mt-1.5 flex w-full items-center justify-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-1 font-mono text-[8.5px] font-bold uppercase tracking-wider text-cyan-300 transition-colors hover:border-cyan-400/70 hover:bg-cyan-500/20"
+            >
+              <Sparkles className="h-2.5 w-2.5" aria-hidden />
+              escalate&nbsp;to&nbsp;copilot
+            </button>
           </div>
         ) : null}
       </div>
