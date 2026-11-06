@@ -458,30 +458,44 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         </mesh>
       ) : null}
 
-      {/* ---- 顶部全息铭牌：节点名 + 实时 CPU/MEM 百分比
-         （drei Html 契约：center + distanceFactor + zIndexRange=[10,0] + pointer-events-none） ---- */}
+      {/*
+       * 铭牌：从"机柜顶部的三行大卡片"改为"贴地紧凑标签"（对标图二）。
+       *
+       * 【为何必须改】原位置 [0, RACK_BODY_SIZE[1] + 0.72, 0] = y 5.12，
+       * 三行深色卡片正好横在拱形网络光缆的中段——实拍确认它把弧线切断了，
+       * 是"画面杂乱"的主要来源之一（蓝图 §1.4）。
+       *
+       * 【新形态】贴地单行 `● worker-alpha`，数值仅在 hover/选中时展开。
+       * 常态下只占一行极小面积，不侵入 3D 构图主体；需要数值时鼠标一放上去
+       * 就展开，信息不丢失。
+       */}
       <Html
-        position={[0, RACK_BODY_SIZE[1] + 0.72, 0]}
+        position={[0, 0.34, RACK_BODY_SIZE[2] / 2 + 0.35]}
         center
-        distanceFactor={16}
+        distanceFactor={14}
         zIndexRange={[10, 0]}
         className="pointer-events-none"
       >
         <div
           className={cn(
-            'flex flex-col items-center gap-0.5 rounded border border-slate-700/70 bg-slate-950/85 px-2 py-1 backdrop-blur-sm transition-colors',
-            isSelected && 'border-cyan-400/80 shadow-glow-cyan',
+            'flex items-center gap-1.5 whitespace-nowrap rounded border px-1.5 py-0.5 backdrop-blur-sm transition-colors',
+            isSelected || hovered
+              ? 'border-cyan-400/70 bg-slate-950/90'
+              : 'border-slate-700/50 bg-slate-950/70',
           )}
         >
-          <span className="font-mono text-[10px] font-bold tracking-wider text-slate-200">{node.name}</span>
-          <span className="flex items-center gap-1.5 font-mono text-[10px] tabular-nums">
-            <span style={{ color: statusColor }}>CPU {node.cpuUsage}%</span>
-            <span className="text-slate-600">|</span>
-            <span style={{ color: statusColor }}>MEM {node.memUsage}%</span>
-          </span>
-          <span className="font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: statusColor }}>
-            {node.status} · {node.podIds.length} pods
-          </span>
+          {/* 状态圆点：常态下唯一的色彩信号，一眼扫过即可判断健康度 */}
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: statusColor }} />
+          <span className="font-mono text-[10px] font-bold tracking-wide text-slate-200">{node.name}</span>
+          {/* 数值仅在交互态展开，避免常态遮挡画面 */}
+          {isSelected || hovered ? (
+            <>
+              <span className="font-mono text-[10px] tabular-nums" style={{ color: statusColor }}>
+                CPU {node.cpuUsage}%
+              </span>
+              <span className="font-mono text-[10px] tabular-nums text-slate-500">MEM {node.memUsage}%</span>
+            </>
+          ) : null}
         </div>
       </Html>
     </group>

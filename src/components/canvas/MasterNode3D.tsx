@@ -38,6 +38,7 @@ import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import { MASTER_ENTITY_ID } from '@/types/canvas';
 import { MASTER_POSITION } from '@/utils/spatialLayout';
+import GlowHalo3D from '@/components/canvas/GlowHalo3D';
 import type { SelectedEntityType } from '@/types/store';
 
 /* ========================================================================== */
@@ -45,13 +46,13 @@ import type { SelectedEntityType } from '@/types/store';
 /* ========================================================================== */
 
 /** 外层正八面体半径（调度扫描包络） */
-const OCTA_RADIUS = 1.15;
+const OCTA_RADIUS = 1.85;
 
 /** 内层二十面体半径（与外层保持 0.3 间隙，双层线框互不穿插） */
-const ICO_RADIUS = 0.85;
+const ICO_RADIUS = 0.95;
 
 /** 能量核心球半径（呼吸峰值 1.12 倍仍与内层线框保持间隙） */
-const CORE_RADIUS = 0.34;
+const CORE_RADIUS = 0.42;
 
 /** 外层正向自转角速度（rad/s）：约 25 秒/圈，从容的全局扫描节奏 */
 const OUTER_SPIN_RATE = 0.25;
@@ -145,25 +146,29 @@ export default function MasterNode3D() {
   useFrame((state): void => {
     const t = state.clock.getElapsedTime();
 
-    // 外层八面体：正向自转 + 正弦倾角摆动（调度扫描感）
+    /* 外层晶面 + 棱线：同步正向自转 + 正弦倾角摆动（调度扫描感）。
+       两者必须同速同相位，否则棱线会从晶面上"脱开"。 */
     if (outerRef.current !== null) {
       outerRef.current.rotation.y = t * OUTER_SPIN_RATE;
       outerRef.current.rotation.x = Math.sin(t * 0.4) * 0.18;
     }
-    // 内层二十面体：反向自转 + 余弦滚转（仪差机械感）
     if (innerRef.current !== null) {
-      innerRef.current.rotation.y = t * INNER_SPIN_RATE;
-      innerRef.current.rotation.z = Math.cos(t * 0.32) * 0.22;
+      innerRef.current.rotation.y = t * OUTER_SPIN_RATE;
+      innerRef.current.rotation.x = Math.sin(t * 0.4) * 0.18;
     }
-    // 能量核心：呼吸缩放（±12%）+ 发光强度同频脉动（心跳隐喻）
+    /* 内层晶核：反向自转 + 余弦滚转（仪差机械感） */
     if (coreRef.current !== null) {
+      coreRef.current.rotation.y = t * INNER_SPIN_RATE;
+      coreRef.current.rotation.z = Math.cos(t * 0.32) * 0.22;
+      /* 呼吸缩放（±12%）——心跳隐喻 */
       const breath = 1 + BREATH_AMPLITUDE * Math.sin(t * BREATH_RATE);
       coreRef.current.scale.setScalar(breath);
     }
+    /* 内核自发光强度同频脉动 */
     if (coreMaterialRef.current !== null) {
-      coreMaterialRef.current.emissiveIntensity = 1.7 + 0.55 * Math.sin(t * BREATH_RATE + Math.PI / 4);
+      coreMaterialRef.current.emissiveIntensity = 2.6 + 0.7 * Math.sin(t * BREATH_RATE + Math.PI / 4);
     }
-    // 底部全息圆环：缓慢自转（刻度扫过 = 控制面巡检隐喻）
+    /* 底部全息圆环：缓慢自转（刻度扫过 = 控制面巡检隐喻） */
     if (ringGroupRef.current !== null) {
       ringGroupRef.current.rotation.y = t * RING_SPIN_RATE;
     }
@@ -183,43 +188,78 @@ export default function MasterNode3D() {
       }}
       onPointerOut={(): void => setHovered(false)}
     >
-      {/* ---- 外层：正八面体青色发光线框（正向自转） ---- */}
-      <mesh ref={outerRef}>
+      {/*
+       * ═══ 重工水晶化（对标图二）═══
+       * 原实现是"两个细线框 + 一颗小球"——线框太细、体量太小（半径 1.15），
+       * 在整屏构图里像个飘着的小挂件，撑不起"控制平面"的视觉重心。
+       * 现改为三层结构：半透明实心晶面外壳 + 内层反向晶核 + 白炽内核 + 外溢辉光。
+       *
+       * 【为何用实心半透明而非线框】线框只有轮廓没有体量，透视下几乎没有
+       * 明暗变化；半透明实心晶面能吃到环境光与自发光，正面/侧面/背面因
+       * 透过层数不同而呈现不同亮度，才有"水晶"的厚度感。
+       */}
+
+      {/* ---- 外层：巨型八面体半透明晶面（正向自转） ---- */}
+      <mesh ref={outerRef} scale={[1, 1.18, 1]}>
         <octahedronGeometry args={[OCTA_RADIUS, 0]} />
+        <meshStandardMaterial
+          color={GLOW_CYAN}
+          emissive={GLOW_CYAN}
+          emissiveIntensity={emphasized ? 0.9 : 0.55}
+          transparent
+          opacity={emphasized ? 0.32 : 0.2}
+          metalness={0.05}
+          roughness={0.12}
+          toneMapped={false}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
+
+      {/* ---- 棱线：八面体的 12 条棱单独描亮，强化晶体切面感 ---- */}
+      <mesh ref={innerRef} scale={[1, 1.18, 1]}>
+        <octahedronGeometry args={[OCTA_RADIUS * 1.001, 0]} />
         <meshBasicMaterial
           color={GLOW_CYAN}
           wireframe
           transparent
-          opacity={emphasized ? 0.95 : 0.55}
+          opacity={emphasized ? 0.95 : 0.7}
           toneMapped={false}
         />
       </mesh>
 
-      {/* ---- 内层：二十面体青色线框（反向自转，与外层 1.52:1 速比） ---- */}
-      <mesh ref={innerRef}>
-        <icosahedronGeometry args={[ICO_RADIUS, 1]} />
-        <meshBasicMaterial
-          color={GLOW_CYAN}
-          wireframe
-          transparent
-          opacity={emphasized ? 0.8 : 0.4}
-          toneMapped={false}
-        />
-      </mesh>
-
-      {/* ---- 能量核心：呼吸缩放的高亮发光球 ---- */}
+      {/* ---- 内层：反向自转的小八面体晶核（与外层 1.52:1 速比） ---- */}
       <mesh ref={coreRef}>
-        <sphereGeometry args={[CORE_RADIUS, 32, 32]} />
+        <octahedronGeometry args={[ICO_RADIUS, 0]} />
+        <meshStandardMaterial
+          color="#a5f3fc"
+          emissive="#67e8f9"
+          emissiveIntensity={2.2}
+          metalness={0.1}
+          roughness={0.15}
+          transparent
+          opacity={0.85}
+          toneMapped={false}
+        />
+      </mesh>
+
+      {/* ---- 白炽内核光球：呼吸缩放，晶体最亮的能量中心 ---- */}
+      <mesh>
+        <sphereGeometry args={[CORE_RADIUS, 24, 24]} />
         <meshStandardMaterial
           ref={coreMaterialRef}
-          color="#a5f3fc"
-          emissive={GLOW_CYAN}
-          emissiveIntensity={1.7}
+          color="#ffffff"
+          emissive="#a5f3fc"
+          emissiveIntensity={2.6}
           metalness={0.1}
-          roughness={0.25}
+          roughness={0.2}
           toneMapped={false}
         />
       </mesh>
+
+      {/* ---- 外溢辉光：程序化假泛光，让水晶"在发光"而非"是亮的" ---- */}
+      <GlowHalo3D color="#22d3ee" scale={5.4} opacity={0.9} falloff={2.2} pulse pulsePeriod={3.4} />
+      <GlowHalo3D color="#a5f3fc" scale={2.4} opacity={0.95} falloff={2.8} pulse pulsePeriod={2.1} />
 
       {/* ---- 底部刻度全息圆环：双环轮廓 + 24 径向刻度齿（贴地投影，缓慢自转）。
          【几何推导】ringGroupRef 只承担绕世界 Y 的慢转（刻度扫过 = 巡检隐喻）；
@@ -265,17 +305,28 @@ export default function MasterNode3D() {
         ))}
       </group>
 
-      {/* ---- 悬浮铭牌（drei Html 契约：center + distanceFactor=15 +
-         zIndexRange=[10,0] + pointer-events-none，永不遮挡抽屉/Modal） ---- */}
-      <Html position={[0, 1.75, 0]} center distanceFactor={15} zIndexRange={[10, 0]} className="pointer-events-none">
+      {/*
+       * 铭牌：从"悬浮在晶石上方"改为"贴地单行"（对标图二）。
+       *
+       * 【两个问题一起修】
+       * 1. 原位置 [0, 1.75, 0] 悬在晶石身上方，与主体抢视觉重心；
+       * 2. 内部两个 span 是纵向 flex + 宽字距，在窄容器里被压成
+       *    「CONTROL / PLANE / API- / SERVER」四行竖排断词（图一实拍确认）。
+       *
+       * 现改为：位置下移到地面 [0, 0.42, 2.25]（朝相机侧探出，不遮晶石），
+       * 横向单行排列，且加 `whitespace-nowrap` 强制不断词。
+       */}
+      <Html position={[0, 0.42, 2.25]} center distanceFactor={14} zIndexRange={[10, 0]} className="pointer-events-none">
         <div
           className={cn(
-            'flex flex-col items-center gap-0.5 rounded border border-cyan-400/40 bg-slate-950/85 px-2.5 py-1 backdrop-blur-sm transition-colors',
-            emphasized && 'border-cyan-400/80 shadow-glow-cyan',
+            'flex items-center gap-1.5 whitespace-nowrap rounded border px-2 py-0.5 backdrop-blur-sm transition-colors',
+            emphasized
+              ? 'border-cyan-400/70 bg-slate-950/90 shadow-glow-cyan'
+              : 'border-cyan-400/30 bg-slate-950/70',
           )}
         >
-          <span className="font-mono text-[10px] font-bold tracking-[0.2em] text-cyan-300">CONTROL PLANE</span>
-          <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-slate-500">API-SERVER</span>
+          <span className="font-mono text-[10px] font-bold tracking-[0.12em] text-cyan-300">控制平面</span>
+          <span className="font-mono text-[10px] tracking-wider text-slate-500">api-server</span>
         </div>
       </Html>
     </group>
