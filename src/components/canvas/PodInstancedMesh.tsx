@@ -54,21 +54,15 @@ import { MAX_PODS, telemetryTransientRef } from '@/store/useTelemetryRef';
 import type { PodStatus } from '@/types/cluster';
 import type { PodHoverLabelData, PodStatusBadgeStyle } from '@/types/canvas';
 import type { ClusterState, SelectedEntityType, StatusFilter } from '@/types/store';
-import { POD_BOX_HEIGHT, getPodWorldTransform } from '@/utils/spatialLayout';
+import { POD_BOX_SIZE, POD_SEAT_OFFSET_Y, getPodWorldTransform } from '@/utils/spatialLayout';
 
 /* ========================================================================== */
 /* 模块级常量与预计算表（加载期一次求值，SSR 安全——纯数学无 window/three 运行时）   */
 /* ========================================================================== */
 
-/** Pod 可视盒尺寸 [宽, 高, 深]（契约指定值；高 0.38 < 契约盒高 0.92） */
-const POD_BOX_SIZE: readonly [number, number, number] = [0.52, 0.38, 0.52];
-
-/**
- * 落座 Y 偏移（世界单位）：可视盒中心相对槽位中心的下移量。
- * = 可视盒高/2 − 契约盒高/2 = 0.19 − 0.46 = −0.27，
- * 使「契约盒底面」精确落在隔板顶面上（推导见文件头与 spatialLayout JSDoc）。
- */
-const POD_SEAT_OFFSET_Y = POD_BOX_SIZE[1] / 2 - POD_BOX_HEIGHT / 2;
+/* 说明：POD_BOX_SIZE 与 POD_SEAT_OFFSET_Y 已上提至 spatialLayout.ts
+   作为渲染契约的单一事实源——SelectionBeacon3D 需要同一组尺寸与偏移
+   才能把选中框严丝合缝地套在方块上。严禁在此重新定义局部副本。 */
 
 /** 状态色常量（模块级预分配，useFrame 内只读，零 Color 构造） */
 const COLOR_RUNNING = new THREE.Color('#10b981'); // 翠绿：Running 正常态

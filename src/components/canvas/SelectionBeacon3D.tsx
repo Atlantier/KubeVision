@@ -19,12 +19,12 @@
  *   不触发任何组件重渲染。
  */
 
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
 import { useClusterStore } from '@/store/useClusterStore';
-import { getPodWorldTransform } from '@/utils/spatialLayout';
+import { POD_BOX_SIZE, POD_SEAT_OFFSET_Y, getPodWorldTransform } from '@/utils/spatialLayout';
 import type { PodEntity } from '@/types/cluster';
 import type { SelectedEntityType } from '@/types/store';
 
@@ -71,20 +71,73 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
   const selectedEntityType = useClusterStore((s): SelectedEntityType | null => s.selectedEntityType);
   const pods = useClusterStore((s): readonly PodEntity[] => s.snapshotSummary.pods);
 
-  /* 定位目标 Pod 并解算其槽位世界坐标（仅选中变化时重算） */
+  /**
+   * 【定位目标 Pod 并解算其槽位世界坐标】
+   *
+   * 【关键：必须叠加 POD_SEAT_OFFSET_Y】此前直接用 transform.position 作为
+   * 信标中心，漏掉了渲染器为「让方块底面贴合隔板」而施加的下沉偏移
+   * （POD_SEAT_OFFSET_Y = 可视盒高/2 − 契约盒高/2，当前为 −0.18）。
+   * 结果是选中 Pod 时呼吸线框悬在方块正上方约 0.18 世界单位处，
+   * 肉眼可见的错位——实测确认后修复。
+   *
+   * 依赖只放 selectedEntityId / selectedEntityType / pods 三者，
+   * 避免遥测高频字段（cpu/mem）变化触发重算。
+   */
   const anchor = useMemo((): { position: [number, number, number]; rotationY: number } | null => {
     if (selectedEntityType !== 'pod' || selectedEntityId === null) return null;
     const pod = pods.find((p): boolean => p.id === selectedEntityId);
     if (pod === undefined) return null;
 
     const transform = getPodWorldTransform(pod.rackIndex, pod.slotIndex);
-    return { position: transform.position, rotationY: transform.rotationY };
+    return {
+      position: [
+        transform.position[0],
+        transform.position[1] + POD_SEAT_OFFSET_Y,
+        transform.position[2],
+      ],
+      rotationY: transform.rotationY,
+    };
   }, [selectedEntityType, selectedEntityId, pods]);
 
   /* ---- 预分配动画对象引用 ---- */
   const groupRef = useRef<THREE.Group>(null);
   const ringRef = useRef<THREE.Mesh>(null);
   const boxRef = useRef<THREE.LineSegments>(null);
+
+  /**
+   * 【修复：几何体内存泄漏】
+   *
+   * 此前写作 `<edgesGeometry args={[new THREE.BoxGeometry(0.42, 0.5, 0.42)]} />`
+   * —— `new THREE.BoxGeometry(...)` 位于 JSX 渲染体内，每次重渲染都会
+   * 在堆上创建一个新的 BoxGeometry，且其 .dispose() 从未被调用。
+   *
+   * 本组件订阅 snapshotSummary.pods（1Hz 快照流），因此**每秒泄漏一个
+   * BoxGeometry**——长时间运行会持续累积 GPU 缓冲，违反 AGENTS.md 第 3 条。
+   *
+   * 修复：在 useMemo 中一次性创建（空依赖 → 组件生命周期内仅一份），
+   * 并在卸载时显式 dispose（BoxGeometry 与由其派生的 EdgesGeometry 都要）。
+   * 尺寸跟随 POD_BOX_SIZE 外扩 0.08，让包围框恰好包住新尺寸的方块。
+   */
+  const { boxGeometry, edgesGeometry } = useMemo((): {
+    boxGeometry: THREE.BoxGeometry;
+    edgesGeometry: THREE.EdgesGeometry;
+  } => {
+    const pad = 0.08;
+    const box = new THREE.BoxGeometry(
+      POD_BOX_SIZE[0] + pad,
+      POD_BOX_SIZE[1] + pad,
+      POD_BOX_SIZE[2] + pad,
+    );
+    return { boxGeometry: box, edgesGeometry: new THREE.EdgesGeometry(box) };
+  }, []);
+
+  /* 卸载时释放 GPU 资源（EdgesGeometry 与源 BoxGeometry 各自持有缓冲） */
+  useEffect((): (() => void) => {
+    return (): void => {
+      edgesGeometry.dispose();
+      boxGeometry.dispose();
+    };
+  }, [boxGeometry, edgesGeometry]);
 
   useFrame((state): void => {
     if (anchor === null) return;
@@ -153,11 +206,11 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
       </mesh>
 
       {/*
-       * 线框包围盒：BoxGeometry 的 EdgesGeometry 只保留 12 条棱，
-       * 比实体半透明包围盒更"仪表化"，且三角形数个位数。
+       * 线框包围盒：EdgesGeometry 只保留 12 条棱，比实体半透明包围盒更
+       * "仪表化"，且三角形数个位数。几何体已上提到 useMemo 并配 dispose，
+       * 不再随每秒快照重渲染泄漏。
        */}
-      <lineSegments ref={boxRef} raycast={(): void => undefined}>
-        <edgesGeometry args={[new THREE.BoxGeometry(0.42, 0.5, 0.42)]} />
+      <lineSegments ref={boxRef} geometry={edgesGeometry} raycast={(): void => undefined}>
         <lineBasicMaterial color={BEACON_COLOR} transparent opacity={0.75} toneMapped={false} />
       </lineSegments>
 
