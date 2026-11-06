@@ -42,6 +42,7 @@ import { CheckCircle2, Loader2, ShieldAlert, Terminal, Wrench } from 'lucide-rea
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import type { ActionConfirmProps, RemediationActionType } from '@/types/ai';
+import type { SelectedEntityType } from '@/types/store';
 
 /* ========================================================================== */
 /* 常量                                                                       */
@@ -90,6 +91,9 @@ export default function ActionConfirm({
 }: ActionConfirmProps) {
   const healEntity = useClusterStore((s): ((targetId: string, actionType: string) => void) => s.healEntity);
   const appendTerminalLog = useClusterStore((s): ((line: string) => void) => s.appendTerminalLog);
+  const selectEntity = useClusterStore(
+    (s): ((entityId: string | null, entityType?: SelectedEntityType | null) => void) => s.selectEntity,
+  );
 
   /** 高危确认勾选态（非高危动作恒为 true，无需勾选） */
   const [acknowledged, setAcknowledged] = useState<boolean>(!isHighRisk);
@@ -121,14 +125,18 @@ export default function ActionConfirm({
    * 4. 追加 [MCP-ROUTER] 审计行——记录本次「经 MCP 路由调用工具」的
    *    协议级事实（与步骤 3 中 store 写的 [KUBE-CONTROLLER] 控制器行互补：
    *    前者说「谁调用了什么工具」，后者说「控制器执行结果如何」）；
-   * 5. 转入 done 态，最后回调 onActionExecuted 向上冒泡。
+   * 5. **selectEntity 引导 3D 相机聚焦到被修复实体**——这是「对话 → 空间」
+   *    的反向联动：用户在聊天流里修好了一个 Pod，左侧画布立刻飞过去展示
+   *    修复结果。若不聚焦，用户可能完全不知道"我修的是哪一台"，
+   *    自愈就变成了一个抽象的按钮，而非可验证的空间事件；
+   * 6. 转入 done 态，最后回调 onActionExecuted 向上冒泡。
    *
    * 【为何延迟 600ms 再调用 healEntity】这不是无意义的等待：
    * 它给用户一个「操作已受理、正在执行」的确定反馈，且在此期间按钮禁用，
    * 彻底杜绝连点造成的重复自愈与免疫窗口误触发。
    *
-   * 【回调顺序保证】onActionExecuted 放在 healEntity 与日志之后调用，
-   * 确保父级收到回调时 store 与终端已是最新状态，避免「回调读到旧值」。
+   * 【回调顺序保证】onActionExecuted 放在 healEntity、日志与 selectEntity
+   * 之后调用，确保父级收到回调时 store 与终端已是最新状态，避免「回调读到旧值」。
    */
   const handleExecute = useCallback((): void => {
     if (phase !== 'idle') return;
@@ -150,11 +158,23 @@ export default function ActionConfirm({
         `[MCP-ROUTER] Invoked mcp://k8s-cluster/tools/${actionType} -> Target ${targetId} healed`,
       );
 
-      /* ---- 步骤 5：切换成功态并向上冒泡回调 ---- */
+      /* ---- 步骤 5：引导 3D 相机聚焦被修复实体 ---- *
+       * 【实体类型推导】actionType 决定目标性质：
+       * drain_node → 节点；restart_pod / scale_deployment → Pod。
+       * 传给 selectEntity 的第二个参数让 CameraRig 能用正确的特写机位
+       * （节点是机架远景，Pod 是实例近景），而不是统一按一种方式聚焦。
+       *
+       * 【顺序】必须在 healEntity 之后：CameraRig 的 focus effect 依赖
+       * selectedEntityId 变化，而此时快照已更新为愈合态，
+       * 相机飞过去看到的就是"已修复"的绿色实例——时序上因果正确。 */
+      const entityType: SelectedEntityType = actionType === 'drain_node' ? 'node' : 'pod';
+      selectEntity(targetId, entityType);
+
+      /* ---- 步骤 6：切换成功态并向上冒泡回调 ---- */
       setPhase('done');
       onActionExecuted?.(targetId, actionType);
     }, EXECUTION_ANIMATION_MS);
-  }, [acknowledged, actionType, appendTerminalLog, healEntity, isHighRisk, onActionExecuted, phase, targetId]);
+  }, [acknowledged, actionType, appendTerminalLog, healEntity, isHighRisk, onActionExecuted, phase, selectEntity, targetId]);
 
   const isExecuting = phase === 'executing';
   const isDone = phase === 'done';

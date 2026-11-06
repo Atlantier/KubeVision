@@ -490,6 +490,25 @@ export interface CopilotMessage {
   readonly engine?: 'llm' | 'simulator';
   /** 是否仍在流式接收（true → 显示打字光标与"思考中"指示） */
   readonly isStreaming: boolean;
+  /**
+   * 是否为失败消息（请求中断/异常）。
+   *
+   * 【用途】气泡据此渲染「一键重试」降级提示框。刻意与 isStreaming 分开：
+   * 流结束（isStreaming=false）既可能是成功也可能是失败，二者语义不同，
+   * 混用一个布尔会让"正常结束"和"异常中断"在 UI 上无法区分。
+   */
+  readonly failed?: boolean;
+  /** 失败消息对应的原始 prompt（重试时复用，避免用户重打） */
+  readonly failedPrompt?: string;
+  /**
+   * 是否为自愈验证摘要消息（绿色系统级消息）。
+   *
+   * 【为何单独标记】这类消息不是 LLM 生成的对话内容，而是前端在
+   * healEntity 完成后从真实快照里读出结果拼成的**系统回执**。
+   * 视觉上以翠绿边框区分，语义上与模型回答明确分离——
+   * 用户需要一眼看出"这是系统确认的事实"而非"AI 说的话"。
+   */
+  readonly isVerification?: boolean;
 }
 
 /**

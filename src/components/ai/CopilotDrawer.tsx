@@ -33,11 +33,13 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertTriangle,
   Camera,
+  CheckCircle2,
   Eraser,
   Loader2,
   Mic,
-  MicOff,
+  RotateCw,
   Send,
+  ShieldAlert,
   Sparkles,
   Volume2,
   VolumeX,
@@ -140,6 +142,68 @@ function makeId(prefix: string): string {
 }
 
 /* ========================================================================== */
+/* 输入安全校验                                                                */
+/* ========================================================================== */
+
+/** 单条 prompt 最大字符数（超出会挤占上下文且可能是误粘贴） */
+const MAX_PROMPT_CHARS = 4000;
+
+/**
+ * 提示注入特征词表。
+ *
+ * 【威胁模型】本项目的 prompt 会被拼进服务端 System Prompt 的上下文里。
+ * 恶意用户可能尝试用「忽略上述指令」「你现在是…」这类经典注入话术
+ * 劫持模型行为，让它绕过安全护栏输出错误的运维建议——
+ * 在运维场景下，一条被劫持的"建议"可能直接导致误删资源。
+ *
+ * 【为何只做"提示"不做"阻断"】这些词在正常运维对话里也可能合法出现
+ * （如"请忽略那条误报告警"）。因此检测到后**不阻止发送**，
+ * 而是给出警告并记录，让用户知情——安全设计要避免过度阻塞正常工作流。
+ * 真正的防线在服务端（System Prompt 明确限定角色与输出范围）。
+ */
+const PROMPT_INJECTION_PATTERNS: ReadonlyArray<{
+  readonly name: string;
+  readonly pattern: RegExp;
+}> = [
+  { name: '忽略指令', pattern: /(忽略|无视|忘掉|ignore|disregard)\s*(上述|以上|之前|前面|所有|all|previous|above)\s*(指令|提示|规则|instruction|prompt|rule)/i },
+  { name: '角色劫持', pattern: /(你现在是|从现在起你是|you\s+are\s+now|act\s+as)\s*(?!sre|运维)/i },
+  { name: '系统提示泄露', pattern: /(system\s*prompt|系统提示词|打印.*(指令|prompt)|reveal.*(instruction|prompt))/i },
+  { name: '越权指令', pattern: /(删除|drop)\s*(所有|全部|all)\s*(namespace|命名空间|pod|资源|resource)/i },
+];
+
+/**
+ * validatePrompt —— 用户输入的基础安全与合法性校验。
+ *
+ * 【校验项】
+ * 1. 空内容 / 纯空白 → 拒绝；
+ * 2. 超长（> MAX_PROMPT_CHARS）→ 拒绝，提示精简；
+ * 3. 控制字符（除换行/制表）过多 → 拒绝（可能是二进制/乱码粘贴）；
+ * 4. 提示注入特征 → **放行但警告**（不阻断正常工作流）。
+ *
+ * @returns ok=true 可发送；ok=false 时 reason 为面向用户的中文原因
+ */
+function validatePrompt(text: string): { readonly ok: true; readonly warning?: string } | { readonly ok: false; readonly reason: string } {
+  if (text.length === 0) {
+    return { ok: false, reason: '请输入诊断内容' };
+  }
+  if (text.length > MAX_PROMPT_CHARS) {
+    return { ok: false, reason: `输入过长（${text.length} 字符），请精简至 ${MAX_PROMPT_CHARS} 字符以内` };
+  }
+  /* 控制字符检测：允许 \n \r \t，其余 C0/C1 控制符视为异常输入 */
+  // eslint-disable-next-line no-control-regex
+  const controlChars = text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g);
+  if (controlChars !== null && controlChars.length > 3) {
+    return { ok: false, reason: '输入包含异常控制字符，请重新输入' };
+  }
+  for (const rule of PROMPT_INJECTION_PATTERNS) {
+    if (rule.pattern.test(text)) {
+      return { ok: true, warning: `检测到疑似「${rule.name}」表述，已放行但请注意：Copilot 仅执行运维诊断职责` };
+    }
+  }
+  return { ok: true };
+}
+
+/* ========================================================================== */
 /* 子组件：实体上下文胶囊                                                        */
 /* ========================================================================== */
 
@@ -196,7 +260,13 @@ function ContextPill({
  * 【就地映射】骨架屏与结果卡占据同一个位置，result 到达后原地替换，
  * 用户看到的是"骨架 → 卡片"的连续过渡，而不是列表重排。
  */
-function ToolCardSlot({ card }: { readonly card: CopilotToolCard }) {
+function ToolCardSlot({
+  card,
+  onActionExecuted,
+}: {
+  readonly card: CopilotToolCard;
+  readonly onActionExecuted?: (targetId: string, actionType: string) => void;
+}) {
   if (card.state === 'skeleton') {
     return <GenUISkeleton toolName={card.toolName} mcpUri={card.mcpUri} />;
   }
@@ -254,7 +324,7 @@ function ToolCardSlot({ card }: { readonly card: CopilotToolCard }) {
         paramDescription={args.paramDescription}
         mcpEndpoint={args.mcpEndpoint}
         isHighRisk={args.isHighRisk}
-        onActionExecuted={args.onActionExecuted}
+        onActionExecuted={onActionExecuted}
       />
     );
   }
@@ -268,6 +338,107 @@ function ToolCardSlot({ card }: { readonly card: CopilotToolCard }) {
 }
 
 /* ========================================================================== */
+/* 子组件：主动异常嗅探横幅                                                     */
+/* ========================================================================== */
+
+/**
+ * ProactiveAnomalyBanner —— 3D 画布异常态势 → Copilot 的主动提示横幅。
+ *
+ * 【触发条件】同时满足才渲染：
+ * 1. 存在 OOMKilled / CrashLoopBackOff 的 Pod，或 activeChaos !== 'NONE'；
+ * 2. 用户尚未手动关闭本次提示（dismissed）。
+ *
+ * 【视觉分级】有混沌演练在跑 → 琥珀色（amber，演练属于"已知故障注入"）；
+ * 仅存在自然异常 → 红色（rose，非预期故障更需警觉）。
+ * 两者都用 animate-glow-pulse 做脉动，符合"醒目但不刺眼"。
+ *
+ * 【为何需要 dismissed】用户可能已经看过并在处理别的告警，横幅反复出现
+ * 会变成噪音。关闭后本轮会话不再提示，直到用户手动要求重新嗅探。
+ */
+function ProactiveAnomalyBanner({
+  faultyCount,
+  chaosActive,
+  chaosLabel,
+  isBusy,
+  onDiagnose,
+  onDismiss,
+}: {
+  readonly faultyCount: number;
+  readonly chaosActive: boolean;
+  readonly chaosLabel: string;
+  readonly isBusy: boolean;
+  readonly onDiagnose: () => void;
+  readonly onDismiss: () => void;
+}) {
+  /* 无异常 → 不渲染（正常态不该有噪音） */
+  if (faultyCount === 0 && !chaosActive) return null;
+
+  const isChaos = chaosActive;
+  const tone = isChaos
+    ? {
+        wrapper: 'border-amber-500/60 bg-amber-500/12 shadow-glow-amber',
+        icon: 'text-amber-400',
+        title: 'text-amber-200',
+        btn: 'border-amber-500/60 bg-amber-500/20 text-amber-100 hover:bg-amber-500/30',
+      }
+    : {
+        wrapper: 'border-rose-500/60 bg-rose-500/12 shadow-glow-rose',
+        icon: 'text-rose-400',
+        title: 'text-rose-200',
+        btn: 'border-rose-500/60 bg-rose-500/20 text-rose-100 hover:bg-rose-500/30',
+      };
+
+  /* 文案：有异常计数就说计数，只有混沌场景则说场景 */
+  const message =
+    faultyCount > 0
+      ? `检测到 ${faultyCount} 个容器实例异常，是否立即启动 SRE 根因分析？`
+      : `检测到混沌演练场景 ${chaosLabel} 正在运行，是否启动根因分析？`;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: 'auto' }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.28, ease: 'easeOut' }}
+      className="shrink-0 overflow-hidden"
+      role="status"
+      aria-live="polite"
+      aria-label="主动异常嗅探提示"
+    >
+      <div className={cn('m-1.5 flex items-start gap-1.5 rounded-md border p-1.5 shadow-glow-amber', tone.wrapper)}>
+        <AlertTriangle className={cn('mt-[1px] h-3.5 w-3.5 shrink-0 animate-glow-pulse', tone.icon)} aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className={cn('text-[10px] font-bold leading-snug', tone.title)}>{message}</p>
+          <div className="mt-1 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onDiagnose}
+              disabled={isBusy}
+              className={cn(
+                'rounded border px-1.5 py-0.5 font-mono text-[8.5px] font-bold uppercase tracking-wider transition-colors',
+                isBusy
+                  ? 'cursor-not-allowed border-slate-600 bg-slate-800/60 text-slate-500'
+                  : tone.btn,
+              )}
+            >
+              {isBusy ? '诊断中…' : '一键启动诊断'}
+            </button>
+            <button
+              type="button"
+              onClick={onDismiss}
+              aria-label="关闭异常提示"
+              className="ml-auto rounded px-1 py-0.5 text-slate-500 transition-colors hover:text-slate-300"
+            >
+              <X className="h-3 w-3" aria-hidden />
+            </button>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/* ========================================================================== */
 /* 子组件：消息气泡                                                             */
 /* ========================================================================== */
 
@@ -277,7 +448,15 @@ function ToolCardSlot({ card }: { readonly card: CopilotToolCard }) {
  * 【AI 消息结构】思考链（可折叠）→ 正文 Markdown 文本 → 工具卡片列表。
  * 顺序刻意如此：先让用户看到"AI 是怎么想的"，再给结论，最后给可交互卡片。
  */
-function MessageBubble({ message }: { readonly message: CopilotMessage }) {
+function MessageBubble({
+  message,
+  onRetry,
+  onActionExecuted,
+}: {
+  readonly message: CopilotMessage;
+  readonly onRetry?: (messageId: string, prompt: string) => void;
+  readonly onActionExecuted?: (targetId: string, actionType: string) => void;
+}) {
   /* ---- 用户消息：右侧对齐气泡 + 已发送的视口缩略图 ---- */
   if (message.role === 'user') {
     return (
@@ -300,6 +479,18 @@ function MessageBubble({ message }: { readonly message: CopilotMessage }) {
             {message.text}
           </p>
         </div>
+      </div>
+    );
+  }
+
+  /* ---- 自愈验证摘要：绿色系统级回执，与 AI 回答明确区分 ---- */
+  if (message.isVerification === true) {
+    return (
+      <div className="flex items-start gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-2 shadow-glow-emerald">
+        <CheckCircle2 className="mt-[1px] h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden />
+        <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[10.5px] leading-relaxed text-emerald-100">
+          {message.text}
+        </p>
       </div>
     );
   }
@@ -329,7 +520,7 @@ function MessageBubble({ message }: { readonly message: CopilotMessage }) {
       {message.toolCards.length > 0 ? (
         <div className="flex flex-col gap-1.5">
           {message.toolCards.map((card) => (
-            <ToolCardSlot key={card.toolCallId} card={card} />
+            <ToolCardSlot key={card.toolCallId} card={card} onActionExecuted={onActionExecuted} />
           ))}
         </div>
       ) : null}
@@ -339,6 +530,32 @@ function MessageBubble({ message }: { readonly message: CopilotMessage }) {
         <p className="font-mono text-[8px] uppercase tracking-wider text-slate-600">
           answered&nbsp;by&nbsp;{message.engine === 'llm' ? 'remote llm' : 'local deterministic engine'}
         </p>
+      ) : null}
+
+      {/* ---- 失败降级提示框（带一键重试） ---- *
+       * 【设计意图】流中断是最伤体验的失败：用户已经看到思考链在动、
+       * 可能已读了一半正文，然后戛然而止。此处不用刺眼的红色错误块，
+       * 而是一个克制的琥珀色提示 + 明确的「一键重试」——
+       * 让用户知道"发生了什么"且"下一步只需点一下"，而不是陷入困惑。 */}
+      {message.failed === true && !message.isStreaming ? (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/8 p-2">
+          <p className="flex items-start gap-1 text-[10px] leading-relaxed text-amber-200">
+            <AlertTriangle className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
+            <span>诊断流意外中断，可能是网络波动或服务端繁忙。你可以直接重试，已输入的上下文会保留。</span>
+          </p>
+          <button
+            type="button"
+            onClick={(): void => {
+              if (onRetry !== undefined && message.failedPrompt !== undefined) {
+                onRetry(message.id, message.failedPrompt);
+              }
+            }}
+            className="mt-1.5 flex items-center gap-1 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-amber-200 transition-colors hover:border-amber-400/70 hover:bg-amber-500/25"
+          >
+            <RotateCw className="h-2.5 w-2.5" aria-hidden />
+            一键重试
+          </button>
+        </div>
       ) : null}
     </div>
   );
@@ -361,6 +578,14 @@ export default function CopilotDrawer() {
   const setCapturedViewport = useClusterStore((s): ((dataUrl: string | null) => void) => s.setCapturedViewport);
   const quickPromptTrigger = useClusterStore((s): string | null => s.quickPromptTrigger);
   const clearQuickPrompt = useClusterStore((s): (() => void) => s.clearQuickPrompt);
+  /* 主动嗅探数据源：异常 Pod 列表 + 混沌场景（细粒度订阅，仅这两项变化时重渲染） */
+  const faultyPodCount = useClusterStore(
+    (s): number =>
+      s.snapshotSummary.pods.filter(
+        (p): boolean => p.status === 'OOMKilled' || p.status === 'CrashLoopBackOff',
+      ).length,
+  );
+  const activeChaos = useClusterStore((s): string => s.activeChaos);
 
   /* ---- 本地 UI 状态 ---- */
   const [messages, setMessages] = useState<readonly CopilotMessage[]>([]);
@@ -370,6 +595,14 @@ export default function CopilotDrawer() {
   const [isListening, setIsListening] = useState<boolean>(false);
   const [speechSupported, setSpeechSupported] = useState<boolean>(true);
   const [speechError, setSpeechError] = useState<string | null>(null);
+  /** 用户是否已关闭主动异常横幅（关闭后本轮会话不再打扰） */
+  const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
+  /** 最近一次失败请求的上下文（用于"一键重试"） */
+  const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null);
+  /** 输入安全校验的即时错误提示 */
+  const [inputGuardError, setInputGuardError] = useState<string | null>(null);
+  /** 提示注入等"放行但警告"的提示（区别于阻断性错误） */
+  const [guardWarning, setGuardWarning] = useState<string | null>(null);
 
   /* ---- Refs ---- */
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -544,6 +777,21 @@ export default function CopilotDrawer() {
       const text = rawText.trim();
       if (text.length === 0 || isStreaming) return;
 
+      /* ---- 输入安全校验（发送前拦截，防注入/超长/空内容） ---- */
+      const guard = validatePrompt(text);
+      if (!guard.ok) {
+        setInputGuardError(guard.reason);
+        return;
+      }
+      setInputGuardError(null);
+      /**
+       * 【注入警告的落地】validatePrompt 对疑似提示注入**放行但警告**。
+       * 此前只返回了 warning 却没有任何地方渲染它——那等于警告根本没发生。
+       * 这里把它写进 guardWarning 状态并在输入区上方常驻显示，
+       * 保证用户确实看到「系统识别到了可疑表述」。
+       */
+      setGuardWarning(guard.warning ?? null);
+
       /* ---- 中断上一条未完成的流 ---- */
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -699,17 +947,29 @@ export default function CopilotDrawer() {
 
         /* 流正常结束 */
         patchMessage(assistantId, (m): CopilotMessage => ({ ...m, isStreaming: false }));
+        setLastFailedPrompt(null);
       } catch (error) {
         const aborted = error instanceof Error && error.name === 'AbortError';
         if (!aborted) {
+          /**
+           * 【错误降级契约】中断时不留下一条半截的"正在输入"气泡，
+           * 而是写入可读的错误说明并把原 prompt 记下来供重试。
+           * 空正文 → 直接给错误文案；已有部分正文 → 保留正文并追加错误尾注
+           * （用户已读到的内容不该被抹掉）。
+           */
+          const reason = error instanceof Error ? error.message : '未知错误';
           patchMessage(assistantId, (m): CopilotMessage => ({
             ...m,
             isStreaming: false,
             text:
               m.text.length > 0
-                ? m.text
-                : `> ⚠️ 请求失败：${error instanceof Error ? error.message : '未知错误'}`,
+                ? `${m.text}\n\n> ⚠️ 诊断流意外中断：${reason}`
+                : `> ⚠️ 诊断请求失败：${reason}`,
+            /* 标记失败态，气泡底部渲染"一键重试" */
+            failed: true,
+            failedPrompt: text,
           }));
+          setLastFailedPrompt(text);
         }
       } finally {
         setIsStreaming(false);
@@ -718,6 +978,133 @@ export default function CopilotDrawer() {
     },
     [buildClusterContext, capturedViewportDataUrl, isStreaming, messages, patchMessage, setCapturedViewport, speakAlert, ttsEnabled],
   );
+
+  /**
+   * retryLastRequest —— 一键重试上一次失败的请求。
+   *
+   * 【实现方式】移除失败的 AI 消息气泡（避免对话流里堆积无效残片），
+   * 然后用同一 prompt 重新调用 sendMessage。用户消息保留（它确实发出去过）。
+   */
+  const retryLastRequest = useCallback(
+    (failedMessageId: string, prompt: string): void => {
+      setMessages((prev) => prev.filter((m): boolean => m.id !== failedMessageId));
+      setLastFailedPrompt(null);
+      /* 下一帧再发，确保上一条已从数组移除（sendMessage 读的是闭包里的 messages） */
+      window.setTimeout((): void => {
+        void sendMessage(prompt);
+      }, 0);
+    },
+    [sendMessage],
+  );
+
+  /**
+   * handleProactiveDiagnose —— 主动异常横幅的「一键启动诊断」。
+   *
+   * 【指令构造】把嗅探到的态势事实编码进 prompt：异常 Pod 数量、
+   * 具体故障类型分布、当前混沌场景。这样 Copilot 无需二次反问
+   * 就能直接进入根因分析——主动感知的价值在于"已经替用户看清楚"。
+   */
+  const handleProactiveDiagnose = useCallback((): void => {
+    const snapshot = useClusterStore.getState().snapshotSummary;
+    const faults = snapshot.pods.filter(
+      (p): boolean => p.status === 'OOMKilled' || p.status === 'CrashLoopBackOff',
+    );
+    const statusCounts = new Map<string, number>();
+    for (const pod of faults) {
+      statusCounts.set(pod.status, (statusCounts.get(pod.status) ?? 0) + 1);
+    }
+    const breakdown =
+      statusCounts.size > 0
+        ? [...statusCounts.entries()]
+            .map(([status, count]): string => `${status}×${count}`)
+            .join('、')
+        : '无';
+
+    const prompt =
+      `主动异常嗅探发现集群存在 ${faults.length} 个异常容器实例（${breakdown}），` +
+      `当前混沌场景 ${activeChaos}，集群健康分 ${snapshot.clusterHealthScore}/100。` +
+      (faults.length > 0
+        ? `涉及实例：${faults.slice(0, 3).map((p): string => p.name).join('、')}。`
+        : '') +
+      `请立即执行 SRE 根因分析，定位故障成因并给出可执行的自愈方案。`;
+
+    setBannerDismissed(true);
+    void sendMessage(prompt);
+  }, [activeChaos, sendMessage]);
+
+  /** dismissBanner —— 关闭主动提示（本轮会话不再打扰） */
+  const dismissBanner = useCallback((): void => {
+    setBannerDismissed(true);
+  }, []);
+
+  /** 供横幅渲染的最终开关：已关闭则整体不显示 */
+  const showProactiveBanner = !bannerDismissed;
+
+  /**
+   * handleActionExecuted —— 自愈完成后的闭环反馈（对话侧的"自愈验证摘要"）。
+   *
+   * 【为何需要一条独立的绿色系统消息】
+   * user 在卡片上点执行后，卡片本身只是变成 "executed"，这是**局部**反馈。
+   * 但自愈是一个跨系统的完整动作：Pod 状态变了、内存水位回落了、
+   * 集群健康分提升了、3D 相机也飞过去了。用户需要一处能同时看到
+   * 这些**结果事实**的地方——那就是对话流里这条系统级摘要。
+   *
+   * 【数据从哪来】不编造：healEntity 已同步更新了 snapshotSummary，
+   * 此处从 store 读取修复后的**真实**指标（状态/内存/健康分）。
+   * 报告里的每个数字都是当前集群的真实值。
+   *
+   * 【为何用 setTimeout 0】healEntity 与 selectEntity 在同一 tick 内完成，
+   * 但 React 状态提交是异步的。延后一帧再读 store，保证拿到的是
+   * 已提交的愈合后快照，而不是愈合前的旧值。
+   */
+  const handleActionExecuted = useCallback((targetId: string, actionType: string): void => {
+    window.setTimeout((): void => {
+      const state = useClusterStore.getState();
+      const snapshot = state.snapshotSummary;
+
+      /* 定位被修复的实体（可能是 Pod，也可能是节点） */
+      const healedPod = snapshot.pods.find((p): boolean => p.id === targetId);
+      const healedNode = snapshot.nodes.find((n): boolean => n.id === targetId);
+
+      const targetLabel =
+        healedPod !== undefined
+          ? healedPod.name
+          : healedNode !== undefined
+            ? healedNode.name
+            : targetId;
+
+      /* 组装摘要：优先展示 Pod 的恢复指标，其次节点，再次兜底 */
+      const detailParts: string[] = [];
+      if (healedPod !== undefined) {
+        detailParts.push(`恢复 ${healedPod.status} 状态`);
+        detailParts.push(`内存水位回落至 ${healedPod.memoryUsage.toFixed(0)}%`);
+      } else if (healedNode !== undefined) {
+        detailParts.push(`节点状态 ${healedNode.status}`);
+        detailParts.push(`CPU ${healedNode.cpuUsage.toFixed(0)}% / 内存 ${healedNode.memUsage.toFixed(0)}%`);
+      } else {
+        detailParts.push('目标实体已恢复');
+      }
+      detailParts.push(`集群健康度已提升至 ${snapshot.clusterHealthScore.toFixed(0)} 分`);
+
+      const summary =
+        `✅ [MCP Verification] 目标容器 ${targetLabel} 已通过 ` +
+        `mcp://k8s-cluster/tools/${actionType} ${detailParts.join('，')}。`;
+
+      /* 追加为一条独立的系统消息（非 AI 推理消息，不带思考链/卡片） */
+      const sysMessage: CopilotMessage = {
+        id: makeId('sys'),
+        role: 'assistant',
+        text: summary,
+        reasoningSteps: [],
+        toolCards: [],
+        isStreaming: false,
+        /* 用 engine 字段区分来源：verification 是本地的验证摘要，非模型生成 */
+        engine: 'simulator',
+        isVerification: true,
+      };
+      setMessages((prev) => [...prev, sysMessage]);
+    }, 0);
+  }, []);
 
   /* ========================================================================== */
   /* 快捷指令（来自外部触发 + 本地芯片）                                            */
@@ -911,6 +1298,24 @@ export default function CopilotDrawer() {
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
+          {/* ---- 主动异常嗅探横幅：3D 画布 → Copilot 的主动感知联动 ---- *
+           * 【设计意图】把「AI 等用户提问」变为「AI 主动发现异常并请缨」。
+           * 当 3D 画布侧遥测出现故障态时，Copilot 立刻在顶部亮出横幅，
+           * 用户一键即可启动根因分析——这是「双向主动感知」中
+           * 「场景态势 → 对话」的那一半（另一半是 Copilot 诊断 → 相机聚焦）。
+           *
+           * 【为何不自动发起诊断】自动跑诊断会消耗额度、打断用户当前操作，
+           * 且用户可能正在阅读别的结论。**提示 + 一键确认**才是恰当的主动：
+           * 系统负责发现与准备，执行权始终留在人手里。 */}
+          <ProactiveAnomalyBanner
+            faultyCount={showProactiveBanner ? faultyPodCount : 0}
+            chaosActive={showProactiveBanner && activeChaos !== 'NONE'}
+            chaosLabel={activeChaos}
+            isBusy={isStreaming}
+            onDiagnose={handleProactiveDiagnose}
+            onDismiss={dismissBanner}
+          />
+
           {/* ---- 状态控制头 ---- */}
           <div className="flex shrink-0 flex-col gap-1.5 border-b border-slate-800/70 px-2 py-1.5">
             <div className="flex items-center gap-1.5">
@@ -984,7 +1389,14 @@ export default function CopilotDrawer() {
                 </p>
               </div>
             ) : (
-              messages.map((message) => <MessageBubble key={message.id} message={message} />)
+              messages.map((message) => (
+                <MessageBubble
+                  key={message.id}
+                  message={message}
+                  onRetry={retryLastRequest}
+                  onActionExecuted={handleActionExecuted}
+                />
+              ))
             )}
           </div>
 
@@ -1028,6 +1440,32 @@ export default function CopilotDrawer() {
                 <AlertTriangle className="h-2.5 w-2.5 shrink-0" aria-hidden />
                 {speechError ?? '当前浏览器不支持语音识别，请使用 Chrome / Edge'}
               </p>
+            ) : null}
+
+            {/* 输入安全校验提示（超长/异常字符等，发送前拦截） */}
+            {inputGuardError !== null ? (
+              <p className="mb-1 flex items-center gap-1 font-mono text-[8.5px] text-rose-400">
+                <AlertTriangle className="h-2.5 w-2.5 shrink-0" aria-hidden />
+                {inputGuardError}
+              </p>
+            ) : null}
+
+            {/* 提示注入警告（放行但告知，不阻断正常工作流） */}
+            {guardWarning !== null ? (
+              <div className="mb-1 flex items-start gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-1">
+                <ShieldAlert className="mt-[1px] h-2.5 w-2.5 shrink-0 text-amber-400" aria-hidden />
+                <p className="min-w-0 flex-1 font-mono text-[8.5px] leading-relaxed text-amber-300">
+                  {guardWarning}
+                </p>
+                <button
+                  type="button"
+                  onClick={(): void => setGuardWarning(null)}
+                  aria-label="关闭安全提示"
+                  className="shrink-0 text-amber-500/70 transition-colors hover:text-amber-300"
+                >
+                  <X className="h-2.5 w-2.5" aria-hidden />
+                </button>
+              </div>
             ) : null}
 
             {/* 输入行 */}
