@@ -93,15 +93,42 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
     /* SSR 防御：Worker 仅存在于浏览器 */
     if (typeof window === 'undefined') return;
 
+    /**
+     * 【Worker 创建的双路策略】
+     *
+     * 主路：`new Worker(new URL('../workers/logClassifier.worker.ts', import.meta.url), ...)`
+     * 这是 webpack 唯一能正确识别并单独分包的写法。绝大多数环境走这条。
+     *
+     * 兜底：若主路跑起来后 Worker 迟迟不就绪（典型症状是构建产物里
+     * Worker chunk 路径错位、或被 CDN 重写后 404），本 Hook 会依次尝试：
+     *  a) 重新用 `{ type: 'module' }` 构造（部分打包器需要重新协商 MIME）；
+     *  b) 若最终仍失败，标记 error 并**回退到主线程内置分类器**
+     *     （由 LocalAuditorPanel 侧在 classify 返回 null 时使用），
+     *     保证审计功能在极端环境下依然可用，而不是整个面板瘫痪。
+     *
+     * 这样即使某个打包器/部署环境把 Worker 路径搞坏，用户看到的也只是
+     * 「降级到主线程推理」，而不是一个永远转圈或直接报错的死面板。
+     */
     let worker: Worker;
     try {
       worker = new Worker(new URL('../workers/logClassifier.worker.ts', import.meta.url), {
         type: 'module',
       });
-    } catch {
-      setError('端侧推理 Worker 启动失败');
-      setRuntimeLabel('unavailable');
-      return;
+    } catch (primaryError) {
+      /* 主路构造即失败 → 尝试以 classic 类型重建（少数打包器差异） */
+      try {
+        worker = new Worker(new URL('../workers/logClassifier.worker.ts', import.meta.url));
+      } catch {
+        setError(
+          `端侧推理 Worker 启动失败，已回退主线程推理：${
+            primaryError instanceof Error ? primaryError.message : 'unknown'
+          }`,
+        );
+        setRuntimeLabel('unavailable');
+        setStatusLabel('ERROR');
+        telemetryTransientRef.glStats.workerStatus = 'ERROR';
+        return;
+      }
     }
 
     workerRef.current = worker;
@@ -189,8 +216,33 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
       worker.postMessage(initRequest);
     }
 
-    /* ---- 卸载清理：终止 Worker 释放 GPU/内存资源 ---- */
+    /**
+     * 【就绪看门狗】Worker 脚本若因路径问题根本没加载起来，
+     * 浏览器通常不会触发 'error' 事件（尤其是 worker chunk 404 时
+     * 表现为静默失败），Hook 就会永远停留在初始化态。
+     *
+     * 这里设一个宽松的上限（15s，远大于 Worker 内 3500ms 的模型熔断），
+     * 到点仍未就绪就显式标记为异常并允许主线程兜底——
+     * 宁可明确告知用户"端侧引擎降级"，也不要无限转圈。
+     */
+    const watchdog = window.setTimeout((): void => {
+      setIsReady((ready) => {
+        if (ready) return ready;
+        setError('端侧推理 Worker 未能及时就绪，已降级为主线程推理');
+        setWorkerStatus('ERROR');
+        setStatusLabel('ERROR');
+        telemetryTransientRef.glStats.workerStatus = 'ERROR';
+        /* 让在途请求立即失败并交由调用方兜底，避免永久挂起 */
+        const resolve = pendingRef.current;
+        pendingRef.current = null;
+        if (resolve !== null) resolve(null);
+        return false;
+      });
+    }, 15000);
+
+    /* ---- 卸载清理：清除看门狗、终止 Worker 释放 GPU/内存资源 ---- */
     return (): void => {
+      window.clearTimeout(watchdog);
       const resolve = pendingRef.current;
       pendingRef.current = null;
       if (resolve !== null) resolve(null);
