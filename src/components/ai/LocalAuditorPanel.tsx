@@ -16,72 +16,26 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
-import { CheckCircle2, Eye, EyeOff, FileSearch, Loader2, ShieldCheck, Sparkles } from 'lucide-react';
+import { CheckCircle2, Cpu, Eye, EyeOff, FileSearch, Loader2, ShieldCheck, Sparkles, Zap } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
-import type { EdgeLogLabel } from '@/types/ai';
+import { useEdgeLogClassifier } from '@/hooks/useEdgeLogClassifier';
+import { sanitizeRawLog } from '@/utils/logSanitizer';
+import type { EdgeAuditResult, EdgeLogLabel, LogEntry } from '@/types/ai';
 
 /* ========================================================================== */
-/* 脱敏规则（端侧正则掩码）                                                      */
+/* 脱敏：统一委托给 src/utils/logSanitizer.ts                                    */
 /* ========================================================================== */
 
-/**
- * SENSITIVE_PATTERNS —— 敏感信息正则表。
- *
- * 【设计意图】每条规则同时给出「匹配模式」与「替换标签」，
- * 替换为语义标签（如 [REDACTED-TOKEN]）而非空串——
- * 保留"此处曾有凭证"这一事实，便于审计与后续日志分析。
- */
-const SENSITIVE_PATTERNS: ReadonlyArray<{
-  readonly name: string;
-  readonly pattern: RegExp;
-  readonly replacement: string;
-}> = [
-  {
-    name: '连接串凭证',
-    pattern: /(postgres|mysql|mongodb|redis|amqp):\/\/[^\s:@]+:[^\s@]+@/gi,
-    replacement: '$1://[REDACTED-CREDENTIAL]@',
-  },
-  {
-    name: 'Bearer Token',
-    pattern: /Bearer\s+[A-Za-z0-9\-._~+/]{16,}=*/g,
-    replacement: 'Bearer [REDACTED-TOKEN]',
-  },
-  {
-    name: 'AWS Access Key',
-    pattern: /AKIA[0-9A-Z]{16}/g,
-    replacement: '[REDACTED-AWS-KEY]',
-  },
-  {
-    name: '私钥块',
-    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-    replacement: '[REDACTED-PRIVATE-KEY]',
-  },
-  {
-    name: 'JWT',
-    pattern: /eyJ[A-Za-z0-9\-._~+/]{10,}\.[A-Za-z0-9\-._~+/]{10,}\.[A-Za-z0-9\-._~+/]{10,}/g,
-    replacement: '[REDACTED-JWT]',
-  },
-  {
-    name: '通用 password 字段',
-    pattern: /(password|passwd|pwd|secret|api[_-]?key)\s*[=:]\s*["']?[^\s"',}]{6,}/gi,
-    replacement: '$1=[REDACTED]',
-  },
-  {
-    name: '内网 IP',
-    pattern: /\b(?:10|172|192)\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g,
-    replacement: '[REDACTED-IP]',
-  },
-  {
-    name: '邮箱',
-    pattern: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
-    replacement: '[REDACTED-EMAIL]',
-  },
-];
+/* 说明：本面板原本内联维护一份 SENSITIVE_PATTERNS 正则表，现已移除。
+   脱敏规则必须**单点定义**——若面板与真正的外发路径各维护一份，
+   迟早出现「面板显示已脱敏、外发时却漏掉某类凭证」的致命不一致。
+   唯一权威源是 logSanitizer.ts，它覆盖 IPv4（含端口）、JWT/Bearer、
+   云厂商 AccessKey（AWS/阿里云/腾讯云）与邮箱，并提供幂等性保证。 */
 
 /* ========================================================================== */
-/* 端侧分类规则（规则引擎，可被 Transformers.js 推理替换）                        */
+/* 端侧分类规则（Worker 未就绪时的逐行预览兜底）                                  */
 /* ========================================================================== */
 
 /**
@@ -152,53 +106,119 @@ export default function LocalAuditorPanel() {
     (s): ((prompt: string) => void) => s.triggerQuickPrompt,
   );
 
+  /**
+   * 端侧推理 Worker（Transformers.js v3 + WebGPU/WASM）。
+   *
+   * 【架构】模型加载与推理全部在独立 Worker 线程内完成，主线程零阻塞。
+   * Hook 回传 runtime / progress / runtimeLabel，本面板据此渲染
+   * 「此刻用的是 WebGPU 还是 WASM」——性能数字脱离后端标识没有意义。
+   *
+   * 【降级】Worker 内建 3500ms 熔断：离线或镜像站不可达时自动切换到
+   * 内置确定性分类器，进度直接推至 100% Ready，界面绝不卡死。
+   */
+  const classifier = useEdgeLogClassifier(true);
+
+  /** Worker 推理结果（null 表示尚未运行） */
+  const [auditResults, setAuditResults] = useState<readonly EdgeAuditResult[] | null>(null);
+
   const [rawInput, setRawInput] = useState<string>(SAMPLE_LOGS.join('\n'));
   const [showRaw, setShowRaw] = useState<boolean>(false);
   const [audited, setAudited] = useState<boolean>(false);
   const [isAuditing, setIsAuditing] = useState<boolean>(false);
 
   /**
-   * sanitized —— 对输入执行全量脱敏。
+   * sanitized —— 对输入执行全量脱敏（调用统一脱敏器）。
    *
-   * 【核心逻辑】逐条规则对全文做 replace，统计每个匹配的替换次数
-   * 作为 maskedCount（用于隐私审计角标）。规则顺序有意义：
-   * 连接串先行（它内部含 password，若先跑通用 password 规则会破坏 URL 结构）。
+   * 【为何改用 sanitizeRawLog】脱敏规则必须**单点定义**：如果面板里再维护
+   * 一份自己的规则表，就会出现「面板认为已脱敏、而真正外发路径漏掉某项」
+   * 的致命不一致。logSanitizer.ts 是唯一权威源，此处只做逐行拆分与汇总。
    */
   const sanitized = useMemo((): { readonly text: string; readonly maskedCount: number } => {
-    let text = rawInput;
+    const lines = rawInput.split('\n');
     let maskedCount = 0;
-    for (const rule of SENSITIVE_PATTERNS) {
-      /* 用 match 计数（replace 回调里累加更直观，但需重置 lastIndex） */
-      const matches = text.match(rule.pattern);
-      if (matches !== null && matches.length > 0) {
-        maskedCount += matches.length;
-        text = text.replace(rule.pattern, rule.replacement);
-      }
+    const outLines: string[] = [];
+    for (const line of lines) {
+      const result = sanitizeRawLog(line);
+      maskedCount += result.maskedCount;
+      outLines.push(result.sanitized);
     }
-    return { text, maskedCount };
+    return { text: outLines.join('\n'), maskedCount };
   }, [rawInput]);
 
-  /** 分类结果（基于脱敏后的文本，模型永远看不到原文） */
+  /** 本地规则分类结果（仅在 Worker 未返回时作为逐行预览兜底） */
   const classification = useMemo(
     (): { readonly label: EdgeLogLabel; readonly confidence: number } => classifyLog(sanitized.text),
     [sanitized.text],
   );
 
   /**
-   * runAudit —— 执行审计。
+   * displayedClassification —— 优先展示 Worker 的端侧推理结果。
    *
-   * 【延迟的意义】端侧推理（真实场景下是 WebGPU/WASM 前向计算）需要时间；
-   * 这里用短延迟模拟该节拍，同时把 maskedCount 累加进 store 的隐私审计角标。
-   * 注：本轮为规则引擎，延迟仅用于呈现"审计中"状态。
+   * 【优先级】Worker 结果 > 本地规则预览。
+   * Worker 结果来自真实模型（或超时后的内置分类器），是本功能的正式产出；
+   * 本地规则只用于在推理完成前给用户一个即时预览，避免空白。
+   */
+  const displayedClassification = useMemo((): {
+    readonly label: EdgeLogLabel;
+    readonly confidence: number;
+    readonly latencyMs: number | null;
+  } => {
+    if (auditResults !== null && auditResults.length > 0) {
+      /* 取所有行的最高风险标签作为整批结论 */
+      const priority: Record<EdgeLogLabel, number> = {
+        CRITICAL_PANIC: 3,
+        RESOURCE_EXHAUSTED: 2,
+        NETWORK_TIMEOUT: 1,
+        NORMAL_INFO: 0,
+      };
+      let top = auditResults[0];
+      for (const r of auditResults) {
+        if (priority[r.label] > priority[top.label]) top = r;
+      }
+      return { label: top.label, confidence: top.confidence, latencyMs: top.inferenceLatencyMs };
+    }
+    return { label: classification.label, confidence: classification.confidence, latencyMs: null };
+  }, [auditResults, classification]);
+
+  /**
+   * runAudit —— 执行端侧审计（真实 Worker 推理）。
+   *
+   * 【核心流转】
+   * 1. 把脱敏后的每一行构造为 LogEntry（rawText 留本地、sanitizedText 送模型）；
+   * 2. 投递给 Worker 分类；
+   * 3. 拿到逐条结果后汇总展示，并把 maskedCount 累加进隐私审计角标。
+   *
+   * 【为何构造 LogEntry 而不是直接传字符串】Worker 的协议契约就是
+   * LogEntry[]，且该结构强制携带 sanitizedText 字段——这个类型设计本身
+   * 就在提醒调用方：**送进模型的必须是脱敏文本**。
    */
   const runAudit = useCallback((): void => {
     setIsAuditing(true);
-    window.setTimeout((): void => {
+
+    const rawLines = rawInput.split('\n').filter((l): boolean => l.trim().length > 0);
+    const logEntries: LogEntry[] = rawLines.map((rawLine, index): LogEntry => {
+      const { sanitized: clean, maskedCount } = sanitizeRawLog(rawLine);
+      return {
+        id: `edge-log-${index}`,
+        rawText: rawLine,
+        sanitizedText: clean,
+        maskedCount,
+        timestamp: Date.now(),
+        podName: 'local-audit',
+        namespace: 'edge',
+      };
+    });
+
+    void (async (): Promise<void> => {
+      const results = await classifier.classify(logEntries);
+      if (results !== null) {
+        setAuditResults(results);
+      }
       incrementMaskedSecrets(sanitized.maskedCount);
       setAudited(true);
       setIsAuditing(false);
-    }, 420);
-  }, [incrementMaskedSecrets, sanitized.maskedCount]);
+    })();
+  }, [classifier, incrementMaskedSecrets, rawInput, sanitized.maskedCount]);
 
   /**
    * escalateToCopilot —— 把端侧审计结论上报给 AI Copilot 做进一步根因分析。
@@ -228,8 +248,6 @@ export default function LocalAuditorPanel() {
     triggerQuickPrompt(prompt);
   }, [classification.confidence, classification.label, sanitized.maskedCount, sanitized.text, triggerQuickPrompt]);
 
-  const labelMeta = LABEL_META[classification.label];
-
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 p-2">
       {/* ---- 头部：隐私说明 + 累计脱敏角标 ---- */}
@@ -244,6 +262,47 @@ export default function LocalAuditorPanel() {
         <p className="mt-1 font-mono text-[8.5px] uppercase tracking-wider text-emerald-400/80">
           total&nbsp;masked&nbsp;secrets:&nbsp;{totalMaskedSecrets}
         </p>
+
+        {/* ---- 运行时后端 + 模型加载进度（真实回传，非猜测） ---- */}
+        <div className="mt-1.5 flex items-center gap-1 rounded border border-slate-700/70 bg-slate-800/40 px-1.5 py-1">
+          {classifier.runtime === 'webgpu' ? (
+            <Zap className="h-2.5 w-2.5 shrink-0 text-amber-400" aria-hidden />
+          ) : (
+            <Cpu className="h-2.5 w-2.5 shrink-0 text-cyan-400" aria-hidden />
+          )}
+          <span
+            className="min-w-0 flex-1 truncate font-mono text-[8px] uppercase tracking-wider text-slate-300"
+            title={classifier.modelName}
+          >
+            {classifier.runtimeLabel}
+          </span>
+          {classifier.isFallback ? (
+            <span className="shrink-0 rounded border border-amber-500/40 bg-amber-500/15 px-1 py-0.5 font-mono text-[7.5px] font-bold uppercase text-amber-300">
+              builtin
+            </span>
+          ) : null}
+          <span className="shrink-0 font-mono text-[8px] tabular-nums text-slate-500">
+            {classifier.progress}%
+          </span>
+        </div>
+        {/* 加载进度条（仅在未就绪时显示，避免就绪后占位） */}
+        {!classifier.isReady ? (
+          <div className="mt-1 h-0.5 overflow-hidden rounded-full bg-slate-800">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-400 transition-[width] duration-300"
+              style={{ width: `${classifier.progress}%` }}
+              role="progressbar"
+              aria-valuenow={classifier.progress}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="端侧模型加载进度"
+            />
+          </div>
+        ) : null}
+        {/* Worker 错误提示 */}
+        {classifier.error !== null ? (
+          <p className="mt-1 font-mono text-[7.5px] text-rose-400">{classifier.error}</p>
+        ) : null}
       </div>
 
       {/* ---- 原始/脱敏切换 ---- */}
@@ -285,7 +344,7 @@ export default function LocalAuditorPanel() {
           </pre>
         </div>
 
-        {/* ---- 分类结果 ---- */}
+        {/* ---- 分类结果（端侧推理产出） ---- */}
         {audited ? (
           <div className="shrink-0 rounded border border-slate-800 bg-slate-900/60 p-1.5">
             <p className="font-mono text-[8px] uppercase tracking-wider text-slate-600">
@@ -295,18 +354,26 @@ export default function LocalAuditorPanel() {
               <span
                 className={cn(
                   'rounded border px-1.5 py-0.5 font-mono text-[9px] font-bold',
-                  labelMeta.className,
+                  LABEL_META[displayedClassification.label].className,
                 )}
               >
-                {labelMeta.text}
+                {LABEL_META[displayedClassification.label].text}
               </span>
               <span className="font-mono text-[9px] tabular-nums text-slate-400">
-                {(classification.confidence * 100).toFixed(0)}%
+                {(displayedClassification.confidence * 100).toFixed(0)}%
               </span>
+              {/* 端侧推理耗时（保留两位小数，契约要求） */}
+              {displayedClassification.latencyMs !== null ? (
+                <span className="font-mono text-[8.5px] tabular-nums text-cyan-400/80">
+                  {displayedClassification.latencyMs.toFixed(2)}ms
+                </span>
+              ) : null}
               <CheckCircle2 className="ml-auto h-3 w-3 text-emerald-400" aria-hidden />
             </div>
             <p className="mt-1 font-mono text-[8px] uppercase tracking-wider text-slate-600">
-              label:&nbsp;{classification.label}
+              {/* 必须与上方徽标同源：否则会出现「徽标显示资源耗尽、
+                  label 行却写 CRITICAL_PANIC」的自相矛盾（实测发现） */}
+              label:&nbsp;{displayedClassification.label}
             </p>
 
             {/*

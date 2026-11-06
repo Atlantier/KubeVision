@@ -1,0 +1,22 @@
+feat(edge-ai): on-device privacy sanitizer and Transformers.js WebGPU/WASM log classifier
+
+- src/utils/logSanitizer.ts: synchronous zero-latency PII masking with five ordered rules — URL-embedded credentials, cloud AccessKeys (AWS AKIA/ASIA/AGPA/AIDA/AROA, Aliyun LTAI, Tencent AKID), JWT and Bearer tokens, IPv4 with optional port, and email. Replacements are semantic placeholders ([REDACTED_IP], [MASKED_TOKEN], [MASKED_KEY], [REDACTED_CREDENTIAL], [REDACTED_EMAIL]) rather than deletions, so log structure survives and auditors can see that something was masked. Idempotent: re-running over sanitized text masks nothing.
+
+- src/workers/logClassifier.worker.ts: real WebGPU capability detection via 'gpu' in navigator, reported to the main thread as 'WebGPU Hardware Accelerated' or 'WebAssembly SIMD' on every progress message so the HUD never has a blank window. Dynamically imports @huggingface/transformers inside the worker with allowLocalModels=false and remoteHost=https://hf-mirror.com/, builds a feature-extraction pipeline for Xenova/all-MiniLM-L6-v2 with dtype q8 on the detected device, and streams download progress from 0-90% leaving the last 10% for readiness.
+
+- 3500ms Promise.race circuit breaker: if weight download is slow, offline, or the mirror is unreachable, the worker immediately falls back to a built-in weighted-feature classifier and pushes progress to 100% Ready. The worst failure mode for a loading UI is not an error but an indefinite spinner, so the breaker converts an unbounded wait into a graceful, invisible degradation. The fallback is honestly labelled builtin=true rather than pretending a network ran.
+
+- Inference returns the four-state label, a confidence mapped into [0.85, 0.99] (0.85 floor because this is a closed four-class problem with domain-specialised features; 0.99 ceiling because no heuristic should claim certainty), and a real performance.now() latency rounded to two decimals.
+
+- src/hooks/useEdgeLogClassifier.ts: wraps worker lifecycle using new Worker(new URL(..., import.meta.url), { type: 'module' }) — the only form webpack will bundle into a separate chunk. Serialises batches so results cannot be mismatched, and terminates the worker on unmount to release GPU memory.
+
+- LocalAuditorPanel now delegates masking to logSanitizer (single source of truth) and runs classification through the worker, surfacing the runtime backend, model name, load progress and the honesty marker when running on the fallback.
+
+- Fixed three real defects found only by running it:
+  (1) webpack failed to build the worker with "Module not found: Can't resolve './'" because transformers does a dynamic import of './' for Node-only native binding probing — resolved with a targeted IgnorePlugin;
+  (2) the sanitizer did not cover credentials embedded in connection URLs, so a postgres://admin:PASSWORD@db.internal connection string leaked the password in plaintext — added a highest-priority rule that consumes the credential segment before the IP rule can fragment the URL;
+  (3) the classification badge and the label line read from different sources, showing one label next to a different one — both now derive from a single value.
+
+- Also suppressed one known-harmless transformers warning about import.meta via a narrowly scoped ignoreWarnings entry rather than disabling warnings globally.
+
+- Verified: tsc/lint/build all exit 0 with a warning-free build; 33 sanitizer assertions (all mandated categories, three cloud providers, combined log line masking 4 fields, idempotency, structural preservation, no semver false positives) and 16 worker assertions on a real headless Edge with WebGPU enabled, confirming the runtime label reaching the UI, readiness inside the breaker window, a CRITICAL_PANIC classification at 0.99 confidence with a two-decimal latency, and the DB password redacted to postgres://[REDACTED_CREDENTIAL]@db.internal

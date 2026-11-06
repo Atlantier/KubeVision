@@ -560,6 +560,85 @@ export interface SpeechRecognitionWindow {
 }
 
 /* ========================================================================== */
+/* 端侧 Worker 消息协议（主线程 ↔ logClassifier.worker）                         */
+/* ========================================================================== */
+
+/**
+ * ClassifierRuntime —— 端侧推理运行时后端标识。
+ *
+ * 【语义】WebGPU 走独立显卡/集成显卡的并行算力；WASM SIMD 走 CPU 的
+ * 128 位向量指令。前者通常快 3~10 倍，但并非所有浏览器/设备都支持。
+ * 这个值会实时回显到性能 HUD，让用户明确知道「此刻用的是哪个后端」——
+ * 性能数字脱离后端标识是没有意义的。
+ */
+export type ClassifierRuntime = 'webgpu' | 'wasm';
+
+/** 主线程 → Worker 的分类请求消息 */
+export interface ClassifierClassifyRequest {
+  readonly type: 'classify';
+  /** 待分类的日志条目（sanitizedText 是唯一合法输入） */
+  readonly logs: readonly LogEntry[];
+}
+
+/** 主线程 → Worker 的初始化请求消息 */
+export interface ClassifierInitRequest {
+  readonly type: 'init';
+}
+
+/** 主线程 → Worker 的全部请求消息 */
+export type ClassifierRequest = ClassifierClassifyRequest | ClassifierInitRequest;
+
+/**
+ * Worker → 主线程的模型加载进度消息。
+ *
+ * 【runtime 字段】每次进度回传都带上运行时标识，而不是只在 ready 时给一次：
+ * 前端 HUD 可能在任意时刻挂载并开始监听，每条消息都自解释才不会有空白期。
+ * runtimeLabel 是给用户看的中文/英文可读串
+ * （'WebGPU Hardware Accelerated' / 'WebAssembly SIMD'）。
+ */
+export interface ClassifierProgressMessage {
+  readonly type: 'progress';
+  /** 加载进度 0~100 */
+  readonly progress: number;
+  /** 运行时后端 */
+  readonly runtime: ClassifierRuntime;
+  /** 运行时可读标签（HUD 直接展示） */
+  readonly runtimeLabel: string;
+  /** 模型名（含降级时切换为内置分类器的标识） */
+  readonly modelName: string;
+}
+
+/** Worker → 主线程：模型就绪（或已降级为内置分类器） */
+export interface ClassifierReadyMessage {
+  readonly type: 'ready';
+  readonly runtime: ClassifierRuntime;
+  readonly runtimeLabel: string;
+  readonly modelName: string;
+  /** 是否使用了内置降级分类器（true 表示外部模型不可用） */
+  readonly fallback: boolean;
+}
+
+/** Worker → 主线程：单条日志的分类结果 */
+export interface ClassifierResultMessage {
+  readonly type: 'result';
+  /** 逐条分类结果（与请求 logs 顺序一一对应） */
+  readonly results: readonly EdgeAuditResult[];
+}
+
+/** Worker → 主线程：错误消息 */
+export interface ClassifierErrorMessage {
+  readonly type: 'error';
+  readonly message: string;
+}
+
+/** Worker → 主线程的全部响应消息 */
+export type ClassifierResponse =
+  | ClassifierProgressMessage
+  | ClassifierReadyMessage
+  | ClassifierResultMessage
+  | ClassifierErrorMessage;
+
+/* ========================================================================== */
 /* 端侧日志审计（Transformers.js WebGPU/WASM 浏览器端推理）                      */
 /* ========================================================================== */
 

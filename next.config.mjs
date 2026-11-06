@@ -30,13 +30,48 @@ const nextConfig = {
   reactStrictMode: true,
   transpilePackages: ['three'],
 
-  webpack: (config, { isServer }) => {
+  webpack: (config, { isServer, webpack }) => {
+    /**
+     * 【精确抑制第三方库的已知无害警告】
+     * @huggingface/transformers 内部有 `import.meta` 的直接访问，
+     * webpack 会提示 "Critical dependency: Accessing import.meta directly
+     * is unsupported"。这是该库在浏览器 ESM 环境下的正常写法，
+     * 实际运行不受影响（Worker 端已通过真机 WebGPU 验证）。
+     *
+     * 这里只匹配**这一个模块的这一条**警告，不用 ignoreWarnings 全局关闭
+     * ——全局关闭会让真正的严重警告也被静默，那是危险的。
+     */
+    config.ignoreWarnings = [
+      ...(config.ignoreWarnings ?? []),
+      {
+        module: /@huggingface[\\/]transformers/,
+        message: /Accessing import\.meta directly is unsupported/,
+      },
+    ];
+
     config.resolve.alias = {
       ...config.resolve.alias,
       // 可选原生依赖：仅探测、不安装，解析为空模块
       'sharp$': false,
       'onnxruntime-node$': false,
     };
+
+    /**
+     * 【Worker 打包修复】@huggingface/transformers 内部存在形如
+     * `import('./')` 的动态导入（用于在 Node 环境下探测同目录的
+     * onnxruntime 原生绑定）。webpack 打包 Web Worker 时会尝试解析
+     * 这个相对路径，但 Worker chunk 的输出目录结构与源目录不同，
+     * 于是报 "Module not found: Can't resolve './'"。
+     *
+     * 处理方式：用 IgnorePlugin 忽略这一无法静态解析的模块引用。
+     * 本项目只在浏览器端使用（WebGPU / WASM），Node 分支永远不会执行，
+     * 因此忽略解析不影响任何运行时行为。
+     */
+    config.plugins.push(
+      new webpack.IgnorePlugin({
+        resourceRegExp: /^\.\/$/,
+      }),
+    );
 
     // Node 内置模块在浏览器端一律置空（客户端与服务端构建保持一致，
     // 服务端侧同样不需要 sharp / onnxruntime-node 的真实解析结果）
