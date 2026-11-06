@@ -394,10 +394,37 @@ function buildSystemPrompt(
     '  · renderRootCauseAnalysis：完成根因分析后调用，必须填写证据链与置信度。',
     '  · proposeRemediationAction：给出修复动作建议时调用（不会自动执行，需用户二次确认）。',
     '',
+    /**
+     * 【执行顺序：文字优先，工具随后】
+     *
+     * 实测发现（deepseek-flash）：若只要求"使用 Markdown 回答"，
+     * 模型倾向于**直接调用工具然后结束**，产出 0~30 字符正文。
+     * 用户看到三张卡片却没有任何文字解释，体验是断裂的。
+     *
+     * 因此这里把流程写死为三个有序步骤，并明确"先输出文字"。
+     * 这不是过度约束——它是把产品期望的交互形态显式告知模型，
+     * 而非指望模型猜到我们希望"先讲结论再给卡片"。
+     */
+    '【执行顺序（必须完整执行，不可提前结束）】',
+    '  第 1 步：先用 Markdown 输出诊断正文（结论 → 根因机制 → 处置建议），不少于 150 字。',
+    '  第 2 步：正文写完后，**必须依次调用以下三个工具，一个都不能少**：',
+    '          ① renderPodMetrics       （渲染指标卡）',
+    '          ② renderRootCauseAnalysis（渲染根因卡）',
+    '          ③ proposeRemediationAction（渲染自愈动作卡）',
+    '  第 3 步：三张卡片全部调用完毕后，用一两句话总结结束。',
+    '',
+    '  ⚠️ 强制约束：',
+    '  · 禁止跳过正文直接调用工具；',
+    '  · 禁止只调用一两个工具就结束——实测发现模型容易在第二张卡后停止，',
+    '    这会使用户看不到完整的自愈动作建议；',
+    '  · 即使正文已经给出了处置建议，仍然必须调用 proposeRemediationAction',
+    '    把建议渲染成可点击的确认卡片。',
+    '',
     '【回答要求】',
     '  1. 使用 Markdown，结构清晰（结论 → 证据 → 处置建议）。',
     '  2. 明确引用命中的 Runbook 编号。',
     '  3. 不要臆造未在上下文中出现的 Pod 或指标。',
+    '  4. 正文必须包含具体技术细节（如 cgroup memory.max、Exit Code 137、oom_score 等）。',
   ].join('\n');
 }
 
@@ -552,10 +579,16 @@ async function streamWithLLM(params: {
   readonly systemPrompt: string;
   readonly hasImage: boolean;
   readonly viewportImage: string | undefined;
+  /**
+   * 本次请求实际检索到的 Runbook。
+   * 用于在 tool-result 时注入 ragReferences——模型自己不知道检索命中项，
+   * 溯源必须由路由层用真实结果填充。
+   */
+  readonly runbooks: readonly RagRunbookDoc[];
   readonly emit: (event: ChatStreamEvent) => void;
   readonly signal: AbortSignal;
 }): Promise<boolean> {
-  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, emit, signal } = params;
+  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, emit, signal } = params;
 
   try {
     const provider = createOpenAI({ apiKey, baseURL });
@@ -647,7 +680,7 @@ async function streamWithLLM(params: {
         await sleep(TOOL_RESULT_DELAY_MS_A, signal);
 
         /* 步骤 3：校验 args 后推 tool-result（前端据此水合卡片） */
-        const validated = validateToolArgs(toolName, part.args);
+        const validated = validateToolArgs(toolName, part.args, runbooks);
         if (validated === null) {
           emit({
             type: 'text',
@@ -681,11 +714,20 @@ async function streamWithLLM(params: {
 /**
  * validateToolArgs —— 按工具名校验模型生成的参数。
  *
+ * 【ragReferences 注入】模型无法凭空知道本次检索命中了哪些手册——
+ * 它只看到 System Prompt 里的文本描述。因此 RAG 引用必须由**路由层**
+ * 用真实的检索结果填充，而不是让模型自己编。此前这里硬编码空数组，
+ * 导致引擎 A 产出的根因卡永远缺失溯源区（实测发现）。
+ *
+ * @param toolName    工具名
+ * @param rawArgs     模型生成的原始参数（不可信）
+ * @param runbooks    本次请求实际检索到的 Runbook（用于注入 ragReferences）
  * @returns 通过校验的卡片载荷；校验失败返回 null
  */
 function validateToolArgs(
   toolName: string,
   rawArgs: unknown,
+  runbooks: readonly RagRunbookDoc[],
 ): PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps | null {
   if (toolName === 'renderPodMetrics') {
     const parsed = podMetricsSchema.safeParse(rawArgs);
@@ -694,9 +736,13 @@ function validateToolArgs(
   if (toolName === 'renderRootCauseAnalysis') {
     const parsed = rootCauseSchema.safeParse(rawArgs);
     if (!parsed.success) return null;
-    /* RootCauseAlertProps 还需 ragReferences —— 由前端/store 侧注入，
-       此处留空数组占位（路由层不持有 RAG 引用，避免载荷膨胀） */
-    return { ...parsed.data, ragReferences: [] } as RootCauseAlertProps;
+    /**
+     * 【用真实检索结果填充溯源】runbooks 来自请求入口处的
+     * retrieveSreRunbooks 调用，含 id / title / similarityScore。
+     * 这样前端「📚 RAG 检索增强知识库溯源」区展示的就是**实际命中**的手册，
+     * 而不是模型杜撰的引用——溯源的公信力完全取决于这一点。
+     */
+    return { ...parsed.data, ragReferences: [...runbooks] } as RootCauseAlertProps;
   }
   if (toolName === 'proposeRemediationAction') {
     const parsed = remediationSchema.safeParse(rawArgs);
@@ -1217,6 +1263,7 @@ export async function POST(request: Request): Promise<Response> {
             systemPrompt,
             hasImage,
             viewportImage,
+            runbooks,
             emit,
             signal,
           });
