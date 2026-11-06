@@ -32,7 +32,11 @@ import type { ChaosScenario, PodStatus, TelemetrySnapshot } from '@/types/cluste
  *   SSE 帧未携带服务端发送时间戳，无法测真往返延迟，故本字段如实反映
  *   「收帧节奏抖动」：显著 >1000 表示推送延迟累积，显著 <1000 表示
  *   客户端本地降级引擎接管。由 useTelemetryStream 的 recordFrameLatency 写入。
- * - workerStatus：模拟引擎 Worker 状态描述（如 'idle' / 'streaming' / 'error: ...'）
+ * - workerStatus：端侧推理 Worker 的运行状态串（'INITIALIZING (WebGPU)' /
+ *   'READY (WASM)' / 'INFERENCING' / 'ERROR'），由 useEdgeLogClassifier
+ *   在收到 Worker 的 status 消息时原地写入。注意它是**状态机当前态**
+ *   而非进度——进度恒为 100% 后，状态仍会在 READY 与 INFERENCING 之间往返。
+ *   字段名为历史兼容保留（原为模拟引擎 Worker 预留）。
  *
  * 【可变性说明】本接口字段刻意不加 readonly —— 瞬态轨的全部意义即
  * 每帧原地突变（mutable in-place），任何不可变拷贝都会触发 GC 压力。

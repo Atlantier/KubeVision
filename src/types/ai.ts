@@ -589,6 +589,50 @@ export interface ClassifierInitRequest {
 export type ClassifierRequest = ClassifierClassifyRequest | ClassifierInitRequest;
 
 /**
+ * ClassifierWorkerStatus —— Worker 运行状态机的四态。
+ *
+ * 【为何需要独立的状态消息】进度（progress）表达的是「模型下载到哪一步」，
+ * 而状态表达的是「Worker 此刻在做什么」。两者正交：模型早已就绪后，
+ * 进度恒为 100%，但 Worker 仍会在 READY 与 INFERENCING 之间往返。
+ * 性能 HUD 需要的是后者——「这个线程现在是忙是闲」，
+ * 因此状态必须作为独立消息类型下发，而不是从进度里推断。
+ *
+ * 【状态流转】
+ *   INITIALIZING ──(模型就绪/降级)──> READY
+ *        │                              │
+ *        └──(失败)──> ERROR            ├──(收到 classify)──> INFERENCING
+ *                                       │                          │
+ *                                       └──────(结果下发)──────────┘
+ */
+export type ClassifierWorkerStatus = 'INITIALIZING' | 'READY' | 'INFERENCING' | 'ERROR';
+
+/**
+ * ClassifierStatusMessage —— Worker 状态的即时回传消息。
+ *
+ * 【同步回传契约】Worker 在**收到主线程指令的同一事件循环内**立即发出
+ * 对应的状态消息（init → INITIALIZING，classify → INFERENCING），
+ * 而不是等异步工作完成后再一并回传。这让 HUD 能立刻反映「指令已被受理」，
+ * 消除「点了按钮但界面毫无反应」的不确定感——即使真实推理需要数百毫秒。
+ *
+ * 【label 字段】给 HUD 直接渲染的完整可读串，形如 'READY (WebGPU)' /
+ * 'INFERENCING'。由 Worker 统一拼装而非让 HUD 自己组合：
+ * 状态与运行时的组合规则只应有一处定义。
+ */
+export interface ClassifierStatusMessage {
+  readonly type: 'status';
+  /** 状态机当前态 */
+  readonly status: ClassifierWorkerStatus;
+  /** 运行时后端 */
+  readonly runtime: ClassifierRuntime;
+  /** 运行时可读标签（'WebGPU Hardware Accelerated' / 'WebAssembly SIMD'） */
+  readonly runtimeLabel: string;
+  /** HUD 直接展示的完整状态串（如 'READY (WebGPU)' / 'INFERENCING'） */
+  readonly label: string;
+}
+
+/** Worker → 主线程：模型加载进度消息（见上方 ClassifierProgressMessage） */
+
+/**
  * Worker → 主线程的模型加载进度消息。
  *
  * 【runtime 字段】每次进度回传都带上运行时标识，而不是只在 ready 时给一次：
@@ -633,10 +677,82 @@ export interface ClassifierErrorMessage {
 
 /** Worker → 主线程的全部响应消息 */
 export type ClassifierResponse =
+  | ClassifierStatusMessage
   | ClassifierProgressMessage
   | ClassifierReadyMessage
   | ClassifierResultMessage
   | ClassifierErrorMessage;
+
+/**
+ * isClassifierResponse —— 运行期校验一条未知消息是否为合法的 Worker 响应。
+ *
+ * 【为何必须做运行期校验】TypeScript 类型在编译后完全消失，
+ * `self.postMessage` 跨越的是 structured-clone 边界——它不携带任何类型信息，
+ * 也不保证发送方就是预期的那份代码（例如旧版 Worker chunk 被浏览器缓存、
+ * 或第三方脚本向同一 Worker 投递消息）。若主线程直接信任 `event.data`，
+ * 一个形状错误的 `{ type: 'result', results: null }` 就能让
+ * `.map` 在渲染层抛异常，把整个对话面板打挂。
+ *
+ * 【校验策略】先确认是对象且有字符串 type，再按 type 逐一检查
+ * 该类型必需的字段是否存在且类型正确。刻意只做**形状校验**而非深度遍历：
+ * 本协议消息体都很小，浅层校验已足以防止崩溃，过度校验反而增加耦合。
+ *
+ * 【未知 type 的处理】返回 false。这为协议向前兼容留出空间——
+ * 未来 Worker 新增消息类型时，旧主线程会安全忽略而非崩溃。
+ *
+ * @param value postMessage 收到的任意值
+ * @returns 是否为可安全消费的 ClassifierResponse
+ */
+export function isClassifierResponse(value: unknown): value is ClassifierResponse {
+  if (typeof value !== 'object' || value === null) return false;
+  const rec = value as Record<string, unknown>;
+  const type = rec.type;
+  if (typeof type !== 'string') return false;
+
+  /** 判断字段是否为有限数 */
+  const isFiniteNumber = (v: unknown): v is number =>
+    typeof v === 'number' && Number.isFinite(v);
+  /** 判断字段是否为非空字符串 */
+  const isNonEmptyString = (v: unknown): v is string =>
+    typeof v === 'string' && v.length > 0;
+
+  switch (type) {
+    case 'status':
+      return (
+        (rec.status === 'INITIALIZING' ||
+          rec.status === 'READY' ||
+          rec.status === 'INFERENCING' ||
+          rec.status === 'ERROR') &&
+        (rec.runtime === 'webgpu' || rec.runtime === 'wasm') &&
+        isNonEmptyString(rec.label)
+      );
+
+    case 'progress':
+      return (
+        isFiniteNumber(rec.progress) &&
+        (rec.runtime === 'webgpu' || rec.runtime === 'wasm') &&
+        typeof rec.runtimeLabel === 'string' &&
+        typeof rec.modelName === 'string'
+      );
+
+    case 'ready':
+      return (
+        (rec.runtime === 'webgpu' || rec.runtime === 'wasm') &&
+        typeof rec.runtimeLabel === 'string' &&
+        typeof rec.modelName === 'string' &&
+        typeof rec.fallback === 'boolean'
+      );
+
+    case 'result':
+      return Array.isArray(rec.results);
+
+    case 'error':
+      return typeof rec.message === 'string';
+
+    default:
+      return false;
+  }
+}
 
 /* ========================================================================== */
 /* 端侧日志审计（Transformers.js WebGPU/WASM 浏览器端推理）                      */

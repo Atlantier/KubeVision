@@ -23,10 +23,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { isClassifierResponse } from '@/types/ai';
 import type {
   ClassifierRequest,
-  ClassifierResponse,
   ClassifierRuntime,
+  ClassifierWorkerStatus,
   EdgeAuditResult,
   LogEntry,
 } from '@/types/ai';
@@ -49,6 +51,10 @@ export interface UseEdgeLogClassifierResult {
   readonly isReady: boolean;
   /** 是否降级到内置分类器 */
   readonly isFallback: boolean;
+  /** Worker 状态机当前态（null 表示尚未收到状态消息） */
+  readonly workerStatus: ClassifierWorkerStatus | null;
+  /** Worker 状态的完整可读串（如 'READY (WebGPU)' / 'INFERENCING'） */
+  readonly statusLabel: string;
   /** 错误信息（null 表示无错） */
   readonly error: string | null;
   /** 提交一批日志进行分类（返回逐条结果；失败时返回 null） */
@@ -73,6 +79,8 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
   const [modelName, setModelName] = useState<string>('initializing…');
   const [isReady, setIsReady] = useState<boolean>(false);
   const [isFallback, setIsFallback] = useState<boolean>(false);
+  const [workerStatus, setWorkerStatus] = useState<ClassifierWorkerStatus | null>(null);
+  const [statusLabel, setStatusLabel] = useState<string>('idle');
   const [error, setError] = useState<string | null>(null);
   const [isClassifying, setIsClassifying] = useState<boolean>(false);
 
@@ -98,11 +106,28 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
 
     workerRef.current = worker;
 
-    /* ---- 消息处理：判别联合窄化 ---- */
-    worker.addEventListener('message', (event: MessageEvent<ClassifierResponse>): void => {
+    /* ---- 消息处理：先做运行期校验，再判别联合窄化 ---- */
+    worker.addEventListener('message', (event: MessageEvent<unknown>): void => {
+      /**
+       * 【运行期校验】postMessage 跨越 structured-clone 边界，
+       * 返回的是 unknown 而非可信的 ClassifierResponse。
+       * 直接强转会让形状错误的消息（如旧版 Worker chunk 被缓存、
+       * results 为 null）在渲染层引发异常。校验后才进入分支。
+       */
+      if (!isClassifierResponse(event.data)) return;
       const message = event.data;
 
       switch (message.type) {
+        case 'status': {
+          setWorkerStatus(message.status);
+          setStatusLabel(message.label);
+          /* 【核心：写入瞬态轨】glStats 是模块级可变单例，
+             每帧被渲染循环/HUD 读取，此处原地赋值即可，
+             不触发任何 React 重渲染（AGENTS.md 第 3 条 60FPS 红线）。 */
+          telemetryTransientRef.glStats.workerStatus = message.label;
+          break;
+        }
+
         case 'progress': {
           setProgress(message.progress);
           setRuntime(message.runtime);
@@ -131,6 +156,9 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
 
         case 'error': {
           setError(message.message);
+          setWorkerStatus('ERROR');
+          setStatusLabel('ERROR');
+          telemetryTransientRef.glStats.workerStatus = 'ERROR';
           const resolve = pendingRef.current;
           pendingRef.current = null;
           setIsClassifying(false);
@@ -143,9 +171,12 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
       }
     });
 
-    /* ---- Worker 运行期错误 ---- */
+    /* ---- Worker 运行期错误（脚本加载失败、未捕获异常等） ---- */
     worker.addEventListener('error', (event: ErrorEvent): void => {
       setError(event.message.length > 0 ? event.message : '端侧推理 Worker 异常');
+      setWorkerStatus('ERROR');
+      setStatusLabel('ERROR');
+      telemetryTransientRef.glStats.workerStatus = 'ERROR';
       setIsClassifying(false);
       const resolve = pendingRef.current;
       pendingRef.current = null;
@@ -202,6 +233,8 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
     modelName,
     isReady,
     isFallback,
+    workerStatus,
+    statusLabel,
     error,
     classify,
     isClassifying,

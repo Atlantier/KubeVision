@@ -169,7 +169,13 @@ function PerfHudPanel() {
       label: 'Frame Interval',
       value: sample !== null && sample.sseLatencyMs > 0 ? `${sample.sseLatencyMs.toFixed(0)} ms` : '--',
     },
-    { label: 'Sim Worker', value: sample !== null ? sample.workerStatus : '--' },
+    {
+      /* 标签语义：此前写作 Sim Worker，但该字段实际由端侧推理 Worker
+         写入（'INITIALIZING (WebGPU)' / 'READY (WASM)' / 'INFERENCING'），
+         改名以如实反映数据来源——HUD 标签写错来源比不显示更糟。 */
+      label: 'Edge Worker',
+      value: sample !== null ? sample.workerStatus : '--',
+    },
     {
       label: 'Entities',
       value: sample !== null ? `${sample.nodeCount} nodes / ${sample.podCount} pods / ${sample.alertCount} alerts` : '--',

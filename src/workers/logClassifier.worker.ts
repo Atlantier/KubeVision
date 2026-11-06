@@ -34,6 +34,7 @@ import type {
   ClassifierRequest,
   ClassifierResponse,
   ClassifierRuntime,
+  ClassifierWorkerStatus,
   EdgeAuditResult,
   EdgeLogLabel,
   LogEntry,
@@ -51,6 +52,19 @@ const MODEL_REMOTE_HOST = 'https://hf-mirror.com/';
 
 /** 模型标识（Xenova 发布的 ONNX 量化版 MiniLM） */
 const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+
+/**
+ * 状态最小可见时长（毫秒）。
+ *
+ * 【为何需要】内置分类器实测整批仅 1.6ms，而 PerfHUD 以 4Hz（250ms）
+ * 采样 workerStatus。若状态 1.6ms 内翻回 READY，用户与 HUD 都**永远
+ * 看不到** INFERENCING——回传了但不可观测，等于没回传。
+ *
+ * 【取 260ms 的理由】略大于 HUD 的采样周期（250ms），保证至少被采到一次；
+ * 又不至于长到让用户觉得"明明瞬间完成却在装忙"。
+ * 这个值只影响状态展示时长，不影响任何计算或结果下发的时机。
+ */
+const MIN_STATUS_VISIBLE_MS = 260;
 
 /* ========================================================================== */
 /* 运行时探测                                                                  */
@@ -422,6 +436,41 @@ function post(message: ClassifierResponse): void {
 }
 
 /**
+ * postStatus —— 同步回传 Worker 状态（供 HUD 实时展示）。
+ *
+ * 【为何抽成函数】状态消息在多个位置发出（启动、收到 init、收到 classify、
+ * 推理完成、出错），必须保证 label 拼装规则**只有一处定义**。
+ * 否则很容易出现 'READY (WebGPU)' 与 'READY(webgpu)' 这类不一致，
+ * 让 HUD 看起来像是两个不同系统在写。
+ *
+ * 【label 拼装规则】
+ * - INITIALIZING / READY 需要标明后端（用户想知道正在用哪个算力）；
+ * - INFERENCING / ERROR 不标后端（此刻关注的是"在忙/出错"，
+ *   后端信息已由 INITIALIZING/READY 阶段告知过）。
+ *
+ * @param status 目标状态
+ */
+function postStatus(status: ClassifierWorkerStatus): void {
+  const runtimeTag = currentRuntime === 'webgpu' ? 'WebGPU' : 'WASM';
+  const label =
+    status === 'INITIALIZING'
+      ? `INITIALIZING (${runtimeTag})`
+      : status === 'READY'
+        ? `READY (${runtimeTag})`
+        : status === 'INFERENCING'
+          ? 'INFERENCING'
+          : 'ERROR';
+
+  post({
+    type: 'status',
+    status,
+    runtime: currentRuntime,
+    runtimeLabel: currentLabel,
+    label,
+  });
+}
+
+/**
  * ensureModel —— 惰性初始化模型（幂等）。
  *
  * 【为何惰性】Worker 启动后可能很久才收到第一批日志。立刻开始下载
@@ -438,20 +487,58 @@ async function ensureModel(): Promise<ModelHandle> {
     modelName: modelHandle.fallback ? 'builtin-semantic-classifier' : MODEL_ID,
     fallback: modelHandle.fallback,
   });
+  /* 模型就绪 → 状态同步切到 READY（HUD 立刻可见） */
+  postStatus('READY');
   return modelHandle;
+}
+
+/**
+ * isClassifierRequest —— 运行期校验主线程指令的形状。
+ *
+ * 【为何 Worker 侧也要校验】Worker 同样面对不可信的 structured-clone 输入。
+ * 一个缺了 logs 的 classify 消息会让 `for (const log of logs)` 直接抛
+ * TypeError，整个 Worker 的消息处理器随之进入异常路径——虽然不会崩溃，
+ * 但主线程会收到含义模糊的 error，难以定位。
+ * 这里做最小形状校验后，非法指令被明确拒绝而不是引发内部异常。
+ *
+ * @param value 收到的任意消息
+ * @returns 是否为本 Worker 能处理的合法请求
+ */
+function isClassifierRequest(value: unknown): value is ClassifierRequest {
+  if (typeof value !== 'object' || value === null) return false;
+  const rec = value as Record<string, unknown>;
+  if (rec.type === 'init') return true;
+  if (rec.type === 'classify') {
+    return Array.isArray(rec.logs);
+  }
+  return false;
 }
 
 /**
  * Worker 消息处理器。
  *
+ * 【同步状态回传契约】收到指令后**立即**（在任何 await 之前）发出状态消息，
+ * 让主线程/HUD 在同一事件循环内就能反映「指令已受理」。这是刻意设计：
+ * 真实推理可能耗时数百毫秒，若状态要等推理结束才回传，用户会觉得点击无效。
+ *
  * 【类型窄化】用判别联合的 type 字段做穷举分支，
  * 未知消息类型静默忽略（向前兼容未来的协议扩展）。
  */
-self.addEventListener('message', (event: MessageEvent<ClassifierRequest>): void => {
-  const request = event.data;
+self.addEventListener('message', (event: MessageEvent<unknown>): void => {
+  const raw = event.data;
+
+  /* ---- 运行期校验：拒绝形状错误的指令，避免内部异常 ---- */
+  if (!isClassifierRequest(raw)) {
+    post({ type: 'error', message: 'invalid request payload' });
+    return;
+  }
+  const request: ClassifierRequest = raw;
 
   if (request.type === 'init') {
+    /* 同步回传：指令已受理，进入初始化 */
+    postStatus('INITIALIZING');
     void ensureModel().catch((error: unknown): void => {
+      postStatus('ERROR');
       post({
         type: 'error',
         message: error instanceof Error ? error.message : 'model init failed',
@@ -461,6 +548,14 @@ self.addEventListener('message', (event: MessageEvent<ClassifierRequest>): void 
   }
 
   if (request.type === 'classify') {
+    /**
+     * 【同步回传 INFERENCING】注意位置：在任何 await 之前。
+     * 这样即使模型尚未加载完成（需要等待 init），HUD 也立刻显示
+     * INFERENCING，而不是停留在 READY/INITIALIZING 让用户以为没响应。
+     */
+    const inferencingStartedAt = performance.now();
+    postStatus('INFERENCING');
+
     void (async (): Promise<void> => {
       try {
         const handle = await ensureModel();
@@ -475,7 +570,29 @@ self.addEventListener('message', (event: MessageEvent<ClassifierRequest>): void 
         }
 
         post({ type: 'result', results });
+
+        /**
+         * 【状态最小可见时长】内置分类器是纯词权重匹配，实测整批仅耗时
+         * 1.6ms（见 setter 拦截实测）。若立刻切回 READY，PerfHUD 以 4Hz
+         * 采样永远看不到 INFERENCING——状态回传的意义就落空了。
+         *
+         * 这里补足到 MIM_STATUS_VISIBLE_MS 的**最小显示时长**：
+         * 不是谎报耗时（推理确实早已完成，result 也已下发），
+         * 而是让"系统正在工作"这一事实对用户可感知。
+         * 等待期间不阻塞任何计算，只是延后状态翻转。
+         */
+        const elapsed = performance.now() - inferencingStartedAt;
+        const remaining = MIN_STATUS_VISIBLE_MS - elapsed;
+        if (remaining > 0) {
+          await new Promise<void>((resolve): void => {
+            setTimeout(resolve, remaining);
+          });
+        }
+
+        /* 推理结束 → 回到 READY（模型已就绪，随时可接受下一批） */
+        postStatus('READY');
       } catch (error) {
+        postStatus('ERROR');
         post({
           type: 'error',
           message: error instanceof Error ? error.message : 'classification failed',
@@ -485,7 +602,7 @@ self.addEventListener('message', (event: MessageEvent<ClassifierRequest>): void 
   }
 });
 
-/* 启动即回传一次进度，让 HUD 立刻知道运行时后端（无需等 init 请求） */
+/* 启动即回传进度与初始状态，让 HUD 立刻知道运行时后端（无需等 init 请求） */
 post({
   type: 'progress',
   progress: 0,
@@ -493,3 +610,4 @@ post({
   runtimeLabel: currentLabel,
   modelName: MODEL_ID,
 });
+postStatus('INITIALIZING');
