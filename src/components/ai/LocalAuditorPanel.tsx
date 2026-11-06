@@ -363,6 +363,9 @@ export default function LocalAuditorPanel() {
   const triggerQuickPrompt = useClusterStore(
     (s): ((prompt: string) => void) => s.triggerQuickPrompt,
   );
+  const appendTerminalLog = useClusterStore(
+    (s): ((line: string) => void) => s.appendTerminalLog,
+  );
 
   /* ---- 端侧推理 Worker（生命周期由 Hook 统一管理：创建 → 使用 → terminate） ---- */
   const classifier = useEdgeLogClassifier(true);
@@ -442,13 +445,51 @@ export default function LocalAuditorPanel() {
 
         /* 最新的在前，最多保留 24 条（防止无限增长） */
         setRecords((prev) => [...newRecords, ...prev].slice(0, 24));
+
+        /**
+         * 【终端联动】把端侧推理事件写入底部 TerminalEcho。
+         *
+         * 【为何逐条写而非只写汇总】终端是**审计流水**，用户需要能追溯到
+         * 「哪条日志被判成了什么」。只写一行汇总虽然干净，却丢掉了
+         * Pod 维度的对应关系——当 3 个 Pod 同时异常时，汇总无法回答
+         * 「到底是哪个 Pod 崩了」。
+         *
+         * 【格式契约】严格采用
+         * `[EDGE-WASM] Masked N secrets & classified LABEL (x.xxms) in pod <name>`
+         * 与终端既有的 [EDGE-WASM] 前缀完全一致（TerminalEcho 的 TONE_RULES
+         * 已把它映射为 edge 色调），因此无需改动终端组件即可自动高亮。
+         *
+         * 【只写脱敏计数与标签，绝不写日志正文】终端内容会进入持久化的
+         * recent 30 条，若把正文写进去，脱敏努力就在持久化层被绕过了。
+         * 这里只记录「脱敏了几处、判成了什么类、耗时多少、来自哪个 Pod」——
+         * 这些元信息本身不含敏感内容，却足以支撑审计追溯。
+         */
+        for (const record of newRecords) {
+          appendTerminalLog(
+            `[EDGE-WASM] Masked ${record.maskedCount} secrets & classified ${record.result.label} ` +
+              `(${record.result.inferenceLatencyMs.toFixed(2)}ms) in pod ${record.podName}`,
+          );
+        }
+
+        /**
+         * 批次汇总行：给出本批的整体统计，便于快速扫读。
+         * 单条行回答「哪一条怎么样」，汇总行回答「这一批整体如何」，
+         * 两者互补而非重复。
+         */
+        const highRiskInBatch = newRecords.filter(
+          (r): boolean => r.result.label === 'CRITICAL_PANIC' || r.result.label === 'RESOURCE_EXHAUSTED',
+        ).length;
+        appendTerminalLog(
+          `[EDGE-WASM] batch audited: ${newRecords.length} logs / ${batchMasked} secrets masked / ` +
+            `${highRiskInBatch} high-risk (${classifier.runtimeLabel})`,
+        );
       }
     } catch {
       /* 抓取/审计失败不应中断面板：静默恢复，用户可重试 */
     } finally {
       setIsFetching(false);
     }
-  }, [classifier, incrementMaskedSecrets, isFetching]);
+  }, [appendTerminalLog, classifier, incrementMaskedSecrets, isFetching]);
 
   /* ========================================================================== */
   /* 自动实时流式审计                                                             */
@@ -470,6 +511,45 @@ export default function LocalAuditorPanel() {
        通过 ref 读取最新函数，避免定时器被反复销毁重建 */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStream]);
+
+  /* ========================================================================== */
+  /* 引擎生命周期事件 → 终端                                                       */
+  /* ========================================================================== */
+
+  /** 上一次已写入终端的引擎状态（避免 React 重渲染导致重复刷同一行） */
+  const lastLoggedStatusRef = useRef<string | null>(null);
+
+  /**
+   * 引擎状态变化写入终端。
+   *
+   * 【为何记录到终端】模型加载/降级对用户是"黑盒等待"：面板上只有一条
+   * 进度条，用户不知道背后在做什么、为什么慢。把 INITIALIZING → READY
+   * 或降级事件写进终端，等于给这段等待过程留下可追溯的时间线——
+   * 出问题时能回答"当时引擎到底就绪了没有"。
+   *
+   * 【去重】用 ref 记录上次写入的状态串，相同状态不重复写。
+   * 否则 React 的每次重渲染都会追加一行，把终端刷满噪音。
+   */
+  useEffect(() => {
+    const label = classifier.statusLabel;
+    if (label.length === 0 || label === 'idle') return;
+    if (lastLoggedStatusRef.current === label) return;
+    lastLoggedStatusRef.current = label;
+
+    if (label === 'ERROR') {
+      appendTerminalLog(`[ERR] [EDGE-WASM] engine error: ${classifier.error ?? 'unknown'}`);
+      return;
+    }
+    /* 只在两个"里程碑"状态写日志：进入 INITIALIZING 与达到 READY。
+       INFERENCING 已由每条日志的分类行体现，重复写会淹没关键信息。 */
+    if (label.startsWith('INITIALIZING')) {
+      appendTerminalLog(`[EDGE-WASM] engine initializing -> ${classifier.modelName} (${label})`);
+    } else if (label.startsWith('READY')) {
+      appendTerminalLog(
+        `[EDGE-WASM] engine ready (${label})${classifier.isFallback ? ' · builtin fallback active' : ''}`,
+      );
+    }
+  }, [appendTerminalLog, classifier.error, classifier.isFallback, classifier.modelName, classifier.statusLabel]);
 
   /* ========================================================================== */
   /* 端云协同：脱敏摘要移交 Copilot                                                */
@@ -495,9 +575,21 @@ export default function LocalAuditorPanel() {
         `推理耗时 ${record.result.inferenceLatencyMs.toFixed(2)}ms，已脱敏 ${record.maskedCount} 处敏感信息。\n` +
         `以下是**脱敏后的安全日志**（原始凭证未离开本机）：\n\`\`\`\n${record.sanitizedText}\n\`\`\`\n` +
         `请分析该异常的根因，并给出可执行的修复建议。`;
+
+      /**
+       * 【移交审计行】记录「有一条脱敏摘要被送出设备边界」这一事实。
+       * 这是隐私审计链的最后一环：日志里能查到什么被移交了、
+       * 移交时的分类依据是什么。注意只记元信息（标签/脱敏数/Pod），
+       * 不记正文——正文已在 conversation 里，无需在持久化终端重复存一份。
+       */
+      appendTerminalLog(
+        `[EDGE-WASM] sanitized handoff -> Copilot: ${record.result.label} from pod ${record.podName} ` +
+          `(${record.maskedCount} secrets masked, confidence ${(record.result.confidence * 100).toFixed(1)}%)`,
+      );
+
       triggerQuickPrompt(prompt);
     },
-    [triggerQuickPrompt],
+    [appendTerminalLog, triggerQuickPrompt],
   );
 
   /* ========================================================================== */
