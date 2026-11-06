@@ -64,10 +64,18 @@ import { POD_BOX_SIZE, POD_SEAT_OFFSET_Y, getPodWorldTransform } from '@/utils/s
    作为渲染契约的单一事实源——SelectionBeacon3D 需要同一组尺寸与偏移
    才能把选中框严丝合缝地套在方块上。严禁在此重新定义局部副本。 */
 
-/** 状态色常量（模块级预分配，useFrame 内只读，零 Color 构造） */
-const COLOR_RUNNING = new THREE.Color('#10b981'); // 翠绿：Running 正常态
-const COLOR_PENDING = new THREE.Color('#f59e0b'); // 琥珀：Pending / Terminating 过渡态
-const COLOR_CRASH = new THREE.Color('#f43f5e'); // 警示红：CrashLoopBackOff / OOMKilled
+/**
+ * 状态色常量（模块级预分配，useFrame 内只读，零 Color 构造）。
+ *
+ * 【为何比 Tailwind 语义色更亮】这些值最终会作为 instanceColor 与材质
+ * 基色相乘，再经晶体着色器的棱边/菲涅尔倍率放大。若直接用 emerald-500
+ * (#10b981) 这类 UI 常用值，在纯黑背景 + toneMapped:false 下会显得发闷。
+ * 这三个值刻意取得更高饱和与更高亮度，使晶块在暗场里"自发光"，
+ * 同时保留红/绿/琥珀的语义可辨识度（色相不变，仅提亮）。
+ */
+const COLOR_RUNNING = new THREE.Color('#22f59e'); // 翠绿（提亮）：Running 正常态
+const COLOR_PENDING = new THREE.Color('#fbbf24'); // 琥珀（提亮）：Pending / Terminating 过渡态
+const COLOR_CRASH = new THREE.Color('#ff3b6b'); // 警示红（提亮）：CrashLoopBackOff / OOMKilled
 
 /** 故障态发光增强倍率（契约指定：tempColor.multiplyScalar(1.5)，分量可 >1 产生过曝辉光） */
 const CRASH_GLOW_BOOST = 1.5;
@@ -172,6 +180,97 @@ const POD_PHASES: readonly number[] = (() => {
   }
   return phases;
 })();
+
+/* ========================================================================== */
+/* 晶体材质着色器注入（零新增依赖实现"霓虹晶块"观感）                                */
+/* ========================================================================== */
+
+/**
+ * injectCrystalShader —— 为 meshStandardMaterial 注入三段视觉增强。
+ *
+ * 【设计意图】不引入 @react-three/postprocessing（AGENTS.md 第 9 条锁定依赖
+ * 世代矩阵，装它易触发 three/R3F 版本冲突）。图二那种"半透明果冻内芯 +
+ * 高亮棱边 + 边缘辉光"的质感，可在单次 Draw Call 内用片段着色器实现，
+ * 且 48 个实例共享同一材质，性能代价为零。
+ *
+ * 【核心数学：三段叠加，全部输出到 emissive 通道】
+ * 1. **棱边掩码（edgeMask）**：boxGeometry 每个面 UV ∈ [0,1]²，取
+ *    `min(u, 1-u, v, 1-v)` 得到"距最近边的距离"，再用 smoothstep 反相——
+ *    靠近棱边时趋近 1。乘面法线的"非主视面"权重可让正对相机的面更强。
+ * 2. **菲涅尔边缘光（fresnel）**：`pow(1 - dot(N, V), power)`。
+ *    视线越掠射（dot 越小）越亮，形成经典的边缘发光，勾勒立体轮廓。
+ * 3. **内芯自发光（coreGlow）**：以面中心为圆心的径向衰减，
+ *    模拟晶体内部能量从中心透出的感觉。
+ *
+ * 三者以不同权重叠加到 `totalEmissiveRadiance`——这是 Standard 材质在
+ * 光照计算后、色调映射前的最终自发光项，因此不受场景灯光强弱影响，
+ * 在纯黑背景下依然稳定发光。
+ *
+ * 【为何用 onBeforeCompile 而非 ShaderMaterial】改 ShaderMaterial 需从零
+ * 重写 PBR 光照（含 InstancedMesh 的 instanceColor 与矩阵变换），
+ * 而 onBeforeCompile 只做定点字符串替换，保留原生 PBR 管线与实例化支持。
+ *
+ * 【注入点的安全性】必须替换 `#include <emissivemap_fragment>` 且
+ * **在替换串中原样保留该 include**——若漏掉，emissive 贴图通道会失效；
+ * 同时不能误加 `#include <dithering_fragment>`（蓝图示例中重复了该行，
+ * 会导致 GLSL 编译期重复定义）。此处只动一处 include，最小侵入。
+ *
+ * @param shader three 传入的可变 shader 对象（含 vertexShader/fragmentShader）
+ */
+function injectCrystalShader(shader: THREE.WebGLProgramParametersWithUniforms): void {
+  /* ---- 顶点着色器：把面 UV 与视图空间法线传给片元 ---- */
+  shader.vertexShader = shader.vertexShader
+    .replace(
+      '#include <common>',
+      `#include <common>
+       varying vec2 vCrystalUv;
+       varying vec3 vViewNormal;`,
+    )
+    .replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       vCrystalUv = uv;
+       vViewNormal = normalize(normalMatrix * normal);`,
+    );
+
+  /* ---- 片元着色器：三段掩码叠加到自发光通道 ---- */
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      '#include <common>',
+      `#include <common>
+       varying vec2 vCrystalUv;
+       varying vec3 vViewNormal;`,
+    )
+    .replace(
+      '#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+       {
+         /* 1. 棱边掩码：距最近面的边缘的归一化距离，越靠边越亮。
+            阈值从 0.11 收窄到 0.055 —— 收窄后亮边更"细而锐利"，
+            接近图二那种霓虹描边的精致感，而不是整块发白的模糊光晕。 */
+         float edgeDist = min(min(vCrystalUv.x, 1.0 - vCrystalUv.x),
+                              min(vCrystalUv.y, 1.0 - vCrystalUv.y));
+         float edgeMask = 1.0 - smoothstep(0.0, 0.055, edgeDist);
+
+         /* 2. 菲涅尔边缘光：视线掠射时增强，勾勒轮廓 */
+         vec3 viewDir = normalize(-vViewPosition);
+         float fresnel = pow(1.0 - clamp(dot(normalize(vViewNormal), viewDir), 0.0, 1.0), 2.6);
+
+         /* 3. 内芯：以面中心为圆心的径向衰减，模拟晶体内部透光 */
+         float coreDist = length(vCrystalUv - vec2(0.5));
+         float coreGlow = 1.0 - smoothstep(0.0, 0.62, coreDist);
+
+         /* 叠加权重重标定：棱边提到 1.85 让描边成为视觉主角，
+            内芯保持低强度托底（0.13）避免整体过曝丢失状态语义色，
+            菲涅尔 0.42 提供柔和的轮廓包裹。 */
+         float crystalBoost = coreGlow * 0.13 + edgeMask * 1.85 + fresnel * 0.42;
+
+         /* 用漫反射基色（含 instanceColor 调制后的颜色）作为自发光色相，
+            保证红/绿/琥珀的语义纯度不被冲淡。 */
+         totalEmissiveRadiance += diffuseColor.rgb * crystalBoost;
+       }`,
+    );
+}
 
 /**
  * resolvePodTargetColor —— 状态 → 基础目标色映射（纯函数，返回模块级只读常量）。
@@ -549,12 +648,27 @@ export default function PodInstancedMesh() {
       onPointerOut={handlePointerOut}
       onClick={handleClick}
     >
-      {/* 契约几何：0.52 × 0.38 × 0.52 容器盒 */}
+      {/* 契约几何：0.66 × 0.56 × 0.56 容器晶块（尺寸源自 spatialLayout 单一事实源） */}
       <boxGeometry args={[POD_BOX_SIZE[0], POD_BOX_SIZE[1], POD_BOX_SIZE[2]]} />
-      {/* AGENTS.md 第 7 条：动态实例着色的基础材质 color 必须 #ffffff
-          （实例色与材质色相乘，白基色保证 instanceColor 原样呈现）
-          且 toneMapped={false}（状态色绕过色调映射，红/绿/琥珀保持语义纯度） */}
-      <meshStandardMaterial color="#ffffff" roughness={0.2} metalness={0.5} toneMapped={false} />
+      {/*
+       * AGENTS.md 第 7 条：动态实例着色的基础材质 color 必须 #ffffff
+       * （实例色与材质色相乘，白基色保证 instanceColor 原样呈现）
+       * 且 toneMapped={false}（状态色绕过色调映射，红/绿/琥珀保持语义纯度）。
+       *
+       * 【PBR 吞光修复】原配置 metalness={0.5} roughness={0.2}，但场景内
+       * **没有任何环境贴图**（无 <Environment> / envMap）。按 PBR 能量守恒，
+       * 金属度 0.5 会把一半的漫反射固有色替换成"环境反射"，
+       * 而环境是 #020617 纯黑背景 → 反射回黑色 → 翠绿被砍成暗沉泥绿。
+       * 现改为近绝缘体配置（metalness 0.05 / roughness 0.35）：
+       * 固有色完整保留，配合下方自发光注入，得到"霓虹晶块"而非"塑料砖"。
+       */}
+      <meshStandardMaterial
+        color="#ffffff"
+        roughness={0.35}
+        metalness={0.05}
+        toneMapped={false}
+        onBeforeCompile={injectCrystalShader}
+      />
       </instancedMesh>
 
       {/* ---- 悬停微型标签（单个 <Html>，仅悬停实例存在时挂载） ----
