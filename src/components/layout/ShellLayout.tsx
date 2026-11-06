@@ -38,6 +38,7 @@ import { Bot, Layers, ShieldCheck, TerminalSquare } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
+import type { ChaosScenario } from '@/types/cluster';
 import type { RightPanelTab } from '@/types/store';
 import type {
   MobileViewKey,
@@ -186,6 +187,8 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
   const activeRightTab = useClusterStore((s): RightPanelTab => s.activeRightTab);
   const setPerfHudOpen = useClusterStore((s): ((open: boolean) => void) => s.setPerfHudOpen);
   const setActiveRightTab = useClusterStore((s): ((tab: RightPanelTab) => void) => s.setActiveRightTab);
+  /* 混沌场景订阅：驱动视口四周的警示氛围光（仅一个字符串比较，开销可忽略） */
+  const activeChaos = useClusterStore((s): ChaosScenario => s.activeChaos);
 
   /* ---- 移动端视图键（Store 状态，非持久化）：
      由本地 useState 提升而来——画布视口工具条的「📸 快照诊断」经
@@ -237,6 +240,22 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
         >
           {/* 视口槽位：后续轮次注入 dynamic(ssr:false) R3F Canvas */}
           {viewport ?? <ViewportPlaceholder />}
+
+          {/* ---- 混沌演练态势氛围光（审查报告 §2.4.2）----
+              值班人员余光扫一眼就该知道集群处于故障演练态，而不是
+              必须先读到顶部的红色胶囊。这里用一层极克制的内阴影暗角：
+              透明度 6-8%、pointer-events-none 不拦截任何交互、
+              与画布同层但覆盖其上，营造"整块屏幕被警示色浸染"的氛围。 */}
+          {activeChaos !== 'NONE' ? (
+            <div
+              className="pointer-events-none absolute inset-0 z-[5] animate-glow-pulse rounded-lg"
+              aria-hidden
+              style={{
+                boxShadow:
+                  'inset 0 0 60px 12px rgba(244, 63, 94, 0.07), inset 0 0 140px 40px rgba(245, 158, 11, 0.05)',
+              }}
+            />
+          ) : null}
 
           {/* 事件流终端：绝对定位于视口底部，右侧避让相机工具条（z-20）
               —— right-[74px] = 工具条右距 12 + 宽 50 + 间隙 12，

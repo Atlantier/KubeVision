@@ -17,7 +17,7 @@
  * 展开/折叠为本地 useState，切换不触发父级重渲染。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BrainCircuit,
   ChevronDown,
@@ -105,6 +105,26 @@ export default function AgentThoughtChain({
   className,
 }: AgentThoughtChainProps) {
   const [expanded, setExpanded] = useState<boolean>(defaultExpanded);
+  /** 用户是否手动干预过展开态——干预后不再自动接管（尊重用户意图） */
+  const userToggledRef = useRef<boolean>(false);
+
+  /**
+   * 【流式自动展开】（审查报告 §4.2）
+   *
+   * 对标 Cursor / DeepSeek / Claude：推理进行中但正文尚未吐出时，
+   * 用户最需要看到实时的步骤流转。此前默认折叠，前几秒只能盯着一行
+   * 折叠条干等，完全体现不出"Agent 正在思考"的价值。
+   *
+   * 策略：
+   * 1. 流式开始（isStreaming=true）且用户未手动干预 → 自动展开；
+   * 2. 流式结束 → 自动收起（把屏幕让给正文与卡片）；
+   * 3. 一旦用户手动点过折叠头，后续不再自动接管——
+   *    自动展开是「贴心默认」，不能变成「和用户抢控制权」。
+   */
+  useEffect(() => {
+    if (userToggledRef.current) return;
+    setExpanded(isStreaming);
+  }, [isStreaming]);
 
   /**
    * 步骤排序与总耗时（防御性处理：契约要求升序，但流式拼接可能乱序）。
@@ -131,7 +151,11 @@ export default function AgentThoughtChain({
       {/* ============ 折叠头部（点击切换） ============ */}
       <button
         type="button"
-        onClick={(): void => setExpanded((prev): boolean => !prev)}
+        onClick={(): void => {
+          /* 标记用户已手动干预：此后流式状态变化不再自动接管展开态 */
+          userToggledRef.current = true;
+          setExpanded((prev): boolean => !prev);
+        }}
         aria-expanded={expanded}
         className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-slate-800/40"
       >

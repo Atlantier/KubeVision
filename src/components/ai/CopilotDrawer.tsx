@@ -34,6 +34,7 @@ import {
   AlertTriangle,
   Camera,
   CheckCircle2,
+  ChevronDown,
   Eraser,
   Loader2,
   Mic,
@@ -41,6 +42,7 @@ import {
   Send,
   ShieldAlert,
   Sparkles,
+  Square,
   Volume2,
   VolumeX,
   X,
@@ -598,6 +600,8 @@ export default function CopilotDrawer() {
   const [inputGuardError, setInputGuardError] = useState<string | null>(null);
   /** 提示注入等"放行但警告"的提示（区别于阻断性错误） */
   const [guardWarning, setGuardWarning] = useState<string | null>(null);
+  /** 用户是否已向上滚离底部（驱动「回到最新诊断」胶囊显隐） */
+  const [isAwayFromBottom, setIsAwayFromBottom] = useState<boolean>(false);
 
   /* ---- Refs ---- */
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -617,12 +621,35 @@ export default function CopilotDrawer() {
     el.scrollTop = el.scrollHeight;
   }, []);
 
-  /** onScroll —— 记录用户是否仍在底部附近 */
+  /**
+   * onScroll —— 记录用户是否仍在底部附近。
+   *
+   * 【双写：ref + state】ref 供 useFrame 级别的高频判断（不受重渲染影响），
+   * state 用于驱动「↓ 回到最新诊断」胶囊的显隐——这是低频 UI 变化，
+   * 用 React 状态是合适的；两者同步写入保证判断与显示永远一致。
+   */
   const handleScroll = useCallback((): void => {
     const el = scrollRef.current;
     if (el === null) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickToBottomRef.current = distance < STICKY_SCROLL_THRESHOLD_PX;
+    const nearBottom = distance < STICKY_SCROLL_THRESHOLD_PX;
+    stickToBottomRef.current = nearBottom;
+    setIsAwayFromBottom(!nearBottom);
+  }, []);
+
+  /**
+   * jumpToLatest —— 回到底部并恢复自动跟随。
+   *
+   * 【为何要显式恢复 stickToBottomRef】用户点胶囊的意图明确是"我要看最新的"，
+   * 若只滚动一次而不恢复跟随标记，下一帧新消息到达时又会被判定为"用户在看历史"
+   * 而停止跟随——那胶囊等于白点。
+   */
+  const jumpToLatest = useCallback((): void => {
+    const el = scrollRef.current;
+    if (el === null) return;
+    stickToBottomRef.current = true;
+    setIsAwayFromBottom(false);
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }, []);
 
   /* 消息变化后跟随滚动（流式追加时持续贴底） */
@@ -1236,6 +1263,29 @@ export default function CopilotDrawer() {
     }
   }, []);
 
+  /**
+   * handleStopGeneration —— 停止当前流式生成，但**保留已产出的内容**。
+   *
+   * 【为何与 clearSession 分开】两者语义完全不同：
+   * - clearSession = 销毁整段对话历史（用户想重新开始）；
+   * - handleStopGeneration = 中途刹车（用户觉得答案太啰嗦/跑偏了）。
+   *
+   * 此前只有前者，用户为了停一段长回复被迫删掉全部历史——这是把
+   * "停止"和"销毁"混为一谈。这里 abort 后仅把 isStreaming 置回 false，
+   * 已渲染的正文与卡片原样留在屏幕上。
+   *
+   * 【兜底】abort 后 sendMessage 的 catch 会收到 AbortError 并跳过错误处理，
+   * 因此这里只需确保 UI 状态复位；同时终止语音播报避免念到一半。
+   */
+  const handleStopGeneration = useCallback((): void => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsStreaming(false);
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+  }, []);
+
   /* ========================================================================== */
   /* 渲染                                                                       */
   /* ========================================================================== */
@@ -1305,7 +1355,7 @@ export default function CopilotDrawer() {
           <LocalAuditorPanel />
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="relative flex min-h-0 flex-1 flex-col">
           {/* ---- 主动异常嗅探横幅：3D 画布 → Copilot 的主动感知联动 ---- *
            * 【设计意图】把「AI 等用户提问」变为「AI 主动发现异常并请缨」。
            * 当 3D 画布侧遥测出现故障态时，Copilot 立刻在顶部亮出横幅，
@@ -1407,6 +1457,34 @@ export default function CopilotDrawer() {
               ))
             )}
           </div>
+
+          {/*
+           * 【回到最新诊断 悬浮胶囊】（审查报告 §4.3）
+           *
+           * 用户在流式生成或阅读长报告时向上滚动后，auto-scroll 会让位
+           * （stickToBottomRef=false），此时新内容在下方持续产出但看不到。
+           * 这枚胶囊给出明确的"有新内容、点我回去"提示，
+           * 比让用户自己滚到底更符合对话产品的直觉。
+           *
+           * 用 AnimatePresence 做进出场，避免突然闪现/消失。
+           */}
+          <AnimatePresence>
+            {isAwayFromBottom && messages.length > 0 ? (
+              <motion.button
+                type="button"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 8 }}
+                transition={{ duration: 0.16 }}
+                onClick={jumpToLatest}
+                aria-label="回到最新诊断"
+                className="absolute bottom-[124px] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-cyan-500/50 bg-slate-900/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-cyan-300 shadow-glow-cyan backdrop-blur-md transition-colors hover:border-cyan-400 hover:bg-slate-800/90 active:scale-95"
+              >
+                <ChevronDown className="h-3 w-3" aria-hidden />
+                回到最新诊断
+              </motion.button>
+            ) : null}
+          </AnimatePresence>
 
           {/* ---- 输入区 ---- */}
           <div className="shrink-0 border-t border-slate-800/70 px-2 py-1.5">
@@ -1530,26 +1608,43 @@ export default function CopilotDrawer() {
                   ) : null}
                 </button>
 
-                {/* 发送 */}
-                <button
-                  type="button"
-                  onClick={(): void => void sendMessage(inputValue)}
-                  disabled={!canSend}
-                  aria-label="发送消息"
-                  title="发送"
-                  className={cn(
-                    'rounded border p-1 transition-colors',
-                    canSend
-                      ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25'
-                      : 'cursor-not-allowed border-slate-700 bg-slate-800/50 text-slate-600',
-                  )}
-                >
-                  {isStreaming ? (
-                    <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
-                  ) : (
+                {/*
+                 * 【发送 / 停止生成 双态按钮】（审查报告 §4.3）
+                 *
+                 * 此前流式期间发送按钮只是变成禁用的旋转菊花——用户想中断
+                 * 一段啰嗦的长回复，唯一出路是点「清空会话」把历史全删光。
+                 * 这是把"停止"与"销毁"混为一谈的产品缺陷。
+                 *
+                 * 现在流式中切换为高辨识度的玫瑰红方形停止按钮，
+                 * 点击调用 abortRef.abort()：已生成的内容保留，流优雅收尾。
+                 */}
+                {isStreaming ? (
+                  <button
+                    type="button"
+                    onClick={handleStopGeneration}
+                    aria-label="停止生成"
+                    title="停止生成（保留已生成内容）"
+                    className="rounded border border-rose-500/60 bg-rose-500/15 p-1 text-rose-300 transition-colors hover:border-rose-400 hover:bg-rose-500/25 active:scale-95"
+                  >
+                    <Square className="h-3 w-3" aria-hidden />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={(): void => void sendMessage(inputValue)}
+                    disabled={!canSend}
+                    aria-label="发送消息"
+                    title="发送"
+                    className={cn(
+                      'rounded border p-1 transition-colors',
+                      canSend
+                        ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25'
+                        : 'cursor-not-allowed border-slate-700 bg-slate-800/50 text-slate-600',
+                    )}
+                  >
                     <Send className="h-3 w-3" aria-hidden />
-                  )}
-                </button>
+                  </button>
+                )}
               </div>
             </div>
 

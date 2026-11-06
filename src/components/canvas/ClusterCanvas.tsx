@@ -37,6 +37,7 @@ import GlStatsCollector from '@/components/canvas/GlStatsCollector';
 import MasterNode3D from '@/components/canvas/MasterNode3D';
 import NetworkStream3D from '@/components/canvas/NetworkStream3D';
 import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
+import SelectionBeacon3D from '@/components/canvas/SelectionBeacon3D';
 import ViewportToolbar from '@/components/canvas/ViewportToolbar';
 import WorkerRack3D from '@/components/canvas/WorkerRack3D';
 import NodeInspectHUD from '@/components/hud/NodeInspectHUD';
@@ -373,6 +374,12 @@ export default function ClusterCanvas() {
         {/* ---- 机架故障警示涟漪（仅故障机架激活：崩溃 Pod 或节点非 Ready；
            自定义 ShaderMaterial 三环由内向外扩散，加色混合贴地辉光） ---- */}
         <ErrorRippleRing />
+
+        {/* ---- 选中 Pod 的空间锁定光环（审查报告 §2.4）----
+           机架与 Master 各有自己的选中视觉，但单个 Pod 此前完全没有——
+           推近特写后同层 4 个方块挤在画面中心，用户分不清探针面板指的是哪颗。
+           该标记绘制包围框 + 刻度环 + 指示杆，与巡检面板形成「数据 ↔ 空间」指认闭环。 */}
+        <SelectionBeacon3D />
 
         {/* ---- 相机运镜系统 ---- */}
         <CameraRig />
