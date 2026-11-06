@@ -1054,10 +1054,32 @@ export default function CopilotDrawer() {
     void sendMessage(prompt);
   }, [activeChaos, sendMessage]);
 
-  /** dismissBanner —— 关闭主动提示（本轮会话不再打扰） */
+  /** dismissBanner —— 关闭主动提示（本轮场景不再打扰） */
   const dismissBanner = useCallback((): void => {
     setBannerDismissed(true);
   }, []);
+
+  /**
+   * 【横幅随故障场景变化自动唤醒】（审查报告 §5.3）
+   *
+   * 缺陷：`bannerDismissed` 一旦置 true 就永不重置，导致用户关掉横幅后，
+   * 即便从 POD_OOM_SWARM 切到 NET_PACKET_LOSS 这样的**全新故障**，
+   * 主动告警也再也不会弹出——而这恰恰是最该提醒的时刻。
+   *
+   * 修复：监听 activeChaos 变化，每当注入新的非 NONE 场景时重置关闭态。
+   * 语义上"关闭"应作用于"当前这次告警"，而不是"整个会话"——
+   * 新的故障是新的事实，用户值得被重新提醒一次。
+   *
+   * 注意依赖只有 activeChaos：故障 Pod 数量的波动不重置（否则横幅会
+   * 频繁复活），只有**场景切换**这种明确的用户动作才重新提示。
+   */
+  const prevChaosRef = useRef<string>(activeChaos);
+  useEffect(() => {
+    if (prevChaosRef.current !== activeChaos) {
+      prevChaosRef.current = activeChaos;
+      if (activeChaos !== 'NONE') setBannerDismissed(false);
+    }
+  }, [activeChaos]);
 
   /** 供横幅渲染的最终开关：已关闭则整体不显示 */
   const showProactiveBanner = !bannerDismissed;
