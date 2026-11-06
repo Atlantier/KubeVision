@@ -210,7 +210,7 @@ export default function RootCauseAlert({
         {citationsOpen ? (
           <ul className="space-y-1 px-2.5 pb-2">
             {ragReferences.length === 0 ? (
-              <li className="font-mono text-[12px] text-slate-600">— no runbook matched —</li>
+              <li className="font-mono text-[12px] text-slate-600">— 暂未匹配到排障手册 —</li>
             ) : (
               ragReferences.map((doc) => {
                 /* similarityScore ∈ [0,1]，展示为百分比（如 0.964 → 96.4%） */

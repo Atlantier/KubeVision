@@ -148,7 +148,7 @@ const TOPOLOGY_LEGEND: readonly TopologyLegendItem[] = [
   },
   {
     key: 'faulty',
-    label: 'Faulty',
+    label: '异常告警',
     tone: 'critical',
     description: 'CrashLoopBackOff / OOMKilled 故障',
   },
@@ -258,10 +258,10 @@ function derivePodView(
         : 'critical';
 
   const metaRows: InspectMetaRow[] = [
-    { label: 'NAMESPACE', value: pod.namespace },
-    { label: 'NODE', value: hostNode?.name ?? pod.nodeId },
-    { label: 'POD IP', value: pod.ip },
-    { label: 'RACK / SLOT', value: `rack-${pod.rackIndex} · slot-${pod.slotIndex}` },
+    { label: '命名空间', value: pod.namespace },
+    { label: '所属节点', value: hostNode?.name ?? pod.nodeId },
+    { label: 'Pod IP', value: pod.ip },
+    { label: '机架 / 槽位', value: `rack-${pod.rackIndex} · slot-${pod.slotIndex}` },
   ];
 
   return {
@@ -314,10 +314,10 @@ function deriveNodeView(
     node.status === 'Ready' ? 'healthy' : node.status === 'HighLoad' ? 'warning' : 'critical';
 
   const metaRows: InspectMetaRow[] = [
-    { label: 'NODE IP', value: node.ip },
-    { label: 'RACK', value: `rack-${node.rackIndex}` },
-    { label: 'CAPACITY', value: `${node.cpuCapacity}C / ${node.memCapacity}GiB` },
-    { label: 'PODS', value: `${rackPods.length} scheduled` },
+    { label: '节点 IP', value: node.ip },
+    { label: '机架', value: `rack-${node.rackIndex}` },
+    { label: '容量', value: `${node.cpuCapacity} 核 / ${node.memCapacity} GiB` },
+    { label: 'Pod 数', value: `${rackPods.length} 个已调度` },
   ];
 
   return {
@@ -379,9 +379,9 @@ function deriveMasterView(snapshot: TelemetrySnapshot): EntityInspectView {
   const running = pods.filter((pod): boolean => pod.status === 'Running').length;
 
   const metaRows: InspectMetaRow[] = [
-    { label: 'SCOPE', value: 'cluster control plane' },
-    { label: 'NODES', value: `${nodes.length} workers` },
-    { label: 'PODS', value: `${running}/${pods.length} running` },
+    { label: '作用域', value: '集群控制平面' },
+    { label: '工作节点', value: `${nodes.length} 个` },
+    { label: 'Pod 数', value: `${running}/${pods.length} 运行中` },
     { label: 'QPS', value: snapshot.totalQps.toLocaleString('en-US') },
   ];
 

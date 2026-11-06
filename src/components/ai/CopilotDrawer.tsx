@@ -516,8 +516,38 @@ function MessageBubble({
       {/* 工具卡片列表 */}
       {message.toolCards.length > 0 ? (
         <div className="flex flex-col gap-1.5">
-          {message.toolCards.map((card) => (
-            <ToolCardSlot key={card.toolCallId} card={card} onActionExecuted={onActionExecuted} />
+          {/*
+           * 【①②③ 编号导轨】（蓝图 §1.9）
+           *
+           * 图二把 Agent 的三张卡片标注为 ①→②→③ 的流水线顺序，
+           * 让评委一眼看懂"这不是三张随机卡片，而是一条诊断链路"：
+           * ① 采集指标 → ② 定位根因 → ③ 提出并执行自愈。
+           *
+           * 实现方式：在卡片左侧画一条竖直导轨，每个卡片前置一个圆形序号徽标，
+           * 徽标之间有连贯的竖线——视觉上形成"流程"而非"列表"。
+           * 序号用中文数字（一二三）而非 ①②③，因为 ①②③ 在某些
+           * 等宽字体下渲染为方框，中文数字跨平台更稳。
+           */}
+          {message.toolCards.map((card, cardIndex) => (
+            <div key={card.toolCallId} className="relative flex gap-2">
+              {/* ---- 左侧导轨：序号徽标 + 连接线 ---- */}
+              <div className="flex shrink-0 flex-col items-center">
+                <span
+                  className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-cyan-500/50 bg-cyan-500/15 font-mono text-[10px] font-bold text-cyan-300"
+                  aria-hidden
+                >
+                  {cardIndex + 1}
+                </span>
+                {/* 连接线：最后一个卡片不画，避免悬空断线 */}
+                {cardIndex < message.toolCards.length - 1 ? (
+                  <span className="mt-0.5 w-px flex-1 bg-gradient-to-b from-cyan-500/40 to-cyan-500/10" aria-hidden />
+                ) : null}
+              </div>
+              {/* ---- 右侧：卡片本体 ---- */}
+              <div className="min-w-0 flex-1">
+                <ToolCardSlot card={card} onActionExecuted={onActionExecuted} />
+              </div>
+            </div>
           ))}
         </div>
       ) : null}
