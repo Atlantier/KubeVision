@@ -37,6 +37,7 @@ import GlStatsCollector from '@/components/canvas/GlStatsCollector';
 import MasterNode3D from '@/components/canvas/MasterNode3D';
 import NetworkStream3D from '@/components/canvas/NetworkStream3D';
 import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
+import ClusterTopologyFloor3D from '@/components/canvas/ClusterTopologyFloor3D';
 import SelectionBeacon3D from '@/components/canvas/SelectionBeacon3D';
 import ViewportToolbar from '@/components/canvas/ViewportToolbar';
 import WorkerRack3D from '@/components/canvas/WorkerRack3D';
@@ -56,10 +57,30 @@ const FOG_NEAR = 18;
 const FOG_FAR = 48;
 
 /** 初始相机机位（全景鸟瞰，与 OVERVIEW_CAMERA_POSITION 契约一致） */
-const INITIAL_CAMERA_POSITION: [number, number, number] = [0, 14, 22];
+/**
+ * 初始相机机位（世界坐标）。
+ *
+ * 【为何从正后方 [0, 14, 22] 改为斜轴 [7.8, 14, 22]】
+ * 正后方机位让三个机架严格对称排布，构图呆板且**互相遮挡**——
+ * 中间机架被 Master 挡住，两侧机架又靠近边缘。图二采用的是经典
+ * "斜轴三角构图"：相机偏向一侧，使三个机架在画面上呈现前中后三个层次，
+ * 深度关系立刻清晰，也让地面拓扑星环的椭圆形状可见（正后会看成一条线）。
+ *
+ * 【为何 y 保持 14】`scripts/verify.mjs` L606 用 `|pos[1] - 14| > 1`
+ * 判断"相机已离开全景机位"，y 值是该断言的锚点，不可改动。
+ * X 偏移不影响该断言（选中机架后相机飞到 y=4.0，差值为 10，稳过）。
+ */
+const INITIAL_CAMERA_POSITION: [number, number, number] = [7.8, 14, 22];
 
-/** 相机垂直视场角（度）：45° 下鸟瞰位可一屏收纳三机架环形布局 */
-const CAMERA_FOV = 45;
+/**
+ * 垂直视场角（度）。
+ *
+ * 【为何从 45° 收到 40°】长焦压缩透视，让远处的机架不会因近大远小
+ * 过度缩小，整体更接近"微缩模型"的精密感（图二正是这种观感）。
+ * 收得太狠（如 36°）会让 19 世界单位宽的场景贴近视口边界，
+ * 40° 是在"压缩感"与"完整构图"之间实测取得的安全值。
+ */
+const CAMERA_FOV = 40;
 
 /* ========================================================================== */
 /* ClusterCanvas 主体                                                          */
@@ -366,6 +387,11 @@ export default function ClusterCanvas() {
         {/* ---- Pod 容器实例渲染器（单 Draw Call InstancedMesh ×48 容量；
            每帧从瞬态池读取状态/CPU 负载驱动四态动画，落座隔板插槽零穿模） ---- */}
         <PodInstancedMesh />
+
+        {/* ---- 地面拓扑星环：主轨道 + 控制平面内环 + 三道径向电路 ----
+           让机架"站在轨道上"而非漂浮在无限网格里（蓝图 §1.6）。
+           故障机架对应的那道径向电路会切为绯红，形成空间级告警。 */}
+        <ClusterTopologyFloor3D />
 
         {/* ---- 集群网络通信流（MASTER→三机架拱形贝塞尔光缆 + 54 个流动数据包；
            吞吐驱动推进速率，故障车道切换警示红并断续卡顿） ---- */}

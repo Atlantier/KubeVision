@@ -37,10 +37,15 @@ import {
 
 /**
  * 全景鸟瞰机位（取消选中/未知实体的安全回退位）。
- * 与 ClusterCanvas 的 <Canvas camera={{ position: ... }}> 初始值保持一致，
- * 首帧画面与「复位全景」画面完全相同，视觉零跳变。
+ *
+ * 【斜轴构图】X 从 0 改为 7.8，与 ClusterCanvas 的初始机位严格一致——
+ * 正后方机位会让三机架对称排布、互相遮挡且地面星环被压成一条线；
+ * 偏置后呈现前中后三层纵深，星环的椭圆轮廓才可见（蓝图 §1.8）。
+ *
+ * 【y=14 不可改】scripts/verify.mjs L606 以 `|pos[1] - 14| > 1` 判断
+ * 相机是否已离开全景机位，该值是验收断言的锚点。
  */
-export const OVERVIEW_CAMERA_POSITION: readonly [number, number, number] = [0, 14, 22];
+export const OVERVIEW_CAMERA_POSITION: readonly [number, number, number] = [7.8, 14, 22];
 
 /** 全景注视点：MASTER 全息投影锚点（三机架环形布局的几何中心上方） */
 export const OVERVIEW_LOOK_AT: readonly [number, number, number] = MASTER_POSITION;
