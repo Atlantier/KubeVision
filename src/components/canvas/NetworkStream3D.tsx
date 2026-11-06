@@ -82,8 +82,15 @@ import {
 /** 光缆车道数（三机架环形拓扑，恒 3） */
 const LANE_COUNT = 3;
 
-/** 每车道数据包粒子数（契约指定：共 54 = 3 × 18） */
-const PACKETS_PER_LANE = 18;
+/**
+ * 每车道数据包粒子数。
+ *
+ * 【为何从 18 提到 26】原值 18 在弧长 ~14 世界单位上均匀分布，
+ * 间距约 0.78——每颗粒子半径 0.07，视觉上形成一串**等距的珠子**，
+ * 这就是图一"佛珠弧线"观感的直接来源。
+ * 提到 26 后配合下方的不等距相位偏移与三级粒径，形成"星尘流"而非串珠。
+ */
+const PACKETS_PER_LANE = 26;
 
 /** 粒子总数（InstancedMesh 固定容量，严禁随数据变化——args 重建灾难同 Pod 渲染器） */
 const PACKET_TOTAL = LANE_COUNT * PACKETS_PER_LANE;
@@ -94,8 +101,23 @@ const RACK_TOP_Y = RACK_BODY_SIZE[1] + 0.12;
 /** 拱形抬升量（世界单位）：MASTER 侧陡升、机架侧缓落 */
 const ARCH_LIFT = 3.4;
 
-/** 粒子球半径（发光数据包颗粒感） */
-const PACKET_RADIUS = 0.07;
+/**
+ * 粒子基准半径（发光数据包颗粒感）。
+ *
+ * 【为何从 0.07 缩到 0.038】粒子越小、越密，越像"星尘"；
+ * 越大越像"珠子"。配合三级粒径倍率（下方 PACKET_SIZE_TIERS），
+ * 大小参差才是真实粒子流的观感。
+ */
+const PACKET_RADIUS = 0.038;
+
+/**
+ * 三级粒径倍率：按粒子在车道内的序号循环取值。
+ *
+ * 【设计意图】统一大小的粒子无论多密都会呈现"规则阵列"；
+ * 引入 0.7 / 1.0 / 1.4 三档差异后，视觉上形成前后景深错落，
+ * 这是图二那种"星尘"质感的核心技巧之一。
+ */
+const PACKET_SIZE_TIERS: readonly number[] = [0.7, 1.0, 1.4];
 
 /** 推进速度模型：v = BASE + PER_MBPS × 吞吐（周期/秒，u 域） */
 const PACKET_BASE_SPEED = 0.08;
@@ -223,11 +245,39 @@ export default function NetworkStream3D() {
     }
     return colors;
   }, []);
+  /**
+   * 粒子曲线参数初值（决定"串珠"还是"星尘"）。
+   *
+   * 【核心数学：黄金分割抖动】
+   * 原公式 `u₀ = (j + 0.37k) / N` 是**严格等距**分布——弧长上每隔
+   * 1/N 就有一颗粒子，间距完全一致。这正是"佛珠弧线"的数学根源：
+   * 人眼对等距排列极其敏感，会立刻识别为"被串起来的珠子"而非"流动的粒子"。
+   *
+   * 现改为两层叠加：
+   * 1. **基准等分**（j/N）保证宏观覆盖均匀，不出现大片空隙；
+   * 2. **黄金分割抖动**：用无理数 φ⁻¹ ≈ 0.6180339887 生成伪随机偏移，
+   *    再乘以抖动强度 JITTER，把每个粒子在其等分格内部随机错开。
+   *
+   * 【为何用黄金分割而非 Math.random()】Math.random() 不可复现，
+   * 会导致每次挂载的粒子布局都不同（E2E 无法断言、截图无法比对）。
+   * 黄金分割序列 {n·φ⁻¹} 是低差异序列：既打散了等距性，
+   * 又保证整体分布比随机更均匀，且**完全可复现**。
+   */
   const uBuffer = useMemo((): Float32Array => {
     const buffer = new Float32Array(PACKET_TOTAL);
+    /** 抖动强度：0.62 意味着粒子可在自己格子的 62% 范围内游走 */
+    const JITTER = 0.62;
+    const PHI_INV = 0.6180339887498949;
+
     for (let k = 0; k < LANE_COUNT; k++) {
       for (let j = 0; j < PACKETS_PER_LANE; j++) {
-        buffer[k * PACKETS_PER_LANE + j] = ((j + 0.37 * k) / PACKETS_PER_LANE) % 1;
+        const idx = k * PACKETS_PER_LANE + j;
+        /* 基准等分位置 */
+        const slot = (j + 0.37 * k) / PACKETS_PER_LANE;
+        /* 黄金分割抖动：取小数部分映射到 [-0.5, 0.5]，再乘抖动强度与格子宽度 */
+        const jitterRaw = (idx * PHI_INV) % 1;
+        const jitter = (jitterRaw - 0.5) * JITTER * (1 / PACKETS_PER_LANE);
+        buffer[idx] = ((slot + jitter) % 1 + 1) % 1;
       }
     }
     return buffer;
@@ -257,7 +307,8 @@ export default function NetworkStream3D() {
         curve.getPointAt(uBuffer[idx], tempVec);
         tempObject.position.copy(tempVec);
         tempObject.rotation.set(0, 0, 0);
-        tempObject.scale.setScalar(1);
+        /* 初始帧也必须应用三级粒径，否则首帧所有粒子等大，会闪一下 */
+        tempObject.scale.setScalar(PACKET_SIZE_TIERS[j % PACKET_SIZE_TIERS.length]);
         tempObject.updateMatrix();
         mesh.setMatrixAt(idx, tempObject.matrix);
         mesh.setColorAt(idx, laneColor);
@@ -328,11 +379,20 @@ export default function NetworkStream3D() {
         /* 弧长参数化取点（查表插值，零分配写入 tempVec） */
         curve.getPointAt(u, tempVec);
 
-        /* 故障粒子尺寸闪烁；健康粒子恒定 */
+        /*
+         * 粒子尺寸：三级基准粒径 × （故障时叠加闪烁）。
+         *
+         * 【为何要分三级】统一大小的粒子即使打散了间距，仍会呈现"规则感"；
+         * 引入 0.7 / 1.0 / 1.4 三档大小差异后，视觉上产生前后景深错落，
+         * 这才是图二那种"星尘粒子流"的观感（而非一串等大的珠子）。
+         * 档位按粒子序号取模循环，天然可复现。
+         */
+        const tier = PACKET_SIZE_TIERS[j % PACKET_SIZE_TIERS.length];
         const scale = fault
-          ? FAULT_FLICKER_MIN +
-            FAULT_FLICKER_GAIN * Math.abs(Math.sin(t * FAULT_FLICKER_RATE + j))
-          : 1;
+          ? tier *
+            (FAULT_FLICKER_MIN +
+              FAULT_FLICKER_GAIN * Math.abs(Math.sin(t * FAULT_FLICKER_RATE + j)))
+          : tier;
 
         tempObject.position.copy(tempVec);
         tempObject.scale.setScalar(scale);
