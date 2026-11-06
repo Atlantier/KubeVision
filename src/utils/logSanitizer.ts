@@ -96,6 +96,41 @@ const SANITIZER_RULES: readonly SanitizerRule[] = [
     placeholder: '$1://[REDACTED_CREDENTIAL]@',
   },
   {
+    /* ---- 0.5 通用密码字段（URL 之外的裸凭证） ---- */
+    name: 'password-field',
+    /**
+     * 匹配 `password=xxx` / `passwd: xxx` / `pwd=xxx` / `secret=xxx` 等
+     * 键值形态的凭证，**覆盖不嵌在 URL 里的情况**。
+     *
+     * 【为什么需要单独一条】上一条 url-embedded-credential 只处理
+     * `scheme://user:pass@host` 这一种形态。但真实日志里密码还会以
+     * 独立键值对出现，例如：
+     *   - `admin S3cr3t! at postgres://...`（自由文本中提及密码）
+     *   - `db_password=hunter2 connecting`
+     *   - `config: {passwd: "xxx"}`
+     * 这些 URL 规则抓不到，会成为真实的泄露缺口（回归测试实测发现）。
+     *
+     * 【保留键名】替换为 `$1=[REDACTED_PASSWORD]`，保留键名让日志
+     * 仍能看出"此处曾设置过密码"，便于排查配置问题。
+     *
+     * 【边界控制】值部分要求至少 4 个字符且不含空格/引号/逗号/分号，
+     * 避免把 `password policy: enabled` 这类正常文案误判。
+     *
+     * 【为何不用 \b 开头】`\b` 要求边界两侧一为词字符一为非词字符，
+     * 而 `db_password` 中 `_` 属于词字符，故 `_` 与 `p` 之间**没有**词边界，
+     * `\bpassword` 无法匹配 `db_password=`（回归测试实测发现）。
+     * 改用负向后顾 `(?<![A-Za-z0-9])`：只要前面不是字母数字即可，
+     * 允许下划线、点、短横等常见键名前缀（db_password / app.secret / x-pwd）。
+     *
+     * 【前缀捕获】把合法的键名前缀（`[\w.-]*`）并入捕获组 $1，
+     * 使替换后保留完整键名（`db_password=[REDACTED_PASSWORD]`），
+     * 而不是残缺成 `db_=[REDACTED_PASSWORD]`——保留键名才便于排查配置。
+     */
+    pattern:
+      /(?<![A-Za-z0-9])((?:[A-Za-z0-9_.-]*)(?:password|passwd|pwd|secret|passphrase))\s*[=:]\s*["']?([^\s"',;}]{4,})/gi,
+    placeholder: '$1=[REDACTED_PASSWORD]',
+  },
+  {
     /* ---- 1. 云厂商 AccessKey ---- */
     name: 'cloud-access-key',
     /**
