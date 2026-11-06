@@ -19,12 +19,13 @@
  * 永不遮挡 Copilot 抽屉（z-30+）与顶层 Modal（z-50）（AGENTS.md 第 6 条）。
  */
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Canvas, type RootState } from '@react-three/fiber';
-import { Grid, Sparkles } from '@react-three/drei';
+import { Grid, PerformanceMonitor, Sparkles } from '@react-three/drei';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { useInViewPause } from '@/hooks/useInViewPause';
 import { dispatchViewPreset, subscribeViewPreset } from '@/utils/viewPresetBus';
 import type { WorkerNodeEntity } from '@/types/cluster';
 import type { ViewPresetKey } from '@/types/canvas';
@@ -32,6 +33,7 @@ import type { SelectedEntityType } from '@/types/store';
 
 import CameraRig from '@/components/canvas/CameraRig';
 import ErrorRippleRing from '@/components/canvas/ErrorRippleRing';
+import GlStatsCollector from '@/components/canvas/GlStatsCollector';
 import MasterNode3D from '@/components/canvas/MasterNode3D';
 import NetworkStream3D from '@/components/canvas/NetworkStream3D';
 import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
@@ -142,6 +144,59 @@ export default function ClusterCanvas() {
   const triggerQuickPrompt = useClusterStore((s): ((prompt: string) => void) => s.triggerQuickPrompt);
   const appendTerminalLog = useClusterStore((s): ((line: string) => void) => s.appendTerminalLog);
 
+  /* ========================================================================== */
+  /* 性能优化：视口休眠与自适应 dpr                                                */
+  /* ========================================================================== */
+
+  /** 画布容器引用（供 IntersectionObserver 观察可见性） */
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * 【视口休眠】监听页面可见性 + 元素视口可见性。
+   *
+   * 页面切到后台标签页，或画布滚出/被隐藏时 isActive 变 false，
+   * Canvas 的 frameloop 随即切到 'demand'，每帧 draw call 彻底停止。
+   * 这是全屏 3D 看板最大的省电杠杆——不可见时的渲染是纯粹的浪费。
+   */
+  const { isActive: isSceneActive } = useInViewPause(containerRef);
+
+  /**
+   * 自适应 dpr（1.0 ~ 2.0）。
+   *
+   * 【降级策略】由 drei 的 PerformanceMonitor 驱动：
+   * - 帧率持续走低（onDecline）→ 逐步下调至 1.0；
+   * - 帧率恢复良好（onIncline）→ 逐步回升至 2.0。
+   *
+   * 【为何用区间步进而非二值切换】直接 2.0 ↔ 1.0 硬切会让整屏
+   * 清晰度突变，用户会感到明显的"分辨率跳变"。按 0.25 步进平滑过渡，
+   * 视觉上几乎察觉不到，但性能收益是逐步累积的。
+   */
+  const [adaptiveDpr, setAdaptiveDpr] = useState<number>(2);
+
+  /** 帧率走低：下调 dpr（下限 1.0） */
+  const handlePerfDecline = useCallback((): void => {
+    setAdaptiveDpr((prev): number => {
+      const next = Math.max(1, Math.round((prev - 0.25) * 100) / 100);
+      return next;
+    });
+  }, []);
+
+  /** 帧率恢复：上调 dpr（上限 2.0） */
+  const handlePerfIncline = useCallback((): void => {
+    setAdaptiveDpr((prev): number => {
+      const next = Math.min(2, Math.round((prev + 0.25) * 100) / 100);
+      return next;
+    });
+  }, []);
+
+  /**
+   * 设备能力兜底：明显撑不住高分屏的设备（如低端集显）直接锁到 1.0。
+   * drei 会在设备性能评级过低时调用本回调。
+   */
+  const handlePerfFallback = useCallback((): void => {
+    setAdaptiveDpr(1);
+  }, []);
+
   /**
    * 当前视角预设高亮跟踪（本地 UI 状态）。
    *
@@ -215,9 +270,17 @@ export default function ClusterCanvas() {
   const nodes = useClusterStore((s): readonly WorkerNodeEntity[] => s.snapshotSummary.nodes);
 
   return (
-    <div className="absolute inset-0">
+    <div className="absolute inset-0" ref={containerRef}>
       <Canvas
-        dpr={[1, 2]}
+        /**
+         * 【自适应 DPR 契约】dpr 由状态驱动而非写死：
+         * - 正常态 [1, 2]：高分屏享受 2x 清晰度；
+         * - 持续低帧率（<40FPS）时被 PerformanceMonitor 下调至 1.0，
+         *   牺牲清晰度换回流畅度——掉帧对交互的伤害远大于分辨率下降。
+         * 这个降级是**单向保守**的：一旦降下来，只有帧率稳定回升才会恢复，
+         * 避免在临界点反复横跳造成视觉抖动。
+         */
+        dpr={[1, adaptiveDpr]}
         camera={{ position: INITIAL_CAMERA_POSITION, fov: CAMERA_FOV }}
         gl={{
           antialias: true,
@@ -225,11 +288,29 @@ export default function ClusterCanvas() {
           // 多模态视觉快照前提：帧合成后仍可 toDataURL 读取绘制缓冲
           preserveDrawingBuffer: true,
         }}
+        /**
+         * 【视口休眠契约】页面切到后台或画布滚出视口时，
+         * frameloop 切到 'demand'（仅在需要时渲染），
+         * 彻底停止每帧 draw call——这是最大的省电杠杆。
+         * 切回时立即恢复 'always'，用户无感。
+         */
+        frameloop={isSceneActive ? 'always' : 'demand'}
         onCreated={handleCanvasCreated}
         onPointerMissed={(): void => {
           selectEntity(null);
         }}
       >
+        {/* ---- 性能监控：帧率持续低于 40FPS 时下调 dpr 至 1.0 ---- */}
+        <PerformanceMonitor
+          onDecline={handlePerfDecline}
+          onIncline={handlePerfIncline}
+          flipflops={3}
+          onFallback={handlePerfFallback}
+        />
+
+        {/* ---- WebGL 指标采集探针（无渲染，每 500ms 写入瞬态轨） ---- */}
+        <GlStatsCollector />
+
         {/* ---- 深空氛围：背景色 + 线性雾 ---- */}
         <color attach="background" args={[VOID_COLOR]} />
         <fog attach="fog" args={[VOID_COLOR, FOG_NEAR, FOG_FAR]} />

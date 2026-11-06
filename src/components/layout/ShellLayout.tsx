@@ -38,11 +38,9 @@ import { Bot, Layers, ShieldCheck, TerminalSquare } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
-import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import type { RightPanelTab } from '@/types/store';
 import type {
   MobileViewKey,
-  PerfHudSample,
   RightDrawerSlotProps,
   ShellLayoutProps,
 } from '@/types/layout';
@@ -118,97 +116,9 @@ export function RightDrawerSlot({ activeTab, onTabChange, children }: RightDrawe
   );
 }
 
-/* ========================================================================== */
-/* 子组件：性能监控 HUD（浮层，z-40，低于顶层 Modal 的 z-50）                    */
-/* ========================================================================== */
-
-/**
- * PerfHudPanel —— 性能监控 HUD 浮层。
- *
- * 【数据流】4Hz 定时采样 telemetryTransientRef.glStats（瞬态轨，渲染循环写入）
- * + snapshotSummary 实体计数（响应轨），合并为 PerfHudSample 进本地 state。
- * 采样器仅在 HUD 开启时运行（关闭即零后台开销）；组件卸载清理定时器。
- */
-function PerfHudPanel() {
-  const [sample, setSample] = useState<PerfHudSample | null>(null);
-  const snapshotSummary = useClusterStore((s) => s.snapshotSummary);
-
-  useEffect(() => {
-    const timer = setInterval((): void => {
-      const stats = telemetryTransientRef.glStats;
-      setSample({
-        fps: stats.fps,
-        frameTimeMs: stats.frameTimeMs,
-        drawCalls: stats.drawCalls,
-        triangles: stats.triangles,
-        sseLatencyMs: stats.sseLatencyMs,
-        workerStatus: stats.workerStatus,
-        podCount: snapshotSummary.pods.length,
-        nodeCount: snapshotSummary.nodes.length,
-        alertCount: snapshotSummary.activeAlerts.length,
-      });
-    }, PERF_HUD_SAMPLE_INTERVAL_MS);
-    return (): void => clearInterval(timer);
-  }, [snapshotSummary]);
-
-  const rows: ReadonlyArray<{ readonly label: string; readonly value: string }> = [
-    { label: 'FPS', value: sample !== null && sample.fps > 0 ? sample.fps.toFixed(0) : '--' },
-    {
-      label: 'Frame',
-      value: sample !== null && sample.frameTimeMs > 0 ? `${sample.frameTimeMs.toFixed(1)} ms` : '--',
-    },
-    { label: 'Draw Calls', value: sample !== null ? String(sample.drawCalls) : '--' },
-    {
-      label: 'Triangles',
-      value: sample !== null && sample.triangles > 0 ? sample.triangles.toLocaleString('en-US') : '--',
-    },
-    {
-      /* 标签语义：本指标测量的是「相邻两帧的到达间隔」（理想 1000ms），
-         而非网络 RTT——SSE 帧未携带服务端发送时间戳，无法算真 RTT。
-         如实标注为 Frame Interval 而非误导性的 Latency。 */
-      label: 'Frame Interval',
-      value: sample !== null && sample.sseLatencyMs > 0 ? `${sample.sseLatencyMs.toFixed(0)} ms` : '--',
-    },
-    {
-      /* 标签语义：此前写作 Sim Worker，但该字段实际由端侧推理 Worker
-         写入（'INITIALIZING (WebGPU)' / 'READY (WASM)' / 'INFERENCING'），
-         改名以如实反映数据来源——HUD 标签写错来源比不显示更糟。 */
-      label: 'Edge Worker',
-      value: sample !== null ? sample.workerStatus : '--',
-    },
-    {
-      label: 'Entities',
-      value: sample !== null ? `${sample.nodeCount} nodes / ${sample.podCount} pods / ${sample.alertCount} alerts` : '--',
-    },
-  ];
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: -8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8 }}
-      transition={{ duration: 0.18 }}
-      className="kv-panel pointer-events-auto absolute right-3 top-16 z-40 w-60 p-3"
-      aria-label="性能监控 HUD"
-    >
-      <p className="mb-2 font-mono text-[10px] font-bold uppercase tracking-[0.25em] text-cyan-400">
-        perf&nbsp;hud · {PERF_HUD_SAMPLE_HZ}hz
-      </p>
-      <dl className="space-y-1">
-        {rows.map((row) => (
-          <div key={row.label} className="flex items-baseline justify-between gap-2">
-            <dt className="font-mono text-[10px] uppercase tracking-wider text-slate-500">{row.label}</dt>
-            <dd className="font-mono text-[11px] tabular-nums text-slate-200">{row.value}</dd>
-          </div>
-        ))}
-      </dl>
-      <p className="mt-2 border-t border-slate-800 pt-1.5 font-mono text-[9px] text-slate-600">
-        数据源：telemetryTransientRef.glStats（瞬态轨，零重渲染采样）
-      </p>
-    </motion.div>
-  );
-}
-
+/* 说明：原 PerfHudPanel 已移除。性能遥测 HUD 迁至独立组件
+   src/components/hud/PerfTelemetryHUD.tsx，由 page.tsx 通过 next/dynamic
+   按需懒加载（首屏零开销）。本文件仅保留 Shift+P 的开关状态维护。 */
 /* ========================================================================== */
 /* 子组件：移动端底部浮动视图切换栏                                              */
 /* ========================================================================== */
@@ -273,7 +183,6 @@ function MobileViewSwitcher({ view, onChange }: { readonly view: MobileViewKey; 
  */
 export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
   /* ---- Store 细粒度订阅 ---- */
-  const isPerfHudOpen = useClusterStore((s): boolean => s.isPerfHudOpen);
   const activeRightTab = useClusterStore((s): RightPanelTab => s.activeRightTab);
   const setPerfHudOpen = useClusterStore((s): ((open: boolean) => void) => s.setPerfHudOpen);
   const setActiveRightTab = useClusterStore((s): ((tab: RightPanelTab) => void) => s.setActiveRightTab);
@@ -329,8 +238,10 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
               两者在右下角不再重叠，terminal 的 clear 按钮与日志区完整可点 */}
           <TerminalEcho className="absolute bottom-3 left-3 right-[74px]" />
 
-          {/* 性能 HUD：悬浮于视口右上（z-40） */}
-          <AnimatePresence>{isPerfHudOpen ? <PerfHudPanel /> : null}</AnimatePresence>
+          {/* 性能遥测 HUD 已迁出本组件：由 page.tsx 通过 next/dynamic
+              懒加载 PerfTelemetryHUD 挂载（按需载入，首屏零开销）。
+              此处仅保留 Shift+P 的开关状态（isPerfHudOpen），
+              键盘监听仍在下方 useEffect 中维护。 */}
         </section>
 
         {/* ---- 右栏：AI 抽屉槽位（35%） ---- */}

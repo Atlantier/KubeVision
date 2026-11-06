@@ -77,6 +77,21 @@ const ChaosControlModal = dynamic(() => import('@/components/hud/ChaosControlMod
 });
 
 /**
+ * PerfTelemetryHUD 懒加载（开发者性能遥测浮层）。
+ *
+ * 【为何 dynamic】这是一个**按需开发者工具**：绝大多数用户永远不会按
+ * Shift+P。它的代码（2Hz 采样器、FPS 迷你折线图、framer-motion 动画）
+ * 不应该进入首屏 bundle。ssr:false 同时规避 window 依赖。
+ *
+ * 【loading 返回 null】HUD 是浮层，加载期间不占位；chunk 通常几十毫秒就绪，
+ * 闪现骨架只会造成视觉噪音。
+ */
+const PerfTelemetryHUD = dynamic(() => import('@/components/hud/PerfTelemetryHUD'), {
+  ssr: false,
+  loading: (): null => null,
+});
+
+/**
  * CanvasSkeleton —— 3D 画布加载占位（赛博风）。
  *
  * 深空网格背景 + 中心雷达徽标脉冲 + 底部扫描线往复（animate-scan-line 令牌），
@@ -131,9 +146,17 @@ export default function HomePage() {
    * 仅此一个布尔值参与本页重渲染，开销可忽略。 */
   const isChaosModalOpen = useClusterStore((s): boolean => s.isChaosModalOpen);
 
+  /* 性能遥测 HUD 开关（Shift+P 或 TopBar 按钮写入）。
+   * HUD 组件本身通过 dynamic 懒加载，关闭状态下完全不加载其 chunk。 */
+  const isPerfHudOpen = useClusterStore((s): boolean => s.isPerfHudOpen);
+  const setPerfHudOpen = useClusterStore((s): ((open: boolean) => void) => s.setPerfHudOpen);
+
   return (
     <>
       <ShellLayout viewport={<ClusterCanvas />} drawer={<CopilotDrawer />} />
+
+      {/* 性能遥测浮层：按需懒加载，仅在开启时挂载（关闭即卸载并释放采样器） */}
+      {isPerfHudOpen ? <PerfTelemetryHUD onClose={(): void => setPerfHudOpen(false)} /> : null}
       {/* 顶层混沌演练模态框：仅在开启时挂载，关闭即卸载（配合 dynamic 实现
           chunk 按需加载 + 卸载释放）。组件内部自带 AnimatePresence 入场动画，
           且 z-50 位于全站最顶层（高于 PerfHUD z-40 与画布 Html 标注）。 */}
