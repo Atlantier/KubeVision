@@ -217,7 +217,7 @@ export default function ActionConfirm({
               {ACTION_LABEL[actionType]}
             </span>
             {isHighRisk ? (
-              <span className="rounded border border-rose-500/50 bg-rose-500/15 px-1 py-0.5 font-mono text-[8px] font-bold uppercase tracking-wider text-rose-300">
+              <span className="rounded border border-rose-500/50 bg-rose-500/15 px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-rose-300">
                 high&nbsp;risk
               </span>
             ) : null}
@@ -232,7 +232,7 @@ export default function ActionConfirm({
       <div className="px-2.5 pb-2">
         <div className="flex items-center gap-1 rounded border border-slate-700/70 bg-slate-800/50 px-1.5 py-1">
           <Terminal className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
-          <code className="truncate font-mono text-[9px] text-slate-400">{mcpEndpoint}</code>
+          <code className="truncate font-mono text-[11px] text-slate-400">{mcpEndpoint}</code>
         </div>
       </div>
 
@@ -252,7 +252,7 @@ export default function ActionConfirm({
             className="mt-[2px] h-3 w-3 shrink-0 cursor-pointer accent-rose-500"
             aria-label="确认已知晓高危操作风险"
           />
-          <span className="min-w-0 text-[9.5px] leading-relaxed text-rose-200/90">
+          <span className="min-w-0 text-[12px] leading-relaxed text-rose-200/90">
             我已知晓该操作将影响生产环境，确认立即执行（此操作会记录审计日志）
           </span>
         </label>
@@ -317,7 +317,7 @@ export default function ActionConfirm({
 
       {/* ============ 执行完成后的回执 ============ */}
       {isDone ? (
-        <p className="border-t border-slate-800 px-2.5 py-1.5 font-mono text-[8.5px] uppercase tracking-wider text-emerald-400/80">
+        <p className="border-t border-slate-800 px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-wider text-emerald-400/80">
           ✓ heal dispatched → immunity window registered → 3d viewport updated
         </p>
       ) : null}

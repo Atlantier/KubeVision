@@ -565,6 +565,27 @@ export const useClusterStore = create<ClusterStore>()(
       },
 
       /**
+       * clearTerminalLogs —— 仅清空终端滚动日志（不动任何持久化数据）。
+       *
+       * 【为何必须独立于 clearPersistedHistory】
+       * 此前 TerminalEcho 的 clear 按钮直接调用 clearPersistedHistory()，
+       * 用户只想清掉左下角几行滚动日志，却连带洗白了 connectionMode
+       * （数据源偏好）、totalMaskedSecrets（端侧累计脱敏计数）与
+       * remediationHistory（自愈审计历史）——这是**真实的数据丢失事故**，
+       * 属于最危险的一类「操作与预期不符」缺陷（审查报告 §5.2）。
+       *
+       * 本动作只做一件事：清空 terminalLogs 并留一条系统回执，
+       * 让用户明确知道「清屏发生了什么」。
+       */
+      clearTerminalLogs: () => {
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        const ss = String(now.getSeconds()).padStart(2, '0');
+        set({ terminalLogs: [`${hh}:${mm}:${ss} [SYSTEM] 终端回显已清屏`] });
+      },
+
+      /**
        * triggerQuickPrompt —— 触发 AI 快捷诊断指令。
        *
        * 【联动契约】写入载荷的同时强制切换两处 Copilot 可见性：

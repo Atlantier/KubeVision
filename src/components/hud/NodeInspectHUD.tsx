@@ -51,6 +51,7 @@ import {
   Move3d,
   RotateCcw,
   Server,
+  ShieldCheck,
   Sparkles,
   X,
   ZoomIn,
@@ -564,7 +565,7 @@ function TopologyLegendPanel() {
       {/* 手势提示 */}
       <div className="mb-1.5 flex items-center gap-1.5">
         <Move3d className="h-3 w-3 text-slate-500" aria-hidden />
-        <p className="font-mono text-[9px] font-bold uppercase tracking-[0.22em] text-slate-500">
+        <p className="font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
           camera&nbsp;controls
         </p>
       </div>
@@ -580,7 +581,7 @@ function TopologyLegendPanel() {
             ) : (
               <MousePointerClick className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
             )}
-            <span className="truncate font-mono text-[9px] text-slate-500">
+            <span className="truncate font-mono text-[11px] text-slate-500">
               {hint.label} <span className="text-slate-600">·</span>{' '}
               <span className="text-slate-400">{hint.effect}</span>
             </span>
@@ -638,7 +639,7 @@ function EntityProbeCard({
           <p className="truncate font-mono text-[11px] font-bold tracking-wide text-slate-100" title={view.displayName}>
             {view.displayName}
           </p>
-          <p className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-slate-600">
+          <p className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.18em] text-slate-600">
             {view.entityType}
           </p>
         </div>
@@ -659,7 +660,7 @@ function EntityProbeCard({
         <span className={cn('font-mono text-[10px] font-bold tracking-wider', TONE_TEXT_CLASS[view.statusTone])}>
           {view.statusLabel}
         </span>
-        <span className="ml-auto flex items-center gap-1 font-mono text-[9px] text-slate-500">
+        <span className="ml-auto flex items-center gap-1 font-mono text-[11px] text-slate-500">
           RESTARTS
           <span className={cn('font-bold tabular-nums', TONE_TEXT_CLASS[restartsTone])}>{view.restarts}</span>
         </span>
@@ -669,7 +670,7 @@ function EntityProbeCard({
       <dl className="mt-2 space-y-1">
         {view.metaRows.map((row) => (
           <div key={row.label} className="flex items-baseline justify-between gap-2">
-            <dt className="shrink-0 font-mono text-[9px] uppercase tracking-wider text-slate-600">{row.label}</dt>
+            <dt className="shrink-0 font-mono text-[11px] uppercase tracking-wider text-slate-600">{row.label}</dt>
             <dd
               className="min-w-0 truncate font-mono text-[10px] tabular-nums text-slate-300"
               title={row.value.length > 0 ? row.value : '—'}
@@ -687,7 +688,7 @@ function EntityProbeCard({
       </div>
 
       {/* ---- 数据口径标注（direct 真实采集 / derived 聚合派生） ---- */}
-      <p className="mt-1.5 flex items-center gap-1 font-mono text-[8px] uppercase tracking-wider text-slate-700">
+      <p className="mt-1.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-700">
         <HardDrive className="h-2 w-2" aria-hidden />
         history&nbsp;source&nbsp;·&nbsp;{view.historySource === 'direct' ? 'direct samples' : 'derived from pod samples'}
       </p>
@@ -702,14 +703,39 @@ function EntityProbeCard({
           <Sparkles className="h-3 w-3" aria-hidden />
           交由 AI Copilot 根因诊断
         </button>
-        <button
-          type="button"
-          onClick={onHeal}
-          className="flex w-full items-center justify-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-300 transition-all duration-150 hover:border-emerald-400/70 hover:bg-emerald-500/20 active:scale-[0.98]"
-        >
-          <RotateCcw className="h-3 w-3" aria-hidden />
-          隔离并重启实例
-        </button>
+        {/*
+         * 【按实体类型定制动作】此前 Master / Node / Pod 一律渲染
+         * 「隔离并重启实例」并统一调用 healEntity(id,'restart_pod')：
+         * - 选中 MASTER 时会传出 'master-control-plane' 这个不存在的 Pod ID，
+         *   Store 查不到却仍打印成功的 [KUBE-CONTROLLER] 日志——**虚假成功回执**；
+         * - 选中 Worker 节点时对节点传 'restart_pod' 语义也不对。
+         *
+         * 真实 K8s 运维中这三类实体的处置动作完全不同，此处按类型区分：
+         * - pod    → 重启 Pod（可执行）
+         * - node   → 驱逐节点并恢复水位（可执行，节点级动作）
+         * - master → 控制面只读巡检（禁用破坏性操作，符合生产安全逻辑）
+         */}
+        {view.entityType === 'master' ? (
+          <button
+            type="button"
+            disabled
+            aria-disabled
+            className="flex w-full cursor-not-allowed items-center justify-center gap-1.5 rounded border border-slate-700 bg-slate-800/40 px-2 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-600"
+            title="控制面为只读保护对象，不提供破坏性运维动作"
+          >
+            <ShieldCheck className="h-3 w-3" aria-hidden />
+            控制面只读巡检
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onHeal}
+            className="flex w-full items-center justify-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-300 transition-all duration-150 hover:border-emerald-400/70 hover:bg-emerald-500/20 active:scale-[0.98]"
+          >
+            <RotateCcw className="h-3 w-3" aria-hidden />
+            {view.entityType === 'node' ? '驱逐节点并恢复水位' : '隔离并重启 Pod'}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -726,7 +752,7 @@ function SparklineBlock({
   return (
     <div>
       <div className="mb-0.5 flex items-baseline justify-between gap-2">
-        <span className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-wider text-slate-500">
+        <span className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
           <span style={{ color: series.color }}>{icon}</span>
           {series.label}
         </span>
@@ -769,6 +795,7 @@ export default function NodeInspectHUD({ className }: NodeInspectHUDProps) {
   );
   const triggerQuickPrompt = useClusterStore((s): ((prompt: string) => void) => s.triggerQuickPrompt);
   const healEntity = useClusterStore((s): ((targetId: string, actionType: string) => void) => s.healEntity);
+  const appendTerminalLog = useClusterStore((s): ((line: string) => void) => s.appendTerminalLog);
 
   /**
    * 巡检视图模型（实体 + 快照变更才重算）。
@@ -815,8 +842,27 @@ export default function NodeInspectHUD({ className }: NodeInspectHUDProps) {
    */
   const handleHeal = useCallback((): void => {
     if (view === null) return;
-    healEntity(view.entityId, 'restart_pod');
-  }, [view, healEntity]);
+
+    /**
+     * 【按实体类型分派动作，并拒绝控制面】
+     *
+     * 修复两个真实缺陷（审查报告 §5.1）：
+     * 1. master 控制面没有对应的 Pod 实体，此前一律传 'master-control-plane'
+     *    给 healEntity，Store 找不到该 ID 却仍打印成功的
+     *    [KUBE-CONTROLLER] executed 日志——**虚假成功回执比报错更危险**，
+     *    会让值班人员误以为控制面已被修复。此处直接拒绝并给明确提示。
+     * 2. node 级目标应走节点维护动作（drain_node），而非 Pod 的 restart_pod。
+     */
+    if (view.entityType === 'master') {
+      appendTerminalLog(
+        '[WARN] 控制面为只读保护对象，已拒绝破坏性运维动作（master-control-plane）',
+      );
+      return;
+    }
+
+    const actionType = view.entityType === 'node' ? 'drain_node' : 'restart_pod';
+    healEntity(view.entityId, actionType);
+  }, [view, healEntity, appendTerminalLog]);
 
   return (
     <div

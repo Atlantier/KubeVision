@@ -195,6 +195,14 @@ export interface ClusterActions {
   incrementMaskedSecrets: (count: number) => void;
   /** 追加底部终端日志（运行期 FIFO 上限 200 条） */
   appendTerminalLog: (line: string) => void;
+  /**
+   * 仅清空终端滚动日志（保留 connectionMode / totalMaskedSecrets /
+   * remediationHistory 等全部持久化数据），并写入一条清屏回执。
+   *
+   * 【为何与 clearPersistedHistory 分开】用户点终端上的「清屏」只想清掉
+   * 屏幕上滚动的几行日志，若顺带清掉持久化审计数据就是数据丢失事故。
+   */
+  clearTerminalLogs: () => void;
   /** 触发 AI 快捷诊断指令（自动将右侧抽屉切换至 copilot 页签；小屏联动切至 copilot 视图） */
   triggerQuickPrompt: (prompt: string) => void;
   /** 手动切换右侧抽屉页签（copilot / auditor） */

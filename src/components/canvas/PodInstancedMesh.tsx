@@ -592,7 +592,7 @@ export default function PodInstancedMesh() {
               />
               <span
                 className={cn(
-                  'font-mono text-[8px] uppercase tracking-widest',
+                  'font-mono text-[10px] uppercase tracking-widest',
                   POD_STATUS_BADGE[hoverLabelData.status].extraClass,
                 )}
                 style={{ color: POD_STATUS_BADGE[hoverLabelData.status].color }}
@@ -601,7 +601,7 @@ export default function PodInstancedMesh() {
               </span>
             </span>
             {/* 实时 CPU / MEM 百分比（响应轨 1Hz 刷新，tabular-nums 防抖动） */}
-            <span className="flex items-center gap-2 font-mono text-[9px] tabular-nums text-slate-400">
+            <span className="flex items-center gap-2 font-mono text-[10px] tabular-nums text-slate-400">
               <span>
                 CPU <span className="text-slate-200">{hoverLabelData.cpuUsage}%</span>
               </span>

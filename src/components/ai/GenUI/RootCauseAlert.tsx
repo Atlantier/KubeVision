@@ -105,7 +105,7 @@ export default function RootCauseAlert({
       <div className="flex items-start gap-2 p-2.5 pb-2">
         <span
           className={cn(
-            'mt-0.5 inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider',
+            'mt-0.5 inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider',
             SEVERITY_BADGE[severity],
             severity === 'P0' && 'animate-glow-pulse',
           )}
@@ -120,7 +120,7 @@ export default function RootCauseAlert({
       <div className="px-2.5 pb-2">
         <div className="flex items-center gap-1.5">
           <Gauge className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
-          <span className="shrink-0 font-mono text-[8.5px] uppercase tracking-wider text-slate-500">
+          <span className="shrink-0 font-mono text-[11px] uppercase tracking-wider text-slate-500">
             confidence
           </span>
           <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-800">
@@ -134,7 +134,7 @@ export default function RootCauseAlert({
               aria-label="根因置信度"
             />
           </div>
-          <span className="shrink-0 font-mono text-[9px] font-bold tabular-nums text-slate-300">
+          <span className="shrink-0 font-mono text-[11px] font-bold tabular-nums text-slate-300">
             {confidencePct}%
           </span>
         </div>
@@ -142,7 +142,7 @@ export default function RootCauseAlert({
 
       {/* ============ 根因摘要 ============ */}
       <div className="px-2.5 pb-2">
-        <p className="flex items-start gap-1 font-mono text-[8.5px] uppercase tracking-wider text-slate-500">
+        <p className="flex items-start gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
           <Target className="mt-[2px] h-2.5 w-2.5 shrink-0" aria-hidden />
           root&nbsp;cause
         </p>
@@ -154,7 +154,7 @@ export default function RootCauseAlert({
       {/* ============ 影响范围 ============ */}
       {impactScope.length > 0 ? (
         <div className="px-2.5 pb-2">
-          <p className="font-mono text-[8.5px] uppercase tracking-wider text-slate-500">impact&nbsp;scope</p>
+          <p className="font-mono text-[11px] uppercase tracking-wider text-slate-500">impact&nbsp;scope</p>
           <p className="mt-0.5 text-[10px] leading-relaxed text-amber-300/90">{impactScope}</p>
         </div>
       ) : null}
@@ -162,7 +162,7 @@ export default function RootCauseAlert({
       {/* ============ 时间轴证据链 ============ */}
       {evidenceChain.length > 0 ? (
         <div className="border-t border-slate-800 px-2.5 py-2">
-          <p className="flex items-center gap-1 font-mono text-[8.5px] uppercase tracking-wider text-slate-500">
+          <p className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
             <ListTree className="h-2.5 w-2.5" aria-hidden />
             evidence&nbsp;chain&nbsp;·&nbsp;{evidenceChain.length}
           </p>
@@ -175,7 +175,7 @@ export default function RootCauseAlert({
             {evidenceChain.map((evidence, index) => (
               <li key={`${index}-${evidence.slice(0, 16)}`} className="flex items-start gap-1.5">
                 <span className="relative z-10 mt-[5px] h-1 w-1 shrink-0 rounded-full bg-slate-500" aria-hidden />
-                <code className="min-w-0 flex-1 break-words font-mono text-[9.5px] leading-relaxed text-slate-400">
+                <code className="min-w-0 flex-1 break-words font-mono text-[12px] leading-relaxed text-slate-400">
                   {evidence}
                 </code>
               </li>
@@ -198,10 +198,10 @@ export default function RootCauseAlert({
             <ChevronRight className="h-2.5 w-2.5 shrink-0 text-emerald-400" aria-hidden />
           )}
           <BookOpen className="h-3 w-3 shrink-0 text-emerald-400" aria-hidden />
-          <span className="min-w-0 flex-1 truncate font-mono text-[9px] font-bold uppercase tracking-wider text-emerald-300">
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] font-bold uppercase tracking-wider text-emerald-300">
             📚 RAG 检索增强知识库溯源
           </span>
-          <span className="shrink-0 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[8.5px] tabular-nums text-emerald-300">
+          <span className="shrink-0 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-emerald-300">
             {ragReferences.length}&nbsp;citations
           </span>
         </button>
@@ -210,7 +210,7 @@ export default function RootCauseAlert({
         {citationsOpen ? (
           <ul className="space-y-1 px-2.5 pb-2">
             {ragReferences.length === 0 ? (
-              <li className="font-mono text-[9.5px] text-slate-600">— no runbook matched —</li>
+              <li className="font-mono text-[12px] text-slate-600">— no runbook matched —</li>
             ) : (
               ragReferences.map((doc) => {
                 /* similarityScore ∈ [0,1]，展示为百分比（如 0.964 → 96.4%） */
@@ -222,12 +222,12 @@ export default function RootCauseAlert({
                     className="rounded border border-slate-800 bg-slate-950/50 p-1.5 transition-colors hover:border-emerald-500/40"
                   >
                     <div className="flex items-start gap-1.5">
-                      <span className="shrink-0 rounded bg-emerald-500/15 px-1 py-0.5 font-mono text-[8.5px] font-bold text-emerald-300">
+                      <span className="shrink-0 rounded bg-emerald-500/15 px-1 py-0.5 font-mono text-[11px] font-bold text-emerald-300">
                         {doc.id}
                       </span>
                       {similarityPct !== null ? (
                         <span
-                          className="ml-auto shrink-0 font-mono text-[8.5px] font-bold tabular-nums text-emerald-400"
+                          className="ml-auto shrink-0 font-mono text-[11px] font-bold tabular-nums text-emerald-400"
                           title={`余弦相似度 ${doc.similarityScore?.toFixed(4)}`}
                         >
                           Similarity:&nbsp;{similarityPct.toFixed(1)}%
@@ -235,7 +235,7 @@ export default function RootCauseAlert({
                       ) : null}
                     </div>
                     <p className="mt-1 text-[10px] font-medium leading-snug text-slate-300">{doc.title}</p>
-                    <p className="mt-0.5 font-mono text-[8px] uppercase tracking-wider text-slate-600">
+                    <p className="mt-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
                       {doc.category} · {doc.tags.slice(0, 3).join(' / ')}
                     </p>
                   </li>

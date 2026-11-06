@@ -71,7 +71,7 @@ export default function GenUISkeleton({ toolName, mcpUri, className }: GenUISkel
       {/* ============ MCP URI 提示 ============ */}
       <div className="relative mt-1.5 flex items-center gap-1 rounded border border-slate-700/70 bg-slate-800/50 px-1.5 py-1">
         <Plug className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
-        <code className="truncate font-mono text-[9px] text-slate-400">{mcpUri}</code>
+        <code className="truncate font-mono text-[11px] text-slate-400">{mcpUri}</code>
       </div>
 
       {/* ============ 骨架块（模拟即将出现的卡片结构） ============ */}
@@ -82,7 +82,7 @@ export default function GenUISkeleton({ toolName, mcpUri, className }: GenUISkel
       </div>
 
       {/* ============ 底部提示 ============ */}
-      <p className="relative mt-2 font-mono text-[8.5px] uppercase tracking-wider text-slate-600">
+      <p className="relative mt-2 font-mono text-[11px] uppercase tracking-wider text-slate-600">
         invoking&nbsp;mcp&nbsp;tool&nbsp;·&nbsp;awaiting&nbsp;result…
       </p>
     </div>

@@ -221,7 +221,7 @@ function splitHighlight(text: string, mode: 'risk' | 'mask'): HighlightSegment[]
 function HighlightedLog({ text, mode }: { readonly text: string; readonly mode: 'risk' | 'mask' }) {
   const segments = useMemo((): HighlightSegment[] => splitHighlight(text, mode), [text, mode]);
   return (
-    <pre className="whitespace-pre-wrap break-all font-mono text-[8.5px] leading-relaxed">
+    <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">
       {segments.map((seg, i) => {
         if (seg.kind === 'plain') {
           return (
@@ -272,24 +272,24 @@ function AuditCard({
       {/* ---- 头部：Pod 名 + 分类徽标 + 耗时 ---- */}
       <div className="flex flex-wrap items-center gap-1">
         <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', meta.dot)} aria-hidden />
-        <span className="min-w-0 flex-1 truncate font-mono text-[9.5px] font-bold text-slate-200" title={record.podName}>
+        <span className="min-w-0 flex-1 truncate font-mono text-[12px] font-bold text-slate-200" title={record.podName}>
           {record.podName}
         </span>
         <span
           className={cn(
-            'shrink-0 rounded border px-1 py-0.5 font-mono text-[8px] font-bold uppercase tracking-wider',
+            'shrink-0 rounded border px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider',
             meta.badge,
           )}
         >
           {record.result.label}&nbsp;{(record.result.confidence * 100).toFixed(1)}%
         </span>
-        <span className="shrink-0 font-mono text-[8px] tabular-nums text-cyan-400/80">
+        <span className="shrink-0 font-mono text-[10px] tabular-nums text-cyan-400/80">
           {record.result.inferenceLatencyMs.toFixed(2)}ms
         </span>
       </div>
 
       {/* ---- 命名空间 + 脱敏计数 ---- */}
-      <div className="mt-0.5 flex items-center gap-1 font-mono text-[8px] uppercase tracking-wider text-slate-600">
+      <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-600">
         <span className="truncate">{record.namespace}</span>
         <span>·</span>
         <span className={record.maskedCount > 0 ? 'text-amber-500' : ''}>
@@ -305,7 +305,7 @@ function AuditCard({
           aria-pressed={showRaw}
           aria-label={showRaw ? '查看脱敏后安全日志' : '查看原始含敏感信息日志'}
           className={cn(
-            'flex items-center gap-0.5 rounded border px-1 py-0.5 font-mono text-[8px] uppercase tracking-wider transition-colors',
+            'flex items-center gap-0.5 rounded border px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors',
             showRaw
               ? 'border-rose-500/50 bg-rose-500/15 text-rose-300'
               : 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300',
@@ -315,7 +315,7 @@ function AuditCard({
           {showRaw ? 'raw (敏感)' : 'sanitized (安全)'}
         </button>
         {record.maskedCount > 0 ? (
-          <span className="ml-auto font-mono text-[7.5px] uppercase tracking-wider text-slate-600">
+          <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-600">
             toggle&nbsp;to&nbsp;compare
           </span>
         ) : null}
@@ -337,7 +337,7 @@ function AuditCard({
           type="button"
           onClick={(): void => onEscalate(record)}
           aria-label="仅将脱敏安全摘要移交 Copilot 深度诊断"
-          className="mt-1 flex w-full items-center justify-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-1 font-mono text-[8px] font-bold uppercase tracking-wider text-cyan-300 transition-colors hover:border-cyan-400/70 hover:bg-cyan-500/20"
+          className="mt-1 flex w-full items-center justify-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300 transition-colors hover:border-cyan-400/70 hover:bg-cyan-500/20"
         >
           <Sparkles className="h-2.5 w-2.5" aria-hidden />
           仅将脱敏安全摘要移交 Copilot
@@ -616,13 +616,13 @@ export default function LocalAuditorPanel() {
       <div className="shrink-0 rounded border border-emerald-500/30 bg-emerald-500/5 p-1.5">
         <div className="flex items-center gap-1">
           <ShieldCheck className="h-3 w-3 shrink-0 text-emerald-400" aria-hidden />
-          <span className="font-mono text-[9px] font-bold uppercase tracking-wider text-emerald-300">
+          <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-emerald-300">
             edge&nbsp;ai&nbsp;·&nbsp;privacy&nbsp;guard
           </span>
           {/* 运行时徽标 */}
           <span
             className={cn(
-              'ml-auto flex shrink-0 items-center gap-0.5 rounded border px-1 py-0.5 font-mono text-[7.5px] font-bold uppercase tracking-wider',
+              'ml-auto flex shrink-0 items-center gap-0.5 rounded border px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider',
               isWebGPU
                 ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
                 : 'border-cyan-500/50 bg-cyan-500/15 text-cyan-300',
@@ -635,7 +635,7 @@ export default function LocalAuditorPanel() {
         </div>
 
         {/* 模型名 + 状态 */}
-        <div className="mt-1 flex items-center gap-1 font-mono text-[7.5px] tracking-wider text-slate-500">
+        <div className="mt-1 flex items-center gap-1 font-mono text-[10px] tracking-wider text-slate-500">
           <span className="min-w-0 flex-1 truncate" title={classifier.modelName}>
             {classifier.modelName}
           </span>
@@ -671,7 +671,7 @@ export default function LocalAuditorPanel() {
               aria-label="端侧模型权重加载进度"
             />
           </div>
-          <span className="shrink-0 font-mono text-[7.5px] tabular-nums text-slate-500">
+          <span className="shrink-0 font-mono text-[10px] tabular-nums text-slate-500">
             {classifier.progress}%{classifier.isReady ? ' Ready' : ''}
           </span>
         </div>
@@ -679,13 +679,13 @@ export default function LocalAuditorPanel() {
         {/* 累计脱敏凭证数 + 平均推理延迟 */}
         <div className="mt-1 grid grid-cols-2 gap-1">
           <div className="rounded border border-slate-700/70 bg-slate-800/40 px-1 py-0.5">
-            <p className="font-mono text-[7px] uppercase tracking-wider text-slate-600">masked</p>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">masked</p>
             <p className="font-mono text-[10px] font-bold tabular-nums text-amber-300">
               {totalMaskedSecrets}
             </p>
           </div>
           <div className="rounded border border-slate-700/70 bg-slate-800/40 px-1 py-0.5">
-            <p className="font-mono text-[7px] uppercase tracking-wider text-slate-600">avg latency</p>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">avg latency</p>
             <p className="font-mono text-[10px] font-bold tabular-nums text-cyan-300">
               {avgLatency !== null ? `${avgLatency.toFixed(2)}ms` : '--'}
             </p>
@@ -694,7 +694,7 @@ export default function LocalAuditorPanel() {
 
         {/* 降级提示 */}
         {classifier.isFallback ? (
-          <p className="mt-1 flex items-center gap-0.5 font-mono text-[7px] text-amber-400/90">
+          <p className="mt-1 flex items-center gap-0.5 font-mono text-[10px] text-amber-400/90">
             <Activity className="h-2 w-2 shrink-0" aria-hidden />
             外部模型不可用，已启用内置确定性分类器（离线可用）
           </p>
@@ -709,7 +709,7 @@ export default function LocalAuditorPanel() {
           disabled={isFetching || !classifier.isReady}
           aria-label="抓取并审计当前集群容器日志流"
           className={cn(
-            'flex min-w-0 flex-1 items-center justify-center gap-1 rounded border px-1.5 py-1 font-mono text-[8px] font-bold uppercase tracking-wider transition-colors',
+            'flex min-w-0 flex-1 items-center justify-center gap-1 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             isFetching || !classifier.isReady
               ? 'cursor-not-allowed border-slate-700 bg-slate-800/50 text-slate-600'
               : 'border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:border-cyan-400/70 hover:bg-cyan-500/20',
@@ -730,7 +730,7 @@ export default function LocalAuditorPanel() {
           aria-pressed={autoStream}
           aria-label="自动实时流式审计"
           className={cn(
-            'flex shrink-0 items-center gap-0.5 rounded border px-1.5 py-1 font-mono text-[8px] font-bold uppercase tracking-wider transition-colors',
+            'flex shrink-0 items-center gap-0.5 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             autoStream
               ? 'border-rose-500/60 bg-rose-500/15 text-rose-300'
               : 'border-slate-700 bg-slate-800/50 text-slate-500 hover:text-slate-300',
@@ -752,7 +752,7 @@ export default function LocalAuditorPanel() {
 
       {/* 自动模式指示 */}
       {autoStream ? (
-        <p className="flex shrink-0 items-center gap-1 font-mono text-[7.5px] uppercase tracking-wider text-rose-400/80">
+        <p className="flex shrink-0 items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-rose-400/80">
           <span className="h-1 w-1 animate-glow-pulse rounded-full bg-rose-500" aria-hidden />
           实时流式审计中 · 每 {AUTO_STREAM_INTERVAL_MS / 1000}s 抓取一批
         </p>
@@ -763,8 +763,8 @@ export default function LocalAuditorPanel() {
         {records.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-1.5 px-4 text-center">
             <ShieldCheck className="h-6 w-6 text-slate-700" aria-hidden />
-            <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-slate-600">awaiting logs</p>
-            <p className="text-[9px] leading-relaxed text-slate-600">
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-600">awaiting logs</p>
+            <p className="text-[11px] leading-relaxed text-slate-600">
               点击上方按钮抓取集群日志，端侧将完成脱敏与语义分类，
               <br />
               原始敏感信息永不离开本机。
@@ -774,7 +774,7 @@ export default function LocalAuditorPanel() {
           <>
             {/* 高危计数摘要 */}
             {criticalCount > 0 ? (
-              <p className="flex items-center gap-1 rounded border border-rose-500/30 bg-rose-500/8 px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-wider text-rose-300">
+              <p className="flex items-center gap-1 rounded border border-rose-500/30 bg-rose-500/8 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-rose-300">
                 <Play className="h-2.5 w-2.5 shrink-0" aria-hidden />
                 {criticalCount} 条高危日志待移交 Copilot
               </p>

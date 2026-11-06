@@ -70,7 +70,7 @@ const FPS_WARN = 40;
 function FpsSparkline({ values }: { readonly values: readonly number[] }) {
   if (values.length < 2) {
     return (
-      <div className="flex h-[22px] items-center justify-center font-mono text-[8px] text-slate-700">
+      <div className="flex h-[22px] items-center justify-center font-mono text-[10px] text-slate-700">
         collecting…
       </div>
     );
@@ -238,10 +238,10 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       {/* ============ 头部 ============ */}
       <div className="flex items-center gap-1.5">
         <Activity className="h-3.5 w-3.5 shrink-0 text-cyan-400" aria-hidden />
-        <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-cyan-300">
+        <span className="font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-cyan-300">
           perf&nbsp;telemetry
         </span>
-        <span className="ml-auto font-mono text-[8px] uppercase tracking-wider text-slate-600">2hz</span>
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-600">2hz</span>
         <button
           type="button"
           onClick={onClose}
@@ -256,7 +256,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       <div className="mt-2 rounded border border-slate-800 bg-slate-950/50 p-1.5">
         <div className="flex items-baseline gap-1.5">
           <Gauge className={cn('h-3 w-3 shrink-0', fpsTone)} aria-hidden />
-          <span className="font-mono text-[8px] uppercase tracking-wider text-slate-500">fps</span>
+          <span className="font-mono text-[10px] uppercase tracking-wider text-slate-500">fps</span>
           <span className={cn('ml-auto font-mono text-[15px] font-bold leading-none tabular-nums', fpsTone)}>
             {sample !== null && sample.fps > 0 ? sample.fps : hasData ? '0' : '--'}
           </span>
@@ -271,19 +271,19 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       <div className="mt-1.5 grid grid-cols-2 gap-1">
         {/* Frame Time */}
         <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[7.5px] uppercase tracking-wider text-slate-600">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
             <Cpu className="h-2 w-2" aria-hidden />
             frame
           </p>
           <p className="font-mono text-[11px] font-bold tabular-nums text-slate-200">
             {sample !== null && sample.frameTimeMs > 0 ? `${sample.frameTimeMs.toFixed(1)}` : '--'}
-            <span className="ml-0.5 text-[8px] font-normal text-slate-600">ms</span>
+            <span className="ml-0.5 text-[10px] font-normal text-slate-600">ms</span>
           </p>
         </div>
 
         {/* Draw Calls */}
         <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[7.5px] uppercase tracking-wider text-slate-600">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
             <Layers className="h-2 w-2" aria-hidden />
             draws
           </p>
@@ -294,7 +294,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
 
         {/* Triangles */}
         <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[7.5px] uppercase tracking-wider text-slate-600">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
             <Triangle className="h-2 w-2" aria-hidden />
             tris
           </p>
@@ -305,23 +305,23 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
 
         {/* SSE Latency */}
         <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[7.5px] uppercase tracking-wider text-slate-600">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
             <Radio className="h-2 w-2" aria-hidden />
             sse
           </p>
           <p className="font-mono text-[11px] font-bold tabular-nums text-slate-200">
             {sample !== null && sample.sseLatencyMs > 0 ? `${sample.sseLatencyMs}` : '--'}
-            <span className="ml-0.5 text-[8px] font-normal text-slate-600">ms</span>
+            <span className="ml-0.5 text-[10px] font-normal text-slate-600">ms</span>
           </p>
         </div>
       </div>
 
       {/* ============ 端侧 Worker 状态 ============ */}
       <div className="mt-1.5 flex items-center gap-1 rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-        <span className="font-mono text-[7.5px] uppercase tracking-wider text-slate-600">edge</span>
+        <span className="font-mono text-[10px] uppercase tracking-wider text-slate-600">edge</span>
         <span
           className={cn(
-            'ml-auto truncate font-mono text-[9px] font-bold tabular-nums',
+            'ml-auto truncate font-mono text-[11px] font-bold tabular-nums',
             /\bREADY\b/.test(sample?.workerStatus ?? '')
               ? 'text-emerald-400'
               : sample?.workerStatus === 'INFERENCING'
@@ -337,14 +337,14 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       </div>
 
       {/* ============ 实体计数 ============ */}
-      <div className="mt-1.5 border-t border-slate-800 pt-1 font-mono text-[7.5px] uppercase tracking-wider text-slate-600">
+      <div className="mt-1.5 border-t border-slate-800 pt-1 font-mono text-[10px] uppercase tracking-wider text-slate-600">
         {sample !== null
           ? `${sample.nodeCount} nodes / ${sample.podCount} pods / ${sample.alertCount} alerts`
           : '--'}
       </div>
 
       {/* ============ 数据来源说明 ============ */}
-      <p className="mt-1 font-mono text-[7px] leading-relaxed text-slate-700">
+      <p className="mt-1 font-mono text-[10px] leading-relaxed text-slate-700">
         数据源：telemetryTransientRef.glStats（瞬态轨 · 零重渲染采样）
       </p>
     </motion.div>

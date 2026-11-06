@@ -316,11 +316,11 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
 
                   {/* 受灾机架徽标（恢复卡不显示） */}
                   {card.targetRackIndex !== null ? (
-                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-slate-700/70 bg-slate-800/60 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-slate-400">
+                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-slate-700/70 bg-slate-800/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-slate-400">
                       target&nbsp;·&nbsp;rack-{card.targetRackIndex}
                     </span>
                   ) : (
-                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-emerald-700/60 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-emerald-300">
+                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-emerald-700/60 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-emerald-300">
                       restore&nbsp;·&nbsp;all&nbsp;racks
                     </span>
                   )}
@@ -330,7 +330,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
           </div>
 
           {/* ======== 底部提示 ======== */}
-          <p className="mt-3.5 flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-slate-600">
+          <p className="mt-3.5 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-slate-600">
             <AlertTriangle className="h-2.5 w-2.5" aria-hidden />
             drills run against the simulated engine · no real cluster is harmed · ESC to abort
           </p>

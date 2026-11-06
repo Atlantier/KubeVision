@@ -111,7 +111,10 @@ export function TerminalLine({ line, tone }: TerminalLineProps) {
 export default function TerminalEcho({ className, defaultCollapsed = false }: TerminalEchoProps) {
   /* ---- Store 细粒度订阅 ---- */
   const terminalLogs = useClusterStore((s): string[] => s.terminalLogs);
-  const clearPersistedHistory = useClusterStore((s): (() => void) => s.clearPersistedHistory);
+  /* 【只清屏，不动持久化数据】详见 store.clearTerminalLogs 注释：
+     此前误用 clearPersistedHistory 会连带清掉 connectionMode /
+     totalMaskedSecrets / remediationHistory，属数据丢失事故。 */
+  const clearTerminalLogs = useClusterStore((s): (() => void) => s.clearTerminalLogs);
 
   /* ---- 折叠态（本地 UI 状态，非持久化——折叠偏好无跨会话价值） ---- */
   const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
@@ -189,7 +192,7 @@ export default function TerminalEcho({ className, defaultCollapsed = false }: Te
             event&nbsp;stream
           </span>
           {/* 行数徽标 */}
-          <span className="shrink-0 rounded-full border border-slate-700 bg-slate-800/80 px-1.5 font-mono text-[9px] tabular-nums text-slate-400">
+          <span className="shrink-0 rounded-full border border-slate-700 bg-slate-800/80 px-1.5 font-mono text-[11px] tabular-nums text-slate-400">
             {terminalLogs.length}
           </span>
           {/* 折叠态：内联显示最新一行（截断），展开态隐藏 */}
@@ -205,15 +208,16 @@ export default function TerminalEcho({ className, defaultCollapsed = false }: Te
           ) : null}
         </button>
 
-        {/* 清空/重置本地日志缓存（clearPersistedHistory：清 localStorage + 回归初始） */}
+        {/* 仅清屏：不触碰数据源偏好、脱敏计数与自愈审计历史 */}
         <button
           type="button"
-          onClick={clearPersistedHistory}
-          className="mr-2 flex shrink-0 items-center gap-1 rounded border border-slate-700/70 bg-slate-800/50 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-slate-400 transition-colors hover:border-rose-500/50 hover:text-rose-300 active:scale-95"
-          title="清空当前日志并重置本地持久化缓存（connectionMode / 脱敏计数 / 自愈历史 / 日志）"
+          onClick={clearTerminalLogs}
+          aria-label="清空终端日志"
+          className="mr-2 flex shrink-0 items-center gap-1 rounded border border-slate-700/70 bg-slate-800/50 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400 transition-colors hover:border-rose-500/50 hover:text-rose-300 active:scale-95"
+          title="清空终端滚动日志（不影响数据源偏好、脱敏计数与自愈审计历史）"
         >
           <Trash2 className="h-3 w-3" aria-hidden />
-          <span className="hidden sm:inline">clear</span>
+          <span className="hidden sm:inline">清屏</span>
         </button>
       </div>
 

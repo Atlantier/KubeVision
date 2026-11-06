@@ -219,8 +219,13 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
       {/* ============ 顶栏 ============ */}
       <TopBar />
 
-      {/* ============ 主体：桌面双栏 65/35 · 移动上下分栏 ============ */}
-      <main className="flex min-h-0 flex-1 flex-col gap-2 p-2 lg:flex-row lg:gap-3 lg:p-3">
+      {/* ============ 主体：桌面双栏 65/35 · 移动上下分栏 ============ *
+       * 【移动端底部留白】小屏下 MobileViewSwitcher 以 fixed bottom-3 悬浮，
+       * 此前会直接盖住 3D 视口底部的 TerminalEcho 与 Copilot 面板最底部的
+       * 快捷指令芯片。pb-14 为切换栏（约 44px + 12px 间距）预留安全区，
+       * 桌面端无需该留白故 lg:pb-3 回归正常。
+       */}
+      <main className="flex min-h-0 flex-1 flex-col gap-2 p-2 pb-14 lg:flex-row lg:gap-3 lg:p-3">
         {/* ---- 左栏：3D 视口槽位（65%）+ 底部悬浮 TerminalEcho ---- */}
         <section
           aria-label="3D 集群拓扑视口"
@@ -244,11 +249,16 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
               键盘监听仍在下方 useEffect 中维护。 */}
         </section>
 
-        {/* ---- 右栏：AI 抽屉槽位（35%） ---- */}
+        {/* ---- 右栏：AI 抽屉槽位（35%） ---- *
+         * 【视觉契约修复】此前该 <section> 没有任何边框/圆角/背景，
+         * 外部传入的 drawer 直接裸渲染，与左侧带描边的 3D 视口并排时
+         * 出现明显的视觉割裂（左侧是"面板"，右侧是"黑洞"）。
+         * 现在把 .kv-panel 容器下沉到这一层，左右两栏材质完全对称。
+         */}
         <section
           aria-label="AI Copilot 抽屉"
           className={cn(
-            'min-h-0 flex-1 lg:basis-[35%] lg:grow-0 lg:shrink-0',
+            'kv-panel min-h-0 flex-1 overflow-hidden rounded-lg lg:basis-[35%] lg:grow-0 lg:shrink-0',
             // 移动端：topology 视图时隐藏右栏
             mobileView === 'topology' && 'hidden lg:block',
           )}

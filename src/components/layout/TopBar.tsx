@@ -392,12 +392,12 @@ export default function TopBar() {
           <span className="text-sm font-bold tracking-tight text-slate-50">
             KubeVision&nbsp;<span className="text-cyan-400">AI</span>
           </span>
-          <span className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.25em] text-slate-500">
+          <span className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.25em] text-slate-500">
             situational awareness
           </span>
         </div>
         {/* 版本徽标 v2.4-Edge */}
-        <span className="hidden rounded border border-slate-700 bg-slate-800/60 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-slate-400 md:inline-block">
+        <span className="hidden rounded border border-slate-700 bg-slate-800/60 px-1.5 py-0.5 font-mono text-[11px] tracking-wider text-slate-400 md:inline-block">
           {VERSION_BADGE}
         </span>
         {/* 实时健康分环形徽标（≥85 翠绿 / 60~84 琥珀 / <60 红闪） */}

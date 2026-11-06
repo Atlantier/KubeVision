@@ -49,6 +49,7 @@ import {
 import ActionConfirm from '@/components/ai/GenUI/ActionConfirm';
 import AgentThoughtChain from '@/components/ai/GenUI/AgentThoughtChain';
 import GenUISkeleton from '@/components/ai/GenUI/GenUISkeleton';
+import MarkdownLite from '@/components/ai/MarkdownLite';
 import PodMetricsCard from '@/components/ai/GenUI/PodMetricsCard';
 import RootCauseAlert from '@/components/ai/GenUI/RootCauseAlert';
 import { cn } from '@/utils/cn';
@@ -222,7 +223,7 @@ function ContextPill({
 }) {
   if (entityId === null) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/60 px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-slate-500">
+      <span className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/60 px-2 py-0.5 font-mono text-[11px] uppercase tracking-wider text-slate-500">
         未绑定实体
       </span>
     );
@@ -239,7 +240,7 @@ function ContextPill({
   return (
     <span
       className={cn(
-        'inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[9px] tracking-wider',
+        'inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] tracking-wider',
         colorClass,
       )}
       title={entityId}
@@ -275,7 +276,7 @@ function ToolCardSlot({
     return (
       <div className="flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
         <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" aria-hidden />
-        <span className="font-mono text-[9.5px] text-amber-300">
+        <span className="font-mono text-[12px] text-amber-300">
           {card.toolName} 返回的载荷无法渲染
         </span>
       </div>
@@ -331,7 +332,7 @@ function ToolCardSlot({
 
   /* 未知工具：友好降级，不崩溃 */
   return (
-    <div className="rounded-md border border-slate-700 bg-slate-800/50 px-2 py-1.5 font-mono text-[9.5px] text-slate-400">
+    <div className="rounded-md border border-slate-700 bg-slate-800/50 px-2 py-1.5 font-mono text-[12px] text-slate-400">
       未知工具 {card.toolName}
     </div>
   );
@@ -415,7 +416,7 @@ function ProactiveAnomalyBanner({
               onClick={onDiagnose}
               disabled={isBusy}
               className={cn(
-                'rounded border px-1.5 py-0.5 font-mono text-[8.5px] font-bold uppercase tracking-wider transition-colors',
+                'rounded border px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider transition-colors',
                 isBusy
                   ? 'cursor-not-allowed border-slate-600 bg-slate-800/60 text-slate-500'
                   : tone.btn,
@@ -469,7 +470,7 @@ function MessageBubble({
               alt="已发送的 3D 视口快照"
               className="h-16 w-28 object-cover"
             />
-            <p className="px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider text-cyan-400/80">
+            <p className="px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-cyan-400/80">
               3d&nbsp;viewport&nbsp;sent
             </p>
           </div>
@@ -503,16 +504,10 @@ function MessageBubble({
         <AgentThoughtChain steps={message.reasoningSteps} isStreaming={message.isStreaming && message.text.length === 0} />
       ) : null}
 
-      {/* 正文 */}
+      {/* 正文：经 MarkdownLite 渲染（此前直接输出纯文本，会裸露 ## / ** 等语法） */}
       {message.text.length > 0 ? (
-        <div className="rounded-lg rounded-bl-sm border border-slate-800 bg-slate-900/60 px-2.5 py-1.5">
-          <p className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-slate-200">
-            {message.text}
-            {/* 流式光标 */}
-            {message.isStreaming ? (
-              <span className="ml-0.5 inline-block h-3 w-1 animate-glow-pulse bg-cyan-400 align-middle" aria-hidden />
-            ) : null}
-          </p>
+        <div className="rounded-lg rounded-bl-sm border border-slate-800 bg-slate-900/60 px-2.5 py-2">
+          <MarkdownLite markdown={message.text} isStreaming={message.isStreaming} />
         </div>
       ) : null}
 
@@ -527,7 +522,7 @@ function MessageBubble({
 
       {/* 引擎来源标注（诚实标注，仅在流结束后显示） */}
       {!message.isStreaming && message.engine !== undefined ? (
-        <p className="font-mono text-[8px] uppercase tracking-wider text-slate-600">
+        <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">
           answered&nbsp;by&nbsp;{message.engine === 'llm' ? 'remote llm' : 'local deterministic engine'}
         </p>
       ) : null}
@@ -550,7 +545,7 @@ function MessageBubble({
                 onRetry(message.id, message.failedPrompt);
               }
             }}
-            className="mt-1.5 flex items-center gap-1 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-amber-200 transition-colors hover:border-amber-400/70 hover:bg-amber-500/25"
+            className="mt-1.5 flex items-center gap-1 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider text-amber-200 transition-colors hover:border-amber-400/70 hover:bg-amber-500/25"
           >
             <RotateCw className="h-2.5 w-2.5" aria-hidden />
             一键重试
@@ -1273,7 +1268,7 @@ export default function CopilotDrawer() {
               aria-selected={active}
               onClick={(): void => setActiveRightTab(tab.key)}
               className={cn(
-                'relative min-w-0 flex-1 truncate px-2 font-mono text-[9.5px] uppercase tracking-wider transition-colors',
+                'relative min-w-0 flex-1 truncate px-2 font-mono text-[12px] uppercase tracking-wider transition-colors',
                 active ? 'text-cyan-300' : 'text-slate-500 hover:text-slate-300',
               )}
               title={tab.label}
@@ -1325,7 +1320,7 @@ export default function CopilotDrawer() {
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
                   <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 </span>
-                <span className="font-mono text-[8.5px] uppercase tracking-wider text-emerald-400/90">
+                <span className="font-mono text-[11px] uppercase tracking-wider text-emerald-400/90">
                   online
                 </span>
               </span>
@@ -1363,7 +1358,7 @@ export default function CopilotDrawer() {
                 <Eraser className="h-3 w-3" aria-hidden />
               </button>
             </div>
-            <p className="font-mono text-[8px] uppercase tracking-wider text-slate-600">
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">
               {ttsEnabled ? '🔊 tts 已开启 · 根因诊断将语音播报' : '🔇 tts 已关闭'}
             </p>
           </div>
@@ -1426,7 +1421,7 @@ export default function CopilotDrawer() {
                     >
                       <X className="h-2.5 w-2.5" aria-hidden />
                     </button>
-                    <p className="px-1 py-0.5 font-mono text-[7.5px] uppercase tracking-wider text-cyan-400/80">
+                    <p className="px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider text-cyan-400/80">
                       3d&nbsp;snapshot&nbsp;ready
                     </p>
                   </div>
@@ -1436,7 +1431,7 @@ export default function CopilotDrawer() {
 
             {/* 语音错误/不支持提示 */}
             {speechError !== null || !speechSupported ? (
-              <p className="mb-1 flex items-center gap-1 font-mono text-[8.5px] text-amber-400">
+              <p className="mb-1 flex items-center gap-1 font-mono text-[11px] text-amber-400">
                 <AlertTriangle className="h-2.5 w-2.5 shrink-0" aria-hidden />
                 {speechError ?? '当前浏览器不支持语音识别，请使用 Chrome / Edge'}
               </p>
@@ -1444,7 +1439,7 @@ export default function CopilotDrawer() {
 
             {/* 输入安全校验提示（超长/异常字符等，发送前拦截） */}
             {inputGuardError !== null ? (
-              <p className="mb-1 flex items-center gap-1 font-mono text-[8.5px] text-rose-400">
+              <p className="mb-1 flex items-center gap-1 font-mono text-[11px] text-rose-400">
                 <AlertTriangle className="h-2.5 w-2.5 shrink-0" aria-hidden />
                 {inputGuardError}
               </p>
@@ -1454,7 +1449,7 @@ export default function CopilotDrawer() {
             {guardWarning !== null ? (
               <div className="mb-1 flex items-start gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-1">
                 <ShieldAlert className="mt-[1px] h-2.5 w-2.5 shrink-0 text-amber-400" aria-hidden />
-                <p className="min-w-0 flex-1 font-mono text-[8.5px] leading-relaxed text-amber-300">
+                <p className="min-w-0 flex-1 font-mono text-[11px] leading-relaxed text-amber-300">
                   {guardWarning}
                 </p>
                 <button
@@ -1554,7 +1549,7 @@ export default function CopilotDrawer() {
                   onClick={(): void => void sendMessage(chip.text)}
                   disabled={isStreaming}
                   className={cn(
-                    'rounded-full border px-1.5 py-0.5 font-mono text-[8.5px] transition-colors',
+                    'rounded-full border px-1.5 py-0.5 font-mono text-[11px] transition-colors',
                     isStreaming
                       ? 'cursor-not-allowed border-slate-800 bg-slate-800/30 text-slate-600'
                       : 'border-slate-700 bg-slate-800/50 text-slate-400 hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-300',

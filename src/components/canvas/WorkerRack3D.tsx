@@ -474,12 +474,12 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           )}
         >
           <span className="font-mono text-[10px] font-bold tracking-wider text-slate-200">{node.name}</span>
-          <span className="flex items-center gap-1.5 font-mono text-[8px] tabular-nums">
+          <span className="flex items-center gap-1.5 font-mono text-[10px] tabular-nums">
             <span style={{ color: statusColor }}>CPU {node.cpuUsage}%</span>
             <span className="text-slate-600">|</span>
             <span style={{ color: statusColor }}>MEM {node.memUsage}%</span>
           </span>
-          <span className="font-mono text-[7px] uppercase tracking-[0.2em]" style={{ color: statusColor }}>
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: statusColor }}>
             {node.status} · {node.podIds.length} pods
           </span>
         </div>

@@ -146,7 +146,7 @@ export default function AgentThoughtChain({
         </span>
 
         {/* 摘要徽标：步数 + 总耗时 */}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[9px] tabular-nums text-slate-500">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums text-slate-500">
           <span className="rounded-full border border-slate-700 bg-slate-800/70 px-1.5 py-0.5 text-slate-400">
             {ordered.sorted.length}&nbsp;steps
           </span>
@@ -182,7 +182,7 @@ export default function AgentThoughtChain({
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span
                       className={cn(
-                        'inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase tracking-wider',
+                        'inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider',
                         PHASE_BADGE[step.phase],
                         PHASE_TEXT[step.phase],
                       )}
@@ -193,7 +193,7 @@ export default function AgentThoughtChain({
                     <span className="min-w-0 flex-1 font-mono text-[10px] font-bold text-slate-200">
                       {step.title}
                     </span>
-                    <span className="shrink-0 font-mono text-[9px] tabular-nums text-slate-600">
+                    <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-600">
                       {step.latencyMs}&nbsp;ms
                     </span>
                   </div>
@@ -207,7 +207,7 @@ export default function AgentThoughtChain({
                   {step.mcpUri !== undefined ? (
                     <span className="mt-1 inline-flex max-w-full items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5">
                       <Plug className="h-2.5 w-2.5 shrink-0 text-amber-400" aria-hidden />
-                      <code className="truncate font-mono text-[9px] text-amber-300">{step.mcpUri}</code>
+                      <code className="truncate font-mono text-[11px] text-amber-300">{step.mcpUri}</code>
                     </span>
                   ) : null}
                 </div>

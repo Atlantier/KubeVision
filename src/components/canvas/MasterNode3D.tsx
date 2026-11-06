@@ -275,7 +275,7 @@ export default function MasterNode3D() {
           )}
         >
           <span className="font-mono text-[10px] font-bold tracking-[0.2em] text-cyan-300">CONTROL PLANE</span>
-          <span className="font-mono text-[8px] uppercase tracking-[0.3em] text-slate-500">API-SERVER</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-slate-500">API-SERVER</span>
         </div>
       </Html>
     </group>
