@@ -218,12 +218,12 @@ export default function ActionConfirm({
             </span>
             {isHighRisk ? (
               <span className="rounded border border-rose-500/50 bg-rose-500/15 px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-rose-300">
-                high&nbsp;risk
+                高危变更
               </span>
             ) : null}
           </p>
           <p className="mt-0.5 truncate font-mono text-[10px] text-slate-300" title={targetName}>
-            target&nbsp;·&nbsp;{targetName}
+            target · {targetName}
           </p>
         </div>
       </div>
@@ -295,20 +295,20 @@ export default function ActionConfirm({
             {isDone ? (
               <>
                 <CheckCircle2 className="h-3 w-3" aria-hidden />
-                executed&nbsp;·&nbsp;3d&nbsp;state&nbsp;recovered
+                已执行 · 3D 拓扑已自愈恢复
               </>
             ) : isExecuting ? (
               <>
                 <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
-                executing…
+                执行中…
               </>
             ) : (
               <>
                 <Wrench className="h-3 w-3" aria-hidden />
-                {/* 注意：这里必须用真实空格而非 &nbsp; 实体——
+                {/* 注意：这里必须用真实空格而非   实体——
                     三元表达式返回的是 JS 字符串，不会经过 JSX 的 HTML 实体解析，
-                    写成 'confirm&nbsp;required' 会原样渲染出字面量 "&nbsp;"。 */}
-                {isHighRisk && !acknowledged ? 'confirm required' : 'execute remediation'}
+                    写成 'confirm required' 会原样渲染出字面量 " "。 */}
+                {isHighRisk && !acknowledged ? '需二次确认' : '立即执行自愈方案'}
               </>
             )}
           </span>

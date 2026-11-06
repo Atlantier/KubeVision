@@ -188,8 +188,8 @@ export default function TerminalEcho({ className, defaultCollapsed = false }: Te
           ) : (
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-cyan-400" aria-hidden />
           )}
-          <span className="shrink-0 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-slate-300">
-            event&nbsp;stream
+          <span className="shrink-0 font-mono text-[11px] font-bold tracking-[0.12em] text-slate-300">
+            实时事件回显流
           </span>
           {/* 行数徽标 */}
           <span className="shrink-0 rounded-full border border-slate-700 bg-slate-800/80 px-1.5 font-mono text-[11px] tabular-nums text-slate-400">
@@ -229,7 +229,7 @@ export default function TerminalEcho({ className, defaultCollapsed = false }: Te
       >
         {classifiedLines.length === 0 ? (
           <p className="px-3 py-1 font-mono text-[11px] text-slate-600">
-            -- awaiting cluster events... (bootstrap complete, telemetry stream idle) --
+            -- 正在监听集群实时遥测事件流…（引导完成，等待首帧数据）--
           </p>
         ) : (
           classifiedLines.map((entry, index): ReactNode => (

@@ -157,7 +157,7 @@ export default function PodMetricsCard({
             <span className="text-slate-700">·</span>
             <RefreshCw className="h-2.5 w-2.5 shrink-0" aria-hidden />
             <span className={cn('tabular-nums', restarts > 0 ? 'text-amber-400' : 'text-slate-500')}>
-              {restarts}&nbsp;restarts
+              {restarts} 次重启
             </span>
           </p>
         </div>
@@ -297,14 +297,14 @@ export default function PodMetricsCard({
       <div className="mt-1.5 flex items-center justify-between gap-2">
         <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-600">
           <Activity className="h-2.5 w-2.5" aria-hidden />
-          last&nbsp;6&nbsp;cycles
+          近 6 轮采样趋势
         </span>
         <button
           type="button"
           onClick={handleFocus}
           className="shrink-0 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider text-cyan-300 transition-all hover:border-cyan-400/70 hover:bg-cyan-500/20 active:scale-95"
         >
-          focus&nbsp;in&nbsp;3d
+          3D 视角聚焦
         </button>
       </div>
     </div>

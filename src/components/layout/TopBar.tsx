@@ -86,8 +86,15 @@ const TIER_GLOW_CLASS: Readonly<Record<HealthTier, string>> = {
  * 需求契约五胶囊：ALL / Running / Pending / CrashLoopBackOff / OOMKilled；
  * Terminating 为过渡态不设独立过滤（其 Pod 仍出现在 ALL 中）。
  */
+/**
+ * 【分层汉化准则（审查报告 §3.1）】
+ * Pod 状态枚举（Running / Pending / CrashLoopBackOff / OOMKilled）是
+ * Kubernetes 官方 API 字段值，属于**必须保留英文原词的专有名词**——
+ * 把它们译成中文反而会让运维人员无法与 kubectl 输出对照。
+ * 只有 'ALL' 是纯界面语义，改为「全部空间」。
+ */
 const STATUS_FILTER_OPTIONS: readonly StatusFilterOption[] = [
-  { filter: 'ALL', label: 'ALL' },
+  { filter: 'ALL', label: '全部空间' },
   { filter: 'Running', label: 'Running', status: 'Running' },
   { filter: 'Pending', label: 'Pending', status: 'Pending' },
   { filter: 'CrashLoopBackOff', label: 'CrashLoop', status: 'CrashLoopBackOff' },
@@ -238,7 +245,7 @@ export function ChaosBanner({ scenario, onTerminate }: ChaosBannerProps) {
     >
       <OctagonAlert className="h-3.5 w-3.5 animate-glow-pulse text-rose-400" aria-hidden />
       <span className="animate-glow-pulse font-mono text-[11px] font-bold tracking-wider text-rose-300">
-        CHAOS ACTIVE: {label}
+        故障演练中：{label}
       </span>
       <button
         type="button"
@@ -316,8 +323,8 @@ export function ModeToggle({ mode, onChange, disabled = false }: ModeToggleProps
               />
             ) : null}
             {value === 'demo' ? <Boxes className="h-3 w-3" aria-hidden /> : <Radio className="h-3 w-3" aria-hidden />}
-            <span className="hidden sm:inline">{value === 'demo' ? 'Demo Synthetic' : 'Live Tunnel'}</span>
-            <span className="sm:hidden">{value === 'demo' ? 'Demo' : 'Live'}</span>
+            <span className="hidden sm:inline">{value === 'demo' ? '合成演练流' : '实时集群隧道'}</span>
+            <span className="sm:hidden">{value === 'demo' ? '演练' : '实时'}</span>
           </button>
         );
       })}
@@ -392,8 +399,8 @@ export default function TopBar() {
           <span className="text-sm font-bold tracking-tight text-slate-50">
             KubeVision&nbsp;<span className="text-cyan-400">AI</span>
           </span>
-          <span className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.25em] text-slate-500">
-            situational awareness
+          <span className="mt-0.5 font-mono text-[11px] tracking-[0.15em] text-slate-500">
+            3D 态势感知中枢
           </span>
         </div>
         {/* 版本徽标 v2.4-Edge */}
@@ -436,7 +443,7 @@ export default function TopBar() {
           title="打开混沌工程控制台，注入故障演练场景"
         >
           <Zap className="h-3.5 w-3.5" aria-hidden />
-          <span className="hidden lg:inline">Inject Chaos</span>
+          <span className="hidden lg:inline">混沌故障演练</span>
         </button>
 
         {/* 性能监控 HUD 开关（快捷键 Shift+P，监听器在 ShellLayout 全局挂载） */}
@@ -453,7 +460,7 @@ export default function TopBar() {
           title="性能监控 HUD（快捷键 Shift+P）"
         >
           {isPerfHudOpen ? <Gauge className="h-3.5 w-3.5" aria-hidden /> : <Terminal className="h-3.5 w-3.5" aria-hidden />}
-          <span className="hidden xl:inline">Perf HUD</span>
+          <span className="hidden xl:inline">性能监控</span>
         </button>
       </div>
     </header>

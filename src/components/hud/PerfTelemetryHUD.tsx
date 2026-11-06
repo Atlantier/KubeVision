@@ -71,7 +71,7 @@ function FpsSparkline({ values }: { readonly values: readonly number[] }) {
   if (values.length < 2) {
     return (
       <div className="flex h-[22px] items-center justify-center font-mono text-[10px] text-slate-700">
-        collecting…
+        采样预热中…
       </div>
     );
   }
@@ -239,7 +239,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       <div className="flex items-center gap-1.5">
         <Activity className="h-3.5 w-3.5 shrink-0 text-cyan-400" aria-hidden />
         <span className="font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-cyan-300">
-          perf&nbsp;telemetry
+          WebGL 渲染与遥测性能
         </span>
         <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-600">2hz</span>
         <button
@@ -273,7 +273,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
         <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
           <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
             <Cpu className="h-2 w-2" aria-hidden />
-            frame
+            帧耗时
           </p>
           <p className="font-mono text-[11px] font-bold tabular-nums text-slate-200">
             {sample !== null && sample.frameTimeMs > 0 ? `${sample.frameTimeMs.toFixed(1)}` : '--'}
@@ -296,7 +296,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
         <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
           <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
             <Triangle className="h-2 w-2" aria-hidden />
-            tris
+            三角面
           </p>
           <p className="font-mono text-[11px] font-bold tabular-nums text-slate-200">
             {sample !== null && sample.triangles > 0 ? sample.triangles.toLocaleString('en-US') : '--'}
@@ -307,7 +307,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
         <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
           <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
             <Radio className="h-2 w-2" aria-hidden />
-            sse
+            遥测流
           </p>
           <p className="font-mono text-[11px] font-bold tabular-nums text-slate-200">
             {sample !== null && sample.sseLatencyMs > 0 ? `${sample.sseLatencyMs}` : '--'}
@@ -318,7 +318,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
 
       {/* ============ 端侧 Worker 状态 ============ */}
       <div className="mt-1.5 flex items-center gap-1 rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-        <span className="font-mono text-[10px] uppercase tracking-wider text-slate-600">edge</span>
+        <span className="font-mono text-[10px] tracking-wider text-slate-600">端侧</span>
         <span
           className={cn(
             'ml-auto truncate font-mono text-[11px] font-bold tabular-nums',
@@ -339,7 +339,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       {/* ============ 实体计数 ============ */}
       <div className="mt-1.5 border-t border-slate-800 pt-1 font-mono text-[10px] uppercase tracking-wider text-slate-600">
         {sample !== null
-          ? `${sample.nodeCount} nodes / ${sample.podCount} pods / ${sample.alertCount} alerts`
+          ? `${sample.nodeCount} 节点 / ${sample.podCount} Pod / ${sample.alertCount} 告警`
           : '--'}
       </div>
 

@@ -5,7 +5,7 @@
  *
  * 【设计意图】这是 Copilot 价值最高的卡片：它不只报告「哪里坏了」，
  * 而是呈现「为什么坏 + 证据链 + 知识库依据」。三部分构成完整的可解释性：
- * 1. 定性 + 置信度：P0/P1/P2 徽标 + 模型自评可信度进度条；
+ * 1. 定性 + confidence：P0/P1/P2 徽标 + 模型自评可信度进度条；
  * 2. 证据链（evidenceChain）：时间有序的观测事实，支撑结论；
  * 3. RAG 溯源（ragReferences）：命中的 Runbook 编号、标题、相似度 ——
  *    这是「AI 的回答有据可查」的物理证明，也是本项目的答辩亮点。
@@ -57,7 +57,7 @@ const SEVERITY_GLOW: Readonly<Record<RootCauseAlertProps['severity'], string>> =
   P2: '',
 };
 
-/** severity → 置信度进度条填充色 */
+/** severity → confidence进度条填充色 */
 const SEVERITY_BAR: Readonly<Record<RootCauseAlertProps['severity'], string>> = {
   P0: 'bg-gradient-to-r from-rose-500 to-rose-400',
   P1: 'bg-gradient-to-r from-amber-500 to-amber-400',
@@ -85,7 +85,7 @@ export default function RootCauseAlert({
   /** RAG 溯源区展开态（默认折叠：二级信息，按需深挖） */
   const [citationsOpen, setCitationsOpen] = useState<boolean>(false);
 
-  /** 置信度百分比（clamp 到 [0,100]，防越界输入画出超长进度条） */
+  /** confidence百分比（clamp 到 [0,100]，防越界输入画出超长进度条） */
   const confidencePct = useMemo((): number => {
     const raw = Number.isFinite(confidence) ? confidence : 0;
     return Math.max(0, Math.min(100, Math.round(raw * 100)));
@@ -116,7 +116,7 @@ export default function RootCauseAlert({
         <h3 className="min-w-0 flex-1 text-[12px] font-bold leading-snug text-slate-100">{title}</h3>
       </div>
 
-      {/* ============ 置信度进度条 ============ */}
+      {/* ============ confidence进度条 ============ */}
       <div className="px-2.5 pb-2">
         <div className="flex items-center gap-1.5">
           <Gauge className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
@@ -131,7 +131,7 @@ export default function RootCauseAlert({
               aria-valuenow={confidencePct}
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-label="根因置信度"
+              aria-label="根因confidence"
             />
           </div>
           <span className="shrink-0 font-mono text-[11px] font-bold tabular-nums text-slate-300">
@@ -144,7 +144,7 @@ export default function RootCauseAlert({
       <div className="px-2.5 pb-2">
         <p className="flex items-start gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
           <Target className="mt-[2px] h-2.5 w-2.5 shrink-0" aria-hidden />
-          root&nbsp;cause
+          核心根因判定
         </p>
         <p className="mt-1 whitespace-pre-wrap break-words border-l-2 border-slate-700 pl-2 text-[10.5px] leading-relaxed text-slate-300">
           {rootCauseSummary}
@@ -154,7 +154,7 @@ export default function RootCauseAlert({
       {/* ============ 影响范围 ============ */}
       {impactScope.length > 0 ? (
         <div className="px-2.5 pb-2">
-          <p className="font-mono text-[11px] uppercase tracking-wider text-slate-500">impact&nbsp;scope</p>
+          <p className="font-mono text-[11px] uppercase tracking-wider text-slate-500">故障爆炸半径</p>
           <p className="mt-0.5 text-[10px] leading-relaxed text-amber-300/90">{impactScope}</p>
         </div>
       ) : null}
@@ -164,7 +164,7 @@ export default function RootCauseAlert({
         <div className="border-t border-slate-800 px-2.5 py-2">
           <p className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
             <ListTree className="h-2.5 w-2.5" aria-hidden />
-            evidence&nbsp;chain&nbsp;·&nbsp;{evidenceChain.length}
+            可观测性证据链 · {evidenceChain.length}
           </p>
           <ol className="relative mt-1.5 space-y-1">
             {/* 纵向时间轴主线 */}
@@ -202,7 +202,7 @@ export default function RootCauseAlert({
             📚 RAG 检索增强知识库溯源
           </span>
           <span className="shrink-0 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-emerald-300">
-            {ragReferences.length}&nbsp;citations
+            {ragReferences.length} 条引用
           </span>
         </button>
 
@@ -230,7 +230,7 @@ export default function RootCauseAlert({
                           className="ml-auto shrink-0 font-mono text-[11px] font-bold tabular-nums text-emerald-400"
                           title={`余弦相似度 ${doc.similarityScore?.toFixed(4)}`}
                         >
-                          Similarity:&nbsp;{similarityPct.toFixed(1)}%
+                          匹配度 {similarityPct.toFixed(1)}%
                         </span>
                       ) : null}
                     </div>

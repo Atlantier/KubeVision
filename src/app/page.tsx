@@ -147,11 +147,11 @@ function CanvasSkeleton() {
         <span className="flex h-14 w-14 animate-glow-pulse items-center justify-center rounded-xl border border-cyan-400/40 bg-cyan-400/10 shadow-glow-cyan">
           <Radar className="h-7 w-7 text-cyan-400" aria-hidden />
         </span>
-        <p className="font-mono text-[10px] uppercase tracking-[0.35em] text-cyan-400/80">
-          initializing&nbsp;webgl&nbsp;engine
+        <p className="font-mono text-[11px] tracking-[0.2em] text-cyan-400/80">
+          正在初始化 WebGL 3D 拓扑引擎
         </p>
         <p className="font-mono text-[11px] tracking-wider text-slate-600">
-          loading three.js r169 · r3f scene graph · spatial layout
+          加载 Three.js 场景图 · 空间布局矩阵 · 实例着色器
         </p>
         {/* 进度条：不确定态流光扫描（framer-motion 往复位移，不依赖自定义 keyframes） */}
         <span className="relative mt-1 block h-px w-48 overflow-hidden bg-slate-800">

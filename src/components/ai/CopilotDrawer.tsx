@@ -91,7 +91,7 @@ function AuditorSkeleton() {
         <Sparkles className="h-5 w-5 text-cyan-400" aria-hidden />
       </span>
       <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-400/70">
-        loading&nbsp;edge&nbsp;auditor
+        loading edge auditor
       </p>
     </div>
   );
@@ -470,8 +470,8 @@ function MessageBubble({
               alt="已发送的 3D 视口快照"
               className="h-16 w-28 object-cover"
             />
-            <p className="px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-cyan-400/80">
-              3d&nbsp;viewport&nbsp;sent
+            <p className="px-1.5 py-0.5 font-mono text-[10px] tracking-wider text-cyan-400/80">
+              已附带 3D 视口快照
             </p>
           </div>
         ) : null}
@@ -523,7 +523,7 @@ function MessageBubble({
       {/* 引擎来源标注（诚实标注，仅在流结束后显示） */}
       {!message.isStreaming && message.engine !== undefined ? (
         <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">
-          answered&nbsp;by&nbsp;{message.engine === 'llm' ? 'remote llm' : 'local deterministic engine'}
+            推理引擎 · {message.engine === 'llm' ? '云端大模型' : '本地确定性容灾引擎'}
         </p>
       ) : null}
 
@@ -1240,10 +1240,19 @@ export default function CopilotDrawer() {
   /* 渲染                                                                       */
   /* ========================================================================== */
 
+  /**
+   * 【双页签标签：中文主标 + 英文副标】
+   *
+   * 为何保留英文副标：`scripts/verify.mjs` 的浏览器 E2E 通过
+   * `/Edge Log Auditor/i` 匹配页签文本定位点击目标。若只留中文，
+   * 验收脚本会失配（审查报告 §3.2 的自动化兼容红线）。
+   * 双语标注同时满足「界面汉化」与「测试可定位」两个约束，
+   * 不必为了测试而牺牲界面语言。
+   */
   const tabItems = useMemo(
-    (): ReadonlyArray<{ readonly key: RightPanelTab; readonly label: string }> => [
-      { key: 'copilot', label: 'AI SRE Copilot' },
-      { key: 'auditor', label: 'Edge Log Auditor (WASM)' },
+    (): ReadonlyArray<{ readonly key: RightPanelTab; readonly label: string; readonly sub: string }> => [
+      { key: 'copilot', label: 'AI 运维副驾', sub: 'SRE Copilot' },
+      { key: 'auditor', label: '端侧隐私日志审计', sub: 'Edge Log Auditor (WASM)' },
     ],
     [],
   );
@@ -1268,12 +1277,16 @@ export default function CopilotDrawer() {
               aria-selected={active}
               onClick={(): void => setActiveRightTab(tab.key)}
               className={cn(
-                'relative min-w-0 flex-1 truncate px-2 font-mono text-[12px] uppercase tracking-wider transition-colors',
+                'relative flex min-w-0 flex-1 flex-col items-center justify-center px-2 transition-colors',
                 active ? 'text-cyan-300' : 'text-slate-500 hover:text-slate-300',
               )}
-              title={tab.label}
+              title={`${tab.label} · ${tab.sub}`}
             >
-              {tab.label}
+              {/* 中文主标（用户读） + 英文副标（术语锚点 & 测试选择器） */}
+              <span className="truncate text-[12px] font-semibold leading-none">{tab.label}</span>
+              <span className="mt-0.5 truncate font-mono text-[10px] leading-none opacity-60">
+                {tab.sub}
+              </span>
               {active ? (
                 <motion.span
                   layoutId="copilot-drawer-tab-underline"
@@ -1320,8 +1333,8 @@ export default function CopilotDrawer() {
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
                   <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
                 </span>
-                <span className="font-mono text-[11px] uppercase tracking-wider text-emerald-400/90">
-                  online
+                <span className="font-mono text-[11px] tracking-wider text-emerald-400/90">
+                  在线就绪
                 </span>
               </span>
 
@@ -1374,8 +1387,8 @@ export default function CopilotDrawer() {
             {messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
                 <Sparkles className="h-6 w-6 text-slate-700" aria-hidden />
-                <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-600">
-                  sre copilot ready
+                <p className="font-mono text-[11px] tracking-[0.15em] text-slate-600">
+                  智能运维副驾已就绪
                 </p>
                 <p className="text-[10px] leading-relaxed text-slate-600">
                   提问集群故障、或使用下方快捷指令开始诊断。
@@ -1421,8 +1434,8 @@ export default function CopilotDrawer() {
                     >
                       <X className="h-2.5 w-2.5" aria-hidden />
                     </button>
-                    <p className="px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider text-cyan-400/80">
-                      3d&nbsp;snapshot&nbsp;ready
+                    <p className="px-1 py-0.5 font-mono text-[10px] tracking-wider text-cyan-400/80">
+                      3D 视口快照就绪
                     </p>
                   </div>
                 </motion.div>
@@ -1556,7 +1569,7 @@ export default function CopilotDrawer() {
                   )}
                   title={chip.text}
                 >
-                  <span aria-hidden>{chip.icon}</span>&nbsp;{chip.text}
+                  <span aria-hidden>{chip.icon}</span> {chip.text}
                 </button>
               ))}
             </div>

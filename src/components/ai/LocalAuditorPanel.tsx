@@ -281,7 +281,7 @@ function AuditCard({
             meta.badge,
           )}
         >
-          {record.result.label}&nbsp;{(record.result.confidence * 100).toFixed(1)}%
+          {record.result.label} {(record.result.confidence * 100).toFixed(1)}%
         </span>
         <span className="shrink-0 font-mono text-[10px] tabular-nums text-cyan-400/80">
           {record.result.inferenceLatencyMs.toFixed(2)}ms
@@ -293,7 +293,7 @@ function AuditCard({
         <span className="truncate">{record.namespace}</span>
         <span>·</span>
         <span className={record.maskedCount > 0 ? 'text-amber-500' : ''}>
-          {record.maskedCount}&nbsp;masked
+          {record.maskedCount} masked
         </span>
       </div>
 
@@ -312,11 +312,11 @@ function AuditCard({
           )}
         >
           {showRaw ? <Eye className="h-2.5 w-2.5" aria-hidden /> : <EyeOff className="h-2.5 w-2.5" aria-hidden />}
-          {showRaw ? 'raw (敏感)' : 'sanitized (安全)'}
+          {showRaw ? '原始日志（含敏感凭证）' : '脱敏后日志（零信任安全）'}
         </button>
         {record.maskedCount > 0 ? (
           <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-600">
-            toggle&nbsp;to&nbsp;compare
+            点击切换对比
           </span>
         ) : null}
       </div>
@@ -480,7 +480,7 @@ export default function LocalAuditorPanel() {
           (r): boolean => r.result.label === 'CRITICAL_PANIC' || r.result.label === 'RESOURCE_EXHAUSTED',
         ).length;
         appendTerminalLog(
-          `[EDGE-WASM] batch audited: ${newRecords.length} logs / ${batchMasked} secrets masked / ` +
+          `[EDGE-WASM] 本轮审计完成: ${newRecords.length} logs / ${batchMasked} secrets masked / ` +
             `${highRiskInBatch} high-risk (${classifier.runtimeLabel})`,
         );
       }
@@ -617,7 +617,7 @@ export default function LocalAuditorPanel() {
         <div className="flex items-center gap-1">
           <ShieldCheck className="h-3 w-3 shrink-0 text-emerald-400" aria-hidden />
           <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-emerald-300">
-            edge&nbsp;ai&nbsp;·&nbsp;privacy&nbsp;guard
+            端侧 AI · 隐私脱敏卫士
           </span>
           {/* 运行时徽标 */}
           <span
@@ -679,13 +679,13 @@ export default function LocalAuditorPanel() {
         {/* 累计脱敏凭证数 + 平均推理延迟 */}
         <div className="mt-1 grid grid-cols-2 gap-1">
           <div className="rounded border border-slate-700/70 bg-slate-800/40 px-1 py-0.5">
-            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">masked</p>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">累计脱敏项</p>
             <p className="font-mono text-[10px] font-bold tabular-nums text-amber-300">
               {totalMaskedSecrets}
             </p>
           </div>
           <div className="rounded border border-slate-700/70 bg-slate-800/40 px-1 py-0.5">
-            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">avg latency</p>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">平均推理耗时</p>
             <p className="font-mono text-[10px] font-bold tabular-nums text-cyan-300">
               {avgLatency !== null ? `${avgLatency.toFixed(2)}ms` : '--'}
             </p>
@@ -720,7 +720,7 @@ export default function LocalAuditorPanel() {
           ) : (
             <FileSearch className="h-2.5 w-2.5" aria-hidden />
           )}
-          {isFetching ? 'auditing…' : '抓取并审计日志流'}
+          {isFetching ? '端侧推理中…' : '抓取并审计日志流'}
         </button>
 
         {/* 自动实时流式审计开关 */}
@@ -763,7 +763,7 @@ export default function LocalAuditorPanel() {
         {records.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-1.5 px-4 text-center">
             <ShieldCheck className="h-6 w-6 text-slate-700" aria-hidden />
-            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-600">awaiting logs</p>
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-600">等待抓取日志</p>
             <p className="text-[11px] leading-relaxed text-slate-600">
               点击上方按钮抓取集群日志，端侧将完成脱敏与语义分类，
               <br />

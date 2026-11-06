@@ -142,15 +142,15 @@ export default function AgentThoughtChain({
         )}
         <BrainCircuit className="h-3.5 w-3.5 shrink-0 text-cyan-400" aria-hidden />
         <span className="shrink-0 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-300">
-          agent&nbsp;reasoning
+          AI 诊断推理链
         </span>
 
         {/* 摘要徽标：步数 + 总耗时 */}
         <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums text-slate-500">
           <span className="rounded-full border border-slate-700 bg-slate-800/70 px-1.5 py-0.5 text-slate-400">
-            {ordered.sorted.length}&nbsp;steps
+            {ordered.sorted.length} 步
           </span>
-          <span>{ordered.total}&nbsp;ms</span>
+          <span>{ordered.total} ms</span>
         </span>
 
         {/* 流式指示器：脉冲点 */}
@@ -194,7 +194,7 @@ export default function AgentThoughtChain({
                       {step.title}
                     </span>
                     <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-600">
-                      {step.latencyMs}&nbsp;ms
+                      {step.latencyMs} ms
                     </span>
                   </div>
 
@@ -221,7 +221,7 @@ export default function AgentThoughtChain({
               <span className="relative z-10 flex h-2 w-2 shrink-0 items-center justify-center">
                 <span className="h-1.5 w-1.5 animate-glow-pulse rounded-full bg-cyan-400" aria-hidden />
               </span>
-              <span className="font-mono text-[10px] italic text-cyan-400/70">thinking…</span>
+              <span className="font-mono text-[10px] italic text-cyan-400/70">深度思考中…</span>
             </li>
           ) : null}
         </ol>

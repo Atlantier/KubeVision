@@ -585,10 +585,12 @@ async function streamWithLLM(params: {
    * 溯源必须由路由层用真实结果填充。
    */
   readonly runbooks: readonly RagRunbookDoc[];
+  /** 上下文中的真实实体（校正模型复述 ID 时的幻觉） */
+  readonly knownEntities: readonly KnownEntity[];
   readonly emit: (event: ChatStreamEvent) => void;
   readonly signal: AbortSignal;
 }): Promise<boolean> {
-  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, emit, signal } = params;
+  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, emit, signal } = params;
 
   try {
     const provider = createOpenAI({ apiKey, baseURL });
@@ -680,7 +682,7 @@ async function streamWithLLM(params: {
         await sleep(TOOL_RESULT_DELAY_MS_A, signal);
 
         /* 步骤 3：校验 args 后推 tool-result（前端据此水合卡片） */
-        const validated = validateToolArgs(toolName, part.args, runbooks);
+        const validated = validateToolArgs(toolName, part.args, runbooks, knownEntities);
         if (validated === null) {
           emit({
             type: 'text',
@@ -712,6 +714,106 @@ async function streamWithLLM(params: {
 }
 
 /**
+ * KnownEntity —— 请求上下文中真实存在的实体（用于校正模型幻觉）。
+ *
+ * 【为何需要】大模型在复述长 ID 时极易出错（实测把
+ * `pod-payment-gateway-7f8b9-x2k` 写成 `pod-payment-gateway-7f8b-9x2k`）。
+ * 这类错误在文本层面几乎无法察觉，但会让卡片绑定到不存在的实体、
+ * 3D 聚焦失效。ID 是系统已知的确定事实，应由服务端校正而非让模型复述。
+ */
+interface KnownEntity {
+  readonly id: string;
+  readonly name: string;
+}
+
+/**
+ * editDistance —— Levenshtein 编辑距离（用于 ID 模糊匹配）。
+ *
+ * 【核心数学】d[i][j] = min(
+ *   d[i-1][j] + 1,      // 删除
+ *   d[i][j-1] + 1,      // 插入
+ *   d[i-1][j-1] + cost, // 替换（相同则 +0）
+ * )
+ * 值越小表示两串越接近。用于容忍模型输出中的单字符错漏与顺序颠倒。
+ *
+ * 【为何自己实现】只为一个用途引入 diff 库不值得；此算法 20 行即可，
+ * 且 ID 长度通常 < 60，O(n·m) 完全可接受。
+ *
+ * @param a 字符串 A
+ * @param b 字符串 B
+ * @returns 编辑距离
+ */
+function editDistance(a: string, b: string): number {
+  const la = a.length;
+  const lb = b.length;
+  if (la === 0) return lb;
+  if (lb === 0) return la;
+
+  /* 滚动数组：只保留上一行，空间 O(min(la,lb)) */
+  let prev = new Array<number>(lb + 1);
+  let curr = new Array<number>(lb + 1);
+  for (let j = 0; j <= lb; j++) prev[j] = j;
+
+  for (let i = 1; i <= la; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= lb; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    const tmp = prev;
+    prev = curr;
+    curr = tmp;
+  }
+  return prev[lb];
+}
+
+/**
+ * resolveEntityId —— 把模型给出的近似 ID 映射回真实实体 ID。
+ *
+ * 【匹配优先级】
+ * 1. 精确命中 → 直接返回（最常见，零成本）；
+ * 2. 名字精确命中 → 用名字对应的真实 ID；
+ * 3. 模糊匹配：在真实实体中找编辑距离最小者，且距离需小于阈值
+ *    （取 ID 长度的 25%，最少 3）——阈值防止把无关实体硬套上去。
+ *
+ * @param claimedId   模型声称的 ID
+ * @param claimedName 模型声称的名字（辅助匹配）
+ * @param known       真实实体列表
+ * @returns 匹配到的真实 ID；无法可靠匹配时返回 null（保留模型原值交由调用方决定）
+ */
+function resolveEntityId(
+  claimedId: string,
+  claimedName: string,
+  known: readonly KnownEntity[],
+): string | null {
+  if (known.length === 0) return null;
+
+  /* ---- 1. ID 精确命中 ---- */
+  for (const entity of known) {
+    if (entity.id === claimedId) return entity.id;
+  }
+
+  /* ---- 2. 名字精确命中 ---- */
+  for (const entity of known) {
+    if (entity.name === claimedName || entity.name === claimedId) return entity.id;
+  }
+
+  /* ---- 3. 模糊匹配：编辑距离最小且足够接近 ---- */
+  let best: { id: string; distance: number } | null = null;
+  for (const entity of known) {
+    const d = editDistance(claimedId, entity.id);
+    if (best === null || d < best.distance) {
+      best = { id: entity.id, distance: d };
+    }
+  }
+
+  if (best === null) return null;
+  /* 阈值：允许少量字符差异，但拒绝完全无关的实体 */
+  const threshold = Math.max(3, Math.floor(claimedId.length * 0.25));
+  return best.distance <= threshold ? best.id : null;
+}
+
+/**
  * validateToolArgs —— 按工具名校验模型生成的参数。
  *
  * 【ragReferences 注入】模型无法凭空知道本次检索命中了哪些手册——
@@ -719,19 +821,43 @@ async function streamWithLLM(params: {
  * 用真实的检索结果填充，而不是让模型自己编。此前这里硬编码空数组，
  * 导致引擎 A 产出的根因卡永远缺失溯源区（实测发现）。
  *
- * @param toolName    工具名
- * @param rawArgs     模型生成的原始参数（不可信）
- * @param runbooks    本次请求实际检索到的 Runbook（用于注入 ragReferences）
+ * @param toolName        工具名
+ * @param rawArgs         模型生成的原始参数（不可信）
+ * @param runbooks        本次请求实际检索到的 Runbook（用于注入 ragReferences）
+ * @param knownEntities   本次请求上下文中的真实实体（用于校正模型幻觉的 ID）
  * @returns 通过校验的卡片载荷；校验失败返回 null
  */
 function validateToolArgs(
   toolName: string,
   rawArgs: unknown,
   runbooks: readonly RagRunbookDoc[],
+  knownEntities: readonly KnownEntity[],
 ): PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps | null {
   if (toolName === 'renderPodMetrics') {
     const parsed = podMetricsSchema.safeParse(rawArgs);
-    return parsed.success ? (parsed.data as PodMetricsCardProps) : null;
+    if (!parsed.success) return null;
+
+    /**
+     * 【校正模型幻觉的 Pod ID】
+     *
+     * 实测发现（deepseek-flash）：模型会把 `pod-payment-gateway-7f8b9-x2k`
+     * 记成 `pod-payment-gateway-7f8b-9x2k`——少一个字符、`9x2k` 顺序颠倒。
+     * 人类几乎不会注意，但对系统是致命错位：卡片会绑定到不存在的实体，
+     * 点击名称触发的 3D 聚焦也会失败（CameraRig 找不到该 ID）。
+     *
+     * 【为何由路由层校正而非继续要求模型】ID 是**系统已知的确定事实**，
+     * 让模型"复述"它本身就是设计缺陷——等于让模型做没有智力价值的抄写，
+     * 而抄写恰恰是大模型最容易出错的地方。路由层持有真实实体列表，
+     * 用模糊匹配把模型给的近似 ID 映射回真实 ID，从根源消除这类错误。
+     *
+     * 【匹配策略】按「同名最长公共前缀」+「编辑距离最小」排序，
+     * 只接受足够接近的候选（避免把一个完全无关的 Pod 硬套上去）。
+     */
+    const resolvedId = resolveEntityId(parsed.data.podId, parsed.data.podName, knownEntities);
+    return {
+      ...parsed.data,
+      podId: resolvedId ?? parsed.data.podId,
+    } as PodMetricsCardProps;
   }
   if (toolName === 'renderRootCauseAnalysis') {
     const parsed = rootCauseSchema.safeParse(rawArgs);
@@ -1121,6 +1247,26 @@ export async function POST(request: Request): Promise<Response> {
 
   const systemPrompt = buildSystemPrompt(clusterContext, runbooks, hasImage);
 
+  /**
+   * 【真实实体清单】用于校正模型复述 ID 时的幻觉。
+   * 包含：选中实体 + 全部异常 Pod + 全部节点。
+   * 这些是本次请求上下文中**客观存在**的实体，模型若输出了近似的
+   * 错误 ID，路由层可据此映射回真实值（见 resolveEntityId）。
+   */
+  const knownEntities: KnownEntity[] = [];
+  if (clusterContext.selectedEntityId !== null) {
+    knownEntities.push({
+      id: clusterContext.selectedEntityId,
+      name: clusterContext.selectedEntityId,
+    });
+  }
+  for (const pod of clusterContext.faultyPods) {
+    knownEntities.push({ id: pod.id, name: pod.name });
+  }
+  for (const node of clusterContext.nodes) {
+    knownEntities.push({ id: node.id, name: node.name });
+  }
+
   /* ---- 引擎选择 ---- */
   const apiKey = process.env.OPENAI_API_KEY;
   const baseURL = process.env.OPENAI_BASE_URL;
@@ -1264,6 +1410,7 @@ export async function POST(request: Request): Promise<Response> {
             hasImage,
             viewportImage,
             runbooks,
+            knownEntities,
             emit,
             signal,
           });
