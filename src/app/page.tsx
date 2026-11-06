@@ -31,6 +31,23 @@ import { useTelemetryStream } from '@/hooks/useTelemetryStream';
 import { rehydratePersistedClusterState, useClusterStore } from '@/store/useClusterStore';
 
 /**
+ * CopilotDrawer 懒加载（右侧智能运维副驾驶主面板）。
+ *
+ * 【为何用 dynamic 而非静态 import】
+ * 1. 首屏体积：Copilot 内含 5 个 GenUI 组件、framer-motion 动画、
+ *    NDJSON 流解析与 Web Speech 集成，属重资产；SSR 阶段它不产生任何
+ *    可见内容（消息列表初始为空），延后加载可让 3D 画布更快可交互；
+ * 2. SSR 安全：组件大量使用 window（fetch 流、speechSynthesis、
+ *    SpeechRecognition、canvas.toDataURL），ssr:false 彻底规避服务端求值；
+ * 3. loading 返回 null：抽屉位置由右侧栏的边框与背景承载，
+ *    chunk 就绪前不显示骨架，避免切换瞬间的布局跳动。
+ */
+const CopilotDrawer = dynamic(() => import('@/components/ai/CopilotDrawer'), {
+  ssr: false,
+  loading: (): null => null,
+});
+
+/**
  * ClusterCanvas 懒加载（SSR 边界核心配置）。
  *
  * 【ssr: false 契约】three / @react-three/fiber / drei 深度依赖 window、
@@ -116,7 +133,7 @@ export default function HomePage() {
 
   return (
     <>
-      <ShellLayout viewport={<ClusterCanvas />} />
+      <ShellLayout viewport={<ClusterCanvas />} drawer={<CopilotDrawer />} />
       {/* 顶层混沌演练模态框：仅在开启时挂载，关闭即卸载（配合 dynamic 实现
           chunk 按需加载 + 卸载释放）。组件内部自带 AnimatePresence 入场动画，
           且 z-50 位于全站最顶层（高于 PerfHUD z-40 与画布 Html 标注）。 */}

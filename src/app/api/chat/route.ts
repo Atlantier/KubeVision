@@ -1148,13 +1148,21 @@ export async function POST(request: Request): Promise<Response> {
         /* ============ 推理步骤 2（条件）：多模态视觉 ============ */
         let nextStepIndex = 1;
         if (hasImage) {
-          const approxKb = Math.round((viewportImage.length * 0.75) / 1024);
+          /**
+           * 【体积展示】Base64 相对原始二进制的膨胀系数约 4/3，故乘 0.75 还原。
+           * 小于 1 KB 时改用字节表述——直接 Math.round 到 KB 会显示「约 0 KB」，
+           * 那是会让用户怀疑截图没有被正确接收的错误文案（实测发现）。
+           */
+          const approxBytes = Math.round(viewportImage.length * 0.75);
+          const sizeLabel = approxBytes >= 1024
+            ? `约 ${(approxBytes / 1024).toFixed(1)} KB Base64`
+            : `约 ${approxBytes} 字节 Base64`;
           const visionStep: AgentReasoningStep = {
             stepIndex: nextStepIndex,
             phase: 'MULTIMODAL_VISION',
             title: '解析 3D WebGL 拓扑快照空间异常特征',
             detail:
-              `接收到视口快照（约 ${approxKb} KB Base64），执行空间布局分析：` +
+              `接收到视口快照（${sizeLabel}），执行空间布局分析：` +
               `校验机架实例着色（翠绿/琥珀/鲜红分布）、地面警示波纹环激活范围、` +
               `以及异常机架与遥测数据的空间一致性。`,
             latencyMs: SIM_LATENCY.vision,

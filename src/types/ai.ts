@@ -442,6 +442,105 @@ export interface ChatRequestBody {
 }
 
 /* ========================================================================== */
+/* Copilot 会话消息与语音输入（前端消费层）                                       */
+/* ========================================================================== */
+
+/**
+ * CopilotToolCard —— 工具调用在会话中的渲染状态（skeleton → card）。
+ *
+ * 【设计意图】tool-start 与 tool-result 是两条独立事件，需要在前端合并为
+ * 同一个卡片槽位：先以 skeleton 态占位（展示骨架屏），收到 result 后
+ * 原地升级为 ready 态（水合真实组件）。用 toolCallId 作为配对键，
+ * 保证乱序/交叉到达时也能正确匹配。
+ */
+export interface CopilotToolCard {
+  /** 工具调用唯一标识（与流事件 toolCallId 一致） */
+  readonly toolCallId: string;
+  /** 工具名（决定渲染哪个 GenUI 组件） */
+  readonly toolName: string;
+  /** MCP 端点 URI（骨架屏提示用） */
+  readonly mcpUri: string;
+  /** 生命周期：skeleton 等待结果 / ready 可渲染 / error 载荷校验失败 */
+  readonly state: 'skeleton' | 'ready' | 'error';
+  /** 卡片载荷（仅 ready 态存在） */
+  readonly args?: PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps;
+}
+
+/**
+ * CopilotMessage —— 对话流中的一条消息（用户或 AI）。
+ *
+ * 【用户消息】携带 text 与可选的 viewportSnapshot（已发送的 3D 视口缩略图）。
+ * 【AI 消息】携带 reasoningSteps（思考链）、text（正文流式累积）、
+ * toolCards（生成式 UI 卡片槽位）与 engine（实际生效引擎，诚实标注）。
+ */
+export interface CopilotMessage {
+  /** 消息唯一标识 */
+  readonly id: string;
+  /** 角色 */
+  readonly role: 'user' | 'assistant';
+  /** 正文（AI 消息为流式累积结果） */
+  readonly text: string;
+  /** 用户消息附带的 3D 视口快照 DataURL（AI 消息恒为 undefined） */
+  readonly viewportSnapshot?: string;
+  /** AI 消息的推理步骤序列（实时追加） */
+  readonly reasoningSteps: readonly AgentReasoningStep[];
+  /** AI 消息的工具调用卡片槽位 */
+  readonly toolCards: readonly CopilotToolCard[];
+  /** 实际生效引擎（仅 AI 消息，来自 stream 的 engine 事件） */
+  readonly engine?: 'llm' | 'simulator';
+  /** 是否仍在流式接收（true → 显示打字光标与"思考中"指示） */
+  readonly isStreaming: boolean;
+}
+
+/**
+ * SpeechRecognitionLike —— 浏览器原生语音识别的最小可用接口子集。
+ *
+ * 【为何自行声明而非用 DOM lib 类型】TypeScript 的 DOM lib 至今未内置
+ * SpeechRecognition（仅部分版本提供 webkitSpeechRecognition，且命名不一致），
+ * 直接使用全局名会编译失败。此处只声明真正用到的成员，既避免 any，
+ * 又不引入第三方类型包（AGENTS.md 第 2 条要求零 any）。
+ */
+export interface SpeechRecognitionLike {
+  /** 识别语言（如 'zh-CN'） */
+  lang: string;
+  /** 是否为连续识别 */
+  continuous: boolean;
+  /** 是否返回中间结果 */
+  interimResults: boolean;
+  /** 识别结果回调 */
+  onresult: ((event: SpeechRecognitionResultEventLike) => void) | null;
+  /** 错误回调 */
+  onerror: ((event: { readonly error: string }) => void) | null;
+  /** 结束回调 */
+  onend: (() => void) | null;
+  /** 开始识别 */
+  start: () => void;
+  /** 停止识别 */
+  stop: () => void;
+  /** 中止识别 */
+  abort: () => void;
+}
+
+/** 语音识别结果事件的最小形状（含 results 索引访问） */
+export interface SpeechRecognitionResultEventLike {
+  readonly resultIndex: number;
+  readonly results: {
+    readonly length: number;
+    readonly [index: number]: {
+      readonly isFinal: boolean;
+      readonly length: number;
+      readonly [index: number]: { readonly transcript: string };
+    };
+  };
+}
+
+/** 挂载了语音识别的 window 扩展（构造器可能存在于 window 或 webkit 前缀下） */
+export interface SpeechRecognitionWindow {
+  readonly SpeechRecognition?: new () => SpeechRecognitionLike;
+  readonly webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+}
+
+/* ========================================================================== */
 /* 端侧日志审计（Transformers.js WebGPU/WASM 浏览器端推理）                      */
 /* ========================================================================== */
 
