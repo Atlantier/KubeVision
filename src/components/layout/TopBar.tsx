@@ -399,8 +399,8 @@ export default function TopBar() {
           <span className="text-sm font-bold tracking-tight text-slate-50">
             KubeVision&nbsp;<span className="text-cyan-400">AI</span>
           </span>
-          <span className="mt-0.5 font-mono text-[11px] tracking-[0.15em] text-slate-500">
-            3D 态势感知中枢
+          <span className="mt-0.5 font-mono text-[10px] tracking-[0.15em] text-slate-500">
+            3D 态势感知
           </span>
         </div>
         {/* 版本徽标 v2.4-Edge */}

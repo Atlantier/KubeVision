@@ -108,7 +108,7 @@ export function TerminalLine({ line, tone }: TerminalLineProps) {
  * 【渲染性能】memoized lines 依赖 terminalLogs 数组引用（Store FIFO 更新才失效）；
  * 单行组件无内部状态，200 行上限下 DOM 节点数受控（无需虚拟滚动）。
  */
-export default function TerminalEcho({ className, defaultCollapsed = false }: TerminalEchoProps) {
+export default function TerminalEcho({ className, defaultCollapsed = true }: TerminalEchoProps) {
   /* ---- Store 细粒度订阅 ---- */
   const terminalLogs = useClusterStore((s): string[] => s.terminalLogs);
   /* 【只清屏，不动持久化数据】详见 store.clearTerminalLogs 注释：

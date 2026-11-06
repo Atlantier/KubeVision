@@ -39,10 +39,11 @@
  * 偏移也复位到标准机位）——「关闭卡片 = 退出巡检会话」的语义一致性。
  */
 
-import { useCallback, useId, useMemo } from 'react';
+import { useCallback, useId, useMemo, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
+  ChevronDown,
   Cpu,
   HardDrive,
   LayoutGrid,
@@ -529,65 +530,108 @@ function Sparkline({ series, width = SPARKLINE_WIDTH, height = SPARKLINE_HEIGHT 
  *
  * 【内容】状态图例（三色语义）+ 操作手势提示（四条交互）。
  * 设计目标：新用户看向 3D 场景能在 3 秒内看懂颜色语言与操作方式。
+ *
+ * 【为何改为默认收起的胶囊】（蓝图 §1.4 / 审查报告 §2.4）
+ * 原实现是常驻的 248px 宽、约 200px 高的完整卡片，永久占据 3D 视口左上角。
+ * 实测它遮挡了相当一部分画面，是"四角围城"观感的主要来源之一。
+ *
+ * 现在改为：**常态只有一行紧凑胶囊**（三个色点 + "读图说明"），
+ * 点击才展开完整图例。既保留了新用户的可发现性（色点本身就是图例），
+ * 又把稳态下的画面占用从 ~200px 高压缩到 ~24px。
  */
 function TopologyLegendPanel() {
+  const [expanded, setExpanded] = useState<boolean>(false);
+
   return (
-    <div className="kv-panel pointer-events-auto w-[248px] max-w-full p-3 shadow-panel">
-      {/* 标题 */}
-      <div className="mb-2 flex items-center gap-1.5">
-        <LayoutGrid className="h-3 w-3 text-cyan-400" aria-hidden />
-        <p className="font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-cyan-400">
-          topology&nbsp;legend
-        </p>
-      </div>
-
-      {/* 状态图例 */}
-      <ul className="space-y-1.5">
-        {TOPOLOGY_LEGEND.map((item) => (
-          <li key={item.key} className="flex items-start gap-2">
-            <span
-              className={cn('mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full', TONE_BG_CLASS[item.tone])}
-              aria-hidden
-            />
-            <span className="min-w-0">
-              <span className={cn('font-mono text-[10px] font-bold tracking-wide', TONE_TEXT_CLASS[item.tone])}>
-                {item.label}
-              </span>
-              <span className="ml-1.5 text-[10px] leading-snug text-slate-500">{item.description}</span>
-            </span>
-          </li>
+    <div className="kv-panel pointer-events-auto max-w-full overflow-hidden">
+      {/* ---- 常态：一行紧凑胶囊（点击切换展开） ---- */}
+      <button
+        type="button"
+        onClick={(): void => setExpanded((prev): boolean => !prev)}
+        aria-expanded={expanded}
+        aria-label="展开或收起读图说明"
+        className="flex w-full items-center gap-1.5 px-2 py-1 transition-colors hover:bg-slate-100/5"
+      >
+        <LayoutGrid className="h-3 w-3 shrink-0 text-cyan-400" aria-hidden />
+        {/* 三个状态色点：图例语义在收起态由它们承载，无需文字也能读懂 */}
+        {TOPOLOGY_LEGEND.map((item): ReactNode => (
+          <span
+            key={item.key}
+            className={cn('h-1.5 w-1.5 shrink-0 rounded-full', TONE_BG_CLASS[item.tone])}
+            title={`${item.label} · ${item.description}`}
+            aria-hidden
+          />
         ))}
-      </ul>
+        <span className="ml-0.5 font-mono text-[10px] tracking-wider text-slate-400">读图说明</span>
+        <ChevronDown
+          className={cn(
+            'ml-auto h-3 w-3 shrink-0 text-slate-500 transition-transform duration-200',
+            expanded && 'rotate-180',
+          )}
+          aria-hidden
+        />
+      </button>
 
-      {/* 分隔 */}
-      <div className="my-2 border-t border-slate-800" />
+      {/* ---- 展开态：完整图例 + 手势提示（弹簧高度动画） ---- */}
+      <AnimatePresence initial={false}>
+        {expanded ? (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-slate-800 px-2.5 py-2">
+              {/* 状态图例 */}
+              <ul className="space-y-1.5">
+                {TOPOLOGY_LEGEND.map((item) => (
+                  <li key={item.key} className="flex items-start gap-2">
+                    <span
+                      className={cn('mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full', TONE_BG_CLASS[item.tone])}
+                      aria-hidden
+                    />
+                    <span className="min-w-0">
+                      <span className={cn('font-mono text-[10px] font-bold tracking-wide', TONE_TEXT_CLASS[item.tone])}>
+                        {item.label}
+                      </span>
+                      <span className="ml-1.5 text-[10px] leading-snug text-slate-500">{item.description}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
 
-      {/* 手势提示 */}
-      <div className="mb-1.5 flex items-center gap-1.5">
-        <Move3d className="h-3 w-3 text-slate-500" aria-hidden />
-        <p className="font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
-          camera&nbsp;controls
-        </p>
-      </div>
-      <ul className="grid grid-cols-2 gap-x-2 gap-y-1">
-        {GESTURE_HINTS.map((hint) => (
-          <li key={hint.key} className="flex items-center gap-1">
-            {hint.key === 'rotate' ? (
-              <RotateCcw className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
-            ) : hint.key === 'pan' ? (
-              <Move3d className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
-            ) : hint.key === 'zoom' ? (
-              <ZoomIn className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
-            ) : (
-              <MousePointerClick className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
-            )}
-            <span className="truncate font-mono text-[11px] text-slate-500">
-              {hint.label} <span className="text-slate-600">·</span>{' '}
-              <span className="text-slate-400">{hint.effect}</span>
-            </span>
-          </li>
-        ))}
-      </ul>
+              {/* 分隔 */}
+              <div className="my-2 border-t border-slate-800" />
+
+              {/* 手势提示 */}
+              <div className="mb-1.5 flex items-center gap-1.5">
+                <Move3d className="h-3 w-3 text-slate-500" aria-hidden />
+                <p className="font-mono text-[10px] tracking-wider text-slate-500">相机操作</p>
+              </div>
+              <ul className="grid grid-cols-2 gap-x-2 gap-y-1">
+                {GESTURE_HINTS.map((hint) => (
+                  <li key={hint.key} className="flex items-center gap-1">
+                    {hint.key === 'rotate' ? (
+                      <RotateCcw className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
+                    ) : hint.key === 'pan' ? (
+                      <Move3d className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
+                    ) : hint.key === 'zoom' ? (
+                      <ZoomIn className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
+                    ) : (
+                      <MousePointerClick className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
+                    )}
+                    <span className="truncate font-mono text-[10px] text-slate-500">
+                      {hint.label} <span className="text-slate-600">·</span>{' '}
+                      <span className="text-slate-400">{hint.effect}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
