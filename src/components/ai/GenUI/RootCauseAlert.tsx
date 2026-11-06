@@ -19,6 +19,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertOctagon,
   BookOpen,
@@ -206,44 +207,62 @@ export default function RootCauseAlert({
           </span>
         </button>
 
-        {/* 展开态：Runbook 编号 + 标题 + 相似度 */}
-        {citationsOpen ? (
-          <ul className="space-y-1 px-2.5 pb-2">
-            {ragReferences.length === 0 ? (
-              <li className="font-mono text-[12px] text-slate-600">— 暂未匹配到排障手册 —</li>
-            ) : (
-              ragReferences.map((doc) => {
-                /* similarityScore ∈ [0,1]，展示为百分比（如 0.964 → 96.4%） */
-                const similarityPct =
-                  doc.similarityScore === undefined ? null : Math.round(doc.similarityScore * 1000) / 10;
-                return (
-                  <li
-                    key={doc.id}
-                    className="rounded border border-slate-800 bg-slate-950/50 p-1.5 transition-colors hover:border-emerald-500/40"
-                  >
-                    <div className="flex items-start gap-1.5">
-                      <span className="shrink-0 rounded bg-emerald-500/15 px-1 py-0.5 font-mono text-[11px] font-bold text-emerald-300">
-                        {doc.id}
-                      </span>
-                      {similarityPct !== null ? (
-                        <span
-                          className="ml-auto shrink-0 font-mono text-[11px] font-bold tabular-nums text-emerald-400"
-                          title={`余弦相似度 ${doc.similarityScore?.toFixed(4)}`}
-                        >
-                          匹配度 {similarityPct.toFixed(1)}%
-                        </span>
-                      ) : null}
-                    </div>
-                    <p className="mt-1 text-[10px] font-medium leading-snug text-slate-300">{doc.title}</p>
-                    <p className="mt-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
-                      {doc.category} · {doc.tags.slice(0, 3).join(' / ')}
-                    </p>
-                  </li>
-                );
-              })
-            )}
-          </ul>
-        ) : null}
+        {/*
+         * 展开态：Runbook 编号 + 标题 + 相似度
+         *
+         * 【为何需要 AnimatePresence + 弹簧高度动画】（蓝图 §1.9 / 审查报告 §4.2）
+         * 原实现是裸的条件渲染：点击展开时内容**瞬间出现**，下方所有卡片
+         * （ActionConfirm 等）在同一帧被整体推下去——这是典型的"折叠瞬移"，
+         * 观感上像页面抖了一下。用 height: auto 的弹簧动画后，卡片是
+         * "撑开"而不是"弹跳"，下方内容平滑跟随。
+         */}
+        <AnimatePresence initial={false}>
+          {citationsOpen ? (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 34 }}
+              className="overflow-hidden"
+            >
+              <ul className="space-y-1 px-2.5 pb-2">
+                {ragReferences.length === 0 ? (
+                  <li className="font-mono text-[12px] text-slate-600">— 暂未匹配到排障手册 —</li>
+                ) : (
+                  ragReferences.map((doc) => {
+                    /* similarityScore ∈ [0,1]，展示为百分比（如 0.964 → 96.4%） */
+                    const similarityPct =
+                      doc.similarityScore === undefined ? null : Math.round(doc.similarityScore * 1000) / 10;
+                    return (
+                      <li
+                        key={doc.id}
+                        className="rounded border border-slate-800 bg-slate-950/50 p-1.5 transition-colors hover:border-emerald-500/40"
+                      >
+                        <div className="flex items-start gap-1.5">
+                          <span className="shrink-0 rounded bg-emerald-500/15 px-1 py-0.5 font-mono text-[11px] font-bold text-emerald-300">
+                            {doc.id}
+                          </span>
+                          {similarityPct !== null ? (
+                            <span
+                              className="ml-auto shrink-0 font-mono text-[11px] font-bold tabular-nums text-emerald-400"
+                              title={`余弦相似度 ${doc.similarityScore?.toFixed(4)}`}
+                            >
+                              匹配度 {similarityPct.toFixed(1)}%
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mt-1 text-[10px] font-medium leading-snug text-slate-300">{doc.title}</p>
+                        <p className="mt-0.5 font-mono text-[10px] tracking-wider text-slate-600">
+                          {doc.category} · {doc.tags.slice(0, 3).join(' / ')}
+                        </p>
+                      </li>
+                    );
+                  })
+                )}
+              </ul>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </div>
     </div>
   );
