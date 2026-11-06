@@ -21,7 +21,7 @@
  * 页面标题等元数据已由 src/app/layout.tsx（服务端根布局）统一承载。
  */
 
-import { useEffect, type ReactElement } from 'react';
+import { useEffect, useState, type ReactElement } from 'react';
 import dynamic from 'next/dynamic';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Radar } from 'lucide-react';
@@ -29,6 +29,7 @@ import { Radar } from 'lucide-react';
 import ShellLayout from '@/components/layout/ShellLayout';
 import { useTelemetryStream } from '@/hooks/useTelemetryStream';
 import { rehydratePersistedClusterState, useClusterStore } from '@/store/useClusterStore';
+import { dispatchViewPreset } from '@/utils/viewPresetBus';
 
 /**
  * CopilotDrawer 懒加载（右侧智能运维副驾驶主面板）。
@@ -88,6 +89,18 @@ const ChaosControlModal = dynamic(() => import('@/components/hud/ChaosControlMod
  * 闪现骨架只会造成视觉噪音。
  */
 const PerfTelemetryHUD = dynamic(() => import('@/components/hud/PerfTelemetryHUD'), {
+  ssr: false,
+  loading: (): null => null,
+});
+
+/**
+ * CommandPalette 懒加载（全局运维命令面板）。
+ *
+ * 【为何 lazy】命令面板包含完整的 Pod/Node 列表渲染与搜索逻辑，
+ * 但只在用户按 Cmd/Ctrl+K 时才需要。绝大多数会话根本不会打开它，
+ * 让它进首屏 bundle 是纯浪费。与 Perf HUD 同理，loading 返回 null。
+ */
+const CommandPalette = dynamic(() => import('@/components/hud/CommandPalette'), {
   ssr: false,
   loading: (): null => null,
 });
@@ -193,6 +206,64 @@ export default function HomePage() {
   const isPerfHudOpen = useClusterStore((s): boolean => s.isPerfHudOpen);
   const setPerfHudOpen = useClusterStore((s): ((open: boolean) => void) => s.setPerfHudOpen);
 
+  /* 命令面板开关（本地状态：纯 UI 瞬时态，无跨组件共享需求） */
+  const [isCommandOpen, setCommandOpen] = useState<boolean>(false);
+
+  /**
+   * 【全局快捷键】（审查报告 §4.4 / §4.5）
+   *
+   * - `Cmd/Ctrl + K` 唤起命令面板（Linear / Vercel / Raycast 的标志性交互）；
+   * - `Esc` 逐级退出栈：命令面板 → 混沌模态框 → 性能 HUD →
+   *   取消 3D 选中并复位视角。
+   *
+   * 【为何 Esc 要建"栈"而非各组件自理】多组件同时监听 Esc 会一次按键关掉
+   * 多个面板（用户按一次 Esc 期待只退一层）。这里集中在一处按优先级处理，
+   * 保证「Esc 只退最上面那一层」的直觉。
+   *
+   * 【输入焦点让位】在输入框/文本域内按 Esc 不应触发全局退出——
+   * 那是用户想取消输入，不是想关面板。
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const target = event.target;
+      const inInput =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+
+      /* ---- Cmd/Ctrl + K：唤起命令面板（输入框内也允许，便于随时跳转）---- */
+      if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K')) {
+        event.preventDefault();
+        setCommandOpen((prev): boolean => !prev);
+        return;
+      }
+
+      /* ---- Esc：逐级退出 ---- */
+      if (event.key === 'Escape' && !inInput) {
+        const state = useClusterStore.getState();
+        if (isCommandOpen) {
+          setCommandOpen(false);
+          return;
+        }
+        if (state.isChaosModalOpen) {
+          state.setChaosModalOpen(false);
+          return;
+        }
+        if (state.isPerfHudOpen) {
+          state.setPerfHudOpen(false);
+          return;
+        }
+        if (state.selectedEntityId !== null) {
+          state.selectEntity(null);
+          dispatchViewPreset('overview');
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return (): void => window.removeEventListener('keydown', onKeyDown);
+  }, [isCommandOpen]);
+
   return (
     <>
       <ShellLayout viewport={<ClusterCanvas />} drawer={<CopilotDrawer />} />
@@ -222,6 +293,19 @@ export default function HomePage() {
        */}
       <AnimatePresence initial={false}>
         {isChaosModalOpen ? <ChaosControlModal key="chaos-modal" /> : null}
+      </AnimatePresence>
+
+      {/*
+       * 全局运维命令面板（Cmd/Ctrl+K 唤起，z-60 位于最顶层之上）。
+       *
+       * 【为何 z-60 而非 z-50】命令面板是**跨所有面板的全局跳转器**，
+       * 即使用户正开着混沌演练模态框（z-50）也应能唤起它并直接跳去某个 Pod。
+       * 若低于模态框，用户在模态框内按 Cmd+K 会看到面板被遮住，形同虚设。
+       */}
+      <AnimatePresence initial={false}>
+        {isCommandOpen ? (
+          <CommandPalette key="command-palette" onClose={(): void => setCommandOpen(false)} />
+        ) : null}
       </AnimatePresence>
     </>
   );

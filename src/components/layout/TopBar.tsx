@@ -426,6 +426,30 @@ export default function TopBar() {
 
         <QpsBoard qps={snapshot.totalQps} />
 
+        {/*
+         * 【Live Tunnel 静默假死提示】（审查报告 §5.4）
+         *
+         * 服务端在 mode=live 下只发心跳注释、不推业务帧（真实集群连接器
+         * 尚未接线）。此前前端丢弃了流状态，用户切到「实时集群隧道」后
+         * 看到的是**完全静止的画面且毫无提示**——这比报错更糟，
+         * 因为用户无法区分「集群稳定」与「数据源没接上」。
+         *
+         * 这里在切到 live 时给出诚实的说明与一键切回入口。
+         */}
+        {connectionMode === 'live' ? (
+          <button
+            type="button"
+            role="status"
+            onClick={(): void => setMode('demo')}
+            className="flex shrink-0 items-center gap-1 rounded-full border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 font-mono text-[11px] tracking-wider text-amber-300 transition-colors hover:border-amber-400 hover:bg-amber-500/20"
+            title="当前构建未接入真实集群 Agent，实时隧道无可推送数据帧。点击切回合成演练流"
+            aria-label="切回合成演练数据流"
+          >
+            <Radio className="h-3 w-3 animate-glow-pulse" aria-hidden />
+            等待集群 Agent 推送 · 点击切回演练流
+          </button>
+        ) : null}
+
         {chaosActive ? (
           <ChaosBanner scenario={activeChaos} onTerminate={handleTerminateChaos} />
         ) : null}
