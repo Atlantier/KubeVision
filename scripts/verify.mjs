@@ -812,9 +812,16 @@ async function main() {
     /* 启动 dev server */
     if (!alreadyRunning) console.log('  启动 dev server…');
     const dev = alreadyRunning ? null : spawn(
-      process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm',
-      ['dev'],
-      { cwd: ROOT, shell: process.platform === 'win32', stdio: 'ignore', detached: false },
+      /*
+       * 【Windows 下的启动方式】pnpm 是 .cmd 包装脚本，spawn 无法直接执行，
+       * 必须经 cmd.exe 解析。这里与 run() 一致地显式调用
+       * `cmd.exe /d /s /c pnpm dev`，而不是 `shell: true`——
+       * 后者在 Node 24 会持续输出 DEP0190 弃用警告，
+       * 混在验收输出里容易被误读成真实故障。
+       */
+      process.platform === 'win32' ? 'cmd.exe' : 'pnpm',
+      process.platform === 'win32' ? ['/d', '/s', '/c', 'pnpm', 'dev'] : ['dev'],
+      { cwd: ROOT, shell: false, stdio: 'ignore', detached: false },
     );
 
     /**

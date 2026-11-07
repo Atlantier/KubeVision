@@ -34,3 +34,10 @@ Thumbs.db
 
 public/models
 public/onnx
+
+# ---- 本地审查/规划文档（外部输入，不纳入版本库）----
+# 这两份是评审阶段引入的输入材料，属"过程产物"而非项目源文件；
+# 纳入版本库会让仓库同时出现两种事实来源（代码与文档各说一套），
+# 故按输入材料隔离，仅保留在本地工作副本中。
+kubevision_audit_report.md
+kubevision_championship_blueprint.md
