@@ -118,11 +118,23 @@ const ARCH_LIFT = 3.4;
  */
 const ARC_START_OFFSET = 0.65;
 
-/** 能量束内芯管道半径（高亮冰白青细芯） */
-const RIBBON_CORE_RADIUS = 0.018;
+/**
+ * 能量束内芯管道半径（高亮冰白青细芯）。
+ *
+ * 【对标图五调校】参考图的拱形光束是一条**粗壮明亮**的光带，
+ * 中心有近乎白炽的亮芯。0.018 在本场景尺度下近看偏细，
+ * 上调到 0.026 后，配合加色叠加与行波，中心亮芯才立得住。
+ */
+const RIBBON_CORE_RADIUS = 0.026;
 
-/** 能量束外鞘管道半径（柔光护套，包裹内芯） */
-const RIBBON_SHEATH_RADIUS = 0.048;
+/**
+ * 能量束外鞘管道半径（柔光护套，包裹内芯）。
+ *
+ * 【对标图五调校】图五光束外围有明显的光晕扩散（长曝光感）。
+ * 0.048 → 0.082 让护套真正"包住"内芯并向外渗出辉光，
+ * 而不是两条几乎重合的细线。
+ */
+const RIBBON_SHEATH_RADIUS = 0.082;
 
 /** 彗星光梭的横向缩放（X/Y 收窄，形成流线） */
 const COMET_SCALE_XZ = 0.55;
@@ -131,7 +143,7 @@ const COMET_SCALE_XZ = 0.55;
 const COMET_SCALE_LENGTH = 3.6;
 
 /** 火花粒子的螺旋包络半径（拱顶最散、两端最收） */
-const SPARK_SPIRAL_RADIUS = 0.42;
+const SPARK_SPIRAL_RADIUS = 0.62;
 
 /** 火花螺旋散开的角速度（rad/s） */
 const SPARK_SPIRAL_RATE = 6.5;
@@ -447,9 +459,9 @@ export default function NetworkStream3D() {
       uniforms: {
         uTime: { value: 0 },
         uColor: { value: new THREE.Color('#a5f3fc') },
-        uIntensity: { value: 0.95 },
+        uIntensity: { value: 1.25 },
       },
-      baseIntensity: 0.95,
+      baseIntensity: 1.25,
     })), []);
 
   const ribbonSheath = useMemo((): ReadonlyArray<{
@@ -462,9 +474,9 @@ export default function NetworkStream3D() {
       uniforms: {
         uTime: { value: 0 },
         uColor: { value: new THREE.Color('#22d3ee') },
-        uIntensity: { value: 0.42 },
+        uIntensity: { value: 0.6 },
       },
-      baseIntensity: 0.42,
+      baseIntensity: 0.6,
     })), []);
   /**
    * 车道级颜色持久态（3 个 Color，预分配复用）。
@@ -632,13 +644,13 @@ export default function NetworkStream3D() {
         coreLayer.uniforms.uTime.value = t;
         (coreLayer.uniforms.uColor.value as THREE.Color).copy(laneColor);
         coreLayer.uniforms.uIntensity.value =
-          fault ? 1.35 : severity === SEVERITY_HOT ? 1.15 : 0.95;
+          fault ? 1.75 : severity === SEVERITY_HOT ? 1.5 : 1.25;
       }
       if (sheathLayer !== undefined) {
         sheathLayer.uniforms.uTime.value = t;
         (sheathLayer.uniforms.uColor.value as THREE.Color).copy(laneColor);
         sheathLayer.uniforms.uIntensity.value =
-          fault ? 0.72 : severity === SEVERITY_HOT ? 0.58 : 0.42;
+          fault ? 0.95 : severity === SEVERITY_HOT ? 0.78 : 0.6;
       }
 
       for (let j = 0; j < PACKETS_PER_LANE; j++) {

@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — 计算节点机架程序化 3D 模型（WorkerRack3D）
@@ -233,6 +233,68 @@ const FIBER_RING_INNER = 0.12;
 const FIBER_RING_OUTER = 0.22;
 const FIBER_RING_SEGMENTS = 32;
 
+/* --------------------------------------------------------------------------
+ * 顶部落束光斑（Beam Landing Bloom）
+ * -------------------------------------------------------------------------- */
+
+/**
+ * 落束光斑的尺寸（世界单位，正方形平面边长）。
+ *
+ * 【取值依据】光纤接口环外径 0.22，光斑直径取 1.28（约 5.8 倍环径）：
+ * 中心亮斑覆盖整个接口环，边缘在环外 0.5 处完全衰减为 0，
+ * 从任何机位看都是"一团从环心向外散开的光"，而不是一片方形贴纸。
+ */
+const BEAM_BLOOM_SIZE = 1.9;
+
+/** 落束光斑的脉动角速度（rad/s，约 1.6 秒一次，与导光柱呼吸同一节奏档位） */
+const BEAM_BLOOM_PULSE_RATE = 3.9;
+
+/**
+ * 落束光斑的顶点着色器：传递平面 UV。
+ *
+ * 【为何用 planeGeometry 而不是 circleGeometry】平面的 UV 是规整的 [0,1]²，
+ * 可以直接用 `length(uv - 0.5)` 求到中心的归一化距离，径向衰减公式最简洁；
+ * circleGeometry 的 UV 是圆盘内切，边缘处距离并非单调。
+ */
+const BEAM_BLOOM_VERTEX_SHADER = `
+varying vec2 vUv;
+
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+/**
+ * 落束光斑的片元着色器：径向柔光 + 双圈脉冲环。
+ *
+ * 【核心数学】设 r = length(vUv − 0.5) × 2（中心 0、边缘 1），则
+ *   · 径向柔光   glow = pow(1 − smoothstep(0, 1, r), 2.2)   ← 中心最亮、边缘为 0
+ *   · 内圈脉冲环 ringA = 以 r ≈ 0.34 为中心的高斯带
+ *   · 外圈扩散环 ringB = 以 r ≈ 0.62 为中心、随 uPulse 外扩的高斯带
+ * alpha = (glow · 0.85 + ringA · 0.5 + ringB · 0.35) · uPulse
+ *
+ * 【为什么这样就"无缝"】光束从上方注入、落点就在环心；
+ * 光斑在环心处恰为最大亮度（glow → 1），与光束末端的渐隐终点重合，
+ * 两者以同一状态色叠加后自然融合，不存在"光束结束 + 光斑开始"的接缝。
+ */
+const BEAM_BLOOM_FRAGMENT_SHADER = `
+uniform vec3 uColor;
+uniform float uPulse;
+
+varying vec2 vUv;
+
+void main() {
+  float r = length(vUv - vec2(0.5)) * 2.0;
+  float glow = pow(1.0 - smoothstep(0.0, 1.0, r), 2.2);
+  float ringA = exp(-pow((r - 0.34) / 0.075, 2.0));
+  float ringB = exp(-pow((r - (0.62 * uPulse)) / 0.055, 2.0));
+
+  float alpha = (glow * 1.05 + ringA * 0.62 + ringB * 0.42) * uPulse;
+  gl_FragColor = vec4(uColor, alpha);
+}
+`;
+
 /* ========================================================================== */
 /* 刀片插槽幽灵框                                                                */
 /* ========================================================================== */
@@ -437,6 +499,21 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   const rightGuideMat = useRef<THREE.MeshBasicMaterial>(null);
   /** 腔体点光源：useFrame 内与导光柱同源 lerp，保证状态色绝对一致 */
   const cavityLightRef = useRef<THREE.PointLight>(null);
+
+  /**
+   * 顶部落束光斑的 uniforms（useMemo 预分配，useFrame 内只写 .value）。
+   *
+   * 【为何与导光柱共用同一状态色】光斑位于光束落点，若颜色与机架状态色
+   * 不同源，故障时机架变红而落点仍是青的，光学衔接立刻断裂。
+   * 因此 useFrame 里直接 copy 导光柱已 lerp 过的颜色，天然同源同相。
+   */
+  const beamBloomUniforms = useMemo(
+    (): Record<string, THREE.IUniform> => ({
+      uColor: { value: new THREE.Color('#22d3ee') },
+      uPulse: { value: 1 },
+    }),
+    [],
+  );
   /** 插槽幽灵框实例网格：矩阵在挂载 effect 一次性写入，此后只读 */
   const slotGhostsRef = useRef<THREE.InstancedMesh>(null);
   /** 装甲棱线（drei Edges，官方 EdgesRef 类型）ref：useFrame 驱动选中态呼吸描边 */
@@ -596,6 +673,17 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
     if (cavityLightRef.current !== null) {
       cavityLightRef.current.color.lerp(target, alpha);
     }
+
+    /*
+     * 顶部落束光斑：颜色直接继承导光柱当前色（同源同相），
+     * 脉动用 sin 归一化到 [0.82, 1.18]，与星核心跳同频段。
+     * 全部为原地 .value 写入 —— useFrame 零分配。
+     */
+    if (leftGuideMat.current !== null) {
+      (beamBloomUniforms.uColor.value as THREE.Color).copy(leftGuideMat.current.color);
+    }
+    beamBloomUniforms.uPulse.value =
+      1 + 0.18 * Math.sin(state.clock.getElapsedTime() * BEAM_BLOOM_PULSE_RATE);
 
     /* ---- 装甲棱线：选中态青色呼吸描边 / hover 静态提亮 / 常态低对比 ---- */
     const edges = armorEdgesRef.current;
@@ -872,6 +960,36 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           opacity={0.85}
           side={THREE.DoubleSide}
           depthWrite={false}
+        />
+      </mesh>
+
+      {/*
+       * ---- 顶部落束光斑（Beam Landing Bloom）----
+       *
+       * 【解决什么】光纤接口环是 NetworkStream3D 光束的落点，但此前只有
+       * 一枚细环：光束在环处渐隐为 0，环又只是一圈硬边线，
+       * 两者之间没有"光真的落下来了"的过渡，观感是光束悬停在机柜顶面上方。
+       *
+       * 【做法】在环心平铺一枚径向衰减的柔光斑（着色器见文件头的
+       * BEAM_BLOOM_FRAGMENT_SHADER）：中心最亮、边缘完全透明，
+       * 并叠加内外两道脉冲环。它把"光束落点"变成一个真实的发光汇聚点。
+       *
+       * 【位置】Y = FIBER_RING_Y + 0.006，紧贴接口环上方但高于顶冠面，
+       * 与环共面又不会 z-fighting；水平贴放（−π/2）朝上发光。
+       *
+       * 【颜色与节拍】uColor 每帧 copy 自导光柱已 lerp 的颜色 → 与节点
+       * 健康度同源；uPulse 提供 0.82~1.18 的呼吸，与星核脉动同频段。
+       */}
+      <mesh position={[0, FIBER_RING_Y + 0.006, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noRaycast}>
+        <planeGeometry args={[BEAM_BLOOM_SIZE, BEAM_BLOOM_SIZE]} />
+        <shaderMaterial
+          uniforms={beamBloomUniforms}
+          vertexShader={BEAM_BLOOM_VERTEX_SHADER}
+          fragmentShader={BEAM_BLOOM_FRAGMENT_SHADER}
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
         />
       </mesh>
 
