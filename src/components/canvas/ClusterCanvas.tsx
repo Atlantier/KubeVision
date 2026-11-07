@@ -196,6 +196,22 @@ export default function ClusterCanvas() {
    */
   const [adaptiveDpr, setAdaptiveDpr] = useState<number>(2);
 
+  /**
+   * 是否启用「重后处理链路」（EffectComposer Bloom + 镜面反射地面）。
+   *
+   * 【为什么必须做能力探测】实测在软件光栅化（SwiftShader / llvmpipe）环境下，
+   * 「Bloom 的多级 mip 链 + MeshReflectorMaterial 的独立 RT + 新增地面几何」
+   * 三者叠加会让整帧静默输出**全黑**——不抛异常、不打日志，
+   * 只是画不出来。这类失败在真机 GPU 上通常不存在，
+   * 但对无 GPU 的 CI / 远程桌面 / 虚拟化环境是必现的。
+   *
+   * 【策略】探测 unmasked renderer 字符串：命中 SwiftShader / Software /
+   * llvmpipe / Mesa OffScreen 等关键字时，降级为"直接渲染"，
+   * 保留全部几何与材质（场景内容不减），只关掉后处理链与实时反射。
+   * 这样任何环境下都能看到画面，真实 GPU 上仍是完整电影感。
+   */
+  const [heavyRenderEnabled, setHeavyRenderEnabled] = useState<boolean>(true);
+
   /** 帧率走低：下调 dpr（下限 1.0） */
   const handlePerfDecline = useCallback((): void => {
     setAdaptiveDpr((prev): number => {
@@ -325,7 +341,27 @@ export default function ClusterCanvas() {
          * 切回时立即恢复 'always'，用户无感。
          */
         frameloop={isSceneActive ? 'always' : 'demand'}
-        onCreated={handleCanvasCreated}
+        onCreated={(state): void => {
+          /*
+           * 能力探测：识别软件光栅化并关掉重后处理链。
+           *
+           * 【为何在 onCreated 里做】此时 WebGL 上下文已就绪，可读到
+           * unmasked renderer 字符串；R3F 的 state.gl 即真实上下文。
+           * 探测失败（无 debug 扩展）时保持默认开启，不做误降级。
+           */
+          const context = state.gl.getContext();
+          const debugInfo = context.getExtension('WEBGL_debug_renderer_info');
+          const rendererName =
+            debugInfo === null
+              ? ''
+              : String(context.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) ?? '');
+          const isSoftware =
+            /swiftshader|software|llvmpipe|mesa offscreen|basic render/i.test(rendererName);
+          if (isSoftware) {
+            setHeavyRenderEnabled(false);
+          }
+          handleCanvasCreated(state);
+        }}
         onPointerMissed={(): void => {
           selectEntity(null);
         }}
@@ -530,7 +566,7 @@ export default function ClusterCanvas() {
          * canvas 的 antialias 与 DPR 控制画质，后处理链不重复 MSAA；
          * 本版本 EffectComposer 无 disableNormalPass 选项，法线通道关闭由上游 npm 版本决定。
          */}
-        <EffectComposer multisampling={0}>
+        {heavyRenderEnabled ? (<EffectComposer multisampling={0}>
           <Bloom
             intensity={0.85}
             luminanceThreshold={0.22}
@@ -539,7 +575,7 @@ export default function ClusterCanvas() {
             radius={0.72}
           />
           <Vignette eskil={false} offset={0.18} darkness={0.35} />
-        </EffectComposer>
+        </EffectComposer>) : null}
       </Canvas>
 
       {/*
