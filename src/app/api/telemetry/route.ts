@@ -40,14 +40,16 @@
  *
  * 【mode=demo|live 的语义】
  * - demo：由合成引擎 stepTelemetrySimulation 演进（本轮实现，含 chaos）；
- * - live：真实集群通道的占位。本轮返回说明性注释帧后保持连接
- *   （SSE 注释行以 `:` 开头，客户端解析器必须忽略）。真正接入 kubeconfig /
- *   指标采集属于后续轮次——**不做假数据冒充真实集群**是这里的明确取舍。
+ * - live：**真实遥测**。每秒调用 collectLiveTelemetrySnapshot 采集真实数据：
+ *   配置了 K8S_API_SERVER/BEARER_TOKEN 时走真实 K8s API（nodes/pods/metrics），
+ *   否则走 Node.js 宿主机真实硬件桥接（逐核 CPU delta / 物理内存 / 进程 RSS /
+ *   Linux 网卡增量）。两条链路都**不含 Math.random()**，绝不用随机数冒充实时。
  */
 
 import type { ChaosScenario, TelemetrySnapshot } from '@/types/cluster';
 import { INITIAL_CLUSTER_SNAPSHOT } from '@/types/cluster';
 import { TICK_INTERVAL_MS, stepTelemetrySimulation } from '@/utils/syntheticEngine';
+import { collectLiveTelemetrySnapshot } from '@/utils/liveTelemetry';
 
 /* ---- Next.js Route Segment 配置（必须位于模块顶层且为字面量导出） ---- */
 export const dynamic = 'force-dynamic';
@@ -189,14 +191,60 @@ export function GET(request: Request): Response {
          客户端长时间处于"连接中"状态。 */
       safeEnqueue(`: kubevision telemetry stream established (mode=${mode}, chaos=${chaos})\n\n`);
 
-      /* ---- 2. live 模式：占位通道，明确告知而非伪造数据 ---- */
+      /* ---- 2. live 模式：真实遥测（宿主机硬件桥接 / 真实 K8s API） ---- */
       if (mode === 'live') {
-        safeEnqueue(
-          `: live cluster connector is not wired in this build; no synthetic frames will be emitted\n\n`,
-        );
-        /* 保持连接而不推业务帧：SSE 客户端期望长连接，
-           主动断开会被重连策略反复重试反而刷屏。
-           客户端断开时由 abort / cancel 路径清理。 */
+        /**
+         * 【为什么这里曾经是"空壳"】旧实现推一行 "connector is not wired"
+         * 注释就 return 挂起——用户切到「实时」后 3D 场景彻底静止，
+         * 从观感上看与死机无异。把"没有连接器"如实说明本身是对的，
+         * 但**停住画面**不是一个可接受的实现。
+         *
+         * 【现在】每秒调用 collectLiveTelemetrySnapshot 采集**真实**数据：
+         * - 配了 K8S_API_SERVER/BEARER_TOKEN → 真实集群 nodes/pods(/metrics)；
+         * - 没配 → 本机真实 CPU 逐核 delta、物理内存、进程 RSS、网卡增量。
+         * 无论走哪一层，帧里都不含 Math.random()。
+         *
+         * 【首帧立即推送】先采一次再进定时器，避免等待 1 秒的空白期——
+         * 客户端切到 live 的瞬间就能看到真实水面。
+         */
+        let liveEnabled = true;
+
+        const pushLiveFrame = async (): Promise<void> => {
+          if (isClosed || !liveEnabled) return;
+          try {
+            const collected = await collectLiveTelemetrySnapshot(snapshot);
+            if (isClosed) return;
+            snapshot = collected.snapshot;
+
+            const frame = `data: ${JSON.stringify(snapshot)}\n\n`;
+            if (!safeEnqueue(frame) && timer !== null) {
+              clearInterval(timer);
+              timer = null;
+            }
+          } catch {
+            /* 采集异常不能拖垮连接：本轮跳过，下一秒继续重试真实采样 */
+          }
+        };
+
+        /*
+         * 首帧：同步等待一次采集（采集内部有 4s 超时护栏，不会无限挂）。
+         * 采完再启动定时器，保证后续帧间隔严格 = STREAM_INTERVAL_MS。
+         */
+        void pushLiveFrame().then((): void => {
+          if (isClosed || !liveEnabled) return;
+          timer = setInterval((): void => {
+            if (isClosed) {
+              liveEnabled = false;
+              if (timer !== null) {
+                clearInterval(timer);
+                timer = null;
+              }
+              return;
+            }
+            void pushLiveFrame();
+          }, STREAM_INTERVAL_MS);
+        });
+
         request.signal.addEventListener('abort', safeClose, { once: true });
         return;
       }

@@ -31,6 +31,7 @@ import {
   Loader2,
   Play,
   Radio,
+  Satellite,
   ShieldCheck,
   Sparkles,
   Square,
@@ -398,17 +399,20 @@ export default function LocalAuditorPanel() {
    * 上游若因模板变更漏掉某类凭证，端侧这一关仍能兜住。
    * 而且这一层是**真正决定什么能出设备边界**的那一道闸门。
    */
-  const fetchAndAudit = useCallback(async (): Promise<void> => {
-    if (isFetching) return;
-    setIsFetching(true);
 
-    try {
-      const snapshot = useClusterStore.getState().snapshotSummary;
-      const rawLogs = generateSyntheticLogs(snapshot).slice(0, MAX_BATCH_SIZE);
-      if (rawLogs.length === 0) {
-        setIsFetching(false);
-        return;
-      }
+  /**
+   * runAudit —— 脱敏 → 端侧推理 → 记录/终端回显 的统一管线。
+   *
+   * 【为何抽出来】无论日志来自「合成抓取」还是「真实运行日志」
+   * （/api/logs/live），都必须经过**同一套**端侧脱敏与推理。
+   * 若两条来源各写一遍，脱敏口径迟早漂移——而这是决定"什么能出设备"的闸门，
+   * 绝不允许有第二套实现。
+   *
+   * @param rawLogs 原始日志条目（rawText 未脱敏，本函数负责脱敏）
+   */
+  const runAudit = useCallback(
+    async (rawLogs: readonly LogEntry[]): Promise<void> => {
+      if (rawLogs.length === 0) return;
 
       /* ---- 端侧统一脱敏（唯一权威源） ---- */
       let batchMasked = 0;
@@ -484,12 +488,91 @@ export default function LocalAuditorPanel() {
             `${highRiskInBatch} high-risk (${classifier.runtimeLabel})`,
         );
       }
+    },
+    [appendTerminalLog, classifier, incrementMaskedSecrets],
+  );
+
+  /**
+   * fetchAndAudit —— 抓取**合成**集群日志并审计（原有离线路径）。
+   *
+   * 说明：这是离线演示路径，数据来自合成引擎的集群形态。
+   * 真实运行日志请用 fetchLiveLogs。
+   */
+  const fetchAndAudit = useCallback(async (): Promise<void> => {
+    if (isFetching) return;
+    setIsFetching(true);
+
+    try {
+      const snapshot = useClusterStore.getState().snapshotSummary;
+      const rawLogs = generateSyntheticLogs(snapshot).slice(0, MAX_BATCH_SIZE);
+      await runAudit(rawLogs);
     } catch {
       /* 抓取/审计失败不应中断面板：静默恢复，用户可重试 */
     } finally {
       setIsFetching(false);
     }
-  }, [appendTerminalLog, classifier, incrementMaskedSecrets, isFetching]);
+  }, [isFetching, runAudit]);
+
+  /**
+   * fetchLiveLogs —— 拉取**服务端真实运行日志**并送入同一套端侧审计。
+   *
+   * 【数据来源】`GET /api/logs/live`：
+   * - 配置了 K8S_API_SERVER → 真实集群容器日志；
+   * - 否则 → 宿主真实运行时（真实主机名 / PID / 内网 IP / 物理内存 / 进程 RSS）。
+   *
+   * 【为何整段包成单条 LogEntry】一次拉取得到的是一段多行运行日志快照；
+   * 端侧 sanitizer 与分类器都以"一条日志"为处理单元，因此作为单条送入，
+   * 由 Worker 判定整体标签（CRITICAL_PANIC / RESOURCE_EXHAUSTED / ...）。
+   */
+  const fetchLiveLogs = useCallback(async (): Promise<void> => {
+    if (isFetching) return;
+    setIsFetching(true);
+
+    try {
+      const response = await fetch('/api/logs/live', { cache: 'no-store' });
+      if (!response.ok) {
+        appendTerminalLog(`[ERR] 实时运行日志拉取失败 HTTP ${response.status}`);
+        return;
+      }
+
+      /* 响应体不可信：逐字段守卫后再使用 */
+      const payload: unknown = await response.json();
+      if (typeof payload !== 'object' || payload === null) {
+        appendTerminalLog('[ERR] 实时运行日志响应格式异常');
+        return;
+      }
+      const record = payload as Record<string, unknown>;
+      const rawLog = typeof record.rawLog === 'string' ? record.rawLog : '';
+      const source = record.source === 'k8s-api' ? 'k8s-api' : 'host-live-runtime';
+      const timestamp = typeof record.timestamp === 'number' ? record.timestamp : Date.now();
+
+      if (rawLog.trim().length === 0) {
+        appendTerminalLog('[ERR] 实时运行日志内容为空');
+        return;
+      }
+
+      /* 真实日志 → 单条 LogEntry，走与合成路径完全相同的脱敏 + 推理管线 */
+      await runAudit([
+        {
+          id: `live-${timestamp}`,
+          rawText: rawLog,
+          sanitizedText: rawLog,
+          maskedCount: 0,
+          timestamp,
+          podName: source === 'k8s-api' ? 'k8s-cluster' : 'host-runtime',
+          namespace: source === 'k8s-api' ? 'cluster' : 'host-runtime',
+        },
+      ]);
+
+      appendTerminalLog(
+        `[LIVE-LOG] 真实运行日志已接入 (source=${source})，已送入端侧脱敏与推理管线`,
+      );
+    } catch {
+      appendTerminalLog('[ERR] 实时运行日志拉取异常，请检查服务端网络');
+    } finally {
+      setIsFetching(false);
+    }
+  }, [isFetching, runAudit, appendTerminalLog]);
 
   /* ========================================================================== */
   /* 自动实时流式审计                                                             */
@@ -708,7 +791,7 @@ export default function LocalAuditorPanel() {
       </div>
 
       {/* ==================== 操作区 ==================== */}
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 flex-wrap items-center gap-1">
         <button
           type="button"
           onClick={(): void => void fetchAndAudit()}
@@ -727,6 +810,31 @@ export default function LocalAuditorPanel() {
             <FileSearch className="h-2.5 w-2.5" aria-hidden />
           )}
           {isFetching ? '端侧推理中…' : '抓取并审计日志流'}
+        </button>
+
+        {/*
+         * 【拉取实时运行日志】—— 接真实服务端日志，而非前端写死的静态样本。
+         *
+         * 数据链路：GET /api/logs/live → 真实 K8s 容器日志（若配置）
+         * 或宿主真实运行时（主机名 / PID / 内网 IP / 物理内存 / 进程 RSS）
+         * → 与离线路径**完全相同的**端侧脱敏 + WebGPU/WASM 推理。
+         * 因此这里点击后看到的掩码数与分类结果，是对真实日志的真实判定。
+         */}
+        <button
+          type="button"
+          onClick={(): void => void fetchLiveLogs()}
+          disabled={isFetching || !classifier.isReady}
+          aria-label="拉取服务端实时运行日志并端侧审计"
+          title="拉取真实运行日志（K8s 容器日志或宿主运行时），端侧脱敏后推理"
+          className={cn(
+            'flex shrink-0 items-center gap-1 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
+            isFetching || !classifier.isReady
+              ? 'cursor-not-allowed border-white/[0.05] bg-white/[0.02] text-slate-600'
+              : 'border-cyan-400/60 bg-cyan-400/15 text-cyan-200 shadow-glow-cyan hover:border-cyan-300 hover:bg-cyan-400/25',
+          )}
+        >
+          <Satellite className="h-2.5 w-2.5" aria-hidden />
+          实时日志
         </button>
 
         {/* 自动实时流式审计开关 */}
