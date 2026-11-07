@@ -73,7 +73,7 @@ import { POD_BOX_SIZE, POD_SEAT_OFFSET_Y, getPodWorldTransform } from '@/utils/s
  * 这三个值刻意取得更高饱和与更高亮度，使晶块在暗场里"自发光"，
  * 同时保留红/绿/琥珀的语义可辨识度（色相不变，仅提亮）。
  */
-const COLOR_RUNNING = new THREE.Color('#10f5a0'); // 科技青翠：Running 正常态
+const COLOR_RUNNING = new THREE.Color('#10b981'); // 翠绿：Running 正常态（对标参考图的能量晶体绿）
 const COLOR_PENDING = new THREE.Color('#fbbf24'); // 琥珀（提亮）：Pending / Terminating 过渡态
 const COLOR_CRASH = new THREE.Color('#ff3b6b'); // 警示红（提亮）：CrashLoopBackOff / OOMKilled
 
@@ -896,6 +896,12 @@ export default function PodInstancedMesh() {
       /* 容量恒为 MAX_PODS（args 变化 = 整 mesh 重建灾难，见文件头容量契约）；
          实际绘制数由 useFrame 经 mesh.count 命令式收窄 */
       args={[undefined, undefined, MAX_PODS]}
+      /* ---- 阴影参与（目标图二的能量晶体立体感来源） ----
+       * castShadow：让每个方块在主光方向投下短促的自身阴影，是"体积感"的关键；
+       * receiveShadow：接收隔板与相邻方块的投影，避免整块表面均匀发亮。
+       * InstancedMesh 的实例阴影由 three 在阴影通道内自动展开，无需额外逐实例矩阵。 */
+      castShadow
+      receiveShadow
       /* 实例散布全场景（三机架半径 9.5），而 InstancedMesh 的包围球默认
          按几何体原点计算——不关闭视锥剔除会被整群错误剔除（集体消失）。
          48 实例的绘制成本可忽略，剔除收益为负，故显式禁用。 */
@@ -920,13 +926,22 @@ export default function PodInstancedMesh() {
        * **没有任何环境贴图**（无 <Environment> / envMap）。按 PBR 能量守恒，
        * 金属度 0.5 会把一半的漫反射固有色替换成"环境反射"，
        * 而环境是 #020617 纯黑背景 → 反射回黑色 → 翠绿被砍成暗沉泥绿。
-       * 现改为近绝缘体配置（metalness 0.05 / roughness 0.35）：
-       * 固有色完整保留，配合下方自发光注入，得到"霓虹晶块"而非"塑料砖"。
+       * 【关于 emissive 的重要修正】
+       * 曾尝试把 `emissive` 设为 `#ffffff` 并抬高 `emissiveIntensity` 来"更亮"，
+       * 结果是**所有容器一起变白**、翠绿/绯红状态色被冲掉。
+       * 原因：three.js 的 `instanceColor` 只乘到**漫反射 albedo**，
+       * 不参与 `emissive` 项——白色自发光对每个实例都是同样的纯白。
+       *
+       * 本项目真正的逐实例发光来自下方 `injectCrystalShader`：
+       * 它把"霓虹棱边 / 阳极氧化凹槽 / 内芯光"三层结构注入 `emissive` 通道，
+       * 并由 `vColor`（实例色）着色，因此天然跟随状态色。
+       * 所以这里**保持 emissive 为默认黑**，亮度交给着色器；
+       * 提升"光感"只动表面的镜面参数（roughness / metalness），不动自发光底色。
        */}
       <meshStandardMaterial
         color="#ffffff"
-        roughness={0.35}
-        metalness={0.05}
+        roughness={0.18}
+        metalness={0.15}
         toneMapped={false}
         onBeforeCompile={injectCrystalShader}
       />

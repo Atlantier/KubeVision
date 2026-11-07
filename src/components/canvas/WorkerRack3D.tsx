@@ -48,7 +48,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useFrame, type ThreeEvent } from '@react-three/fiber';
-import { Edges, Html, type EdgesRef } from '@react-three/drei';
+import { Edges, Html, RoundedBox, type EdgesRef } from '@react-three/drei';
 import * as THREE from 'three';
 
 import { cn } from '@/utils/cn';
@@ -165,11 +165,11 @@ const STATUS_TEXT_COLOR: Readonly<Record<NodeStatus, string>> = {
  * 3. **加 <Edges> 棱线**（#1e3a5f）：用结构线把体积轮廓勾出来。
  *    纯色块在深空背景下没有边界，棱线是「看懂这是个立方体」的最后保障。
  */
-const HARDWARE_COLOR = '#0f172a';
-const HARDWARE_METALNESS = 0.2;
-const HARDWARE_ROUGHNESS = 0.45;
-const HARDWARE_EMISSIVE = '#083344';
-const HARDWARE_EMISSIVE_INTENSITY = 0.25;
+const HARDWARE_COLOR = '#1e293b';
+const HARDWARE_METALNESS = 0.45;
+const HARDWARE_ROUGHNESS = 0.32;
+const HARDWARE_EMISSIVE = '#0e7490';
+const HARDWARE_EMISSIVE_INTENSITY = 0.22;
 const HARDWARE_EDGE_COLOR = '#1e3a5f';
 
 /* ========================================================================== */
@@ -251,7 +251,7 @@ const SLOT_GHOST_OUTER = 0.28;
 const SLOT_GHOST_SEGMENTS = 4;
 
 /** 幽灵框透明度（极淡，仅作插槽位置提示，不得抢走 Pod 的视觉主体） */
-const SLOT_GHOST_OPACITY = 0.22;
+const SLOT_GHOST_OPACITY = 0.42;
 
 /** 幽灵框总数：4 层 × 每层 4 槽 = 16（与 SLOTS_PER_RACK 一致） */
 const SLOT_GHOST_COUNT = RACK_TIER_COUNT * SLOTS_PER_TIER;
@@ -654,8 +654,16 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       {/* ---- 底座底板（薄承板：顶面 0.03 恰在 tier-0 隔板底面 0.035 之下，零穿插；
          显式点击选中——底座是用户点选机架的高频落点）。
          材质修复：metalness 0.7 → 0.2、补自发光与棱线，杜绝深空背景下的死黑。 ---- */}
-      <mesh position={[0, BASE_PLATE_CENTER_Y, 0]} onClick={handleSelect}>
-        <boxGeometry args={[RACK_BODY_SIZE[0] + 0.16, BASE_PLATE_HEIGHT, RACK_BODY_SIZE[2] + 0.16]} />
+      <RoundedBox
+        position={[0, BASE_PLATE_CENTER_Y, 0]}
+        args={[RACK_BODY_SIZE[0] + 0.16, BASE_PLATE_HEIGHT, RACK_BODY_SIZE[2] + 0.16]}
+        /* 圆角重工底座：直角方盒在近景下像一块"贴片"，0.035 倒角让它有铸件厚度 */
+        radius={0.035}
+        smoothness={4}
+        castShadow
+        receiveShadow
+        onClick={handleSelect}
+      >
         <meshStandardMaterial
           color={HARDWARE_COLOR}
           metalness={HARDWARE_METALNESS}
@@ -663,8 +671,8 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
-        <Edges threshold={15} color={HARDWARE_EDGE_COLOR} />
-      </mesh>
+        <Edges threshold={15} color="#38bdf8" />
+      </RoundedBox>
 
       {/* ---- 4 层水平服务器托盘隔板（Y 坐标与 Pod 槽位层位同源，推导见常量 JSDoc）。
          metalness 0.55 → 0.2：让腔体点光能以漫反射真实照亮层板，
@@ -673,16 +681,39 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
          斜视时射线常先命中 Pod 下方的隔板边缘。关闭后 Pod 直接被拾取，
          不必再依赖让位协议从命中列表里"翻"出 Pod。 ---- */}
       {TIER_DIVIDER_YS.map((tierY, index): ReactNode => (
-        <mesh key={`divider-${index}`} position={[0, tierY, 0]} raycast={noRaycast}>
-          <boxGeometry args={[RACK_BODY_SIZE[0] - 0.16, 0.055, RACK_BODY_SIZE[2] - 0.14]} />
-          <meshStandardMaterial
-            color="#1e293b"
-            metalness={0.2}
-            roughness={0.5}
-            emissive="#0e7490"
-            emissiveIntensity={0.06}
-          />
-        </mesh>
+        <group key={`divider-${index}`}>
+          <mesh position={[0, tierY, 0]} receiveShadow raycast={noRaycast}>
+            <boxGeometry args={[RACK_BODY_SIZE[0] - 0.16, 0.055, RACK_BODY_SIZE[2] - 0.14]} />
+            <meshStandardMaterial
+              color="#1e293b"
+              metalness={0.2}
+              roughness={0.5}
+              emissive="#0e7490"
+              emissiveIntensity={0.06}
+            />
+          </mesh>
+          {/*
+           * ---- 层板正面发光灯眉（4 层科技抽屉的视觉分界线）----
+           *
+           * 【解决什么】没有这条灯带时，四层隔板在暗场里几乎是同一块深色，
+           * 机架正面读不出"分层"结构，Pod 看起来悬浮在虚空里。
+           * 加一条跟随节点状态色的细长灯眉后，正面呈现出清晰的 4 层横向切片，
+           * 每层容器都被明确地"托"在自己的抽屉里——这是参考图最关键的层次感。
+           *
+           * 【位置】局部 −Z 是机柜正面（rotationY = α + π，+Z 朝向圆心），
+           * 因此灯眉贴在隔板前缘外侧，位于机架正面的最外层，不被装甲遮挡。
+           */}
+          <mesh position={[0, tierY, -(RACK_BODY_SIZE[2] / 2 - 0.05)]} raycast={noRaycast}>
+            <boxGeometry args={[RACK_BODY_SIZE[0] - 0.42, 0.016, 0.016]} />
+            <meshBasicMaterial
+              color={statusColor}
+              toneMapped={false}
+              transparent
+              opacity={emphasized ? 0.95 : 0.62}
+              depthWrite={false}
+            />
+          </mesh>
+        </group>
       ))}
 
       {/*
@@ -717,9 +748,16 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         />
       </instancedMesh>
 
-      {/* ---- 下层顶盖（材质与底座同规格，补棱线勾出阶梯轮廓；显式点击选中）---- */}
-      <mesh position={[0, COVER_Y, 0]} onClick={handleSelect}>
-        <boxGeometry args={[RACK_BODY_SIZE[0] + 0.14, COVER_HEIGHT, RACK_BODY_SIZE[2] + 0.14]} />
+      {/* ---- 下层顶盖（圆角重工台阶，投影 + 接收阴影；显式点击选中）---- */}
+      <RoundedBox
+        position={[0, COVER_Y, 0]}
+        args={[RACK_BODY_SIZE[0] + 0.14, COVER_HEIGHT, RACK_BODY_SIZE[2] + 0.14]}
+        radius={0.035}
+        smoothness={4}
+        castShadow
+        receiveShadow
+        onClick={handleSelect}
+      >
         <meshStandardMaterial
           color={HARDWARE_COLOR}
           metalness={HARDWARE_METALNESS}
@@ -727,8 +765,8 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
-        <Edges threshold={15} color={HARDWARE_EDGE_COLOR} />
-      </mesh>
+        <Edges threshold={15} color="#38bdf8" />
+      </RoundedBox>
 
       {/*
        * ---- 上层内缩散热顶冠（阶梯第二级）----
@@ -741,8 +779,15 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        * 反而被跳过；关闭后射线直达顶盖，由 handleSelect 走完整让位判定，
        * 选中语义更明确、也少一次冒泡。
        */}
-      <mesh position={[0, CROWN_Y, 0]} raycast={noRaycast}>
-        <boxGeometry args={[CROWN_WIDTH, CROWN_HEIGHT, CROWN_DEPTH]} />
+      <RoundedBox
+        position={[0, CROWN_Y, 0]}
+        args={[CROWN_WIDTH, CROWN_HEIGHT, CROWN_DEPTH]}
+        radius={0.035}
+        smoothness={4}
+        castShadow
+        receiveShadow
+        raycast={noRaycast}
+      >
         <meshStandardMaterial
           color={HARDWARE_COLOR}
           metalness={HARDWARE_METALNESS}
@@ -750,7 +795,21 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
-        <Edges threshold={15} color="#22d3ee" />
+        <Edges threshold={15} color="#38bdf8" />
+      </RoundedBox>
+
+      {/*
+       * ---- 顶冠内嵌青色散热格栅芯 ----
+       *
+       * 【为什么加这一块】参考图二的机柜顶部不是一块死板金属，
+       * 而是一条**内凹的发光格栅**——它承担了"这个柜子在散热/在运转"的叙事，
+       * 也是整个机柜唯一向上的发光面，让俯瞰机位有东西可看。
+       * 用极薄的发光薄片（0.02 高）嵌进顶冠上表面，不做几何雕刻，
+       * 成本仅一次 draw call，却让它从"黑色塑料盖"变成"散热模组"。
+       */}
+      <mesh position={[0, CROWN_Y + CROWN_HEIGHT / 2 + 0.012, 0]} raycast={noRaycast}>
+        <boxGeometry args={[CROWN_WIDTH - 0.42, 0.02, CROWN_DEPTH - 0.42]} />
+        <meshBasicMaterial color="#22d3ee" toneMapped={false} transparent opacity={0.5} />
       </mesh>
 
       {/*
@@ -854,27 +913,33 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       >
         <div
           className={cn(
-            'flex items-center gap-1.5 whitespace-nowrap px-2 py-0.5 font-mono text-[10px] tracking-[0.16em] transition-colors',
+            'flex items-center gap-1.5 whitespace-nowrap rounded border px-2 py-0.5 font-mono text-[10px] tracking-[0.14em] transition-colors',
+            /* 半透明深空毛玻璃底衬：即使压在网格线上也保证文字锐利 */
+            'border-white/[0.08] bg-slate-950/70 backdrop-blur-md',
             emphasized
-              ? 'text-cyan-100 drop-shadow-[0_0_8px_rgba(34,211,238,0.75)]'
-              : 'text-slate-300/85 drop-shadow-[0_0_6px_rgba(15,23,42,0.9)]',
+              ? 'text-cyan-100 shadow-[0_0_10px_rgba(34,211,238,0.35)]'
+              : 'text-slate-300/90',
           )}
         >
-          {/* 状态圆点：常态下唯一的色彩信号，自带同色辉光 */}
+          {/* 状态呼吸灯点：常态下唯一的色彩信号，自带同色辉光 */}
           <span
             className="h-1.5 w-1.5 shrink-0 rounded-full"
             style={{ backgroundColor: statusColor, boxShadow: `0 0 6px ${statusColor}` }}
           />
           <span className="font-bold">{node.name}</span>
-          {/* 数值仅在交互态展开，避免常态遮挡画面 */}
-          {emphasized ? (
-            <>
-              <span className="tabular-nums" style={{ color: statusColor }}>
-                CPU {node.cpuUsage}%
-              </span>
-              <span className="tabular-nums text-slate-500">MEM {node.memUsage}%</span>
-            </>
-          ) : null}
+          {/*
+           * 【常驻单行微标】此前 CPU/MEM 只在交互态展开，常态只剩一个名字，
+           * 信息密度不足、也不像"仪表"。改为常驻紧凑单行：
+           * 名字 + 状态点 + `CPU xx% | MEM xx%`，全部等宽对齐。
+           * 位置仍在机柜正前方地面（Y=0.06，低于第一层 Pod 底面 0.09），
+           * 因此绝不会遮挡任何 Pod。
+           */}
+          <span className="text-slate-500">|</span>
+          <span className="tabular-nums" style={{ color: statusColor }}>
+            CPU {Math.round(node.cpuUsage)}%
+          </span>
+          <span className="text-slate-600">·</span>
+          <span className="tabular-nums text-slate-400">MEM {Math.round(node.memUsage)}%</span>
         </div>
       </Html>
     </group>

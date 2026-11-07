@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Canvas, type RootState } from '@react-three/fiber';
-import { Grid, PerformanceMonitor, Sparkles } from '@react-three/drei';
+import { ContactShadows, Grid, PerformanceMonitor, Sparkles } from '@react-three/drei';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
@@ -303,6 +303,13 @@ export default function ClusterCanvas() {
          * 避免在临界点反复横跳造成视觉抖动。
          */
         dpr={[1, adaptiveDpr]}
+        /**
+         * 【实时软阴影】`shadows="soft"` 让 three 使用 PCFSoft 阴影贴图过滤：
+         * 硬边阴影在机柜这种大面积几何上会显出锯齿与"剪纸感"，
+         * 软边才能让机架真正"压"在地面上。代价是每帧一次阴影贴图渲染，
+         * 但场景只有 3 座机架 + 48 个实例，绝对开销可控。
+         */
+        shadows="soft"
         camera={{ position: INITIAL_CAMERA_POSITION, fov: CAMERA_FOV }}
         gl={{
           antialias: true,
@@ -337,10 +344,61 @@ export default function ClusterCanvas() {
         <color attach="background" args={[VOID_COLOR]} />
         <fog attach="fog" args={[VOID_COLOR, FOG_NEAR, FOG_FAR]} />
 
-        {/* ---- 灯光：环境基底 + 主方向光 + MASTER 中心青色辉光 ---- */}
-        <ambientLight intensity={0.5} color="#cbd5e1" />
-        <directionalLight position={[12, 20, 10]} intensity={1.4} color="#e2e8f0" />
-        <pointLight position={[0, 3.2, 0]} intensity={26} distance={26} decay={2} color="#22d3ee" />
+        {/* ---- 赛博影棚三点布光（Three-Point Studio Lighting） ----
+         *
+         * 旧实现只有一盏环境光 + 一盏方向光 + 中心点光，结果是通体均匀照亮、
+         * 没有任何明暗面——这是"塑料感"的根源：塑料正是因为缺乏方向性高光
+         * 与接地阴影才显得廉价。
+         *
+         * 现按电影布光逻辑分三层：
+         *  1) 环境基底（ambient 0.42）：保证暗部不死黑，但压得很低；
+         *  2) 半球天光：天空色 #38bdf8 / 地面色 #020617——
+         *     金属顶盖朝上反射深邃青蓝天光、朝下反射深空暗色，
+         *     单这一盏就让顶冠从"黑塑料盖"变成"阳极氧化铝"；
+         *  3) 主光（key light，投射阴影）+ 侧逆轮廓光（rim light，青蓝）
+         *     + 控制平面中心点光（青色），勾出背光侧金属棱角与中心能量感。
+         */}
+        <ambientLight intensity={0.42} color="#94a3b8" />
+        <hemisphereLight args={['#38bdf8', '#020617', 0.55]} />
+        <directionalLight
+          castShadow
+          position={[14, 24, 14]}
+          intensity={1.85}
+          color="#f8fafc"
+          shadow-mapSize={[1024, 1024]}
+          shadow-camera-left={-16}
+          shadow-camera-right={16}
+          shadow-camera-top={16}
+          shadow-camera-bottom={-16}
+          shadow-bias={-0.0005}
+        />
+        {/* 侧逆轮廓光：只勾勒背光侧金属棱角，不参与阴影计算（省一次阴影渲染） */}
+        <directionalLight position={[-14, 12, -10]} intensity={0.65} color="#22d3ee" />
+        {/* 控制平面中心点光：距离 28 / 衰减 2，覆盖三座机架环域 */}
+        <pointLight position={[0, 3.0, 0]} intensity={36} distance={28} decay={2} color="#22d3ee" />
+
+        {/*
+         * ---- 地面接触阴影（Contact Shadows）----
+         *
+         * 【为什么需要它】实时阴影贴图在"物体与地面贴合处"分辨率不足，
+         * 机架底部会漏出一道亮缝，看起来像悬浮在空中——这是 3D 场景
+         * 最廉价的一种失真。ContactShadows 用一张独立的正交深度图专门
+         * 烘焙贴合处，把接地点压黑，物体瞬间"站稳"。
+         *
+         * 【frames={1} 是性能关键】只在首帧烘焙一次，之后零每帧开销。
+         * 机架与中心晶体都是静态几何，只有 Pod 会动——而它们离地很远，
+         * 不会影响接地阴影的正确性。这是"静态阴影资产"而非动态阴影。
+         */}
+        <ContactShadows
+          position={[0, 0.02, 0]}
+          opacity={0.68}
+          scale={34}
+          blur={2.2}
+          far={8}
+          resolution={512}
+          frames={1}
+          color="#000000"
+        />
 
         {/* ---- 赛博极客双层地面网格 ----
           下层（y=-0.02）：大尺度粗格延伸至雾效远端，构建深空坐标系纵深；

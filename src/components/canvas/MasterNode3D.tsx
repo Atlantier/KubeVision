@@ -82,6 +82,18 @@ const INNER_SPIN_RATE = -0.38;
 /** 内核呼吸角频率（rad/s）：≈2.85 秒/次心跳 */
 const BREATH_RATE = 2.2;
 
+/**
+ * 外层晶格罩的自转速率（弧度/秒，反向）。
+ *
+ * 【为何比外壳快且反向】外壳 0.25 是"缓慢扫描"的仪表节奏；
+ * 罩体取 0.55 的反向旋转，两层棱线以约 0.8 rad/s 的相对角速度穿插，
+ * 视觉上产生持续的摩尔纹流动——这正是参考图中心"耀眼且活着"的来源。
+ */
+const CAGE_SPIN_RATE = 0.55;
+
+/** 晶格罩相对外壳的尺寸倍数（略大，使两层棱线错开而非共面） */
+const CAGE_SCALE = 1.34;
+
 /** 内核呼吸振幅（±12% 缩放） */
 const BREATH_AMPLITUDE = 0.12;
 
@@ -231,6 +243,15 @@ export default function MasterNode3D() {
   const coreRef = useRef<THREE.Mesh>(null);
   const nucleusMaterialRef = useRef<THREE.MeshStandardMaterial>(null);
   const ringGroupRef = useRef<THREE.Group>(null);
+  /**
+   * 外层晶格罩（Octahedron Cage）ref。
+   *
+   * 【为何要第二层八面体】只有一层壳 + 一层核时，转动看起来像"一个东西在转"；
+   * 参考图二的能量核心之所以"耀眼"，是因为**多层反向旋转的棱线**相互穿插，
+   * 产生持续的视差与摩尔纹——这是晶体感的关键，也是静态几何给不了的。
+   * 罩体只画棱线（表面 opacity 0），因此不遮挡内部晶核。
+   */
+  const cageRef = useRef<THREE.Mesh>(null);
 
   const isSelected = selectedEntityId === MASTER_ENTITY_ID;
   const emphasized = isSelected || hovered;
@@ -273,6 +294,11 @@ export default function MasterNode3D() {
     /* 底部全息圆环：缓慢自转（刻度扫过 = 控制面巡检隐喻） */
     if (ringGroupRef.current !== null) {
       ringGroupRef.current.rotation.y = t * RING_SPIN_RATE;
+    }
+    /* 外层晶格罩：反向快速自转 + 反向倾角，与外壳形成穿插视差 */
+    if (cageRef.current !== null) {
+      cageRef.current.rotation.y = -t * CAGE_SPIN_RATE;
+      cageRef.current.rotation.z = Math.sin(t * 0.55) * 0.12;
     }
   });
 
@@ -320,6 +346,22 @@ export default function MasterNode3D() {
           blending={THREE.AdditiveBlending}
         />
         <Edges scale={1.002} threshold={15} color={emphasized ? '#a5f3fc' : GLOW_CYAN} />
+      </mesh>
+
+      {/*
+       * ═══ 第 1.5 层：外层旋转正八面体棱线晶格（Octahedron Cage）═══
+       *
+       * 【只画棱线】表面材质 opacity 0 + depthWrite false：
+       * 完全透明的面片不会遮挡内部晶核，只有 <Edges> 的 12 条棱可见。
+       * 因此几何上是一个"线框笼"，视觉上却像一层在外部旋转的能量晶格。
+       *
+       * 【棱色用冰青】比外壳的青色更白一档，让它在深空背景上有"最亮一层"的观感，
+       * 与内部晶核、白炽内核形成"外亮—中亮—最亮"的向内汇聚。
+       */}
+      <mesh ref={cageRef} scale={[CAGE_SCALE, CAGE_SCALE * OCTA_SCALE_Y, CAGE_SCALE]} raycast={(): void => undefined}>
+        <octahedronGeometry args={[OCTA_RADIUS, 0]} />
+        <meshBasicMaterial color={GLOW_ICE} transparent opacity={0} depthWrite={false} toneMapped={false} />
+        <Edges scale={1.002} threshold={15} color={emphasized ? '#ecfeff' : GLOW_ICE} />
       </mesh>
 
       {/*
@@ -482,10 +524,23 @@ export default function MasterNode3D() {
         zIndexRange={[10, 0]}
         className="pointer-events-none"
       >
-        <div className="flex items-center gap-1.5 whitespace-nowrap px-2 py-0.5 font-mono text-[10px] tracking-[0.2em] text-cyan-200/90 drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]">
-          <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_6px_#22d3ee]" />
-          <span className="font-bold">控制平面</span>
-          <span className="text-cyan-400/70">/ API-SERVER</span>
+        <div className="flex flex-col items-center gap-0.5 whitespace-nowrap px-2.5 py-1 font-mono text-[10px] tracking-[0.2em] text-cyan-200/90">
+          {/*
+           * 工业字体排版：英文小标（大字距、低对比）在上，
+           * 中文主标（加粗、发光）在下 —— 这是参考图二的铭牌层级。
+           * 英文行承担"这是什么设备"的仪表标注功能，中文行承担扫读。
+           */}
+          <span className="flex items-center gap-1 text-[8px] tracking-[0.32em] text-cyan-400/60 uppercase">
+            <span className="h-px w-3 bg-cyan-400/40" aria-hidden />
+            CONTROL PLANE / API-SERVER
+            <span className="h-px w-3 bg-cyan-400/40" aria-hidden />
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_6px_#22d3ee]" />
+            <span className="font-bold text-[11px] text-cyan-100 drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]">
+              控制平面 · API-SERVER
+            </span>
+          </span>
         </div>
       </Html>
     </group>
