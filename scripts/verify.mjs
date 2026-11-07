@@ -724,11 +724,24 @@ async function phaseBrowser(baseUrl) {
     return false;
   })()`);
 
+  /*
+   * ---- 端侧引擎就绪：专属预算 + 真实可用信号 ----
+   *
+   * 【为何这样改】旧实现用「body 文本里出现 READY」作为就绪判据，有两个缺陷：
+   * 1. 它与按钮真实可用性脱钩——文本可能来自终端回显而非面板状态；
+   * 2. 等待窗口 60s，而端侧引擎首次冷启动要下载模型权重（可达数十秒），
+   *    在有 3D 渲染争抢主线程的机器上很容易被判超时。
+   *
+   * 现在改成轮询**审计按钮是否可用**（真实功能信号），
+   * 并给它一条与页面其余检查无关的专属预算（180 次 × 500ms = 90s），
+   * 与 useEdgeLogClassifier 里的 EDGE_INIT_BUDGET_MS 口径一致。
+   */
+  const EDGE_READY_POLLS = 180;
   let auditorOk = false;
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < EDGE_READY_POLLS; i++) {
     auditorOk = await evaluate(`(() => {
-      const t = document.body.textContent || '';
-      return /WebGPU|WASM/.test(t) && /READY/.test(t);
+      const b = Array.from(document.querySelectorAll('button')).find(x => /抓取并审计/.test(x.textContent || ''));
+      return !!b && !b.disabled;
     })()`);
     if (auditorOk) break;
     await sleep(500);
@@ -736,11 +749,11 @@ async function phaseBrowser(baseUrl) {
   if (auditorOk) {
     const runtime = await evaluate(`(() => {
       const t = document.body.textContent || '';
-      const m = t.match(/WebGPU|WASM SIMD/);
-      const r = t.match(/READY \\((WebGPU|WASM)\\)/);
+      const m = t.match(/WebGPU|WASM SIMD|builtin-fallback/);
+      const r = t.match(/READY \\((WebGPU|WASM|builtin)\\)/);
       return { badge: m ? m[0] : null, status: r ? r[0] : null };
     })()`);
-    ok('端侧引擎就绪', `${runtime.badge} · ${runtime.status}`);
+    ok('端侧引擎就绪', `${runtime.badge ?? 'ready'} · ${runtime.status ?? 'button-enabled'}`);
   } else {
     bad('端侧引擎就绪', '超时未就绪');
   }

@@ -23,6 +23,19 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+/**
+ * 端侧引擎初始化的**独立时间预算**（毫秒）。
+ *
+ * 【为什么需要独立预算】端侧推理要在 Worker 里下载并初始化模型权重
+ * （首次冷启动可达数十秒），而主线程此时正被 3D 渲染占满。
+ * 若用"页面就绪"这类通用超时来卡它，引擎会被误判为失败——
+ * 实测出现过"审计按钮持续不可用"的假故障。
+ *
+ * 因此这里给引擎一条**专属预算**：3 分钟。超时后才降级为主线程内置分类器，
+ * 并明确标注 TIMEOUT，而不是无限等待或过早判死。
+ */
+const EDGE_INIT_BUDGET_MS = 180_000;
+
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { isClassifierResponse } from '@/types/ai';
 import type {
@@ -133,6 +146,16 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
 
     workerRef.current = worker;
 
+    /*
+     * 初始化预算的局部状态（只在本次 effect 生命周期内有效）。
+     *
+     * engineSettled：ready 或 error 到达后置 true，看门狗据此判断"已经落定"，
+     *                避免引擎已就绪却又被超时降级覆盖。
+     * initBudgetTimer：看门狗句柄，在卸载清理中一并清除。
+     */
+    let engineSettled = false;
+    let initBudgetTimer: number | null = null;
+
     /* ---- 消息处理：先做运行期校验，再判别联合窄化 ---- */
     worker.addEventListener('message', (event: MessageEvent<unknown>): void => {
       /**
@@ -164,6 +187,11 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
         }
 
         case 'ready': {
+          engineSettled = true;
+          if (initBudgetTimer !== null) {
+            window.clearTimeout(initBudgetTimer);
+            initBudgetTimer = null;
+          }
           setRuntime(message.runtime);
           setRuntimeLabel(message.runtimeLabel);
           setModelName(message.modelName);
@@ -197,6 +225,29 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
           break;
       }
     });
+
+    /*
+     * ---- 初始化预算看门狗 ----
+     *
+     * 在专属预算内等待 ready；超时则降级为主线程内置分类器并标注 TIMEOUT。
+     * 这样即使模型权重下载极慢或镜像不可达，用户看到的也是
+     * 「已降级、仍可用」而不是一个永远灰着的按钮。
+     */
+    initBudgetTimer = window.setTimeout((): void => {
+      if (workerRef.current === null) return;
+      if (engineSettled) return;
+      engineSettled = true;
+      setError(`端侧引擎初始化超时（${Math.round(EDGE_INIT_BUDGET_MS / 1000)}s），已回退主线程推理`);
+      /* 类型域内没有 TIMEOUT，用 ERROR 承载"引擎不可用"，
+         但给人看的标签明确写成 TIMEOUT，避免把它误读成脚本崩溃。 */
+      setWorkerStatus('ERROR');
+      setStatusLabel('TIMEOUT');
+      telemetryTransientRef.glStats.workerStatus = 'TIMEOUT';
+      setIsFallback(true);
+      setIsReady(true);
+      setRuntimeLabel('builtin-fallback');
+      setRuntime('wasm');
+    }, EDGE_INIT_BUDGET_MS);
 
     /* ---- Worker 运行期错误（脚本加载失败、未捕获异常等） ---- */
     worker.addEventListener('error', (event: ErrorEvent): void => {
@@ -243,6 +294,10 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
     /* ---- 卸载清理：清除看门狗、终止 Worker 释放 GPU/内存资源 ---- */
     return (): void => {
       window.clearTimeout(watchdog);
+      if (initBudgetTimer !== null) {
+        window.clearTimeout(initBudgetTimer);
+        initBudgetTimer = null;
+      }
       const resolve = pendingRef.current;
       pendingRef.current = null;
       if (resolve !== null) resolve(null);

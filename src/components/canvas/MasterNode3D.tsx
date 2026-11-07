@@ -184,6 +184,7 @@ void main() {
 const CONSTELLATION_FRAGMENT_SHADER = `
 uniform float uTime;
 uniform float uOpacity;
+uniform vec3 uColor;
 
 varying float vPhase;
 varying float vSize;
@@ -198,7 +199,7 @@ void main() {
   float outer = 1.0 - smoothstep(0.5, 1.0, d);
 
   vec3 color = vec3(0.011, 0.518, 0.780);          /* #0284c7 外圈 */
-  color = mix(color, vec3(0.220, 0.741, 0.973), mid); /* #38bdf8 内圈 */
+  color = mix(color, uColor, mid);        /* 内圈取健康度色温 */
   color = mix(color, vec3(1.0, 1.0, 1.0), core);    /* #ffffff 核心 */
 
   float flicker = 0.62 + 0.38 * sin(uTime * 2.4 + vPhase);
@@ -269,6 +270,63 @@ const AMBIENT_SPARK_RADIUS = 2.2;
 
 /** 环绕控制平面缓慢上升旋转的微光星火数量 */
 const AMBIENT_SPARK_COUNT = 36;
+
+/* -------------------------------------------------------------------------- */
+/* 赤道环与斜交极轨细线环                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** 赤道水平光环半径（略大于内层晶核 1.05、小于外层八面体 1.68 的腰部跨度） */
+const EQUATOR_RADIUS = 1.88;
+
+/** 赤道环线宽与自转角速度（rad/s，约 9 秒一圈，是全场最快的光环） */
+const EQUATOR_THICKNESS = 0.012;
+const EQUATOR_SPIN_RATE = 0.72;
+
+/**
+ * 两道斜交极轨细环。
+ *
+ * 【为何"斜交"】单看赤道环只是一条水平圈；再叠两道人造卫星式的极轨道，
+ * 三者构成一个**三维球壳骨架**，中心立刻从"扁平的圈"变成"有经纬的星体"。
+ * 倾角取 π/2±0.42 —— 刻意让两条极轨互不重合、也不与赤道共面。
+ *
+ * 【opacity 0.22】这是"背景结构"的强度：它们只负责经纬感，
+ * 绝不能抢走星云粒子与棱线的主体地位。
+ */
+const POLAR_RINGS: ReadonlyArray<{
+  readonly key: string;
+  readonly tilt: readonly [number, number, number];
+  readonly spin: number;
+}> = [
+  { key: 'polar-a', tilt: [Math.PI / 2 + 0.42, 0, 0.18], spin: 0.34 },
+  { key: 'polar-b', tilt: [Math.PI / 2 - 0.42, 0.2, -0.18], spin: -0.27 },
+];
+
+/** 极轨细环的半径与线宽 */
+const POLAR_RING_RADIUS = 1.62;
+const POLAR_RING_THICKNESS = 0.008;
+
+/* -------------------------------------------------------------------------- */
+/* 集群健康度 → 色温联动                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** 健康态：冰晶青蓝 */
+const TONE_HEALTHY = new THREE.Color('#38bdf8');
+/** 警告态：流光琥珀 */
+const TONE_WARNING = new THREE.Color('#fbbf24');
+/** 故障态：绯红等离子 */
+const TONE_CRITICAL = new THREE.Color('#f43f5e');
+
+/** 健康分阈值：≥90 健康、≥70 警告、其余故障 */
+const HEALTHY_SCORE_THRESHOLD = 90;
+const WARNING_SCORE_THRESHOLD = 70;
+
+/**
+ * 色温过渡阻尼率 k（1/秒）。
+ *
+ * 【取值依据】SSE 快照 1Hz；k=2.2 使一次状态跃迁在约 1.4 秒内基本完成，
+ * 观感是"晶体慢慢变色"而不是"啪一下换色"——这正是仪表该有的从容。
+ */
+const TONE_LERP_RATE = 2.2;
 
 /** 星火整体环绕角速度（rad/s，约 47 秒/圈，极缓慢以免抢注意力） */
 const AMBIENT_SPARK_SPIN_RATE = 0.135;
@@ -572,9 +630,47 @@ export default function MasterNode3D() {
       uTime: { value: 0 },
       uScale: { value: 1 },
       uOpacity: { value: 0.92 },
+      /** 健康度色温（useFrame 内与 TONE_* 三态 lerp，初始为健康青蓝） */
+      uColor: { value: new THREE.Color('#38bdf8') },
     }),
     [],
   );
+
+  /* ---------------------------------------------------------------------- */
+  /* 集群健康度联动：三态色温                                                      */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * 当前集群健康分（低频订阅，1Hz 上限）。
+   *
+   * 【为何在这里订阅】色温是"整颗晶体的状态"，必须来自集群整体健康度
+   * 而不是选中态。订阅单个数值字段，快照其余部分变化不会触发本组件重渲染。
+   */
+  const clusterHealthScore = useClusterStore(
+    (s): number => s.snapshotSummary.clusterHealthScore,
+  );
+
+  /** 三态目标色（普通值，渲染期按分档一次性选定；useFrame 只读不选） */
+  const healthTargetColor = useMemo((): THREE.Color => {
+    if (clusterHealthScore >= HEALTHY_SCORE_THRESHOLD) return TONE_HEALTHY;
+    if (clusterHealthScore >= WARNING_SCORE_THRESHOLD) return TONE_WARNING;
+    return TONE_CRITICAL;
+  }, [clusterHealthScore]);
+
+  /**
+   * 色温当前值（持久态，跨帧 lerp）。
+   *
+   * 【为何不直接写 uniform】粒子 / 连线 / 光柱三类材质各有一份颜色，
+   * 若各自 lerp 会因起始值不同而出现"颜色不同步"的割裂。
+   * 用**单一持久色**统一插值，再广播给三处，颜色永远一致。
+   */
+  const healthColorCurrent = useMemo((): THREE.Color => TONE_HEALTHY.clone(), []);
+
+  /** 赤道环 ref（水平光环，最快自转） */
+  const equatorRef = useRef<THREE.Mesh>(null);
+  /** 两道斜交极轨环 ref 表 */
+  const polarRingRefs = useRef<Array<THREE.Mesh | null>>([]);
+  polarRingRefs.current.length = POLAR_RINGS.length;
 
   /**
    * 星云粒子几何 —— 360 颗严格约束在八面体内部的确定性点云。
@@ -753,12 +849,53 @@ export default function MasterNode3D() {
    * 【确定性动画】全部角度/缩放为 elapsedTime 的纯函数（t·ω 与 sin(t)），
    * 非增量累积——无浮点误差漂移，暂停/恢复（如页签切换）后相位自洽。
    */
-  useFrame((state): void => {
+  useFrame((state, delta): void => {
     const t = state.clock.getElapsedTime();
 
     /** 星云粒子与光柱的时间/脉动驱动（原地写 uniform，零分配） */
     constellationUniforms.uTime.value = t;
     pillarUniforms.uPulse.value = 1 + 0.22 * Math.sin(t * 1.7);
+
+    /* ---- 赤道环 / 斜交极轨环自转（三种角速度，形成球壳经纬差速） ---- */
+    if (equatorRef.current !== null) {
+      equatorRef.current.rotation.z = t * EQUATOR_SPIN_RATE;
+    }
+    const polars = polarRingRefs.current;
+    for (let i = 0; i < POLAR_RINGS.length; i++) {
+      const ring = polars[i];
+      if (ring !== null && ring !== undefined) {
+        ring.rotation.z = t * POLAR_RINGS[i].spin;
+      }
+    }
+
+    /* ==================================================================
+     * 集群健康度 → 色温平滑联动
+     *
+     * 【核心数学】帧率无关指数阻尼：α = 1 − e^(−k·Δt)
+     *   healthColorCurrent.lerp(healthTargetColor, α)
+     * 单一持久色统一插值后**广播**给三处材质：
+     *   · 星云粒子 uniform uColor（内圈色调）
+     *   · 神经连线 material.color
+     *   · 垂直光柱 uniform uColor
+     * 因此三者的变色永远同步，不会出现"粒子先黄、光柱后黄"的割裂。
+     *
+     * 【零分配】healthColorCurrent 是 useMemo 预分配的 Color，
+     * lerp 原地突变；uniform 的 .value 已是 Color 实例，copy 原地写入。
+     * ================================================================== */
+    const clampedDelta = Math.min(delta, 0.1);
+    const toneAlpha = 1 - Math.exp(-TONE_LERP_RATE * clampedDelta);
+    healthColorCurrent.lerp(healthTargetColor, toneAlpha);
+
+    (constellationUniforms.uColor.value as THREE.Color).copy(healthColorCurrent);
+    (pillarUniforms.uColor.value as THREE.Color).copy(healthColorCurrent);
+
+    const neural = neuralRef.current;
+    if (neural !== null) {
+      const neuralMaterial = neural.material;
+      if (neuralMaterial instanceof THREE.LineBasicMaterial) {
+        neuralMaterial.color.copy(healthColorCurrent);
+      }
+    }
 
     /* 星云整体随晶体缓慢自转（比外壳更慢，形成内外差速观感） */
     if (constellationRef.current !== null) {
@@ -1159,6 +1296,54 @@ export default function MasterNode3D() {
         <sphereGeometry args={[NUCLEUS_RADIUS, 24, 24]} />
         <meshBasicMaterial color="#ffffff" toneMapped={false} />
       </mesh>
+
+      {/*
+       * ═══ 第 2e 层：赤道光环 + 两道斜交极轨细环 ═══
+       *
+       * 【为何需要】上方是通透的暗晶外壳 + 内部星云，下方是地面刻度环，
+       * 但晶体**腰部是空的**——缺少一圈把"上下"接起来的水平结构。
+       * 补上赤道环（1.88）后，晶体立刻有了"星体的赤道"。
+       *
+       * 【三道环的层次】赤道环最亮最明确（opacity 0.5）；两道极轨 0.22，
+       * 倾角 π/2±0.42、互不共面。三者叠加形成三维球壳骨架，
+       * 视觉上从"几圈线"升级为"有经纬的星体"。
+       *
+       * 【零分配】useFrame 只写各自的 rotation.z，不触碰几何或材质。
+       */}
+      <mesh ref={equatorRef} rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
+        <ringGeometry args={[EQUATOR_RADIUS, EQUATOR_RADIUS + EQUATOR_THICKNESS, 128]} />
+        <meshBasicMaterial
+          color={GLOW_CYAN}
+          transparent
+          opacity={emphasized ? 0.7 : 0.5}
+          side={THREE.DoubleSide}
+          toneMapped={false}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </mesh>
+
+      {POLAR_RINGS.map((polar, index): ReactNode => (
+        <mesh
+          key={polar.key}
+          ref={(node): void => {
+            polarRingRefs.current[index] = node;
+          }}
+          rotation={[polar.tilt[0], polar.tilt[1], polar.tilt[2]]}
+          raycast={(): void => undefined}
+        >
+          <ringGeometry args={[POLAR_RING_RADIUS, POLAR_RING_RADIUS + POLAR_RING_THICKNESS, 128]} />
+          <meshBasicMaterial
+            color={GLOW_PALE}
+            transparent
+            opacity={0.22}
+            side={THREE.DoubleSide}
+            toneMapped={false}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+          />
+        </mesh>
+      ))}
 
       {/* ---- 底部刻度全息圆环：双环轮廓 + 24 径向刻度齿（贴地投影，缓慢自转）。
          【几何推导】ringGroupRef 只承担绕世界 Y 的慢转（刻度扫过 = 巡检隐喻）；
