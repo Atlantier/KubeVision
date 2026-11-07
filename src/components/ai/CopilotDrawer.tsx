@@ -54,7 +54,7 @@ import {
 import ActionConfirm from '@/components/ai/GenUI/ActionConfirm';
 import AgentThoughtChain from '@/components/ai/GenUI/AgentThoughtChain';
 import GenUISkeleton from '@/components/ai/GenUI/GenUISkeleton';
-import MarkdownLite from '@/components/ai/MarkdownLite';
+import MarkdownLite, { InlineMarkdown } from '@/components/ai/MarkdownLite';
 import PodMetricsCard from '@/components/ai/GenUI/PodMetricsCard';
 import RootCauseAlert from '@/components/ai/GenUI/RootCauseAlert';
 import { cn } from '@/utils/cn';
@@ -601,7 +601,8 @@ function MessageBubble({
       <div className="flex items-start gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-2 shadow-glow-emerald">
         <CheckCircle2 className="mt-[1px] h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden />
         <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[10.5px] leading-relaxed text-emerald-100">
-          {message.text}
+          {/* 行内富文本：回执里的目标名与 MCP 端点用反引号包裹，渲染为代码胶囊 */}
+          <InlineMarkdown text={message.text} />
         </p>
       </div>
     );
@@ -1304,8 +1305,8 @@ export default function CopilotDrawer() {
       detailParts.push(`集群健康度已提升至 ${snapshot.clusterHealthScore.toFixed(0)} 分`);
 
       const summary =
-        `✅ [MCP Verification] 目标容器 ${targetLabel} 已通过 ` +
-        `mcp://k8s-cluster/tools/${actionType} ${detailParts.join('，')}。`;
+        `✅ [MCP Verification] 目标容器 \`${targetLabel}\` 已通过 ` +
+        `\`mcp://k8s-cluster/tools/${actionType}\` ${detailParts.join('，')}。`;
 
       /* 追加为一条独立的系统消息（非 AI 推理消息，不带思考链/卡片） */
       const sysMessage: CopilotMessage = {
@@ -1823,7 +1824,8 @@ export default function CopilotDrawer() {
               <div className="mb-1 flex items-start gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-1">
                 <ShieldAlert className="mt-[1px] h-2.5 w-2.5 shrink-0 text-amber-400" aria-hidden />
                 <p className="min-w-0 flex-1 font-mono text-[11px] leading-relaxed text-amber-300">
-                  {guardWarning}
+                  {/* 行内富文本：护栏提示可能内嵌代码/加粗标记，避免裸露语法 */}
+                  <InlineMarkdown text={guardWarning} />
                 </p>
                 <button
                   type="button"

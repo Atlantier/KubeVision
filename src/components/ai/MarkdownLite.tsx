@@ -34,7 +34,8 @@
  *    此前这些行会掉进段落分支，把 `- ` 与 `2. ` 原样渲染出来）。
  */
 
-import { Fragment, useId, useMemo, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Check, Copy } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 
@@ -58,6 +59,15 @@ export interface InlineMarkdownProps {
   readonly text: string;
   /** 附加类名（字号/颜色由调用方按上下文决定） */
   readonly className?: string;
+  /**
+   * 是否把**裸 Runbook 编号**（如 `RUNBOOK-K8S-042`）自动提升为行内代码胶囊。
+   *
+   * 【为何做成开关而非默认】在正文/卡片里，Runbook 编号本来就该由模型用
+   * 反引号包裹；但推理链、系统回执这类**由我方模板拼装**的文本不会带反引号，
+   * 编号混在中文句子里会显得平淡。该开关只在这些场景启用，
+   * 避免改变通用 Markdown 语义（普通文本里出现该字样不应被强制改样式）。
+   */
+  readonly highlightRunbookIds?: boolean;
 }
 
 /* ========================================================================== */
@@ -471,10 +481,189 @@ function parseBlocks(source: string): Block[] {
  *
  * @param props 见 InlineMarkdownProps
  */
-export function InlineMarkdown({ text, className }: InlineMarkdownProps) {
+export function InlineMarkdown({ text, className, highlightRunbookIds = false }: InlineMarkdownProps) {
   const uid = useId();
-  const segments = useMemo((): InlineSegment[] => parseInline(text), [text]);
+  const segments = useMemo((): InlineSegment[] => {
+    const parsed = parseInline(text);
+    return highlightRunbookIds ? promoteRunbookIds(parsed) : parsed;
+  }, [text, highlightRunbookIds]);
   return <span className={className}>{renderInline(segments, `im-${uid}`)}</span>;
+}
+
+/* ========================================================================== */
+/* 领域高亮：裸 Runbook 编号 → 行内代码胶囊                                      */
+/* ========================================================================== */
+
+/**
+ * Runbook 编号识别正则。
+ *
+ * `RUNBOOK-K8S-042` / `RUNBOOK-K8S-061` 这类编号是知识库溯源的关键锚点，
+ * 在推理链与系统回执里会以裸文本出现（由我方模板拼装，天然不带反引号）。
+ * 把它提升为代码胶囊后，用户一眼就能定位"这条结论引自哪本手册"。
+ *
+ * 【字符类必须含数字】中段是 `K8S` 而非纯字母——若写成 `[A-Z]+`
+ * 会匹配不到（`K` 之后是 `8`，回溯也失败），实测正是这里先踩了坑。
+ */
+const RUNBOOK_ID_PATTERN = /RUNBOOK-[A-Z0-9]+-\d+/g;
+
+/**
+ * promoteRunbookIds —— 把 text 片段中出现的 Runbook 编号切分为 code 片段。
+ *
+ * 【为何在片段层做而不是再跑一遍正则解析】行内解析已经把文本切成
+ * text / bold / code / italic 四类片段；若对整行再套一次高亮，
+ * 会与已生成的 code 片段重复包围，产生嵌套胶囊。
+ * 因此只对 `text` 类型片段做二次切分，其余片段原样保留。
+ *
+ * @param segments 行内片段数组
+ * @returns 处理后的片段数组（text 中命中的编号变为 code）
+ */
+function promoteRunbookIds(segments: readonly InlineSegment[]): InlineSegment[] {
+  const result: InlineSegment[] = [];
+
+  for (const segment of segments) {
+    /* 加粗/代码/斜体片段：内部若有加粗子片段也一并递归处理 */
+    if (segment.kind !== 'text') {
+      result.push(
+        segment.children !== undefined
+          ? { ...segment, children: promoteRunbookIds(segment.children) }
+          : segment,
+      );
+      continue;
+    }
+
+    const text = segment.text;
+    const matches = [...text.matchAll(RUNBOOK_ID_PATTERN)];
+    /* 无命中：原样保留，避免把整段拆成无意义的单片段 */
+    if (matches.length === 0) {
+      result.push(segment);
+      continue;
+    }
+
+    let cursor = 0;
+    for (const match of matches) {
+      const index = match.index ?? 0;
+      if (index > cursor) {
+        result.push({ kind: 'text', text: text.slice(cursor, index) });
+      }
+      result.push({ kind: 'code', text: match[0] });
+      cursor = index + match[0].length;
+    }
+    if (cursor < text.length) {
+      result.push({ kind: 'text', text: text.slice(cursor) });
+    }
+  }
+
+  return result;
+}
+
+/* ========================================================================== */
+/* 代码块（含一键复制）                                                          */
+/* ========================================================================== */
+
+/** 复制成功提示的展示时长（毫秒） */
+const COPY_FEEDBACK_MS = 1500;
+
+/**
+ * CodeBlock —— 围栏代码块渲染（等宽 + 深底 + 右上角一键复制）。
+ *
+ * 【为什么要复制按钮】AI 给出的 SRE 处置命令（`kubectl cordon`、
+ * `kubectl top pod`、`journalctl -u kubelet`）本来就是**要被执行**的。
+ * 让工程师手动拖选一段跨行代码，既慢又容易漏行或带上前导缩进——
+ * 一个复制按钮直接消除了这类低级失误，这是排障工具的基本素养。
+ *
+ * 【状态机】idle →（点击）→ copied（绿色勾 + 「已复制」）→ 1500ms 后回到 idle。
+ * 定时器在卸载时清理，避免在已卸载组件上 setState。
+ *
+ * 【剪贴板降级】`navigator.clipboard` 只在安全上下文（HTTPS / localhost）
+ * 可用。不可用时回退到「临时 textarea + execCommand('copy')」的老办法，
+ * 保证在内网 HTTP 部署下按钮依然有效，而不是静默失效。
+ *
+ * @param props code 代码正文；lang 语言标识（可为空）
+ */
+function CodeBlock({ code, lang }: { readonly code: string; readonly lang?: string }) {
+  const [copied, setCopied] = useState<boolean>(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* 卸载清理：防止定时器在组件已销毁后触发 setState */
+  useEffect((): (() => void) => {
+    return (): void => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
+
+  /** 把代码写入剪贴板（含非安全上下文降级） */
+  const writeToClipboard = useCallback(async (text: string): Promise<boolean> => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard !== undefined) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      /* 继续尝试降级方案 */
+    }
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return ok;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const handleCopy = useCallback((): void => {
+    void writeToClipboard(code).then((ok): void => {
+      if (!ok) return;
+      setCopied(true);
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout((): void => {
+        setCopied(false);
+        timerRef.current = null;
+      }, COPY_FEEDBACK_MS);
+    });
+  }, [code, writeToClipboard]);
+
+  return (
+    <div className="my-1.5 overflow-hidden rounded border border-slate-700/70 bg-slate-950/80">
+      {/* 头部：左侧语言标识，右侧一键复制 */}
+      <div className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/60 px-2 py-0.5">
+        <span className="min-w-0 truncate font-mono text-[10px] uppercase tracking-wider text-slate-500">
+          {(lang ?? '').length > 0 ? lang : 'code'}
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          aria-label="复制代码命令"
+          title="复制命令"
+          className={cn(
+            'flex shrink-0 items-center gap-1 rounded px-1 py-0.5 font-mono text-[10px] transition-colors',
+            copied ? 'text-emerald-400' : 'text-slate-500 hover:bg-white/[0.06] hover:text-cyan-300',
+          )}
+        >
+          {copied ? (
+            <>
+              <Check className="h-2.5 w-2.5" aria-hidden />
+              已复制
+            </>
+          ) : (
+            <Copy className="h-2.5 w-2.5" aria-hidden />
+          )}
+        </button>
+      </div>
+      <pre className="overflow-x-auto p-2 font-mono text-[11px] leading-relaxed text-slate-300">
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
 }
 
 /* ========================================================================== */
@@ -665,25 +854,10 @@ export default function MarkdownLite({
           case 'hr':
             return <hr key={key} className="my-2 border-slate-800" />;
 
-          /* ---- 围栏代码块：等宽 + 深底 + 可横向滚动 ---- *
-           * 命令块在 SRE 场景里非常常见（kubectl / journalctl 输出），
-           * 必须保持每行独立换行（whitespace-pre）与等宽对齐，
-           * 否则 YAML 缩进和多行命令会被折叠成一行，完全无法阅读。 */
+          /* ---- 围栏代码块：等宽 + 深底 + 一键复制 ---- */
           case 'codeblock':
             return (
-              <div
-                key={key}
-                className="my-1.5 overflow-hidden rounded border border-slate-700/70 bg-slate-950/80"
-              >
-                {(block.lang ?? '').length > 0 ? (
-                  <div className="border-b border-slate-800 bg-slate-900/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
-                    {block.lang}
-                  </div>
-                ) : null}
-                <pre className="overflow-x-auto p-2 font-mono text-[11px] leading-relaxed text-slate-300">
-                  <code>{block.lines.join('\n')}</code>
-                </pre>
-              </div>
+              <CodeBlock key={key} code={block.lines.join('\n')} lang={block.lang} />
             );
 
           /* ---- 普通段落 ---- */

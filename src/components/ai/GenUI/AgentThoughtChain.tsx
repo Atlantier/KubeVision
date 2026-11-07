@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { InlineMarkdown } from '@/components/ai/MarkdownLite';
 import type { AgentReasoningPhase, AgentThoughtChainProps } from '@/types/ai';
 
 /* ========================================================================== */
@@ -309,9 +310,21 @@ export default function AgentThoughtChain({
                       </span>
                     </div>
 
-                    {/* 思考详情（多行支持，pre-wrap 保留换行） */}
+                    {/*
+                     * 思考详情。
+                     *
+                     * 【为何改为 InlineMarkdown 渲染】detail 由服务端模板拼装，
+                     * 实测会包含两类富文本线索：
+                     * 1. 反引号包裹的工具名（`renderPodMetrics`）——此前原样
+                     *    暴露反引号；
+                     * 2. 裸 Runbook 编号（RUNBOOK-K8S-042）与相似度百分比——
+                     *    混在中文句子里毫无辨识度。
+                     * 现在前者渲染为胶囊、后者经 highlightRunbookIds 自动提升
+                     * 为青色代码胶囊，用户一眼就能定位"这条结论引自哪本手册"。
+                     * whitespace-pre-wrap 保留在段落上，多行 detail 的换行不变。
+                     */}
                     <p className="mt-0.5 whitespace-pre-wrap break-words text-[10.5px] leading-relaxed text-slate-500">
-                      {step.detail}
+                      <InlineMarkdown text={step.detail} highlightRunbookIds />
                     </p>
 
                     {/* MCP 协议 URI 高亮标签（仅工具调用阶段存在） */}
