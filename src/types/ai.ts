@@ -173,6 +173,28 @@ export interface RootCauseAlertProps {
 export type RemediationActionType = 'restart_pod' | 'scale_deployment' | 'drain_node';
 
 /**
+ * IntentKind —— 用户请求的四档意图分类（意图路由器的输出）。
+ *
+ * 【为什么需要意图分类】此前无论用户说什么（哪怕只是「你好」，或集群
+ * 100 分健康），服务端都会：固定执行 SRE 排障推理链、固定检索 RAG 手册、
+ * 固定强制调用三个工具并弹出红色「驱逐节点」高危卡片。
+ * 这是把**排障流程**当成了唯一的对话形态——对问候语而言，它既是噪音，
+ * 也是对用户真实意图的误判。
+ *
+ * 四档语义：
+ * - `GREETING_OR_CHITCHAT`   日常问候/能力咨询。不检索、不调工具、零卡片。
+ * - `STEADY_HEALTH_CHECK`    集群全绿，用户问状态/巡检。仅允许指标卡。
+ * - `TARGETED_INSPECTION`    点名某个健康实体的指标。仅允许指标卡。
+ * - `FAULT_DIAGNOSIS_AND_HEAL` 存在异常、明确要求诊断/自愈、或带截图。
+ *                              才走完整三卡排障闭环。
+ */
+export type IntentKind =
+  | 'GREETING_OR_CHITCHAT'
+  | 'STEADY_HEALTH_CHECK'
+  | 'TARGETED_INSPECTION'
+  | 'FAULT_DIAGNOSIS_AND_HEAL';
+
+/**
  * ActionConfirmProps —— 动作确认卡（生成式 UI，人在回路安全闸门）。
  *
  * 【触发】LLM 决定执行运维动作时**不直接执行**，而是下发本卡片等待

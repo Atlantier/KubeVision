@@ -381,31 +381,63 @@ const STOP_WORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * tokenize —— 把任意文本切分为规范化词元数组。
+ * tokenize —— 把任意文本切分为规范化词元数组（中英双语）。
  *
- * 【分词策略】面向「英文技术术语 + 中文描述」的混合文本：
- * 1. 转小写（统一大小写，OOMKilled 与 oomkilled 应视为同一词）；
- * 2. 按非字母数字字符切分（保留连字符在内的技术词会丢失语义，
- *    故先把 '-' '_' 视作分隔，让 "high-load" 贡献 high 与 load 两个词元）；
- * 3. 剔除停用词与长度 < 2 的碎片。
+ * 【分词策略】面向「英文技术术语 + 中文描述」的混合文本，两条通道并行：
  *
- * 【为何不做中文分词】中文描述主要用于人读，检索匹配主要依赖英文术语
- * （kubectl 输出、内核日志均为英文）。对中文做简单字符级切分收益低且
- * 会引入噪声，故此处保留中文原文在 symptom 字段供语义展示，
- * 但不参与词袋计算。
+ * 一、英文/数字通道
+ *   1. 转小写（统一大小写，OOMKilled 与 oomkilled 应视为同一词）；
+ *   2. 把 '-' '_' '/' '.' 视作分隔，让 "high-load" 贡献 high 与 load 两个词元；
+ *   3. 剔除停用词与长度 < 2 的碎片。
+ *
+ * 二、中文通道（本轮新增，修复"中文提问永远检索不到"的缺陷）
+ *   1. 用 /[\u4e00-\u9fa5]+/g 提取连续中文段；
+ *   2. 对长度 ≥ 2 的段，生成**全部相邻二元词（Bigram）** + **完整词**：
+ *        "内存溢出" → ["内存", "存溢", "溢出", "内存溢出"]
+ *        "崩溃重启" → ["崩溃", "溃重", "重启", "崩溃重启"]
+ *   3. 段内用 Set 去重（"你好" 的 bigram 与完整词都是 "你好"，只保留一份）。
+ *
+ * 【为何用 Bigram 而不是引入分词词典】本项目的追问集中在少数几个技术词
+ * （内存溢出 / 节点负载 / 网络丢包 / 崩溃重启）。Bigram 无需词典即可让
+ * 「排查内存溢出」与 Runbook 中文 title/symptom 共享 "内存"、"溢出"、
+ * "内存溢出" 三个词元，余弦相似度立刻非零；而完整词保证精确短语命中时
+ * 权重更高。引入 jieba 级词库对 4 篇手册是明显的过度工程。
+ *
+ * 【为何只对中文去重、不对英文去重】英文侧保留重复即保留词频（TF），
+ * 这是余弦向量的权重来源；中文 bigram 是人为切分产物，重复只会虚增权重，
+ * 故只在中文段内去重。
  *
  * @param text 原始文本
  * @returns 规范化词元数组
  */
 function tokenize(text: string): string[] {
-  const normalized = text.toLowerCase().replace(/[-_/.]/g, ' ');
-  const raw = normalized.split(/[^a-z0-9]+/);
   const tokens: string[] = [];
-  for (const token of raw) {
-    if (token.length < 2) continue;
-    if (STOP_WORDS.has(token)) continue;
-    tokens.push(token);
+
+  /* ---- 通道一：英文 / 数字 ---- */
+  const normalized = text.toLowerCase().replace(/[-_/.]/g, ' ');
+  for (const raw of normalized.split(/[^a-z0-9]+/)) {
+    if (raw.length < 2) continue;
+    if (STOP_WORDS.has(raw)) continue;
+    tokens.push(raw);
   }
+
+  /* ---- 通道二：中文（相邻 Bigram + 完整段） ---- */
+  const chineseSegments = text.match(/[\u4e00-\u9fa5]+/g) ?? [];
+  for (const segment of chineseSegments) {
+    if (segment.length < 2) continue;
+
+    /* Set 保证同一段内 bigram 与完整词不重复计入词频 */
+    const segmentTokens = new Set<string>();
+    for (let i = 0; i + 2 <= segment.length; i++) {
+      segmentTokens.add(segment.slice(i, i + 2));
+    }
+    segmentTokens.add(segment);
+
+    for (const token of segmentTokens) {
+      if (token.length >= 2) tokens.push(token);
+    }
+  }
+
   return tokens;
 }
 
@@ -595,17 +627,37 @@ function normalizeScore(rawScore: number): number {
 /* ========================================================================== */
 
 /**
+ * 最低检索相关性阈值（原始融合分，非归一化分）。
+ *
+ * 【为什么必须有这道闸】旧实现在 `rawScore === 0`（查询与所有文档**零相关**）
+ * 时仍然走归一化，产出 `FLOOR + 0 = 0.86` —— 即 86.0%。于是用户发送
+ * 「你好」也会看到两条「Similarity: 86.0%」的 OOM 手册，并被据此触发
+ * 一整套虚假排障流程。这不是"展示区间映射"，而是**用公式把 0 说成 86%**，
+ * 属于数据造假，必须废除。
+ *
+ * 【阈值取 0.08 的依据】原始分是 0.5·cosine + 0.3·keyword + 0.2·context 的加权。
+ * - 纯问候语：三路全 0 → 0.00（被拦下）；
+ * - 仅混沌场景上下文先验命中（cosine=0, keyword=0, context=0.15）→ 0.03（被拦下，
+ *   因为"当前在演练"不等于"用户问了这件事"）；
+ * - 命中一个关键词且余弦非零 → 通常 > 0.10（放行）。
+ * 0.08 恰好把"只有环境先验、没有任何语义证据"的情况挡在外面。
+ */
+const MIN_RAW_SCORE_THRESHOLD = 0.08;
+
+/**
  * retrieveSreRunbooks —— 混合 RAG 检索主入口。
  *
  * 【核心流转】
- * 1. 查询向量化：query → tokenize → 词频向量（同时保留词元用于关键词通道）；
+ * 1. 查询向量化：query → tokenize（英文词元 + 中文 Bigram）→ 词频向量；
  * 2. 逐文档三路打分：
  *    - cosine：查询词频向量 vs 文档特征词袋词频向量的余弦相似度；
  *    - keyword：查询词元在文档标签/症状/特征词中的命中率；
  *    - context：混沌场景 + 受影响 Pod + 分类呼应的上下文先验；
  * 3. 加权融合：final = 0.5·cosine + 0.3·keyword + 0.2·context；
- * 4. 归一化：保序映射到 [0.86, 0.98]；
- * 5. 按归一化分降序排序，取前 topK 条，回填 similarityScore 返回。
+ * 4. **相关性闸门**：过滤掉 rawScore < MIN_RAW_SCORE_THRESHOLD 的文档。
+ *    若一条都不剩，直接返回空数组——**绝不硬凑 topK 条无关手册**；
+ * 5. 仅对通过闸门的真实命中做保序归一化到 [0.86, 0.98]；
+ * 6. 按归一化分降序排序，取前 topK 条返回。
  *
  * 【纯函数契约】不修改 SRE_RUNBOOK_CORPUS，输出为全新对象数组
  * （回填 similarityScore 时用展开运算符派生），因此可安全反复调用、
@@ -615,7 +667,7 @@ function normalizeScore(rawScore: number): number {
  * @param chaos      当前混沌场景（用于上下文加权；'NONE' 表示稳态无先验）
  * @param faultyPods 受影响 Pod 名称列表（用于服务特征匹配，可为空数组）
  * @param topK       返回条数，默认 2（呼应主推 Runbook 的展示位）
- * @returns Top-K 命中文档（含 similarityScore，按分数降序）
+ * @returns Top-K 命中文档（含 similarityScore，按分数降序）；无相关命中返回 []
  */
 export function retrieveSreRunbooks(
   query: string,
@@ -630,6 +682,13 @@ export function retrieveSreRunbooks(
   /* ---- 1. 查询向量化 ---- */
   const queryTokens = tokenize(query);
   const queryVector = buildTermFrequency(queryTokens);
+
+  /**
+   * 【空查询短路】查询分词后为空（例如纯标点、单字符）时，
+   * 余弦与关键词必然为 0，只剩混沌上下文先验——这属于"没有语义证据"，
+   * 直接返回 [] 比让它靠先验挤进 Top-K 更诚实。
+   */
+  if (queryVector.size === 0) return [];
 
   /* ---- 2. 逐文档打分 ---- */
   interface Scored {
@@ -654,8 +713,14 @@ export function retrieveSreRunbooks(
     return { doc, rawScore };
   });
 
-  /* ---- 3. 归一化 + 排序（同分时按 id 稳定排序，保证可复现） ---- */
-  const results: RagRunbookDoc[] = scored
+  /* ---- 3. 相关性闸门（拒绝 0 分虚标） ---- */
+  const relevant = scored.filter(
+    (entry): boolean => entry.rawScore >= MIN_RAW_SCORE_THRESHOLD,
+  );
+  if (relevant.length === 0) return [];
+
+  /* ---- 4. 归一化 + 排序（同分时按 id 稳定排序，保证可复现） ---- */
+  const results: RagRunbookDoc[] = relevant
     .map(
       (entry): RagRunbookDoc => ({
         ...entry.doc,
@@ -670,7 +735,7 @@ export function retrieveSreRunbooks(
       return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     });
 
-  /* ---- 4. 取 Top-K ---- */
+  /* ---- 5. 取 Top-K ---- */
   return results.slice(0, limit);
 }
 
