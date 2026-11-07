@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — 3D 集群拓扑根画布（ClusterCanvas）
@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Canvas, type RootState } from '@react-three/fiber';
-import { ContactShadows, Grid, PerformanceMonitor, Sparkles } from '@react-three/drei';
+import { ContactShadows, Grid, MeshReflectorMaterial, PerformanceMonitor, Sparkles } from '@react-three/drei';
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing';
 
 import { useClusterStore } from '@/store/useClusterStore';
@@ -401,19 +401,54 @@ export default function ClusterCanvas() {
           color="#000000"
         />
 
-        {/* ---- 赛博极客双层地面网格 ----
+        {/* ---- 黑曜石镜面反射地面（图五空间纵深感的核心）----
+         *
+         * 【解决什么】此前地面只有网格、没有任何反射，场景是"悬在虚空里"的：
+         * 缺少上下镜像关系，纵深立刻扁平。参考图的深邃感来自
+         * **地面把机架、八面体与星环柔和地倒映下去**。
+         *
+         * 【参数依据】
+         * - blur [320, 90]：长轴大幅模糊 → 倒影是柔和渗影而非镜面复刻；
+         * - mixStrength 15 / mirror 0.55：反射克制，过强会抢戏；
+         * - roughness 0.62 + metalness 0.65：黑曜石半哑光金属釉面；
+         * - depthScale + min/maxDepthThreshold：按深度衰减，
+         *   近处清晰、远处迅速沉入深色，避免远处倒影堆叠成噪点。
+         *
+         * 【Y = −0.025】低于两层 Grid（−0.02 / +0.01），
+         * 于是网格像蚀刻在镜面上层的坐标网，而非浮在反射之上。
+         */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.025, 0]} receiveShadow>
+          <circleGeometry args={[32, 64]} />
+          <MeshReflectorMaterial
+            blur={[320, 90]}
+            resolution={512}
+            mixBlur={0.85}
+            mixStrength={15}
+            roughness={0.62}
+            depthScale={1.1}
+            minDepthThreshold={0.35}
+            maxDepthThreshold={1.4}
+            color="#030816"
+            metalness={0.65}
+            mirror={0.55}
+          />
+        </mesh>
+
+        {/* ---- 赛博极客双层地面网格（蚀刻在镜面上的坐标网）----
           下层（y=-0.02）：大尺度粗格延伸至雾效远端，构建深空坐标系纵深；
           上层（y=+0.01）：小尺度细格聚焦中心作战区，与 .bg-cyber-grid 的
-          48px 网格质感呼应。双层 Y 向错位 0.03 杜绝 z-fighting。 */}
+          48px 网格质感呼应。双层 Y 向错位 0.03 杜绝 z-fighting。
+          【本轮调整】线宽与对比度双双调低——地面已是反光材质，
+          网格若太亮会与倒影争视觉权重，变成"两张网"的噪音。 */}
         <Grid
           position={[0, -0.02, 0]}
           args={[140, 140]}
           cellSize={6}
-          cellThickness={0.5}
-          cellColor="#0e7490"
+          cellThickness={0.34}
+          cellColor="#0b5563"
           sectionSize={30}
-          sectionThickness={1.1}
-          sectionColor="#155e75"
+          sectionThickness={0.8}
+          sectionColor="#0e7490"
           fadeDistance={86}
           fadeStrength={1.6}
           infiniteGrid
@@ -422,17 +457,21 @@ export default function ClusterCanvas() {
           position={[0, 0.01, 0]}
           args={[44, 44]}
           cellSize={1.6}
-          cellThickness={0.55}
-          cellColor="#164e63"
+          cellThickness={0.4}
+          cellColor="#12414e"
           sectionSize={8}
-          sectionThickness={1}
-          sectionColor="#22d3ee"
+          sectionThickness={0.8}
+          sectionColor="#1c8ea6"
           fadeDistance={40}
           fadeStrength={1.4}
         />
 
-        {/* ---- 背景微光悬浮粒子（深空尘埃感） ---- */}
-        <Sparkles count={100} scale={30} size={1.2} speed={0.2} color="#22d3ee" position={[0, 5, 0]} opacity={0.55} />
+        {/* ---- 双层深空飞散光粒子场（Dual-Layer Sparkles）----
+          第一层贴地环绕（粗亮、快）复刻光圈周围飞散的星尘；
+          第二层中空光束区（细小、慢、绿）表现能量逸散。
+          两层尺度/速度/颜色都不同，才有"近亮远淡"的景深层次。 */}
+        <Sparkles count={140} scale={[24, 2.5, 24]} size={1.6} speed={0.35} color="#38bdf8" position={[0, 1.2, 0]} opacity={0.75} />
+        <Sparkles count={90} scale={[22, 10, 22]} size={1.1} speed={0.2} color="#10b981" position={[0, 5.0, 0]} opacity={0.45} />
 
         {/* ---- MASTER 控制平面全息模型（锚定 [0,2.5,0]，可点击选中 → 鸟瞰复位） ---- */}
         <MasterNode3D />
@@ -502,6 +541,25 @@ export default function ClusterCanvas() {
           <Vignette eskil={false} offset={0.18} darkness={0.35} />
         </EffectComposer>
       </Canvas>
+
+      {/*
+       * ---- 电影级光学暗角遮罩（DOM 层，Canvas 之上、HUD 之下）----
+       *
+       * 【解决什么】3D 视口与深空背景之间此前是"硬切边"：画面边缘的网格、
+       * 粒子会突然终止在 DOM 容器的矩形边界上，廉价感就来自这个直角。
+       * 叠加一层径向暗角后，四周亮度自然衰减、融入页面背景，
+       * 视觉上形成"无限延伸的深空"而非"一个装着 3D 的矩形框"。
+       *
+       * 【为何用 CSS 而非后处理】Vignette 后处理只作用于 WebGL 内容本身，
+       * 管不到画布与页面背景的接缝；这一层是 DOM 覆盖，正好补上那个边界。
+       *
+       * 【层级与穿透】pointer-events-none + z-[1]：
+       * 在 Canvas（z-0）之上、巡检 HUD / 抽屉（z-20 起）之下，绝不拦截指针。
+       */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-[1] bg-[radial-gradient(circle_at_center,transparent_55%,rgba(2,6,23,0.65)_100%)]"
+      />
 
       {/* ---- 左上角实体巡检 HUD（DOM 层浮层，非 R3F 场景内）：
          未选中实体 → 拓扑图例 + 相机手势提示；选中 pod/node/master →
