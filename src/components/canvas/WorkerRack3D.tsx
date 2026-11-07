@@ -52,6 +52,7 @@ import { Edges, Html, RoundedBox, type EdgesRef } from '@react-three/drei';
 import * as THREE from 'three';
 
 import { cn } from '@/utils/cn';
+import { useOptionalGltfModel } from '@/hooks/useOptionalGltfModel';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import {
@@ -431,6 +432,31 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   /** 最新 node 快照引用：useFrame 读取，避免把 node 塞进渲染循环依赖 */
   const nodeRef = useRef<WorkerRack3DProps['node']>(node);
 
+  /**
+   * ---- Blender 混合渲染挂载槽 ----
+   *
+   * 【契约】美术把 `public/models/worker-rack.glb` 放进去即自动切换为高精度模型；
+   * 文件不存在时钩子返回 `scene === null`，本组件照常渲染程序化重工机柜。
+   *
+   * 【替换范围】只替换**静态外壳骨架**（装甲外框 / 角柱 / 底座 / 顶盖 / 顶冠 /
+   * 散热格栅）。以下动态部件**始终保留**，因此 Blender 模型同样能随节点健康度
+   * 实时变色发光：
+   *   · 12 条插槽底座环（SLOT_GHOSTS，单实例网格）
+   *   · 两根垂直霓虹导光柱（statusColor 驱动）
+   *   · 腔体状态点光源（cavityLight）
+   *   · 4 层托盘隔板（Pod 落座基准）
+   *   · 底部 <Html> 铭牌（名字 / 状态点 / CPU / MEM）
+   *   · 顶部光纤接口环（NetworkStream3D 光缆落点）
+   *
+   * 【为何用 visible 而非条件渲染】外壳由 6 处分散的网格组成，且与动态部件
+   * 交错声明。用 `visible` 关闭时 three 的渲染列表会直接跳过这些对象
+   * （零 draw call），同时保留原有 JSX 结构，避免为条件渲染做大规模结构调整
+   * 而引入布局/射线回归风险。
+   */
+  const { scene: gltfRack, isAvailable: isGltfRackAvailable } = useOptionalGltfModel(
+    '/models/worker-rack.glb',
+  );
+
   /* node props 变更（1Hz）时刷新 ref；useFrame 恒读最新值，零重订阅 */
   useEffect(() => {
     nodeRef.current = node;
@@ -596,11 +622,15 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       }}
       onPointerOut={(): void => setHovered(false)}
     >
+      {/* ---- Blender 高精度模型（存在 .glb 时挂载；否则回落到下方程序化外壳）----
+          模型已由钩子统一开启 castShadow/receiveShadow，因此与场景布光一致。 */}
+      {gltfRack !== null ? <primitive object={gltfRack} /> : null}
+
       {/* ---- 半透明磨砂装甲外框（+ 棱线勾勒机柜轮廓；显式点击选中）。
          【Edges 控制权契约】color/opacity/linewidth 三个动画属性的初始值仅作
          首帧种子，此后由 useFrame 独占驱动；React prop 保持恒定字面量，
          1Hz 重渲染经 R3F props diff 不会重放，动画值零跳变。 ---- */}
-      <mesh position={[0, RACK_BODY_CENTER_Y, 0]} onClick={handleSelect}>
+      <mesh position={[0, RACK_BODY_CENTER_Y, 0]} onClick={handleSelect} visible={!isGltfRackAvailable}>
         <boxGeometry args={[RACK_BODY_SIZE[0], RACK_BODY_SIZE[1], RACK_BODY_SIZE[2]]} />
         <meshStandardMaterial
           color={HARDWARE_COLOR}
@@ -639,6 +669,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           key={`pillar-${index}`}
           position={[pillar.x, RACK_BODY_CENTER_Y, pillar.z]}
           raycast={noRaycast}
+          visible={!isGltfRackAvailable}
         >
           <boxGeometry args={[PILLAR_SIZE, RACK_BODY_SIZE[1], PILLAR_SIZE]} />
           <meshStandardMaterial
@@ -663,6 +694,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         castShadow
         receiveShadow
         onClick={handleSelect}
+        visible={!isGltfRackAvailable}
       >
         <meshStandardMaterial
           color={HARDWARE_COLOR}
@@ -757,6 +789,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         castShadow
         receiveShadow
         onClick={handleSelect}
+        visible={!isGltfRackAvailable}
       >
         <meshStandardMaterial
           color={HARDWARE_COLOR}
@@ -787,6 +820,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         castShadow
         receiveShadow
         raycast={noRaycast}
+        visible={!isGltfRackAvailable}
       >
         <meshStandardMaterial
           color={HARDWARE_COLOR}
@@ -807,7 +841,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        * 用极薄的发光薄片（0.02 高）嵌进顶冠上表面，不做几何雕刻，
        * 成本仅一次 draw call，却让它从"黑色塑料盖"变成"散热模组"。
        */}
-      <mesh position={[0, CROWN_Y + CROWN_HEIGHT / 2 + 0.012, 0]} raycast={noRaycast}>
+      <mesh position={[0, CROWN_Y + CROWN_HEIGHT / 2 + 0.012, 0]} raycast={noRaycast} visible={!isGltfRackAvailable}>
         <boxGeometry args={[CROWN_WIDTH - 0.42, 0.02, CROWN_DEPTH - 0.42]} />
         <meshBasicMaterial color="#22d3ee" toneMapped={false} transparent opacity={0.5} />
       </mesh>
