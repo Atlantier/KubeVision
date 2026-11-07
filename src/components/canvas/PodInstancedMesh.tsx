@@ -54,7 +54,7 @@ import { MAX_PODS, telemetryTransientRef } from '@/store/useTelemetryRef';
 import type { PodStatus } from '@/types/cluster';
 import type { PodHoverLabelData, PodStatusBadgeStyle } from '@/types/canvas';
 import type { ClusterState, SelectedEntityType, StatusFilter } from '@/types/store';
-import { POD_BOX_SIZE, POD_SEAT_OFFSET_Y, getPodWorldTransform } from '@/utils/spatialLayout';
+import { BASE_PAD_CLEARANCE, POD_BOX_HEIGHT, POD_BOX_SIZE, getPodWorldTransform } from '@/utils/spatialLayout';
 
 /* ========================================================================== */
 /* 模块级常量与预计算表（加载期一次求值，SSR 安全——纯数学无 window/three 运行时）   */
@@ -123,14 +123,43 @@ const MAX_FRAME_DELTA = 0.1;
 
 /* ---- Running 态：负载驱动的悬浮呼吸参数 ---- */
 /** 悬浮振幅基线（世界单位）+ 负载增量系数：cpu 0%→2%、100%→6% */
-const RUN_HOVER_BASE = 0.02;
-const RUN_HOVER_LOAD_GAIN = 0.04;
+const RUN_HOVER_BASE = 0.012;
+const RUN_HOVER_LOAD_GAIN = 0.024;
 /** 悬浮角频率基线（rad/s）+ 负载增量：忙容器呼吸更急促 */
 const RUN_HOVER_RATE_BASE = 1.6;
 const RUN_HOVER_RATE_GAIN = 0.8;
-/** 高度微调：负载每 100% 增高 10% + ±2% 正弦呼吸（「随负载高低」的形态表达） */
+/** 高度随负载的静态增量：负载每 100% 增高 10% */
 const RUN_HEIGHT_LOAD_GAIN = 0.1;
-const RUN_HEIGHT_BREATH = 0.02;
+
+/**
+ * CPU 负载平滑的指数阻尼率 k（1/秒），时间常数 ≈ 0.29 秒。
+ *
+ * 【取值依据】SSE 快照 1Hz；k = 3.5 使阶跃在约 3 帧（50ms 帧率下）内
+ * 消化到 16% 以内，肉眼看到的是"负载平滑上浮/回落"，
+ * 而不是"每秒跳一格"。k 过大则失去平滑意义，过小则响应迟钝。
+ */
+const CPU_SMOOTH_RATE = 3.5;
+
+/**
+ * 刀片底座托架安全间隙由 spatialLayout 统一导出（BASE_PAD_CLEARANCE），
+ * 使渲染器、布局数学与 SelectionBeacon3D 的落座偏移共享同一数值。
+ */
+
+/** 2π 常量（相位取模，避免每次求值 Math.PI * 2） */
+const TWO_PI = Math.PI * 2;
+
+/**
+ * 静态落座偏移：层中心 → 刀片静止时的盒中心（scaleY = 1）。
+ *
+ * 推导：−POD_BOX_HEIGHT/2（层中心 → 隔板顶面）
+ *      + BASE_PAD_CLEARANCE（安全间隙）
+ *      + POD_BOX_SIZE[1]/2（半高）
+ *      = −0.46 + 0.026 + 0.26 = −0.174
+ *
+ * 供"挂载首帧矩阵"与"悬停标签高度"复用，保证与 useFrame 内的底面锚定
+ * 公式（scaleY = 1、hoverLift = 0 时）完全一致。
+ */
+const POD_REST_OFFSET_Y = -POD_BOX_HEIGHT / 2 + BASE_PAD_CLEARANCE + POD_BOX_SIZE[1] / 2;
 
 /* ---- Pending/Terminating 态：缓慢明暗脉动参数 ---- */
 /** 明暗脉动角频率（rad/s，≈2.6 秒/次「缓慢」）与幅度（0.72~1.0 亮度包络） */
@@ -515,7 +544,7 @@ export default function PodInstancedMesh() {
     const pose = SLOT_POSES[rackIdx * SLOTS_PER_RACK + slotIdx];
     return [
       pose.position[0],
-      pose.position[1] + POD_SEAT_OFFSET_Y + HOVER_LABEL_OFFSET_Y,
+      pose.position[1] + POD_REST_OFFSET_Y + HOVER_LABEL_OFFSET_Y,
       pose.position[2],
     ];
   }, [hoverLabelData]);
@@ -599,6 +628,39 @@ export default function PodInstancedMesh() {
   const filterScaleBuffer = useMemo((): Float32Array => new Float32Array(MAX_PODS).fill(1), []);
 
   /**
+   * smoothedCpuBuffer —— 逐实例 CPU 负载的**帧率无关指数阻尼**平滑值。
+   *
+   * 【根治"每秒瞬移"】SSE 快照 1Hz 到达，`cpuArray[i]` 是阶跃量。
+   * 旧实现把 c 直接乘进相位 `t·(1.6 + 0.8·c)`：当 t 已经很大（例如 60s）时，
+   * c 跳变 0.1 会让相位瞬间变化 0.1 × 0.8 × 60 ≈ 4.8 弧度——
+   * 盒子一秒钟"抽搐"一次，正是这个乘法放大了数据阶跃。
+   *
+   * 现在 c 先经过阻尼平滑（k = 3.5/s，≈0.29s 时间常数），
+   * 平滑值再参与**角速度**（而不是直接乘时间 t），见 phaseAccumBuffer。
+   */
+  const smoothedCpuBuffer = useMemo((): Float32Array => new Float32Array(MAX_PODS), []);
+
+  /**
+   * phaseAccumBuffer —— 逐实例呼吸相位累计值（弧度）。
+   *
+   * 【核心数学：对角速度积分，而不是对绝对时间求值】
+   *   ω_i(t) = RUN_HOVER_RATE_BASE + RUN_HOVER_RATE_GAIN · smoothC_i
+   *   φ_i(t) = (φ_i(t−dt) + ω_i · dt) mod 2π
+   *
+   * 【为什么这能根治瞬移】`t·ω(c)` 是"用当前 ω 重算整段时间"，
+   * c 一变，整段历史相位被重算 → 跳变。而 `φ += ω·dt` 只把**当前这一帧**
+   * 的角增量累加进去：c 变化只影响此后的角速度，历史相位不受影响，
+   * 因此相位永远连续，切换数据帧时零跳变。
+   *
+   * 初值取自 POD_PHASES（黄金角错相），保证首帧各实例相位均匀铺开。
+   */
+  const phaseAccumBuffer = useMemo((): Float32Array => {
+    const buffer = new Float32Array(MAX_PODS);
+    for (let i = 0; i < MAX_PODS; i++) buffer[i] = POD_PHASES[i];
+    return buffer;
+  }, []);
+
+  /**
    * 挂载初始化：写入全部 48 个实例的矩阵（槽位查表 + 落座偏移）与白色实例色。
    *
    * 【核心目的】setColorAt 触发 three 底层惰性创建 instanceColor
@@ -617,7 +679,7 @@ export default function PodInstancedMesh() {
       const pose = SLOT_POSES[i];
       tempObject.position.set(
         pose.position[0],
-        pose.position[1] + POD_SEAT_OFFSET_Y,
+        pose.position[1] + POD_REST_OFFSET_Y,
         pose.position[2],
       );
       tempObject.rotation.set(0, pose.rotationY, 0);
@@ -742,25 +804,54 @@ export default function PodInstancedMesh() {
 
       /* ---- 2. 状态调制：几何位移/缩放 + 目标色 ---- */
       let posX = pose.position[0];
-      let posY = pose.position[1] + POD_SEAT_OFFSET_Y;
+      let posY = pose.position[1];
       let posZ = pose.position[2];
       let scaleX = 1;
       let scaleY = 1;
       let scaleZ = 1;
+      /** 悬浮抬升量（恒 ≥ 0 的全正半波；仅 Running 态参与） */
+      let hoverLift = 0;
 
       tempTargetColor.copy(resolvePodTargetColor(pod.status));
 
       switch (pod.status) {
         case 'Running': {
-          // 负载归一化（NaN 防御：瞬态池同步层已拦截，此处二道保险）
+          /*
+           * ---- 负载平滑 + 相位积分（根治"每秒瞬移"）----
+           *
+           * 【缺陷复现】旧代码：
+           *   posY += (0.02 + 0.04c)·sin(t·(1.6 + 0.8c) + φ)
+           *   scaleY = 1 + 0.1c + 0.02·sin(2t + φ)
+           * c 每秒阶跃时，`t·(1.6 + 0.8c)` 里的 c 被乘以"已经流逝的整段时间 t"。
+           * t = 60s 时 c 跳 0.1 → 相位跳 0.1 × 0.8 × 60 ≈ 4.8 rad ≈ 275°，
+           * 盒子位置瞬间跳到几乎相反相位 —— 观感就是一秒抽一次。
+           *
+           * 【修复两步】
+           * 1. c 先做帧率无关指数阻尼 → smoothC 连续变化；
+           * 2. 相位改为**对角速度积分** φ += ω(smoothC)·dt（而非 t·ω(c)），
+           *    数据帧跳变只改变此后的角速度，历史相位不可变 → 零跳变。
+           */
           const cpuRaw = cpuArray[i];
-          const c = Number.isNaN(cpuRaw) ? 0 : Math.min(1, Math.max(0, cpuRaw / 100));
-          // 悬浮呼吸：振幅与频率均随负载上浮
-          posY +=
-            (RUN_HOVER_BASE + RUN_HOVER_LOAD_GAIN * c) *
-            Math.sin(t * (RUN_HOVER_RATE_BASE + RUN_HOVER_RATE_GAIN * c) + phase);
-          // 高度微调：负载鼓胀 + 轻微正弦呼吸
-          scaleY = 1 + RUN_HEIGHT_LOAD_GAIN * c + RUN_HEIGHT_BREATH * Math.sin(t * 2 + phase);
+          const cRaw = Number.isNaN(cpuRaw) ? 0 : Math.min(1, Math.max(0, cpuRaw / 100));
+          const smoothAlpha = 1 - Math.exp(-CPU_SMOOTH_RATE * dt);
+          const prevSmooth = smoothedCpuBuffer[i];
+          const smoothC = prevSmooth + (cRaw - prevSmooth) * smoothAlpha;
+          smoothedCpuBuffer[i] = smoothC;
+
+          const accumulatedPhase = phaseAccumBuffer[i] + (RUN_HOVER_RATE_BASE + RUN_HOVER_RATE_GAIN * smoothC) * dt;
+          const wrappedPhase = accumulatedPhase - Math.floor(accumulatedPhase / TWO_PI) * TWO_PI;
+          phaseAccumBuffer[i] = wrappedPhase;
+
+          /*
+           * ---- 全正半波悬浮（根治"向下穿模"）----
+           * hoverWave = 0.5 + 0.5·sin(φ) ∈ [0, 1]，恒非负；
+           * 抬升幅度 0.012 + 0.024·smoothC（最忙也仅 3.6cm 的精密微呼吸）。
+           * 方位位移不再直接改 posY，而是交给末段的"底面锚定"统一合算。
+           */
+          const hoverWave = 0.5 + 0.5 * Math.sin(wrappedPhase);
+          hoverLift = (RUN_HOVER_BASE + RUN_HOVER_LOAD_GAIN * smoothC) * hoverWave;
+          /* 高度只保留随负载的静态鼓胀（呼吸已交给竖直位移，避免双重抖动） */
+          scaleY = 1 + RUN_HEIGHT_LOAD_GAIN * smoothC;
           break;
         }
         case 'Pending':
@@ -871,14 +962,34 @@ export default function PodInstancedMesh() {
         }
       }
 
-      /* ---- 5. 矩阵复合提交（TRS → instanceMatrix） ---- */
+      /* ---- 5. 底面锚定（Bottom-Anchored Lift）——根治向下穿模 ----
+       *
+       * 【问题】旧实现以"盒子中心"为锚点，且悬浮用完整的 sin（负半周使盒子下沉
+       * 最多 −0.06），同时 scaleY > 1 会让盒子围绕中心**上下对称**伸长。
+       * 两者叠加，盒子底面必然插进隔板——静止时本就零间隙贴死，没有任何余量。
+       *
+       * 【解法：先算高度，再反推中心】
+       *   shelfTopY  = 层中心 − POD_BOX_HEIGHT/2   （= 隔板顶面，与 WorkerRack3D 同源）
+       *   当前半高   = POD_BOX_SIZE[1] · scaleY / 2
+       *   posY       = shelfTopY + 安全间隙 + 当前半高 + 悬浮抬升
+       *
+       * 因为 posY 是在**所有缩放因子（状态鼓胀 / 过滤 / 扫描波 / 自愈脉冲）全部
+       * 结算之后**才计算的，所以无论盒子怎么放大缩小，底面永远固定在
+       * `shelfTopY + 0.026 + hoverLift`，物理上不可能穿过隔板。
+       * 而且缩放自然变成"向上生长"而非"向上下同时膨胀"，更符合刀片插拔的直觉。
+       */
+      const shelfTopY = pose.position[1] - POD_BOX_HEIGHT / 2;
+      const halfCurrentHeight = (POD_BOX_SIZE[1] * scaleY) / 2;
+      posY = shelfTopY + BASE_PAD_CLEARANCE + halfCurrentHeight + hoverLift;
+
+      /* ---- 6. 矩阵复合提交（TRS → instanceMatrix） ---- */
       tempObject.position.set(posX, posY, posZ);
       tempObject.rotation.set(0, pose.rotationY, 0);
       tempObject.scale.set(scaleX, scaleY, scaleZ);
       tempObject.updateMatrix();
       mesh.setMatrixAt(i, tempObject.matrix);
 
-      /* ---- 6. 颜色平滑渐变（instanceColor 缓冲即当前值持久态） ---- */
+      /* ---- 7. 颜色平滑渐变（instanceColor 缓冲即当前值持久态） ---- */
       mesh.getColorAt(i, tempColor);
       tempColor.lerp(tempTargetColor, colorAlpha);
       mesh.setColorAt(i, tempColor);

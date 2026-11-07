@@ -234,11 +234,19 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
       ring.rotation.z = t * SPIN_SPEED;
     }
 
-    /* ---- 包围盒做轻微反向自转，制造"锁定扫描"的层次感 ---- */
-    const box = boxRef.current;
-    if (box !== null) {
-      box.rotation.y = -t * SPIN_SPEED * 0.5;
-    }
+    /*
+     * ---- 包围盒：锁定 0°，绝不旋转 ----
+     *
+     * 【缺陷复现】旧代码在此写 `box.rotation.y = -t * SPIN_SPEED * 0.5`，
+     * 让长方形线框绕自身 Y 轴慢转，而盒内的刀片是静止的。
+     * 于是一秒内线框会转过一个角度、露出"框与盒严重错位"的破面观感——
+     * 选中框的语义是「这个盒子被锁定了」，一个正在自转的框恰恰在表达流动，
+     * 与"锁定"语义相反。
+     *
+     * 现在彻底删除该行：线框与刀片保持 0° 绝对平行（组继承 anchor.rotationY，
+     * 与刀片朝向同源），只由外层 group 的呼吸缩放提供"活着"的信号。
+     * 若将来需要动态感，应动刻度环（ring）而非包围盒本体。
+     */
   });
 
   /* 无 Pod 选中 → 不渲染任何场景节点（零开销） */

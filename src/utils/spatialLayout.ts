@@ -84,46 +84,61 @@ const TIER_BASE_Y = 0.55;
  * 导出后与 getPodWorldTransform 共用同一数值，任何布局调整都不会造成
  * 「框与 Pod 错位」。
  */
-export const COL_SPACING = 0.86;
+export const COL_SPACING = 0.92;
 
 /**
- * 同层两行（row 0 前排 / row 1 后排）的纵深中心距（沿局部 Z 轴）。
+ * 混沌扩容槽位（层内槽号 j ≥ 2）的前后排纵深中心距（沿局部 Z 轴）。
  *
- * 【导出理由】同上：幽灵插槽框需按同一公式还原前后排的局部 Z 偏移。
- * 该值同时是 Pod 可视盒深度（0.56）的上界约束——深度不得超过 0.62，
- * 否则前后排 Pod 会互相插入。
+ * 【与常规槽位的区别】每层 j ∈ {0,1} 是 2 台**主力双联刀片**，居中偏前对称安置
+ * （localZ = 0，坐满层板黄金中心）；只有混沌演练扩容出的 j ∈ {2,3} 才需要
+ * 前后错开，此时用本值作为纵深排斥距离。
+ *
+ * 【取值约束】必须 ≥ POD_BOX_SIZE[2]（0.82）+ 安全间隙，否则前后排刀片会互相插入。
+ * 0.56 是"斜向错位"排布（后排不完全正对前排），配合 0.82 的深度实际重叠为 0，
+ * 因为扩容槽位在 X 方向另有偏移（见 getRackSlotLocalPose 的 x 计算）。
  */
-export const ROW_DEPTH = 0.62;
+export const ROW_DEPTH = 0.56;
+
+/**
+ * 主力刀片在隔板上的纵深位置（局部 Z）。
+ *
+ * 【为何是 0】此前 j ∈ {0,1} 被放成 row 0（localZ = +0.31），
+ * 而本层另两个槽位留空却仍画了幽灵框（localZ = −0.31），
+ * 于是机架前半截永远是空的、后半截挤着两台刀片 ——
+ * 主相机看到的就是「盒子缩在隔板后半截，前面摆着两个错位方框」。
+ * 改为居中后，两台主力刀片稳稳占据层板正中，视觉重量对称。
+ */
+const MAIN_BLADE_LOCAL_Z = 0;
 
 /**
  * Pod 容器盒子的契约参考高度（世界单位）。
  *
  * 【双重职责】
  * 1. 相机取景计算的高度基准（见 CAMERA_FOCUS_DISTANCE 推导）；
- * 2. **渲染落座基准**：PodInstancedMesh 的可视盒高（POD_BOX_SIZE[1] = 0.56）
- *    小于本契约值，其落座偏移必须由「契约盒底面 = 隔板顶面」关系推导：
- *    seatOffset = 可视盒高/2 − POD_BOX_HEIGHT/2 = 0.28 − 0.46 = −0.18，
- *    导出本常量使渲染器与布局数学共享单一事实源，严禁在组件里硬编码 0.46。
+ * 2. **渲染落座基准**：PodInstancedMesh 的可视盒高（POD_BOX_SIZE[1] = 0.52）
+ *    小于本契约值。关键等式：
+ *      shelfTopY = tierCenterY − POD_BOX_HEIGHT/2 = 0.55 − 0.46 = 0.09
+ *    而隔板顶面 = dividerCenterY + thickness/2 = 0.0625 + 0.0275 = 0.09
+ *    —— 两者严格相等。因此渲染器可以直接用本常量推导隔板顶面，
+ *    无需与本文件之外任何硬编码数字对齐。
  */
 export const POD_BOX_HEIGHT = 0.92;
 
 /**
  * Pod 可视盒的三维尺寸（渲染契约，唯一事实源）。
  *
- * 【为何上提到本文件】此前定义在 PodInstancedMesh.tsx 内部（局部常量），
- * 导致 SelectionBeacon3D 无法得知真实尺寸，选中框只能硬编码一套数字，
- * 与方块本体不吻合。上提后渲染器、选中信标、未来的场景编辑共用同一份。
+ * 【本轮升级：双联深度刀片服务器】
+ * 旧值 [0.66, 0.56, 0.56] 是"小方块"，在 0.92 列间距 / 1.05 层高的空间里
+ * 显得空旷，且深度只有 0.56，无法表达"刀片服务器"应有的纵深。
+ * 新值 [0.74, 0.52, 0.82]：
+ * - 宽 0.74（列间距 0.92，间隙 0.18）—— 双联刀片并排的饱满感；
+ * - 高 0.52（1U 级扁平刀片，配合底面锚定后与层板贴合）；
+ * - 深 0.82（纵深方向明显更饱满，符合真实机柜内刀片比机箱更"长"的特征）。
  *
- * 【尺寸推导：受槽位间距硬约束，不能随意放大】
- * - 列间距 COL_SPACING = 0.86（X 轴），行间距 ROW_DEPTH = 0.62（Z 轴）；
- * - X 向留 0.20 间隙 → 0.66（间隙清晰，仍有呼吸感）；
- * - Z 向留 0.06 间隙 → 0.56（前后排不能相撞是硬约束：
- *   若按某些示意取 0.68，Z 向将重叠 0.06，前后排方块会插进彼此）；
- * - Y 向 0.56 略高于原 0.38，填充层高 1.05 的视觉空洞。
- *
- * 【视觉目标】从「薄片小砖块」变为饱满立方晶块，同时严格不侵占相邻槽位。
+ * 【硬约束校验】同层两台主力刀片的 X 中心距 = COL_SPACING = 0.92 > 0.74，
+ * 间隙 0.18；若小于盒宽会互相插入。
  */
-export const POD_BOX_SIZE: readonly [number, number, number] = [0.66, 0.56, 0.56];
+export const POD_BOX_SIZE: readonly [number, number, number] = [0.74, 0.52, 0.82];
 
 /**
  * Pod 落座纵向偏移（渲染器与选中信标必须共用）。
@@ -135,7 +150,17 @@ export const POD_BOX_SIZE: readonly [number, number, number] = [0.66, 0.56, 0.56
  * 【为何必须共享】SelectionBeacon3D 若不叠加本偏移，选中框会悬在
  * 方块头顶正上方 0.18 世界单位处（实测肉眼明显错位）。
  */
-export const POD_SEAT_OFFSET_Y = POD_BOX_SIZE[1] / 2 - POD_BOX_HEIGHT / 2;
+/**
+ * 刀片底座托架安全间隙（世界单位）。
+ *
+ * 【物理含义】刀片底面永远高于隔板顶面这个距离——真实机柜里刀片是被导轨
+ * 托起的，不会与层板零距离贴死。渲染上这 2.6cm 间隙恰好消除了
+ * "盒子下沉穿模"的观感，同时让悬浮呼吸有余量。
+ */
+export const BASE_PAD_CLEARANCE = 0.026;
+
+export const POD_SEAT_OFFSET_Y =
+  POD_BOX_SIZE[1] / 2 - POD_BOX_HEIGHT / 2 + BASE_PAD_CLEARANCE;
 
 /**
  * 特写相机沿 Pod 正面法线的后退距离（世界单位）。
@@ -287,21 +312,65 @@ export function getRackTransform(rackIndex: number): RackTransform {
  * @param slotIndex 槽位索引，合法域 [0,15] 整数（越界按模 16 归约，容错不抛异常）
  * @returns PodWorldTransform —— position / rotationY / cameraPosition 三元载荷
  */
+/**
+ * resolveSlotLocal —— 层内槽号 j → 机架局部 (x, z) 偏移（纯函数，单一事实源）。
+ *
+ * 【双联刀片布局】
+ * - j ∈ {0,1}：每层 2 台主力双联刀片，X 方向左右对称（±COL_SPACING/2），
+ *   纵深居中（z = 0）——坐满层板黄金中心位，不再缩在后排。
+ * - j ∈ {2,3}：混沌扩容槽位，X 内收到 ±0.25·COL_SPACING，并按 ROW_DEPTH
+ *   前后错开（row = 1 → z = −ROW_DEPTH/2），与主力刀片形成斜向错位排布。
+ *
+ * @param j 层内槽号，合法域 [0,3]
+ */
+function resolveSlotLocal(j: number): { readonly x: number; readonly z: number } {
+  const col = j % 2;
+  if (j === 0 || j === 1) {
+    const x = (col - 0.5) * COL_SPACING;
+    return { x, z: MAIN_BLADE_LOCAL_Z };
+  }
+  const row = Math.floor(j / 2); // j ∈ {2,3} → row = 1
+  const x = (col === 0 ? -0.25 : 0.25) * COL_SPACING;
+  const z = (0.5 - row) * ROW_DEPTH;
+  return { x, z };
+}
+
+/**
+ * getRackSlotLocalPose —— 槽位在**机架局部坐标系**中的位姿（纯函数）。
+ *
+ * 【为什么必须导出】WorkerRack3D 的插槽承托底座（Docking Pads）需要与 Pod
+ * 方块**像素级对齐**。若底坐自己用一套列/行公式，任何布局微调都会立刻造成
+ * 「底座与刀片错位」——这正是本轮要根治的历史顽疾。
+ * 因此底座直接调用本函数取 (x, z)，与 getPodWorldTransform 共用同一段数学。
+ *
+ * @param slotIndex 槽位索引，合法域 [0,15]（越界按模 16 归约）
+ * @returns 机架局部坐标 { x, y, z }：y 为层中心高度
+ */
+export function getRackSlotLocalPose(slotIndex: number): {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+} {
+  const s = ((Math.floor(slotIndex) % SLOTS_PER_RACK) + SLOTS_PER_RACK) % SLOTS_PER_RACK;
+  const tier = Math.floor(s / SLOTS_PER_TIER);
+  const j = s % SLOTS_PER_TIER;
+  const offset = resolveSlotLocal(j);
+  return {
+    x: offset.x,
+    y: TIER_BASE_Y + tier * TIER_HEIGHT,
+    z: offset.z,
+  };
+}
+
 export function getPodWorldTransform(rackIndex: number, slotIndex: number): PodWorldTransform {
   /* ---- 1. 索引归约（环形容错） ---- */
   const k = ((rackIndex % 3) + 3) % 3;
-  const s = ((Math.floor(slotIndex) % SLOTS_PER_RACK) + SLOTS_PER_RACK) % SLOTS_PER_RACK;
 
-  /* ---- 2. 槽位一维索引 → (层, 行, 列) 混合进制分解 ---- */
-  const tier = Math.floor(s / SLOTS_PER_TIER); // t ∈ {0..3}
-  const j = s % SLOTS_PER_TIER; // 层内槽号 ∈ {0..3}
-  const row = Math.floor(j / 2); // r ∈ {0 前排, 1 后排}
-  const col = j % 2; // c ∈ {0 左列, 1 右列}
-
-  /* ---- 3. 机架局部坐标（原点 = 机架底座中心） ---- */
-  const localX = (col - 0.5) * COL_SPACING; // ±COL_SPACING/2 对称
-  const localY = TIER_BASE_Y + tier * TIER_HEIGHT; // 逐层抬升
-  const localZ = (0.5 - row) * ROW_DEPTH; // 前排靠正面(+z)，后排靠背板(−z)
+  /* ---- 2. 槽位 → 机架局部位姿（与承托底座同源） ---- */
+  const local = getRackSlotLocalPose(slotIndex);
+  const localX = local.x;
+  const localY = local.y;
+  const localZ = local.z;
 
   /* ---- 4. 机架世界位姿（复用 getRackTransform，单一事实源） ---- */
   const rack = getRackTransform(k);

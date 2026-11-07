@@ -57,6 +57,7 @@ import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import {
   COL_SPACING,
+  POD_BOX_SIZE,
   RACK_BODY_CENTER_Y,
   RACK_BODY_SIZE,
   RACK_LIGHT_GUIDE_X,
@@ -65,6 +66,7 @@ import {
   RACK_TIER_HEIGHT,
   ROW_DEPTH,
   SLOTS_PER_TIER,
+  getRackSlotLocalPose,
   getRackTransform,
 } from '@/utils/spatialLayout';
 import type { NodeStatus } from '@/types/cluster';
@@ -251,11 +253,16 @@ const SLOT_GHOST_OUTER = 0.28;
  */
 const SLOT_GHOST_SEGMENTS = 4;
 
-/** 幽灵框透明度（极淡，仅作插槽位置提示，不得抢走 Pod 的视觉主体） */
+/** 承托底座厚度（极薄发光导轨：视觉上是一圈精密边框，不占体积） */
+const SLOT_PAD_HEIGHT = 0.016;
+
+/** 幽灵框透明度（仅作承托导轨提示，不得抢走刀片的视觉主体） */
 const SLOT_GHOST_OPACITY = 0.42;
 
-/** 幽灵框总数：4 层 × 每层 4 槽 = 16（与 SLOTS_PER_RACK 一致） */
-const SLOT_GHOST_COUNT = RACK_TIER_COUNT * SLOTS_PER_TIER;
+/**
+ * 幽灵框总数：4 层 × 每层 2 个主力刀片 = 8（承托底座，与刀片 1:1 对应）
+ */
+const SLOT_GHOST_COUNT = RACK_TIER_COUNT * 2;
 
 /** 单个幽灵框的局部坐标 */
 interface SlotGhostPose {
@@ -302,14 +309,19 @@ const SLOT_GHOSTS: readonly SlotGhostPose[] = (() => {
   const poses: SlotGhostPose[] = [];
   for (let tier = 0; tier < RACK_TIER_COUNT; tier++) {
     const y = TIER_DIVIDER_YS[tier] + SLOT_GHOST_LIFT;
-    for (let slot = 0; slot < SLOTS_PER_TIER; slot++) {
-      const row = Math.floor(slot / 2);
-      const col = slot % 2;
-      poses.push({
-        x: (col - 0.5) * COL_SPACING,
-        y,
-        z: (0.5 - row) * ROW_DEPTH,
-      });
+    /*
+     * 只安置"主力双联刀片"槽位（层内 j ∈ {0,1}），共 4 层 × 2 = 8 个。
+     *
+     * 【为什么从 16 个方环减到 8 个承托底座】旧实现画满 16 个缩水小方环
+     * （边长仅 0.396），而稳态下每层只有 2 台刀片、且被放在后排，
+     * 于是机架前半截空着两个青框、后半截挤着绿色盒子 —— 观感就是"错位"。
+     * 现在每个底座都与对应刀片的 (x, z) **同源**（调用 getRackSlotLocalPose），
+     * 尺寸比刀片外扩 0.04，形成一圈精密导轨边框。
+     */
+    for (let mainSlot = 0; mainSlot < 2; mainSlot++) {
+      const slotIndex = tier * SLOTS_PER_TIER + mainSlot;
+      const local = getRackSlotLocalPose(slotIndex);
+      poses.push({ x: local.x, y, z: local.z });
     }
   }
   return poses;
@@ -347,9 +359,9 @@ const LIGHT_GUIDE_HEIGHT = RACK_BODY_SIZE[1] - 0.5;
  * 保证光能覆盖到最顶层而不溢出到相邻机架（相邻机架间距 ≈16.45）；
  * intensity 2.2 在 r≈1 处仍有可见照度，且不会把深色材质打爆成白。
  */
-const CAVITY_LIGHT_POSITION: readonly [number, number, number] = [0, RACK_BODY_CENTER_Y, 0.2];
-const CAVITY_LIGHT_INTENSITY = 2.2;
-const CAVITY_LIGHT_DISTANCE = 4.8;
+const CAVITY_LIGHT_POSITION: readonly [number, number, number] = [0, RACK_BODY_CENTER_Y + 0.35, 0];
+const CAVITY_LIGHT_INTENSITY = 1.2;
+const CAVITY_LIGHT_DISTANCE = 4.2;
 const CAVITY_LIGHT_DECAY = 2;
 
 /* ========================================================================== */
@@ -482,20 +494,19 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   }, [hovered]);
 
   /**
-   * 插槽幽灵框矩阵初始化（挂载时一次，含 StrictMode 双挂载安全）。
+   * @description 承托底座矩阵初始化（挂载时一次，含 StrictMode 双挂载安全）。
    *
-   * 【旋转推导 · 为何是 rotation.set(−π/2, 0, π/4)】
-   * ringGeometry 的几何平面是 XY（法线 = 局部 +Z）。分两步摆平：
-   *   ① 绕 X 轴 −90°：法线 (0,0,1) → (0,1,0)，平铺于世界 XZ 平面；
-   *      此时 4 段环的顶点落在 ±X / ±Z（菱形朝向）。
-   *   ② 绕（已被映射为世界 Y 的）局部 Z 轴 +45°：菱形转为**轴向对齐的正方形**。
-   * three 的 Euler 默认 XYZ 序构造 R = Rx·Ry·Rz，于向量是先 Rz 后 Rx，
-   * 与上述「先转 45° 再平铺」的推导等价，故此处 x = −π/2、z = π/4。
+   * 【几何变更：方环 → 重工金属承托底座】
+   * 旧实现是 16 个 ringGeometry 方环（边长仅 0.396），与刀片仅"位置相近"；
+   * 现在是 8 个 boxGeometry 承托底座，尺寸 = 刀片尺寸外扩 0.04，
+   * 位置 = getRackSlotLocalPose 的 (x, z)，与刀片**绝对同源**。
    *
-   * 【为何用 InstancedMesh 而非 16 个独立 mesh】
-   * 每个机架 16 个装饰环 × 3 机架 = 48 次额外 Draw Call；
-   * 改用单实例网格后每机架仅 1 次。实例矩阵在此一次性写入，
-   * useFrame 完全不触碰，满足零 GC 契约。
+   * 【为何不再需要 −π/2 与 π/4 旋转】方环必须靠两次旋转才能摆平并轴向对齐；
+   * 而 boxGeometry 天生就是轴对齐的长方体，只需正放（无旋转），
+   * 天然消除"旋转角写错就错位"的一整类隐患。
+   *
+   * 【为何用 InstancedMesh】8 个底座 × 3 机架 = 24 次额外 Draw Call；
+   * 单实例网格后每机架仅 1 次，且矩阵一次写入、useFrame 完全不触碰。
    */
   useEffect((): void => {
     const mesh = slotGhostsRef.current;
@@ -504,7 +515,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
     for (let i = 0; i < SLOT_GHOSTS.length; i++) {
       const slot = SLOT_GHOSTS[i];
       ghostTempObject.position.set(slot.x, slot.y, slot.z);
-      ghostTempObject.rotation.set(-Math.PI / 2, 0, Math.PI / 4);
+      ghostTempObject.rotation.set(0, 0, 0);
       ghostTempObject.scale.set(1, 1, 1);
       ghostTempObject.updateMatrix();
       mesh.setMatrixAt(i, ghostTempObject.matrix);
@@ -769,7 +780,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         frustumCulled={false}
         raycast={noRaycast}
       >
-        <ringGeometry args={[SLOT_GHOST_INNER, SLOT_GHOST_OUTER, SLOT_GHOST_SEGMENTS]} />
+        <boxGeometry args={[POD_BOX_SIZE[0] + 0.08, SLOT_PAD_HEIGHT, POD_BOX_SIZE[2] + 0.08]} />
         <meshBasicMaterial
           color="#22d3ee"
           transparent
