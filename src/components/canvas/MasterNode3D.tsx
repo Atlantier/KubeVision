@@ -56,7 +56,7 @@ import type { SelectedEntityType } from '@/types/store';
 /* ========================================================================== */
 
 /** 外层八面体半径（调度扫描包络） */
-const OCTA_RADIUS = 1.85;
+const OCTA_RADIUS = 1.68;
 
 /** 外层纵向拉伸比：水晶略瘦高，比正球体更具「晶体」而非「球」的轮廓 */
 const OCTA_SCALE_Y = 1.22;
@@ -64,8 +64,11 @@ const OCTA_SCALE_Y = 1.22;
 /** 内层反向晶核半径（与外层保持充足间隙，双层结构互不穿插） */
 const CORE_CRYSTAL_RADIUS = 1.05;
 
-/** 白炽内核球半径（呼吸峰值 1.12 倍仍远小于晶核，不会被吞没） */
-const NUCLEUS_RADIUS = 0.36;
+/** 八面体顶点数（6 个：±X / ±Y / ±Z 各一对） */
+const OCTA_VERTEX_COUNT = 6;
+
+/** 中心白炽星核球半径（紧凑锐利，收敛自旧版 0.36 的"大棉花球"） */
+const NUCLEUS_RADIUS = 0.16;
 
 /**
  * 三轴陀螺仪全息轨道环的几何参数。
@@ -94,11 +97,178 @@ const GYRO_RINGS: ReadonlyArray<{
   { key: 'gyro-c', radius: 1.48, tilt: [Math.PI / 2, Math.PI / 6, 0], spin: 0.62, thickness: 0.008 },
 ];
 
-/** 环绕控制平面缓慢上升旋转的微光星火数量 */
-const AMBIENT_SPARK_COUNT = 36;
+/* -------------------------------------------------------------------------- */
+/* 星云星座粒子群（Constellation Point Cloud）                                  */
+/* -------------------------------------------------------------------------- */
+
+/** 内部星座粒子数量（360 颗，单次 Draw Call 的 Points） */
+const CONSTELLATION_COUNT = 360;
+
+/**
+ * 八面体体积约束（L1 范数不等式）。
+ *
+ * 【几何原理】正八面体 |x|+|y|+|z| ≤ r 是它的解析定义。
+ * 外层八面体做了纵向拉伸（scaleY = 1.22），因此约束变为
+ *   |x| + |y / 1.22| + |z| ≤ r·0.9
+ * 其中 0.9 是刻意留出的内缩系数：粒子必须严格落在**面片之内**，
+ * 贴到棱线上会与 Edges 线框打架，看起来像"粒子漏出晶体"。
+ *
+ * 【密度】用 u = random^(1/3) 把半径分布偏向中心：
+ * 立方根采样让粒子在体积内均匀，再乘 0.75 幂次把重心进一步压向内芯，
+ * 形成"中心致密、边缘稀疏"的星云形态——这是星云而非均匀点阵的关键。
+ */
+const CONSTELLATION_RADIUS = OCTA_RADIUS * 0.9;
+
+/** 星云粒子的三种粒径档位（大 / 中 / 微），按序号循环 */
+const CONSTELLATION_SIZES: readonly number[] = [1.0, 0.62, 0.38];
+
+/** 内部神经晶格连线的节点对数（28 对 + 6 个外顶点连线） */
+const NEURAL_PAIR_COUNT = 28;
+
+/** 星云粒子/连线随整颗晶体自转的角速度（rad/s，与外壳同步但更慢） */
+const CONSTELLATION_SPIN_RATE = 0.18;
+
+/**
+ * 星云星座粒子的顶点着色器。
+ *
+ * 【职责】把三件事传给片元，并完成逐粒子的悬浮位移：
+ * 1. `aSize`   粒径档位 → 作为点尺寸的乘数（大/中/微三档）；
+ * 2. `aPhase`  独立相位 → 每颗粒子的闪烁与悬浮互不同步，避免整片同步脉动；
+ * 3. 悬浮位移  pos.y += sin(uTime · 0.8 + aPhase) · 0.035
+ *    振幅仅 3.5cm：晶体内部的星云应当是"呼吸"，不是"沸腾"。
+ *
+ * 【点尺寸公式】gl_PointSize = aSize · uScale · (300 / -mvPosition.z)
+ * 这是 three 内置 pointsMaterial 的标准透视缩放式，改成手写后
+ * 可以逐粒子调制粒径（内置材质只有全局 size）。
+ */
+const CONSTELLATION_VERTEX_SHADER = `
+attribute float aSize;
+attribute float aPhase;
+
+uniform float uTime;
+uniform float uScale;
+
+varying float vPhase;
+varying float vSize;
+
+void main() {
+  vPhase = aPhase;
+  vSize = aSize;
+
+  vec3 displaced = position;
+  displaced.y += sin(uTime * 0.8 + aPhase) * 0.035;
+
+  vec4 mvPosition = modelViewMatrix * vec4(displaced, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  gl_PointSize = aSize * uScale * (300.0 / max(0.001, -mvPosition.z));
+}
+`;
+
+/**
+ * 星云星座粒子的片元着色器 —— 圆形径向高斯星芒点。
+ *
+ * 【为什么必须手写】Points 默认渲染的是**方形像素块**，放大会露出硬边方块，
+ * 一眼假。用 `gl_PointCoord`（点内归一化坐标 [0,1]²）计算到中心的距离，
+ * 再做径向高斯衰减，才能得到圆形柔光的星点。
+ *
+ * 【三层色阶】
+ *   d < 0.22          → 炽白 #ffffff（核心）
+ *   0.22 ≤ d < 0.55   → 电光青 #38bdf8（内圈）
+ *   d ≥ 0.55          → 深海蓝 #0284c7（外圈，边缘透明）
+ * 三档之间用 smoothstep 平滑过渡，且 alpha 在 d → 1 时归零，
+ * 因此点的边界完全消失，只有中心的光。
+ *
+ * 【闪烁】`flicker = 0.62 + 0.38·sin(uTime·2.4 + vPhase)`：
+ * 每颗粒子有自己的相位，整片星云呈现细密的明灭，而不是统一呼吸。
+ */
+const CONSTELLATION_FRAGMENT_SHADER = `
+uniform float uTime;
+uniform float uOpacity;
+
+varying float vPhase;
+varying float vSize;
+
+void main() {
+  vec2 centered = gl_PointCoord - vec2(0.5);
+  float d = length(centered) * 2.0;
+  if (d > 1.0) discard;
+
+  float core = 1.0 - smoothstep(0.0, 0.22, d);
+  float mid = 1.0 - smoothstep(0.18, 0.55, d);
+  float outer = 1.0 - smoothstep(0.5, 1.0, d);
+
+  vec3 color = vec3(0.011, 0.518, 0.780);          /* #0284c7 外圈 */
+  color = mix(color, vec3(0.220, 0.741, 0.973), mid); /* #38bdf8 内圈 */
+  color = mix(color, vec3(1.0, 1.0, 1.0), core);    /* #ffffff 核心 */
+
+  float flicker = 0.62 + 0.38 * sin(uTime * 2.4 + vPhase);
+  float alpha = (core * 0.95 + mid * 0.55 + outer * 0.25) * flicker * uOpacity;
+  alpha *= 1.0 - smoothstep(0.85, 1.0, d);
+
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+
+/* -------------------------------------------------------------------------- */
+/* 垂直贯穿能量光柱（Vertical Energy Pillar）                                    */
+/* -------------------------------------------------------------------------- */
+
+/** 光柱宽度（直径）与总高度：从地面雷达中心 −2.48 直达高空 +3.72 */
+const PILLAR_WIDTH = 0.26;
+const PILLAR_BOTTOM_Y = -2.48;
+const PILLAR_TOP_Y = 3.72;
+const PILLAR_HEIGHT = PILLAR_TOP_Y - PILLAR_BOTTOM_Y;
+const PILLAR_CENTER_Y = (PILLAR_TOP_Y + PILLAR_BOTTOM_Y) / 2;
+
+/**
+ * 垂直光柱的着色器（顶点）。
+ *
+ * 传递平面 UV：`vUv.y = 0` 为底部、`= 1` 为顶部，用于纵向渐变；
+ * `vUv.x` 用于横向衰减。
+ */
+const PILLAR_VERTEX_SHADER = `
+varying vec2 vUv;
+
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+/**
+ * 垂直光柱的着色器（片元）。
+ *
+ * 【核心数学】两个方向上的指数衰减相乘：
+ *   横向：`lx = 1 - abs(vUv.x - 0.5) * 2` → 中心 1、边缘 0，取 pow(lx, 2.2)
+ *   纵向：`ly = sin(vUv.y · π)^0.65` → 两端趋 0、中段最亮
+ * alpha = 横向 · 纵向 · uPulse
+ *
+ * 【为何纵向用 sin(π·y) 而非线性】线性渐变会让光柱在顶端/底端"截断"，
+ * 出现一条硬边；sin 包络两端自然归零，光柱是"淡入淡出"的。
+ * 0.65 次幂把峰值段拉宽，让中段（穿过晶核的区域）保持明亮。
+ */
+const PILLAR_FRAGMENT_SHADER = `
+uniform float uPulse;
+uniform vec3 uColor;
+
+varying vec2 vUv;
+
+void main() {
+  float lx = 1.0 - abs(vUv.x - 0.5) * 2.0;
+  float lateral = pow(max(0.0, lx), 2.2);
+  float vertical = pow(max(0.0, sin(vUv.y * 3.14159265)), 0.65);
+
+  float alpha = lateral * vertical * uPulse * 0.9;
+  vec3 color = mix(uColor, vec3(1.0, 1.0, 1.0), lateral * 0.55);
+  gl_FragColor = vec4(color, alpha);
+}
+`;
 
 /** 星火环绕半径（控制平面外围能量场） */
 const AMBIENT_SPARK_RADIUS = 2.2;
+
+/** 环绕控制平面缓慢上升旋转的微光星火数量 */
+const AMBIENT_SPARK_COUNT = 36;
 
 /** 星火整体环绕角速度（rad/s，约 47 秒/圈，极缓慢以免抢注意力） */
 const AMBIENT_SPARK_SPIN_RATE = 0.135;
@@ -174,6 +344,7 @@ void main() {
 
 /** 外层正向自转角速度（rad/s）：约 25 秒/圈，从容的全局扫描节奏 */
 const OUTER_SPIN_RATE = 0.25;
+
 
 /** 内层反向自转角速度（rad/s）：与外层不同速比，产生持续变化的视差层次 */
 const INNER_SPIN_RATE = -0.38;
@@ -293,11 +464,7 @@ const RING_TICKS: ReadonlyArray<{
  *   世界 Y = 2.5 + (−2.42 + 0.14) = **0.22**（略高于地面 y=0.08 的刻度环）
  *   世界 Z = 2.35 + 0.45 = **2.80**（朝相机侧探出，在刻度环正前方）
  */
-const LABEL_POSITION: readonly [number, number, number] = [
-  0,
-  RING_LOCAL_Y + 0.14,
-  RING_OUTER_RADIUS + 0.45,
-];
+const LABEL_POSITION: readonly [number, number, number] = [0, -2.28, 2.45];
 
 /* ========================================================================== */
 /* MasterNode3D 主体                                                           */
@@ -345,6 +512,16 @@ export default function MasterNode3D() {
   const gyroRefs = useRef<Array<THREE.Mesh | null>>([]);
   gyroRefs.current.length = GYRO_RINGS.length;
 
+  /** 八面体 6 顶点星芒锚点实例网格 ref */
+  const vertexAnchorRef = useRef<THREE.InstancedMesh>(null);
+
+  /** 星云星座粒子 Points ref */
+  const constellationRef = useRef<THREE.Points>(null);
+  /** 内部神经晶格连线 ref */
+  const neuralRef = useRef<THREE.LineSegments>(null);
+  /** 垂直贯穿能量光柱（两片正交平面的父 group）ref */
+  const pillarRef = useRef<THREE.Group>(null);
+
   /** 环绕星火 Points ref */
   const sparkRef = useRef<THREE.Points>(null);
 
@@ -373,12 +550,189 @@ export default function MasterNode3D() {
   /**
    * 外层晶格罩（Octahedron Cage）ref。
    *
-   * 【为何要第二层八面体】只有一层壳 + 一层核时，转动看起来像"一个东西在转"；
-   * 参考图二的能量核心之所以"耀眼"，是因为**多层反向旋转的棱线**相互穿插，
-   * 产生持续的视差与摩尔纹——这是晶体感的关键，也是静态几何给不了的。
-   * 罩体只画棱线（表面 opacity 0），因此不遮挡内部晶核。
+   * 【为何要第二层】只有一层壳 + 一层核时，转动像"一个东西在转"；
+   * 参考图的能量核心之所以"耀眼"，是因为**多层反向旋转的棱线**相互穿插，
+   * 产生持续的视差与摩尔纹。罩体只画棱线（表面 opacity 0），不遮挡内部。
    */
   const cageRef = useRef<THREE.Mesh>(null);
+
+  /* ---------------------------------------------------------------------- */
+  /* 星云星座粒子群 / 神经晶格 / 垂直光柱 —— 数据与 uniforms                    */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * 星云星座粒子的 uniforms。
+   *
+   * uTime：驱动悬浮与闪烁（useFrame 原地写）；
+   * uScale：点尺寸整体缩放（DPR/相机距离的兜底调节）；
+   * uOpacity：整片星云的透明度。
+   */
+  const constellationUniforms = useMemo(
+    (): Record<string, THREE.IUniform> => ({
+      uTime: { value: 0 },
+      uScale: { value: 1 },
+      uOpacity: { value: 0.92 },
+    }),
+    [],
+  );
+
+  /**
+   * 星云粒子几何 —— 360 颗严格约束在八面体内部的确定性点云。
+   *
+   * 【为何必须是确定性】若用 Math.random()，每次挂载/热更新都会得到不同星图，
+   * 破坏"同一颗晶体"的稳定观感，也让截图/断言无法复现。
+   * 这里用固定种子的线性同余发生器（LCG）：
+   *   seed = (seed · 1664525 + 1013904223) mod 2^32
+   * 序列完全可复现，且分布足够随机。
+   *
+   * 【正八面体约束】取三分量在 [-1,1] 的均匀样本，若满足
+   *   |x| + |y / OCTA_SCALE_Y| + |z| ≤ CONSTELLATION_RADIUS
+   * 则收下；否则整体缩放将该点投影回八面体内部。
+   * 这种"拒绝采样 + 投影"既保证严格在内，又不会在棱边堆积。
+   *
+   * 【密度向内集中】最后把每个点乘 0.75 次幂的径向压缩系数
+   * （见下面 radiusScale），让中心致密、边缘稀疏 → 真星云形态。
+   */
+  const constellationGeometry = useMemo((): THREE.BufferGeometry => {
+    const positions = new Float32Array(CONSTELLATION_COUNT * 3);
+    const sizes = new Float32Array(CONSTELLATION_COUNT);
+    const phases = new Float32Array(CONSTELLATION_COUNT);
+
+    let seed = 20240816;
+    const nextRandom = (): number => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+
+    for (let i = 0; i < CONSTELLATION_COUNT; i++) {
+      /* 采样三分量并投影回八面体内部 */
+      let x = nextRandom() * 2 - 1;
+      let y = nextRandom() * 2 - 1;
+      let z = nextRandom() * 2 - 1;
+      const l1 = Math.abs(x) + Math.abs(y / OCTA_SCALE_Y) + Math.abs(z);
+      if (l1 > 1e-4) {
+        /* 把 L1 范数归一化到 [0.15, 1] 的球壳内：0.15 避免全部堆在原点 */
+        const target = 0.15 + nextRandom() * 0.85;
+        const scale = (target * CONSTELLATION_RADIUS) / l1;
+        x *= scale;
+        y *= scale;
+        z *= scale;
+      }
+
+      /* 径向压缩：u^0.75 让中心更密（星云形态） */
+      const norm = Math.sqrt(x * x + y * y + z * z);
+      if (norm > 1e-4) {
+        const compressed = Math.pow(norm / CONSTELLATION_RADIUS, 0.75) * CONSTELLATION_RADIUS;
+        const k = compressed / norm;
+        x *= k;
+        y *= k;
+        z *= k;
+      }
+
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = y;
+      positions[i * 3 + 2] = z;
+      sizes[i] = CONSTELLATION_SIZES[i % CONSTELLATION_SIZES.length];
+      phases[i] = nextRandom() * Math.PI * 2;
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+    geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+    return geometry;
+  }, []);
+
+  /**
+   * 内部神经晶格连线几何 —— 28 对关键节点 + 6 个外顶点。
+   *
+   * 【设计意图】参考图里晶核内部不是散点，而是**点与点之间还有细线相连**，
+   * 像星座/神经元。没有连线时 360 颗粒子只是"发光的灰尘"；
+   * 有了连线，它们才组成一个"有结构的星系"。
+   *
+   * 【实现】从点云里按固定步长挑 28 对（保证跨区域、不扎堆），
+   * 再把八面体 6 个顶点各连一条到点云中相邻的节点。
+   * 全部写入一个 LineSegments 几何 → 1 次 Draw Call。
+   */
+  const neuralGeometry = useMemo((): THREE.BufferGeometry => {
+    const source = constellationGeometry.getAttribute('position') as THREE.BufferAttribute;
+    const vertices: number[] = [];
+
+    /* 28 对内部连线：用互质步长跳跃选取，避免连线集中在同一簇 */
+    for (let p = 0; p < NEURAL_PAIR_COUNT; p++) {
+      const a = (p * 37) % CONSTELLATION_COUNT;
+      const b = (p * 91 + 13) % CONSTELLATION_COUNT;
+      if (a === b) continue;
+      vertices.push(source.getX(a), source.getY(a), source.getZ(a));
+      vertices.push(source.getX(b), source.getY(b), source.getZ(b));
+    }
+
+    /* 6 个外顶点 → 点云节点的辐条 */
+    const anchors: ReadonlyArray<readonly [number, number]> = [
+      [CONSTELLATION_RADIUS, 0],
+      [-CONSTELLATION_RADIUS, 0],
+      [0, CONSTELLATION_RADIUS * OCTA_SCALE_Y],
+      [0, -CONSTELLATION_RADIUS * OCTA_SCALE_Y],
+      [0, 0],
+      [0, 0],
+    ];
+    for (let a = 0; a < anchors.length; a++) {
+      const target = (a * 59) % CONSTELLATION_COUNT;
+      const ax = a < 2 ? anchors[a][0] : 0;
+      const ay = a >= 2 && a < 4 ? anchors[a][1] : 0;
+      const az = a >= 4 ? (a === 4 ? CONSTELLATION_RADIUS : -CONSTELLATION_RADIUS) : 0;
+      vertices.push(ax, ay, az);
+      vertices.push(source.getX(target), source.getY(target), source.getZ(target));
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    return geometry;
+  }, [constellationGeometry]);
+
+  /** 垂直贯穿能量光柱的 uniforms */
+  const pillarUniforms = useMemo(
+    (): Record<string, THREE.IUniform> => ({
+      uPulse: { value: 1 },
+      uColor: { value: new THREE.Color('#38bdf8') },
+    }),
+    [],
+  );
+
+  /**
+   * 八面体 6 顶点星芒锚点的实例矩阵（模块级常量推导，挂载时写一次）。
+   *
+   * 顶点位置：±X、±Y（按 OCTA_SCALE_Y 拉伸）、±Z。
+   * 用 Object3D 复合矩阵再 clone——创建期一次，不在 useFrame 内。
+   */
+  const vertexAnchorMatrices = useMemo((): ReadonlyArray<THREE.Matrix4> => {
+    const list: THREE.Matrix4[] = [];
+    const temp = new THREE.Object3D();
+    const positions: ReadonlyArray<readonly [number, number, number]> = [
+      [OCTA_RADIUS, 0, 0],
+      [-OCTA_RADIUS, 0, 0],
+      [0, OCTA_RADIUS * OCTA_SCALE_Y, 0],
+      [0, -OCTA_RADIUS * OCTA_SCALE_Y, 0],
+      [0, 0, OCTA_RADIUS],
+      [0, 0, -OCTA_RADIUS],
+    ];
+    for (const p of positions) {
+      temp.position.set(p[0], p[1], p[2]);
+      temp.updateMatrix();
+      list.push(temp.matrix.clone());
+    }
+    return list;
+  }, []);
+
+  /** 写入顶点星芒实例矩阵（挂载一次） */
+  useEffect((): void => {
+    const mesh = vertexAnchorRef.current;
+    if (mesh === null) return;
+    for (let i = 0; i < vertexAnchorMatrices.length; i++) {
+      mesh.setMatrixAt(i, vertexAnchorMatrices[i]);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [vertexAnchorMatrices]);
 
   const isSelected = selectedEntityId === MASTER_ENTITY_ID;
   const emphasized = isSelected || hovered;
@@ -401,6 +755,23 @@ export default function MasterNode3D() {
    */
   useFrame((state): void => {
     const t = state.clock.getElapsedTime();
+
+    /** 星云粒子与光柱的时间/脉动驱动（原地写 uniform，零分配） */
+    constellationUniforms.uTime.value = t;
+    pillarUniforms.uPulse.value = 1 + 0.22 * Math.sin(t * 1.7);
+
+    /* 星云整体随晶体缓慢自转（比外壳更慢，形成内外差速观感） */
+    if (constellationRef.current !== null) {
+      constellationRef.current.rotation.y = t * CONSTELLATION_SPIN_RATE;
+    }
+    if (neuralRef.current !== null) {
+      neuralRef.current.rotation.y = t * CONSTELLATION_SPIN_RATE;
+    }
+
+    /* 垂直光柱：轻微旋转，让双平面交叉的辉光持续变化 */
+    if (pillarRef.current !== null) {
+      pillarRef.current.rotation.y = t * 0.22;
+    }
 
     /* 外层水晶壳：正向自转 + 正弦倾角摆动（调度扫描感） */
     if (outerRef.current !== null) {
@@ -479,21 +850,56 @@ export default function MasterNode3D() {
        */}
       <mesh ref={outerRef} scale={[1, OCTA_SCALE_Y, 1]}>
         <octahedronGeometry args={[OCTA_RADIUS, 0]} />
-        <meshStandardMaterial
-          color={GLOW_CYAN}
-          emissive={GLOW_CYAN}
-          emissiveIntensity={emphasized ? 0.9 : 0.55}
+        {/*
+         * 【通透暗晶外壳】opacity 0.025 + color #022c43（深海墨青）。
+         *
+         * 旧版是 opacity 0.12~0.22 的亮青加色面片——多层晶面叠加后亮度
+         * 持续累积，配合 Bloom 就糊成一团浅蓝棉花糖。
+         * 新版把面片压到**几乎不可见**（0.025）并改用普通混合，
+         * 晶面只暗示体积边界，全部结构信息交给棱线与内部星云。
+         */}
+        <meshBasicMaterial
+          color="#022c43"
           transparent
-          opacity={emphasized ? 0.22 : 0.12}
-          metalness={0.05}
-          roughness={0.12}
-          toneMapped={false}
+          opacity={emphasized ? 0.045 : 0.025}
           side={THREE.DoubleSide}
           depthWrite={false}
-          blending={THREE.AdditiveBlending}
+          toneMapped={false}
         />
-        <Edges scale={1.002} threshold={15} color={emphasized ? '#a5f3fc' : GLOW_CYAN} />
+        {/* 外层主棱线：亮白 #f0f9ff —— 整颗晶体最锐利的轮廓 */}
+        <Edges scale={1.002} threshold={15} color={emphasized ? '#ffffff' : '#f0f9ff'} />
+        {/* 内嵌青色副棱线：略内缩，与外层白棱构成"双线描边"的精密感 */}
+        <Edges scale={0.996} threshold={15} color="#38bdf8" />
       </mesh>
+
+      {/*
+       * ═══ 第 1b 层：八面体 6 个顶点的高光菱形星芒锚点 ═══
+       *
+       * 【为何需要】通透化之后，八面体尖端是两个面交汇的尖角，
+       * 在深空背景上容易"飞掉"（读者找不到轮廓终点）。
+       * 在 6 个顶点各钉一枚微型高光锚点，轮廓立刻被锚定，
+       * 同时产生参考图那种顶点迸光的精致感。
+       *
+       * 【几何】八面体顶点位于 (±r,0,0)/(0,±r,0)/(0,0,±r)；
+       * 外层施加 scaleY=1.22，故上下顶点需按同一比例缩放 Y。
+       * 单实例网格 → 6 个锚点仅 1 次 Draw Call。
+       */}
+      <instancedMesh
+        ref={vertexAnchorRef}
+        args={[undefined, undefined, OCTA_VERTEX_COUNT]}
+        frustumCulled={false}
+        raycast={(): void => undefined}
+      >
+        <octahedronGeometry args={[0.055, 0]} />
+        <meshBasicMaterial
+          color="#f0f9ff"
+          toneMapped={false}
+          transparent
+          opacity={0.95}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </instancedMesh>
 
       {/*
        * ═══ 第 1.5 层：外层旋转正八面体棱线晶格（Octahedron Cage）═══
@@ -513,25 +919,23 @@ export default function MasterNode3D() {
 
       {/*
        * ═══ 第 2 层：内层反向晶核 ═══
-       * opacity 0.22 + AdditiveBlending + depthWrite false：
-       * 只保留「内部还有一层结构在转动」的层次，由 <Edges> 给出清晰轮廓，
-       * 不再依赖实体表面（旧的 0.85 实心白块即「塑料感」来源）。
+       *
+       * 【本轮通透化】面片 opacity 0.22 → **0.04**：内层不再是"发光的面"，
+       * 而是略带体积暗示的暗面 + 亮青色线框（#22d3ee / 0.55）。
+       * 内外因此是「白棱外框 + 青棱内框」的几何套嵌，
+       * 而不是两块叠在一起发光的塑料。
        */}
       <mesh ref={coreRef}>
         <octahedronGeometry args={[CORE_CRYSTAL_RADIUS, 0]} />
-        <meshStandardMaterial
-          color={GLOW_ICE}
-          emissive={GLOW_PALE}
-          emissiveIntensity={1.4}
-          metalness={0.1}
-          roughness={0.15}
+        <meshBasicMaterial
+          color="#022c43"
           transparent
-          opacity={0.22}
-          toneMapped={false}
+          opacity={emphasized ? 0.07 : 0.04}
+          side={THREE.DoubleSide}
           depthWrite={false}
-          blending={THREE.AdditiveBlending}
+          toneMapped={false}
         />
-        <Edges threshold={15} color={GLOW_PALE} />
+        <Edges scale={1.002} threshold={15} color="#22d3ee" transparent opacity={0.55} />
       </mesh>
 
       {/*
@@ -655,8 +1059,106 @@ export default function MasterNode3D() {
        * 内层透明度压到 0.62：新版 shader 自带白炽核，
        * 若仍用 0.95 会与实体内核叠加过曝成一片纯白。
        */}
-      <GlowHalo3D color={GLOW_CYAN} scale={5.4} opacity={0.85} falloff={2.2} pulse pulsePeriod={3.4} />
-      <GlowHalo3D color={GLOW_ICE} scale={2.2} opacity={0.62} falloff={2.8} pulse pulsePeriod={2.1} />
+      {/* 旧的 scale 5.4 / opacity 0.85 大面积柔光已收敛，见下方星核辉光 */}
+
+      {/*
+       * ═══ 第 2b 层：内部星云星座粒子群（360 颗，单次 Draw Call）═══
+       *
+       * 【整颗晶体的灵魂】通透外壳之后，八面体内部必须有"内容"：
+       * 360 颗严格约束在八面体体积内的粒子，越靠中心越密，
+       * 由自定义 shader 绘制成圆形径向高斯星芒点（绝非方形像素块）。
+       *
+       * 【为何用 points 而非 InstancedMesh】星星是"光"不是"物"：
+       * Points + 自定义点精灵可逐粒子控制粒径与闪烁相位；
+       * InstancedMesh 画小球需要更多三角面，且没有 gl_PointCoord 的柔边。
+       */}
+      <points
+        ref={constellationRef}
+        geometry={constellationGeometry}
+        raycast={(): void => undefined}
+      >
+        <shaderMaterial
+          uniforms={constellationUniforms}
+          vertexShader={CONSTELLATION_VERTEX_SHADER}
+          fragmentShader={CONSTELLATION_FRAGMENT_SHADER}
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+        />
+      </points>
+
+      {/*
+       * ═══ 第 2c 层：内部神经晶格连线（28 对节点 + 6 顶点辐条）═══
+       *
+       * 【为何要连线】没有连线时 360 颗粒子只是"发光的灰尘"；
+       * 有了点与点的细线，它们才组成"有结构的星系"——
+       * 这正是参考图晶核内部繁复璀璨的星座纹理。
+       * WebGL 线宽上限为 1px，因此靠低透明度 + 加色叠加取胜。
+       */}
+      <lineSegments ref={neuralRef} geometry={neuralGeometry} raycast={(): void => undefined}>
+        <lineBasicMaterial
+          color="#38bdf8"
+          transparent
+          opacity={0.28}
+          toneMapped={false}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </lineSegments>
+
+      {/*
+       * ═══ 第 2d 层：垂直贯穿能量光柱 ═══
+       *
+       * 【形态】两片正交纵向平面（交叉成十字），宽 0.26、高 6.2，
+       * 从地面雷达中心 y=−2.48 一路向上穿透晶核直达高空 y=+3.72。
+       *
+       * 【为何交叉平面而非圆柱】圆柱从侧面看是一条实心柱；
+       * 交叉平面在任意机位都能看到"光在平面上铺开"，
+       * 且着色器可按 UV 做横向指数衰减——圆柱做不到"中心亮、两侧透明"。
+       */}
+      <group ref={pillarRef} position={[0, PILLAR_CENTER_Y, 0]}>
+        {[0, 1].map((planeIndex): ReactNode => (
+          <mesh
+            key={`pillar-plane-${planeIndex}`}
+            rotation={[0, (planeIndex * Math.PI) / 2, 0]}
+            raycast={(): void => undefined}
+          >
+            <planeGeometry args={[PILLAR_WIDTH, PILLAR_HEIGHT]} />
+            <shaderMaterial
+              uniforms={pillarUniforms}
+              vertexShader={PILLAR_VERTEX_SHADER}
+              fragmentShader={PILLAR_FRAGMENT_SHADER}
+              transparent
+              depthWrite={false}
+              side={THREE.DoubleSide}
+              blending={THREE.AdditiveBlending}
+              toneMapped={false}
+            />
+          </mesh>
+        ))}
+      </group>
+
+      {/*
+       * ═══ 程序化星核辉光（本轮收敛）═══
+       *
+       * 旧配置 scale 5.4 / opacity 0.85 的大面积柔光，叠在八面体上再经 Bloom
+       * 放大，整颗晶体被糊成浅蓝棉花糖。现在只保留一枚紧凑锐利的星核辉光
+       * （2.15 / 0.62）：它的职责是给中心白炽点一层薄光晕，而非覆盖整颗晶体。
+       */}
+      <GlowHalo3D color={GLOW_CYAN} scale={2.15} opacity={0.62} falloff={2.6} pulse pulsePeriod={2.6} />
+
+      {/*
+       * ═══ 中心紧凑高光星核点（0.16 纯白球）═══
+       *
+       * 很小但极亮：它是整颗晶体的"瞳孔"。
+       * 与等离子 shader、星核辉光合成「白点 → 青晕 → 暗晶外壳」三级亮度，
+       * 而不是旧版那种"整块都在发光"的均质白团。
+       */}
+      <mesh raycast={(): void => undefined}>
+        <sphereGeometry args={[NUCLEUS_RADIUS, 24, 24]} />
+        <meshBasicMaterial color="#ffffff" toneMapped={false} />
+      </mesh>
 
       {/* ---- 底部刻度全息圆环：双环轮廓 + 24 径向刻度齿（贴地投影，缓慢自转）。
          【几何推导】ringGroupRef 只承担绕世界 Y 的慢转（刻度扫过 = 巡检隐喻）；
@@ -721,11 +1223,24 @@ export default function MasterNode3D() {
         zIndexRange={[10, 0]}
         className="pointer-events-none"
       >
-        <div className="flex flex-col items-center gap-1 whitespace-nowrap px-3 py-1.5 font-mono">
+        <div className="flex flex-col items-center gap-1 whitespace-nowrap border border-cyan-400/35 bg-slate-950/80 px-3 py-1 font-mono backdrop-blur-md">
           {/*
-           * ── 上沿：刻度线 + 系统标识 ──
-           * 由"两条短横线"升级为**发光刻度线**：中间密、两侧疏，
-           * 像仪器上的标尺刻度，比单纯的装饰横线更有"仪表"语义。
+           * ── 左右对称水平发光翼线 ──
+           * 从标题两侧向外延伸的细横线，是 HUD 铭牌的"翼展"：
+           * 它把孤立的文字锚进视野，暗示这是一块被标定的系统面板。
+           */}
+          <span
+            aria-hidden
+            className="block h-px w-full"
+            style={{
+              background:
+                'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.85) 30%, rgba(165,243,252,0.95) 50%, rgba(34,211,238,0.85) 70%, transparent 100%)',
+            }}
+          />
+          {/*
+           * ── 系统标识行 ──
+           * 左侧七道发光刻度（中间高），后接 SYS.CORE 标识，
+           * 像仪器面板上的量程标记。
            */}
           <span className="flex items-center gap-1 text-[8px] uppercase tracking-[0.32em] text-cyan-400/60">
             {[3, 2, 1, 0, 1, 2, 3].map((tier, index): ReactNode => (
@@ -741,8 +1256,7 @@ export default function MasterNode3D() {
 
           {/*
            * ── 主体：两侧光翼括弧 + 发光主标题 ──
-           * 两侧用对称斜切括弧把标题"夹"起来，是 HUD 里表达
-           * "该对象处于系统焦点"的标准手法。
+           * 对称斜切括弧把标题"夹"起来，是 HUD 表达"该对象处于系统焦点"的标准手法。
            */}
           <span className="flex items-center gap-2">
             <span
@@ -763,11 +1277,7 @@ export default function MasterNode3D() {
             />
           </span>
 
-          {/*
-           * ── 底部：缓慢呼吸的能量基线 ──
-           * 一条低透明度青色渐变横线，用 CSS 动画做 2.8s 呼吸，
-           * 让铭牌"活着"又不抢标题。宽度 100% 通过 wrapper 撑开。
-           */}
+          {/* ── 底部：缓慢呼吸的能量基线 ── */}
           <span
             aria-hidden
             className="mt-0.5 block h-px w-full animate-pulse"

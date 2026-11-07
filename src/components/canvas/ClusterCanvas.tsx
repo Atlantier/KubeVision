@@ -584,11 +584,15 @@ export default function ClusterCanvas() {
          * 缺少"光溢出到邻近像素"的物理现象——这正是图五那种电影感的核心。
          * Bloom 把超过阈值的能量取样模糊后加回画面，光才真正"溢"出来。
          *
-         * 【参数依据】
-         * - luminanceThreshold 0.22：只让高亮发光体溢出，避免整片机架糊成光雾；
-         * - luminanceSmoothing 0.28：阈值边缘做柔和过渡，消灭硬切边界；
-         * - mipmapBlur + radius 0.72：多级 mip 模糊比高斯核更便宜，光晕更大更柔；
-         * - intensity 0.85：克制，过度会吃掉状态色语义（红/绿/琥珀要可分辨）。
+         * 【参数依据（本轮校准）】
+         * - luminanceThreshold **0.62**：旧值 0.22 太低，把八面体面片、
+         *   机柜顶盖这类"中等亮度"表面也纳入泛光，导致控制平面糊成一团
+         *   死白的棉花糖、机柜盖泛白雾。抬到 0.62 后只有真正高光
+         *   （星核顶点 / 能量束核心 / 星尘粒子）才溢出，泛光回归点状细腻；
+         * - luminanceSmoothing 0.24：阈值边缘柔和过渡，消灭硬切边界；
+         * - mipmapBlur + radius 0.56：光晕更紧、更克制，不吞掉细节；
+         * - intensity 0.55：既保住状态色语义（红/绿/琥珀可分辨），
+         *   又不会把暗部整体提亮成灰雾。
          *
          * 【Vignette】暗角 0.35 让视线自然收拢到画面中心的三环布局，
          * 这是参考图构图感的来源之一。
@@ -599,11 +603,11 @@ export default function ClusterCanvas() {
          */}
         {heavyRenderEnabled ? (<EffectComposer multisampling={0}>
           <Bloom
-            intensity={0.85}
-            luminanceThreshold={0.22}
-            luminanceSmoothing={0.28}
+            intensity={0.55}
+            luminanceThreshold={0.62}
+            luminanceSmoothing={0.24}
             mipmapBlur
-            radius={0.72}
+            radius={0.56}
           />
           <Vignette eskil={false} offset={0.18} darkness={0.35} />
         </EffectComposer>) : null}
