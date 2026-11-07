@@ -1,15 +1,29 @@
 'use client';
 
 /**
- * KubeVision AI 鈥?3D 閫変腑瀹炰綋绌洪棿閿佸畾鍏夌幆锛圫electionBeacon3D锛? *
- * 銆愯В鍐充粈涔堥棶棰樸€戝鏌ユ姤鍛?搂2.4 鎸囧嚭鐨勬牳蹇冪煭鏉匡細
- * 鐐瑰嚮 Worker 鏈烘灦鏃?WorkerRack3D 鏈夐潚鑹插懠鍚告弿杈逛笌搴曞骇鐜紝浣嗙偣鍑?*鍗曚釜 Pod**
- * 鎺ㄨ繎鐗瑰啓鍚庯紝PodInstancedMesh 鏍规湰涓嶈 selectedEntityId鈥斺€斿悓灞?4 涓浉閭绘Ы浣? * 鐨?Pod 鏂瑰潡鎸ゅ湪鐢婚潰涓績锛岀敤鎴峰畬鍏ㄥ垎涓嶆竻宸︿笂瑙掓帰閽堥潰鏉挎寚鐨勬槸鍝竴棰椼€? *
- * 銆愭柟妗堛€戞寕杞戒竴涓嫭绔嬬殑杞婚噺閿佸畾鏍囪锛? 涓嚎妗嗗寘鍥寸洅 + 1 涓棆杞埢搴︾幆锛夛紝
- * 璁㈤槄 selectedEntityId 瀹氫綅鍒板搴旀Ы浣嶅潗鏍囥€傝繖涓嶆槸銆岀粰 Pod 鍔犵壒鏁堛€嶏紝
- * 鑰屾槸**鍦ㄧ┖闂撮噷鐢讳竴涓噯鏄?*鈥斺€斾笌宸℃闈㈡澘褰㈡垚銆屾暟鎹?鈫?绌洪棿銆嶇殑闂幆鎸囪銆? *
- * 銆愭€ц兘濂戠害锛圓GENTS.md 绗?3 鏉★級銆? * - useFrame 鍐呴浂 useState銆侀浂 React 鏇存柊锛? * - 鎵€鏈?THREE 瀵硅薄鍦?useMemo 涓鍒嗛厤锛寀seFrame 鍙仛鍘熷湴 .set() / 璧嬪€硷紱
- * - 鍛煎惛涓庤嚜杞敱 useFrame 鐩存帴鍐?ref.current.rotation / scale锛? *   涓嶈Е鍙戜换浣曠粍浠堕噸娓叉煋銆? */
+ * KubeVision AI — 选中实体的空间锁定标记（SelectionBeacon3D）
+ *
+ * 【解决什么问题】审查报告 §2.4 指出的核心短板：点击 Worker 机架时
+ * WorkerRack3D 有青色呼吸描边与底座环，但点击**单个 Pod** 推近特写后，
+ * PodInstancedMesh 根本不读 selectedEntityId——同层 4 个相邻槽位的 Pod
+ * 方块挤在画面中心，用户完全分不清左上角探针面板指的是哪一颗。
+ *
+ * 【方案】挂载一个独立的轻量锁定标记，订阅 selectedEntityId 定位到对应槽位。
+ * 这不是「给 Pod 加特效」，而是在空间里画一个**准星**——
+ * 与巡检面板形成「数据 ↔ 空间」的闭环指认。
+ *
+ * 【为何 Pod 本身已经很精致，标记必须克制】
+ * Pod 现由四层光学着色器渲染（霓虹棱边 + 暗色凹槽 + 纵向渐变 + 菲涅尔），
+ * 表面本身已具备密集的视觉信息。若锁定标记也用粗线、高不透明度，
+ * 会直接压住刀片纹理，反而让用户看不清被选中的东西长什么样。
+ * 因此本轮把标记统一改为**细线 + 半透明 + #38bdf8（天蓝）**：
+ * 天蓝与 Pod 的青翠/琥珀/绯红三态色都能拉开色相差，不会被误认成状态色。
+ *
+ * 【性能契约（AGENTS.md 第 3 条）】
+ * - useFrame 内零 useState、零 React 更新；
+ * - 所有 THREE 几何体在 useMemo 中预分配，useFrame 只做原地 .set() / 赋值；
+ * - 呼吸与自转由 useFrame 直接写 ref.current.rotation / scale，不触发重渲染。
+ */
 
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
@@ -21,51 +35,129 @@ import type { PodEntity } from '@/types/cluster';
 import type { SelectedEntityType } from '@/types/store';
 
 /* ========================================================================== */
-/* 甯搁噺                                                                       */
-/* ========================================================================== */
-
-/** 閿佸畾鐜崐寰勶紙鐣ュぇ浜?Pod 鐩掑瓙锛屽舰鎴愬寘鍥存劅锛?*/
-const RING_RADIUS = 0.34;
-
-/** 閿佸畾鐜嚎妗嗙粏鍒嗭紙8 杈瑰舰鍦ㄩ€忚涓嬫棦鏈夌鎶€鎰熷張鐪佷笁瑙掑舰锛?*/
-const RING_SEGMENTS = 8;
-
-/** 鍛煎惛鍛ㄦ湡锛堢锛夆€斺€斾笌鏈烘灦閫変腑鎬佺殑鍛煎惛鑺傚淇濇寔涓€鑷?*/
-const BREATH_PERIOD_S = 1.6;
-
-/** 鍛煎惛缂╂斁骞呭害锛埪?%锛屽厠鍒朵笉鍠у澶轰富锛?*/
-const BREATH_AMPLITUDE = 0.08;
-
-/** 鑷浆閫熷害锛堝姬搴?绉掞級鈥斺€旂紦鎱㈡壂杩囷紝鏆楃ず"姝ｅ湪閿佸畾" */
-const SPIN_SPEED = 0.9;
-
-/** 椤堕儴绔栫嚎楂樺害锛堜粠 Pod 椤堕儴鍚戜笂寤朵几鐨勬寚绀烘潌锛?*/
-const BEAM_HEIGHT = 0.34;
-
-/** 閿佸畾涓昏壊锛堜富棰橀潚锛屼笌鍏ㄥ眬閫変腑鎬佽涔変竴鑷达級 */
-const BEACON_COLOR = '#22d3ee';
-
-/* ========================================================================== */
-/* 缁勪欢涓讳綋                                                                    */
+/* 常量                                                                       */
 /* ========================================================================== */
 
 /**
- * SelectionBeacon3D 鈥斺€?閫変腑 Pod 鐨勭┖闂撮攣瀹氬厜鐜€? *
- * 銆愪负浣曞彧澶勭悊 Pod銆戞満鏋朵笌 Master 宸叉湁鑷繁鐨勯€変腑瑙嗚锛圵orkerRack3D 鐨? * 鎻忚竟 + 搴曞骇鐜€丮asterNode3D 鐨?emphasized 鐘舵€侊級锛岄噸澶嶅彔鍔犲弽鑰屾潅涔便€? * 鏈粍浠朵笓闂ㄨˉ Pod 杩欎竴灞傜殑缂哄け銆? *
- * 銆愭覆鏌撴潯浠躲€戜粎褰?selectedEntityType === 'pod' 涓旇兘鍦ㄥ揩鐓т腑鎵惧埌璇?Pod 鏃舵覆鏌撱€? */
+ * 锁定主色（天蓝 sky-400）。
+ *
+ * 【为何不用主题青 #22d3ee】Pod 的 Running 态是青翠 #10f5a0、选中机架是青 #22d3ee；
+ * 标记若也用青色系，用户无法区分「这个 Pod 是选中态」还是「这个 Pod 恰好是正常态」。
+ * #38bdf8 的色相更偏蓝，与三种状态色都保持可辨识的距离。
+ */
+const BEACON_COLOR = '#38bdf8';
+
+/** 线框包围盒相对 Pod 可视盒的外扩量（世界单位） */
+const BOX_PADDING = 0.1;
+
+/** 线框不透明度：低到不压住刀片纹理，又能看清轮廓 */
+const BOX_OPACITY = 0.55;
+
+/** 呼吸周期（秒）——与机架选中态的呼吸节奏保持一致 */
+const BREATH_PERIOD_S = 1.6;
+
+/** 呼吸缩放幅度（±5%，比早期版本的 8% 更克制） */
+const BREATH_AMPLITUDE = 0.05;
+
+/** 自转速度（弧度/秒）——缓慢扫过，暗示"正在锁定" */
+const SPIN_SPEED = 0.9;
+
+/* ---- 底部刻度环 ---- */
+const RING_RADIUS = 0.34;
+const RING_SEGMENTS = 8;
+const RING_OPACITY = 0.7;
+
+/* ---- 顶部指示杆 ---- */
+const BEAM_HEIGHT = 0.34;
+const BEAM_OPACITY = 0.45;
+
+/* ---- 四角短刻度线 ---- */
+
+/**
+ * 四角刻度线的长度与粗细（世界单位）。
+ *
+ * 【设计意图】早期版本只有包围盒+底环，锁定感偏"笼统"。
+ * 在包围盒的**四根竖棱**两端各加一小段外伸刻度，形成类似
+ * 「取景框对角标记」的精密观感——这是相机对焦框的经典语言，
+ * 既强化"锁定"语义，又因为短促纤细而完全不遮挡盒内的 Pod。
+ */
+const CORNER_TICK_LENGTH = 0.07;
+const CORNER_TICK_THICKNESS = 0.008;
+
+/**
+ * 四角刻度线的位置与朝向（模块级预计算，渲染期只做映射）。
+ *
+ * 【几何推导】包围盒半宽 = (POD_BOX_SIZE[0] + 2·BOX_PADDING) / 2，
+ * 半高同理由 POD_BOX_SIZE[1] 推出。四个角在 XZ 平面上呈 (±hx, ±hz) 分布，
+ * 每个角放置两根相互垂直的短杆（沿 +X 与 +Z 方向外伸），
+ * 用单位立方体缩放而非新建几何体——四个角共 8 根，全部复用同一个 boxGeometry。
+ */
+const HALF_W = (POD_BOX_SIZE[0] + BOX_PADDING * 2) / 2;
+const HALF_H = (POD_BOX_SIZE[1] + BOX_PADDING * 2) / 2;
+const HALF_D = (POD_BOX_SIZE[2] + BOX_PADDING * 2) / 2;
+
+/** 单根刻度杆的位姿（位置 + 沿哪个轴拉伸） */
+interface CornerTick {
+  readonly position: readonly [number, number, number];
+  readonly axis: 'x' | 'z';
+}
+
+/**
+ * 8 根四角刻度杆：4 个 XZ 角 × 2 个方向（沿 X 外伸、沿 Z 外伸），
+ * 均置于盒体上下棱的中点高度（此处取上棱，视觉上更靠近观察者默认俯视机位）。
+ *
+ * 顺序固定（先 4 个 X 向、再 4 个 Z 向），保证渲染次序稳定无闪烁。
+ */
+const CORNER_TICKS: readonly CornerTick[] = (() => {
+  const xs = [HALF_W, -HALF_W];
+  const zs = [HALF_D, -HALF_D];
+  const ticks: CornerTick[] = [];
+  /* 沿 X 外伸的 4 根：位于四角的 Z 边界上，从盒边向外延 CORNER_TICK_LENGTH/2 */
+  for (const x of xs) {
+    for (const z of zs) {
+      const dir = x > 0 ? 1 : -1;
+      ticks.push({ position: [x + (dir * CORNER_TICK_LENGTH) / 2, HALF_H, z], axis: 'x' });
+    }
+  }
+  /* 沿 Z 外伸的 4 根 */
+  for (const x of xs) {
+    for (const z of zs) {
+      const dir = z > 0 ? 1 : -1;
+      ticks.push({ position: [x, HALF_H, z + (dir * CORNER_TICK_LENGTH) / 2], axis: 'z' });
+    }
+  }
+  return ticks;
+})();
+
+/* ========================================================================== */
+/* 组件主体                                                                    */
+/* ========================================================================== */
+
+/**
+ * SelectionBeacon3D —— 选中 Pod 的空间锁定标记。
+ *
+ * 【为何只处理 Pod】机架与 Master 已有自己的选中视觉（WorkerRack3D 的
+ * 描边 + 底座环、MasterNode3D 的 emphasized 状态），重复叠加反而杂乱。
+ * 本组件专门补 Pod 这一层的缺失。
+ *
+ * 【渲染条件】仅当 selectedEntityType === 'pod' 且能在快照中找到该 Pod 时渲染。
+ */
 export default function SelectionBeacon3D(): React.ReactElement | null {
   const selectedEntityId = useClusterStore((s): string | null => s.selectedEntityId);
   const selectedEntityType = useClusterStore((s): SelectedEntityType | null => s.selectedEntityType);
   const pods = useClusterStore((s): readonly PodEntity[] => s.snapshotSummary.pods);
 
   /**
-   * 銆愬畾浣嶇洰鏍?Pod 骞惰В绠楀叾妲戒綅涓栫晫鍧愭爣銆?   *
-   * 銆愬叧閿細蹇呴』鍙犲姞 POD_SEAT_OFFSET_Y銆戞鍓嶇洿鎺ョ敤 transform.position 浣滀负
-   * 淇℃爣涓績锛屾紡鎺変簡娓叉煋鍣ㄤ负銆岃鏂瑰潡搴曢潰璐村悎闅旀澘銆嶈€屾柦鍔犵殑涓嬫矇鍋忕Щ
-   * 锛圥OD_SEAT_OFFSET_Y = 鍙鐩掗珮/2 鈭?濂戠害鐩掗珮/2锛屽綋鍓嶄负 鈭?.18锛夈€?   * 缁撴灉鏄€変腑 Pod 鏃跺懠鍚哥嚎妗嗘偓鍦ㄦ柟鍧楁涓婃柟绾?0.18 涓栫晫鍗曚綅澶勶紝
-   * 鑲夌溂鍙鐨勯敊浣嶁€斺€斿疄娴嬬‘璁ゅ悗淇銆?   *
-   * 渚濊禆鍙斁 selectedEntityId / selectedEntityType / pods 涓夎€咃紝
-   * 閬垮厤閬ユ祴楂橀瀛楁锛坈pu/mem锛夊彉鍖栬Е鍙戦噸绠椼€?   */
+   * 【定位目标 Pod 并解算其槽位世界坐标】
+   *
+   * 【关键：必须叠加 POD_SEAT_OFFSET_Y】transform.position 是**槽位中心**，
+   * 而渲染器为「让方块底面贴合隔板」又施加了下沉偏移
+   * （POD_SEAT_OFFSET_Y = 可视盒高/2 − 契约盒高/2，当前为 −0.18）。
+   * 若漏掉它，选中框会悬在方块正上方约 0.18 世界单位处，肉眼可见地错位。
+   *
+   * 依赖只放 selectedEntityId / selectedEntityType / pods 三者，
+   * 避免遥测高频字段（cpu/mem）变化触发重算。
+   */
   const anchor = useMemo((): { position: [number, number, number]; rotationY: number } | null => {
     if (selectedEntityType !== 'pod' || selectedEntityId === null) return null;
     const pod = pods.find((p): boolean => p.id === selectedEntityId);
@@ -82,66 +174,74 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
     };
   }, [selectedEntityType, selectedEntityId, pods]);
 
-  /* ---- 棰勫垎閰嶅姩鐢诲璞″紩鐢?---- */
+  /* ---- 预分配动画对象引用 ---- */
   const groupRef = useRef<THREE.Group>(null);
   const ringRef = useRef<THREE.Mesh>(null);
   const boxRef = useRef<THREE.LineSegments>(null);
 
   /**
-   * 銆愪慨澶嶏細鍑犱綍浣撳唴瀛樻硠婕忋€?   *
-   * 姝ゅ墠鍐欎綔 `<edgesGeometry args={[new THREE.BoxGeometry(0.42, 0.5, 0.42)]} />`
-   * 鈥斺€?`new THREE.BoxGeometry(...)` 浣嶄簬 JSX 娓叉煋浣撳唴锛屾瘡娆￠噸娓叉煋閮戒細
-   * 鍦ㄥ爢涓婂垱寤轰竴涓柊鐨?BoxGeometry锛屼笖鍏?.dispose() 浠庢湭琚皟鐢ㄣ€?   *
-   * 鏈粍浠惰闃?snapshotSummary.pods锛?Hz 蹇収娴侊級锛屽洜姝?*姣忕娉勬紡涓€涓?   * BoxGeometry**鈥斺€旈暱鏃堕棿杩愯浼氭寔缁疮绉?GPU 缂撳啿锛岃繚鍙?AGENTS.md 绗?3 鏉°€?   *
-   * 淇锛氬湪 useMemo 涓竴娆℃€у垱寤猴紙绌轰緷璧?鈫?缁勪欢鐢熷懡鍛ㄦ湡鍐呬粎涓€浠斤級锛?   * 骞跺湪鍗歌浇鏃舵樉寮?dispose锛圔oxGeometry 涓庣敱鍏舵淳鐢熺殑 EdgesGeometry 閮借锛夈€?   * 灏哄璺熼殢 POD_BOX_SIZE 澶栨墿 0.08锛岃鍖呭洿妗嗘伆濂藉寘浣忔柊灏哄鐨勬柟鍧椼€?   */
-  const { boxGeometry, edgesGeometry } = useMemo((): {
+   * 【几何体预分配 + 卸载释放】
+   *
+   * 历史缺陷：此前写作 `<edgesGeometry args={[new THREE.BoxGeometry(...)]} />`——
+   * `new` 位于 JSX 渲染体内，每次重渲染都会在堆上创建一个新 BoxGeometry，
+   * 且从不 dispose。本组件订阅 snapshotSummary.pods（1Hz 快照流），
+   * 因此**每秒泄漏一个 BoxGeometry**，长时间运行会持续累积 GPU 缓冲。
+   *
+   * 修复：在 useMemo 中一次性创建（空依赖 → 生命周期内仅一份），
+   * 并在卸载时显式 dispose（BoxGeometry 与由其派生的 EdgesGeometry 各自持有缓冲）。
+   * 尺寸跟随 POD_BOX_SIZE 外扩 BOX_PADDING，让包围框恰好包住方块。
+   */
+  const { boxGeometry, edgesGeometry, tickGeometry } = useMemo((): {
     boxGeometry: THREE.BoxGeometry;
     edgesGeometry: THREE.EdgesGeometry;
+    tickGeometry: THREE.BoxGeometry;
   } => {
-    const pad = 0.08;
     const box = new THREE.BoxGeometry(
-      POD_BOX_SIZE[0] + pad,
-      POD_BOX_SIZE[1] + pad,
-      POD_BOX_SIZE[2] + pad,
+      POD_BOX_SIZE[0] + BOX_PADDING * 2,
+      POD_BOX_SIZE[1] + BOX_PADDING * 2,
+      POD_BOX_SIZE[2] + BOX_PADDING * 2,
     );
-    return { boxGeometry: box, edgesGeometry: new THREE.EdgesGeometry(box) };
+    /* 四角刻度杆复用的单位立方体（8 根共享，靠 scale 拉伸成细杆） */
+    const tick = new THREE.BoxGeometry(1, 1, 1);
+    return { boxGeometry: box, edgesGeometry: new THREE.EdgesGeometry(box), tickGeometry: tick };
   }, []);
 
-  /* 鍗歌浇鏃堕噴鏀?GPU 璧勬簮锛圗dgesGeometry 涓庢簮 BoxGeometry 鍚勮嚜鎸佹湁缂撳啿锛?*/
+  /* 卸载时释放 GPU 资源（三个几何体各自持有缓冲，缺一即泄漏） */
   useEffect((): (() => void) => {
     return (): void => {
       edgesGeometry.dispose();
       boxGeometry.dispose();
+      tickGeometry.dispose();
     };
-  }, [boxGeometry, edgesGeometry]);
+  }, [boxGeometry, edgesGeometry, tickGeometry]);
 
   useFrame((state): void => {
     if (anchor === null) return;
 
-    /* 鐢ㄥ満鏅椂閽熼┍鍔ㄥ姩鐢伙細鍗曚竴鏃堕棿婧愶紝鏍囩椤靛垏鍥炴椂涓嶄細绱Н璺冲彉 */
+    /* 用场景时钟驱动动画：单一时间源，标签页切回时不会累积跳变 */
     const t = state.clock.elapsedTime;
 
-    /* ---- 鍛煎惛缂╂斁锛歴in 娉㈠湪 1卤AMPLITUDE 涔嬮棿寰€澶?---- */
+    /* ---- 呼吸缩放：sin 波在 1±AMPLITUDE 之间往复 ---- */
     const group = groupRef.current;
     if (group !== null) {
       const breath = 1 + Math.sin((t / BREATH_PERIOD_S) * Math.PI * 2) * BREATH_AMPLITUDE;
       group.scale.setScalar(breath);
     }
 
-    /* ---- 鍒诲害鐜嚜杞紙浠呮敼 rotation.y锛岄浂鍒嗛厤锛?---- */
+    /* ---- 刻度环自转（仅改 rotation.z，零分配） ---- */
     const ring = ringRef.current;
     if (ring !== null) {
       ring.rotation.z = t * SPIN_SPEED;
     }
 
-    /* ---- 绾挎鍖呭洿鐩掑仛杞诲井鍙嶅悜鑷浆锛屽埗閫?閿佸畾鎵弿"灞傛鎰?---- */
+    /* ---- 包围盒做轻微反向自转，制造"锁定扫描"的层次感 ---- */
     const box = boxRef.current;
     if (box !== null) {
       box.rotation.y = -t * SPIN_SPEED * 0.5;
     }
   });
 
-  /* 鏃?Pod 閫変腑 鈫?涓嶆覆鏌撲换浣曞満鏅妭鐐癸紙闆跺紑閿€锛?*/
+  /* 无 Pod 选中 → 不渲染任何场景节点（零开销） */
   if (anchor === null) return null;
 
   return (
@@ -149,31 +249,66 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
       ref={groupRef}
       position={anchor.position}
       rotation={[0, anchor.rotationY, 0]}
-      /* 閿佸畾鏍囪涓嶅弬涓庡皠绾挎嬀鍙栵紝閬垮厤閬尅鐪熷疄鐨?Pod 鐐瑰嚮 */
+      /* 锁定标记不参与射线拾取，避免遮挡真实的 Pod 点击 */
       raycast={(): void => undefined}
     >
       {/*
-       * 鍒诲害鐜細韬哄钩鍦?Pod 搴曢儴锛堢粫 X 杞?-90掳 骞抽摵 XZ 骞抽潰锛夛紝
-       * 鐢?8 杈瑰舰绾挎 + 绋€鐤忓埢搴︽劅琛ㄨ揪"鎵弿閿佸畾"銆?       */}
-      <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.46, 0]} raycast={(): void => undefined}>
+       * ---- 线框包围盒 ----
+       * EdgesGeometry 只保留 12 条棱，比实体半透明包围盒更"仪表化"，
+       * 三角形数个位数。不透明度压到 0.55 且用 lineBasicMaterial（不吃光照），
+       * 保证它只是一层薄薄的天蓝轮廓，绝不盖住 Pod 的刀片纹理。
+       */}
+      <lineSegments ref={boxRef} geometry={edgesGeometry} raycast={(): void => undefined}>
+        <lineBasicMaterial color={BEACON_COLOR} transparent opacity={BOX_OPACITY} toneMapped={false} />
+      </lineSegments>
+
+      {/*
+       * ---- 四角短刻度线（8 根，共享同一个单位立方体几何） ----
+       * 相机对焦框的经典语言：四角各一对短促外伸细杆。
+       * 全部位于盒体**上棱**高度，俯视机位下最贴近视线，且不与盒内的 Pod 重叠。
+       */}
+      {CORNER_TICKS.map((tick, index): React.ReactElement => {
+        const isX = tick.axis === 'x';
+        return (
+          <mesh
+            key={`tick-${index}`}
+            geometry={tickGeometry}
+            position={[tick.position[0], tick.position[1], tick.position[2]]}
+            scale={[
+              isX ? CORNER_TICK_LENGTH : CORNER_TICK_THICKNESS,
+              CORNER_TICK_THICKNESS,
+              isX ? CORNER_TICK_THICKNESS : CORNER_TICK_LENGTH,
+            ]}
+            raycast={(): void => undefined}
+          >
+            <meshBasicMaterial color={BEACON_COLOR} transparent opacity={BOX_OPACITY} toneMapped={false} />
+          </mesh>
+        );
+      })}
+
+      {/*
+       * 刻度环：躺平在 Pod 底部（绕 X 轴 −90° 平铺 XZ 平面），
+       * 用 8 边形线框表达"扫描锁定"。
+       */}
+      <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -HALF_H, 0]} raycast={(): void => undefined}>
         <ringGeometry args={[RING_RADIUS - 0.02, RING_RADIUS, RING_SEGMENTS]} />
         <meshBasicMaterial
           color={BEACON_COLOR}
           transparent
-          opacity={0.85}
+          opacity={RING_OPACITY}
           side={THREE.DoubleSide}
           toneMapped={false}
           depthWrite={false}
         />
       </mesh>
 
-      {/* 鍐呭湀锛氭洿灏忔洿娣★紝褰㈡垚鍙岀幆灞傛 */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.46, 0]} raycast={(): void => undefined}>
+      {/* 内圈：更小更淡，形成双环层次 */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -HALF_H, 0]} raycast={(): void => undefined}>
         <ringGeometry args={[RING_RADIUS * 0.55, RING_RADIUS * 0.62, RING_SEGMENTS]} />
         <meshBasicMaterial
           color={BEACON_COLOR}
           transparent
-          opacity={0.5}
+          opacity={0.35}
           side={THREE.DoubleSide}
           toneMapped={false}
           depthWrite={false}
@@ -181,20 +316,12 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
       </mesh>
 
       {/*
-       * 绾挎鍖呭洿鐩掞細EdgesGeometry 鍙繚鐣?12 鏉℃１锛屾瘮瀹炰綋鍗婇€忔槑鍖呭洿鐩掓洿
-       * "浠〃鍖?锛屼笖涓夎褰㈡暟涓綅鏁般€傚嚑浣曚綋宸蹭笂鎻愬埌 useMemo 骞堕厤 dispose锛?       * 涓嶅啀闅忔瘡绉掑揩鐓ч噸娓叉煋娉勬紡銆?       */}
-      <lineSegments ref={boxRef} geometry={edgesGeometry} raycast={(): void => undefined}>
-        <lineBasicMaterial color={BEACON_COLOR} transparent opacity={0.75} toneMapped={false} />
-      </lineSegments>
-
-      {/*
-       * 椤堕儴鎸囩ず鏉嗭細浠庢櫠浣撻《闈㈠悜涓婄殑鐭粏鏉嗭紝鍦ㄤ刊瑙嗚涓嬪府鍔╁畾浣嶃€?       *
-       * 銆愬昂瀵搁殢鏅跺潡閲嶆爣瀹氥€戝師涓?y=0.5 / 楂?0.42锛堥《绔埌 0.71锛夛紝
-       * 閭ｆ槸鎸?0.38 楂樼殑鏃ф柟鍧楄璁＄殑锛涙湰杞柟鍧楅珮 0.56 鍚庯紝
-       * 鎸囩ず鏉嗙浉瀵逛綋閲忔樉寰楄繃闀跨獊鍏€锛堢壒鍐欐埅鍥惧疄娴嬶級銆傜幇鏀逛负浠庢櫠浣撻《闈?       * (0.56/2 = 0.28) 鍐嶅悜涓?0.34锛岄《绔?0.45锛屾伆濂芥帰鍑烘柟鍧椾竴涓ご銆?       */}
-      <mesh position={[0, POD_BOX_SIZE[1] / 2 + BEAM_HEIGHT / 2, 0]} raycast={(): void => undefined}>
-        <boxGeometry args={[0.012, BEAM_HEIGHT, 0.012]} />
-        <meshBasicMaterial color={BEACON_COLOR} transparent opacity={0.6} toneMapped={false} />
+       * 顶部指示杆：从盒顶向上的短细杆，在俯视角下帮助定位。
+       * 顶端恰探出一个"头"的高度（HALF_H + BEAM_HEIGHT），不喧宾夺主。
+       */}
+      <mesh position={[0, HALF_H + BEAM_HEIGHT / 2, 0]} raycast={(): void => undefined}>
+        <boxGeometry args={[0.008, BEAM_HEIGHT, 0.008]} />
+        <meshBasicMaterial color={BEACON_COLOR} transparent opacity={BEAM_OPACITY} toneMapped={false} />
       </mesh>
     </group>
   );
