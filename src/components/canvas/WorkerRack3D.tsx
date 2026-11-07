@@ -628,9 +628,18 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        * 缺少机柜应有的骨架重量。四角立柱补上纵向承重结构，
        * 透过磨砂外壳可见，立刻有了「重工机柜」的实体感。
        * 高度取满机架体高（0 → RACK_BODY_SIZE[1]），中心在 RACK_BODY_CENTER_Y。
+       *
+       * 【raycast 关闭】立柱是纯结构装饰，不承担选中职责：关闭后射线会
+       * 直接穿透到后方的装甲面（由 handleSelect + isPodHitInRack 接管选中），
+       * 或在 Pod 位于柱体视线后方时直达 Pod——两处结果都正确，
+       * 且避免柱体在命中列表里多插一层、干扰让位判定。
        */}
       {PILLAR_POSITIONS.map((pillar, index): ReactNode => (
-        <mesh key={`pillar-${index}`} position={[pillar.x, RACK_BODY_CENTER_Y, pillar.z]}>
+        <mesh
+          key={`pillar-${index}`}
+          position={[pillar.x, RACK_BODY_CENTER_Y, pillar.z]}
+          raycast={noRaycast}
+        >
           <boxGeometry args={[PILLAR_SIZE, RACK_BODY_SIZE[1], PILLAR_SIZE]} />
           <meshStandardMaterial
             color={PILLAR_COLOR}
@@ -659,9 +668,12 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
 
       {/* ---- 4 层水平服务器托盘隔板（Y 坐标与 Pod 槽位层位同源，推导见常量 JSDoc）。
          metalness 0.55 → 0.2：让腔体点光能以漫反射真实照亮层板，
-         否则金属度过高会把光全部转成环境反射而再次吞光。 ---- */}
+         否则金属度过高会把光全部转成环境反射而再次吞光。
+         【raycast 关闭】层板横贯整个腔体，是「挡住 Pod 拾取」风险最高的部件：
+         斜视时射线常先命中 Pod 下方的隔板边缘。关闭后 Pod 直接被拾取，
+         不必再依赖让位协议从命中列表里"翻"出 Pod。 ---- */}
       {TIER_DIVIDER_YS.map((tierY, index): ReactNode => (
-        <mesh key={`divider-${index}`} position={[0, tierY, 0]}>
+        <mesh key={`divider-${index}`} position={[0, tierY, 0]} raycast={noRaycast}>
           <boxGeometry args={[RACK_BODY_SIZE[0] - 0.16, 0.055, RACK_BODY_SIZE[2] - 0.14]} />
           <meshStandardMaterial
             color="#1e293b"
@@ -723,8 +735,13 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        * 尺寸比下层每侧内缩 0.18，形成「先宽后窄」的阶梯轮廓；
        * 棱线改用主题青（#22d3ee）而非暗蓝——它是整座机柜的最高点，
        * 用青色勾勒让顶部在俯瞰机位下能从深色背景里跳出来。
+       *
+       * 【raycast 关闭】顶冠压在下层顶盖正上方。若保留拾取，俯瞰点击机柜顶部
+       * 会先命中顶冠（无 onClick → 冒泡到根 group），而顶盖自身的 handleSelect
+       * 反而被跳过；关闭后射线直达顶盖，由 handleSelect 走完整让位判定，
+       * 选中语义更明确、也少一次冒泡。
        */}
-      <mesh position={[0, CROWN_Y, 0]}>
+      <mesh position={[0, CROWN_Y, 0]} raycast={noRaycast}>
         <boxGeometry args={[CROWN_WIDTH, CROWN_HEIGHT, CROWN_DEPTH]} />
         <meshStandardMaterial
           color={HARDWARE_COLOR}
@@ -754,8 +771,10 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         />
       </mesh>
 
-      {/* ---- 两侧垂直霓虹导光柱（useFrame 平滑变色：翠绿/琥珀/警示红） ---- */}
-      <mesh position={[-RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, LIGHT_GUIDE_Z]}>
+      {/* ---- 两侧垂直霓虹导光柱（useFrame 平滑变色：翠绿/琥珀/警示红）。
+          【raycast 关闭】导光柱贴在机架正面内侧，是纯发光装饰；
+          关闭后点击会穿透到装甲面，由装甲的 handleSelect 负责选中。 ---- */}
+      <mesh position={[-RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, LIGHT_GUIDE_Z]} raycast={noRaycast}>
         <boxGeometry args={[0.11, LIGHT_GUIDE_HEIGHT, 0.11]} />
         <meshBasicMaterial
           ref={leftGuideMat}
@@ -765,7 +784,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           opacity={GUIDE_BASE_OPACITY}
         />
       </mesh>
-      <mesh position={[RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, LIGHT_GUIDE_Z]}>
+      <mesh position={[RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, LIGHT_GUIDE_Z]} raycast={noRaycast}>
         <boxGeometry args={[0.11, LIGHT_GUIDE_HEIGHT, 0.11]} />
         <meshBasicMaterial
           ref={rightGuideMat}
