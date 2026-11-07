@@ -141,13 +141,17 @@ node scripts/benchmark.mjs
 
 ### 实测快照
 
+> 数据来自 `pnpm benchmark`（2026-11-07 复测）。Draw Calls / Triangles 为**硬件无关指标**；
+> FPS 采集于 SwiftShader 软件光栅化环境（无 GPU 加速），数值显著低于真实显卡，
+> 刻意不作为性能证据（详见 `docs/performance.md` 的说明）。
+
 | 指标 | 值 | 说明 |
 |---|---|---|
-| Draw Calls | **69**（恒定） | 78 个实例批渲染；若逐个渲染需 142 次 |
-| Triangles | 14,744 | |
-| RAG 检索 | **5.7ms** 均值 | 20 次采样，P95 7.64ms |
-| 脱敏吞吐 | **16,003 条/秒** | 100 条批量 |
-| 首屏 JS | **62.4 kB** | 3D 与 AI 代码全部懒加载 |
+| Draw Calls | **141**（20 次采样 min = max = 141，完全恒定） | 5 个 InstancedMesh 承载 150 个实例；24 个可见 Pod 仅占 1 次 |
+| Triangles | 24,288 | 含机柜立柱 / 阶梯顶冠 / 16 槽幽灵框等细节 |
+| RAG 检索 | **12.33ms** 均值 / P95 16.88ms | 20 次采样（含冷启动后的预热阶段） |
+| 脱敏吞吐 | **8,990 条/秒** | 100 条批量 × 5 次采样 |
+| 首屏 JS | **64.6 kB** | 3D 与 AI 代码全部懒加载 |
 | 视口休眠 | `always → demand` | 页面隐藏时停止渲染 |
 
 > FPS 数据采集于 SwiftShader 软件光栅化环境（无 GPU），不代表真实显卡表现。详见 [docs/performance.md](docs/performance.md)。
