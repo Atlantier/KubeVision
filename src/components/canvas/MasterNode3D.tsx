@@ -8,20 +8,21 @@
  * 与材质组合而成（AGENTS.md 交付契约），世界坐标锚定 MASTER_POSITION [0, 2.5, 0]
  * ——三机架环形布局的几何中心正上方，「中心指挥 + 外围阵地」构图的视觉焦点。
  *
- * 【几何构成】（由外及内五层，全部为全息半透明材质，无任何不透明实体）
+ * 【几何构成】（由外及内，全部为全息半透明材质，无任何不透明实体）
  * 1. **外层水晶壳**：半透明正八面体（octahedronGeometry, OCTA_RADIUS）。
  *    材质 opacity 0.12 / 0.22 且使用 AdditiveBlending——纯加色、不写深度，
  *    多个晶面叠加时自然增亮，形成通透的「能量包络」而非实心塑料壳。
  *    棱线通过 drei <Edges> 单独描亮：**只画八面体真正的 12 条棱**。
  * 2. **内层反向晶核**：半径 1.05 的八面体，反向自转 + 余弦滚转。
  *    opacity 0.22 + AdditiveBlending，同样配 <Edges> 勾勒轮廓。
- *    它只提供「内部还有一层结构在转动」的层次，绝不遮挡核心。
  * 3. **三维十字能量轴**：三根互相垂直、穿过中心的纤细发光柱，
- *    构成精密全息反应堆的骨架——这是「仪器感」的来源之一。
+ *    构成精密全息反应堆的骨架。
  * 4. **白炽内核**：呼吸缩放（1 ± 0.12·sin(2.2t)）的高亮小球，
  *    心跳隐喻——控制平面存活即集群存活。
- * 5. **底部刻度全息圆环**：双环轮廓 + 24 根径向刻度齿，贴地投影
- *    （世界 y ≈ 0.08），缓慢自转；刻度齿呼应 globals.css 的坐标系质感。
+ * 5. **地面投射光束**：从水晶底部顶点垂直向下接入地面刻度环，
+ *    让悬浮水晶呈现「由地面全息基座投射而出」的因果感（详见 BEAM 常量注释）。
+ * 6. **底部刻度全息圆环**：双环轮廓 + 24 根径向刻度齿，贴地投影
+ *    （世界 y ≈ 0.08），缓慢自转。
  *
  * 【为何删除 wireframe 棱线网格】
  * 旧实现用 `<meshBasicMaterial wireframe />` 画八面体棱线，但 wireframe
@@ -36,8 +37,7 @@
  *
  * 【交互契约】hover 高亮（棱线与晶面增亮 + 光标 pointer）；点击
  * e.stopPropagation() 后 selectEntity(MASTER_ENTITY_ID, 'master')——
- * CameraRig 对 master 类型执行「全景鸟瞰」飞行（MASTER 位于环形中心，
- * 鸟瞰位即其最佳观察机位）。
+ * CameraRig 对 master 类型执行「全景鸟瞰」飞行。
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -96,10 +96,56 @@ const RING_LOCAL_Y = -2.42;
 /** 圆环自转角速度（rad/s） */
 const RING_SPIN_RATE = 0.1;
 
+/* -------------------------------------------------------------------------- */
+/* 地面投射光束（悬浮水晶 ↔ 地面全息基座的连接体）                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 光束顶端：外层水晶的**底部顶点**（局部坐标）。
+ *
+ * 【推导】八面体 octahedronGeometry 的顶点位于 (±r, 0, 0) / (0, ±r, 0) / (0, 0, ±r)，
+ * 底部顶点即 (0, −r, 0)；外层 mesh 又施加了 scale=[1, OCTA_SCALE_Y, 1]，
+ * 故底部顶点的局部 Y = −OCTA_RADIUS × OCTA_SCALE_Y = −1.85 × 1.22 ≈ **−2.257**。
+ */
+const BEAM_TOP_Y = -OCTA_RADIUS * OCTA_SCALE_Y;
+
+/** 光束底端：地面刻度环所在平面（局部 Y = RING_LOCAL_Y ≈ −2.42，世界 y ≈ 0.08） */
+const BEAM_BOTTOM_Y = RING_LOCAL_Y;
+
+/**
+ * 光束高度。
+ *
+ * ⚠️ **注意：这不是 0.65，而是由两端点算出的真实间隙 ≈ 0.163。**
+ *
+ * 需求原文给出的 `cylinderGeometry` 高度为 0.65，但那与场景实测几何不符：
+ * 水晶底部顶点在 −2.257，地面环在 −2.42，两者间距只有 0.163。
+ * 若强行使用 0.65 且让顶端对齐顶点，光柱底端会落到 −2.907，
+ * 即穿出地面网格约 0.42 世界单位——从斜轴机位看会像一根插进地板的柱子；
+ * 若改为居中摆放，则两端同时溢出，问题更明显。
+ *
+ * 因此这里**只保留需求中的半径与段数**（顶 0.02 / 底 0.18 / 16 段 / 开口），
+ * 高度改为由两端点派生，保证光束严丝合缝地架在「水晶尖端 ↔ 地面环」之间，
+ * 不穿透任何一方。若后续希望得到更醒目的长光柱，
+ * 应调整 RING_LOCAL_Y（把地面环下移）或抬升 MASTER_POSITION，而非单方面拉长圆柱。
+ */
+const BEAM_HEIGHT = BEAM_TOP_Y - BEAM_BOTTOM_Y;
+
+/** 光束中心 Y：两端点的中点（几何中心约束，保证上下端精确对齐） */
+const BEAM_CENTER_Y = (BEAM_TOP_Y + BEAM_BOTTOM_Y) / 2;
+
+/** 光束顶部半径（贴近水晶尖端，收得很细） */
+const BEAM_TOP_RADIUS = 0.02;
+
+/** 光束底部半径（在地面环上张开，形成「基座投射口」） */
+const BEAM_BOTTOM_RADIUS = 0.18;
+
+/** 光束圆周分段（16 段足以在近距离下看不出多边形棱角） */
+const BEAM_RADIAL_SEGMENTS = 16;
+
 /** 主题流光 cyan-400（外层晶面与地面圆环） */
 const GLOW_CYAN = '#22d3ee';
 
-/** 冰青 highlight（十字能量轴与白炽内核辉光） */
+/** 冰青 highlight（十字能量轴、白炽内核辉光与地面光束） */
 const GLOW_ICE = '#a5f3fc';
 
 /** 淡青（内层晶核棱线） */
@@ -113,7 +159,6 @@ const GLOW_PALE = '#67e8f9';
  * - X 轴柱：绕 Z 轴旋转 +90°，原 Y 轴映射到世界 X 轴；
  * - Z 轴柱：绕 X 轴旋转 +90°，原 Y 轴映射到世界 Z 轴。
  * 三根柱共同穿过原点，构成互相垂直的全息骨架。
- * 顺序固定（Y → X → Z），保证渲染次序稳定、无帧间闪烁。
  */
 const AXIS_BARS: ReadonlyArray<{
   readonly key: string;
@@ -148,13 +193,12 @@ const RING_TICKS: ReadonlyArray<{
  * [0, 2.5, 0]，因此所有子节点的 Y 都是**相对 2.5 的局部值**。
  *
  * 旧值 [0, 0.42, 2.25] 换算成世界坐标 Y = 2.5 + 0.42 = **2.92**，
- * 而水晶的纵向跨度约为 0.32 ~ 4.68（半径 1.85 × 纵向拉伸 1.22），
+ * 而水晶纵向跨度约 0.32 ~ 4.68（半径 1.85 × 纵向拉伸 1.22），
  * 2.92 恰好落在晶体腰腹正中——铭牌直接插进水晶肚子里穿模。
  *
  * 新值 [0, RING_LOCAL_Y + 0.14, RING_OUTER_RADIUS + 0.45]：
  *   世界 Y = 2.5 + (−2.42 + 0.14) = **0.22**（略高于地面 y=0.08 的刻度环）
  *   世界 Z = 2.35 + 0.45 = **2.80**（朝相机侧探出，在刻度环正前方）
- * 即「贴在刻度圆环前沿的地面铭牌」，既不遮挡晶体，也不与圆环重叠。
  */
 const LABEL_POSITION: readonly [number, number, number] = [
   0,
@@ -250,14 +294,13 @@ export default function MasterNode3D() {
        * ═══ 第 1 层：外层水晶壳（全息通透包络）═══
        *
        * 【为何用 AdditiveBlending + 低 opacity】
-       * 旧实现用 meshStandardMaterial 的 opacity 0.2/0.32，是不透明混合——
-       * 晶面会「遮挡」内部结构，整体读起来像一块半透明白塑料。
-       * 改用纯加色混合后，每个晶面只贡献亮度而不遮挡后方，
-       * 多层晶面叠加自然渐亮，形成真正通透的能量包络。
+       * 不透明混合的晶面会「遮挡」内部结构，整体读起来像半透明白塑料；
+       * 纯加色混合下每个晶面只贡献亮度而不遮挡后方，多层叠加自然渐亮，
+       * 形成真正通透的能量包络。
        *
        * 【棱线为何用 <Edges> 而非 wireframe】
        * wireframe 沿三角形边绘制，八面体每个面由 2 个三角形构成，
-       * 因此会在面上多画出斜向对角线（脏）。<Edges threshold={15}> 基于
+       * 因此会在面上多画出斜向对角线。<Edges threshold={15}> 基于
        * EdgesGeometry 按二面角阈值提取，只保留真正的 12 条棱。
        * scale={1.002} 让棱线极微外扩，避免与晶面共面产生 z-fighting。
        */}
@@ -276,22 +319,14 @@ export default function MasterNode3D() {
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
-        <Edges
-          scale={1.002}
-          threshold={15}
-          color={emphasized ? '#a5f3fc' : GLOW_CYAN}
-        />
+        <Edges scale={1.002} threshold={15} color={emphasized ? '#a5f3fc' : GLOW_CYAN} />
       </mesh>
 
       {/*
        * ═══ 第 2 层：内层反向晶核 ═══
-       *
-       * 【关键修复：消除白色塑料死块】
-       * 旧配置 opacity 0.85 + emissiveIntensity 2.2，几乎是不透明实心体，
-       * 在截图里表现为一个刺眼的实心白六边形死块。
-       * 现降为 opacity 0.22 + AdditiveBlending + depthWrite false，
-       * 只保留「内部结构」的存在感，透过外层可清晰看到它在反向转动，
-       * 由 <Edges> 给出清晰轮廓，不再依赖实体表面。
+       * opacity 0.22 + AdditiveBlending + depthWrite false：
+       * 只保留「内部还有一层结构在转动」的层次，由 <Edges> 给出清晰轮廓，
+       * 不再依赖实体表面（旧的 0.85 实心白块即「塑料感」来源）。
        */}
       <mesh ref={coreRef}>
         <octahedronGeometry args={[CORE_CRYSTAL_RADIUS, 0]} />
@@ -312,13 +347,10 @@ export default function MasterNode3D() {
 
       {/*
        * ═══ 第 3 层：三维十字能量轴 ═══
-       *
        * 三根互相垂直、穿过中心的纤细发光柱，提供「精密仪器骨架」的观感。
-       * 长度取 OCTA_RADIUS × 2.1，略超出晶面向外辐射；
        * 使用 meshBasicMaterial（不吃光照）保证任何机位下亮度恒定的全息感。
-       *
-       * 【为何不随外层自转】反应堆的骨架是静止的测量基准，
-       * 外面转、里面稳，才形成「仪表在扫描」而非「整块东西在翻滚」的观感。
+       * 不随外层自转——反应堆骨架是静止的测量基准，
+       * 「外面转、里面稳」才形成仪表在扫描而非整块东西翻滚的观感。
        */}
       <group>
         {AXIS_BARS.map((bar): ReactNode => (
@@ -331,10 +363,9 @@ export default function MasterNode3D() {
 
       {/*
        * ═══ 第 4 层：白炽内核 ═══
-       *
        * 呼吸缩放的白亮小球，是整块晶体的能量中心。
-       * 半径 0.36 远小于晶核 1.05，确保它被包裹而不外露；
-       * 配合下方两层 GlowHalo3D，形成「实心核 + 屏幕空间白热晕」的双重白炽效果。
+       * 半径 0.36 远小于晶核 1.05，确保被包裹而不外露；
+       * 配合下方两层 GlowHalo3D，形成「实心核 + 屏幕空间白热晕」的双重白炽。
        */}
       <mesh>
         <sphereGeometry args={[NUCLEUS_RADIUS, 24, 24]} />
@@ -350,10 +381,40 @@ export default function MasterNode3D() {
       </mesh>
 
       {/*
+       * ═══ 第 5 层：地面投射光束（悬浮水晶的能量脐带）═══
+       *
+       * 【设计意图】让水晶看起来不是「凭空悬浮」，而是**由地面全息基座向上投射**
+       * 出来的实体。光束上细下粗（0.02 → 0.18），像一个从地面环张开、
+       * 收束到水晶尖端的投射口，把「因果方向」写进几何里。
+       *
+       * 【渲染契约】
+       * - cylinderGeometry 的 openEnded=true：只保留侧面圆筒，去掉上下端盖，
+       *   避免在尖端与地面处出现两片明显的实心圆盘；
+       * - AdditiveBlending：与水晶壳同族的加色混合，叠加后自然发光；
+       * - depthWrite=false：不写深度，不遮挡地面刻度环与星环；
+       * - DoubleSide：从任何机位（含俯视）都能看到筒壁，不会因背面剔除而消失；
+       * - opacity 0.35：克制，作为结构连接而非视觉主角。
+       */}
+      <mesh position={[0, BEAM_CENTER_Y, 0]} raycast={(): void => undefined}>
+        <cylinderGeometry
+          args={[BEAM_TOP_RADIUS, BEAM_BOTTOM_RADIUS, BEAM_HEIGHT, BEAM_RADIAL_SEGMENTS, 1, true]}
+        />
+        <meshBasicMaterial
+          color={GLOW_ICE}
+          transparent
+          opacity={0.35}
+          toneMapped={false}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+
+      {/*
        * ═══ 程序化假辉光（双层）═══
        * 外层大面积青色柔光营造整体氛围，内层小面积冰青白核强化「白炽」感。
-       * 内层透明度刻意压到 0.62：新版 shader 自带白炽核，
-       * 若内层仍用 0.95 会与实体内核叠加过曝成一片纯白。
+       * 内层透明度压到 0.62：新版 shader 自带白炽核，
+       * 若仍用 0.95 会与实体内核叠加过曝成一片纯白。
        */}
       <GlowHalo3D color={GLOW_CYAN} scale={5.4} opacity={0.85} falloff={2.2} pulse pulsePeriod={3.4} />
       <GlowHalo3D color={GLOW_ICE} scale={2.2} opacity={0.62} falloff={2.8} pulse pulsePeriod={2.1} />
@@ -409,11 +470,10 @@ export default function MasterNode3D() {
        * 换算到世界坐标为 y=2.92，正好插进水晶腰腹（穿模）。
        * 现贴在刻度圆环正前方地面（世界 y=0.22），完全不遮挡晶体。
        *
-       * 【样式】去掉厚重深色背景框，改为无底色的全息微发光文字：
-       * - 纯 drop-shadow 发光而非 panel 背景，暗场里像悬浮的投影标注；
-       * - whitespace-nowrap 强制单行，杜绝旧版被压成四行竖排断词；
-       * - drei Html 契约（AGENTS.md 第 6 条）：zIndexRange=[10,0] +
-       *   pointer-events-none，永不遮挡右侧 Copilot 抽屉与顶层 Modal。
+       * 【样式】无底色全息微发光文字：纯 drop-shadow 发光而非 panel 背景，
+       * 暗场里像悬浮的投影标注；whitespace-nowrap 强制单行。
+       * drei Html 契约（AGENTS.md 第 6 条）：zIndexRange=[10,0] +
+       * pointer-events-none，永不遮挡右侧 Copilot 抽屉与顶层 Modal。
        */}
       <Html
         position={[LABEL_POSITION[0], LABEL_POSITION[1], LABEL_POSITION[2]]}
