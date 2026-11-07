@@ -32,7 +32,7 @@
  * 外壳代码零改动。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Bot, Layers, ShieldCheck, TerminalSquare } from 'lucide-react';
 
@@ -48,6 +48,7 @@ import type {
 
 import TopBar from '@/components/layout/TopBar';
 import TerminalEcho from '@/components/layout/TerminalEcho';
+import SplitPaneResizer, { useDrawerWidth } from '@/components/layout/SplitPaneResizer';
 
 /* ========================================================================== */
 /* 模块级常量                                                                  */
@@ -196,6 +197,18 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
   const mobileView = useClusterStore((s): MobileViewKey => s.activeMobileView);
   const setMobileView = useClusterStore((s): ((view: MobileViewKey) => void) => s.setActiveMobileView);
 
+  /* ---- 右栏可拖拽宽度（localStorage 记忆；SSR 安全见 useDrawerWidth 注释） ---- */
+  const [drawerWidthPct, setDrawerWidthPct] = useDrawerWidth();
+
+  /** 拖拽中的标志：拖拽期间禁用宽度过渡，否则会与指针位置产生"橡皮筋"延迟 */
+  const [isResizing, setIsResizing] = useState<boolean>(false);
+
+  /**
+   * 主容器引用：Resizer 需要它的实时 rect（宽度与右缘位置）才能把
+   * 指针像素坐标换算成百分比。用 ref 而非 state，避免每帧测量引起重渲染。
+   */
+  const mainRef = useRef<HTMLElement>(null);
+
   /* ---- 全局键盘：Shift+P 切换性能 HUD ---- */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -228,12 +241,20 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
        * 快捷指令芯片。pb-14 为切换栏（约 44px + 12px 间距）预留安全区，
        * 桌面端无需该留白故 lg:pb-3 回归正常。
        */}
-      <main className="flex min-h-0 flex-1 flex-col gap-2 p-2 pb-14 lg:flex-row lg:gap-3 lg:p-3">
-        {/* ---- 左栏：3D 视口槽位（65%）+ 底部悬浮 TerminalEcho ---- */}
+      <main
+        ref={mainRef}
+        className="flex min-h-0 flex-1 flex-col gap-2 p-2 pb-14 lg:flex-row lg:gap-3 lg:p-3"
+      >
+        {/* ---- 左栏：3D 视口槽位（flex-1 自适应剩余空间）+ 底部悬浮 TerminalEcho ----
+         * 【为何从 lg:basis-[65%] 改成 flex-1 min-w-0】
+         * 引入可拖拽分栏后，右栏宽度是动态的（由 --drawer-w 驱动），
+         * 左栏必须"吃掉剩余空间"而不是固守某个比例。min-w-0 是关键：
+         * flex 子项默认 min-width:auto，不写 min-w-0 时内部的
+         * TerminalEcho/Canvas 会撑开最小宽度，导致右栏被挤到设定值之外。 */}
         <section
           aria-label="3D 集群拓扑视口"
           className={cn(
-            'relative min-h-0 flex-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40 lg:basis-[65%] lg:grow-0 lg:shrink-0',
+            'relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40',
             // 移动端：copilot 视图时隐藏左栏（常驻 DOM，不卸载画布）
             mobileView === 'copilot' && 'hidden lg:block',
           )}
@@ -268,16 +289,39 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
               键盘监听仍在下方 useEffect 中维护。 */}
         </section>
 
-        {/* ---- 右栏：AI 抽屉槽位（35%） ---- *
-         * 【视觉契约修复】此前该 <section> 没有任何边框/圆角/背景，
-         * 外部传入的 drawer 直接裸渲染，与左侧带描边的 3D 视口并排时
-         * 出现明显的视觉割裂（左侧是"面板"，右侧是"黑洞"）。
-         * 现在把 .kv-panel 容器下沉到这一层，左右两栏材质完全对称。
+        {/* ---- 桌面端专属分割手柄（移动端上下分栏时不存在左右之界，故隐藏） ---- */}
+        <div className="hidden lg:flex">
+          <SplitPaneResizer
+            widthPct={drawerWidthPct}
+            onWidthChange={setDrawerWidthPct}
+            onDragStateChange={setIsResizing}
+            containerRef={mainRef}
+          />
+        </div>
+
+        {/* ---- 右栏：AI 抽屉槽位（宽度由 --drawer-w 驱动，桌面端可拖拽） ---- *
+         * 【视觉契约】把 .kv-panel 容器下沉到这一层，左右两栏材质完全对称。
+         *
+         * 【宽度绑定】桌面端用内联 CSS 变量 --drawer-w 承载百分比，
+         * 再由 lg:w-[var(--drawer-w)] 消费。这样宽度变化只需改一个变量，
+         * 无需重建 className 字符串（Tailwind 无法生成动态百分比类，
+         * 动态拼接的 lg:basis-[${pct}%] 在生产构建中会被 JIT 丢弃）。
+         *
+         * 【过渡】拖拽中禁用 transition：宽度每帧都在变，
+         * 若叠加 200ms 过渡会产生明显的"跟不上指针"的橡皮筋感；
+         * 非拖拽时（双击复位/键盘微调）保留过渡以获得平滑感。
          */}
         <section
           aria-label="AI Copilot 抽屉"
+          style={{ '--drawer-w': `${drawerWidthPct}%` } as React.CSSProperties}
           className={cn(
-            'kv-panel min-h-0 flex-1 overflow-hidden rounded-lg lg:basis-[35%] lg:grow-0 lg:shrink-0',
+            'kv-panel min-h-0 overflow-hidden rounded-lg',
+            // 移动端：w-full 铺满，宽度变量不生效
+            'w-full',
+            // 桌面端：消费 --drawer-w，且不参与 flex 伸缩
+            'lg:w-[var(--drawer-w)] lg:shrink-0 lg:grow-0',
+            // 拖拽中禁用过渡，其余时刻 200ms 平滑
+            isResizing ? 'transition-none' : 'transition-[width] duration-200 ease-out',
             // 移动端：topology 视图时隐藏右栏
             mobileView === 'topology' && 'hidden lg:block',
           )}

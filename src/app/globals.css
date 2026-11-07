@@ -91,26 +91,46 @@
 
 @layer components {
   /**
-   * 运维面板：深空赛博美学的标准容器
-   * 面板 bg-slate-900/75 + backdrop-blur-md + border-slate-800（AGENTS.md 第 5 条）
-   */
-  /**
-   * 运维面板：深空赛博美学的标准容器
+   * 运维面板：黑曜石高定玻璃（Obsidian Glass）
    *
-   * 【材质升级（对标 Linear / Vercel / Raycast）】
-   * 在原有 bg-slate-900/75 + backdrop-blur + border-slate-800 之上叠加两层光影：
-   * 1. `inset 0 1px 0 rgba(255,255,255,0.06)` —— 顶部 1px 高光内描边，
-   *    模拟真实玻璃面板受光后的边缘折射，让悬浮面板立刻有了**厚度感**；
-   * 2. `0 12px 36px -8px rgba(2,6,23,0.85)` —— 深空环境下的近黑大范围投影，
-   *    与纯黑背景区分层级而不显脏。
+   * 【设计意图】此前的 .kv-panel 是 `bg-slate-900/75 + border-slate-800`——
+   * 一个纯度很高的深色块加一圈蓝灰描边。问题在于：
+   * 1. **平涂感**：单一色值没有任何纵向层次，面板看起来是"贴"在背景上的一张纸；
+   * 2. **边框偏重**：slate-800 描边在深空背景上对比度偏高，形成"廉价青框"；
+   * 3. **毛玻璃不足**：blur-md（12px）力度偏弱，面板后方内容几乎不会被柔化。
    *
-   * 这两层是"精密仪器感"与"扁平色块"的分水岭，成本仅一次阴影绘制。
+   * 现升级为四层结构，对齐 Linear / Vercel 的高定玻璃语言：
+   *
+   *  ① **纵向渐变底**：上浅（rgba(15,23,42,.78)）下深（rgba(6,10,19,.88)）。
+   *     模拟真实玻璃在环境光下"顶部受光、底部沉入阴影"的观感，
+   *     同时把不透明度做成 0.78→0.88 的递增，让面板底部更实、内容更易读。
+   *  ② **强毛玻璃**：blur(20px) + saturate(140%)。
+   *     单纯的 blur 会让背后的彩色内容变成灰雾；补 40% 饱和度后，
+   *     透出的颜色依然鲜活——这是"高端玻璃"与"磨砂塑料"的关键差别。
+   *  ③ **发丝级描边**：1px solid rgba(255,255,255,0.075)。
+   *     用**白色低透明度**而不是蓝灰色实色：白描边是"玻璃边缘的高光"，
+   *     蓝灰实色则读作"画上去的框"，这正是原设计廉价感的来源。
+   *  ④ **双层阴影**：inset 顶部 1px 高光（受光棱边）+ 大范围外投影（悬浮层级）。
+   *     inset 用 0.09 而非旧的 0.06，因为白色描边本身更淡，需要更亮的内高光配对。
+   *
+   * 【为何不用 @apply 写 backdrop-filter / box-shadow】
+   * Tailwind 的 backdrop-blur-* 粒度只能到预设档位（md/lg/xl），
+   * 无法表达 saturate 组合与精确的 rgba 值；直接写 CSS 属性更精确且更易读。
+   * 注意：`backdrop-filter` 需同时写 `-webkit-` 前缀以兼容 Safari。
    */
   .kv-panel {
-    @apply rounded-lg border border-slate-800 bg-slate-900/75 backdrop-blur-md;
+    @apply rounded-lg;
+    background: linear-gradient(
+      180deg,
+      rgba(15, 23, 42, 0.78) 0%,
+      rgba(6, 10, 19, 0.88) 100%
+    );
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    backdrop-filter: blur(20px) saturate(140%);
     box-shadow:
-      inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
-      0 12px 36px -8px rgba(2, 6, 23, 0.85);
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.09),
+      0 16px 40px -12px rgba(0, 0, 0, 0.65);
   }
 
   /**

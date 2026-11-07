@@ -190,10 +190,31 @@ export interface TerminalEchoProps {
  * 外壳布局代码无需再改动（开闭原则）。
  */
 export interface ShellLayoutProps {
-  /** 左侧 3D 视口插槽（桌面端占 65% 宽） */
+  /** 左侧 3D 视口插槽（桌面端默认占 66% 宽，可拖拽调整） */
   readonly viewport?: ReactNode;
-  /** 右侧 AI 抽屉插槽（桌面端占 35% 宽） */
+  /** 右侧 AI 抽屉插槽（桌面端默认占 34% 宽，可拖拽调整） */
   readonly drawer?: ReactNode;
+}
+
+/**
+ * DrawerResizeConfig —— 右侧抽屉宽度拖拽分栏的配置契约。
+ *
+ * 【为何集中成常量而非散落在组件里】默认值、夹逼区间与最小像素宽三者
+ * 互相牵制：改动其中任一都可能让另一条约束失效（例如把默认值调到区间外、
+ * 或把最小像素宽设得比区间下限还大）。集中在一处并附推导注释，
+ * 才能在评审时一眼看出三者的相容性。
+ */
+export interface DrawerResizeConfig {
+  /** 默认宽度百分比（右栏占比） */
+  readonly defaultPct: number;
+  /** 允许的最小百分比 */
+  readonly minPct: number;
+  /** 允许的最大百分比 */
+  readonly maxPct: number;
+  /** 右栏最小像素宽度（保证窄屏下内容仍可读） */
+  readonly minPx: number;
+  /** localStorage 持久化键名 */
+  readonly storageKey: string;
 }
 
 /** RightDrawerSlot —— 右侧抽屉页签外壳 Props */
