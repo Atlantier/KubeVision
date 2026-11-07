@@ -235,15 +235,25 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
       {/* ============ 顶栏 ============ */}
       <TopBar />
 
-      {/* ============ 主体：桌面双栏 65/35 · 移动上下分栏 ============ *
-       * 【移动端底部留白】小屏下 MobileViewSwitcher 以 fixed bottom-3 悬浮，
-       * 此前会直接盖住 3D 视口底部的 TerminalEcho 与 Copilot 面板最底部的
-       * 快捷指令芯片。pb-14 为切换栏（约 44px + 12px 间距）预留安全区，
-       * 桌面端无需该留白故 lg:pb-3 回归正常。
+      {/* ============ 主体：桌面双栏（右栏可拖拽）· 移动上下分栏 ============ *
+       * 【桌面端无界工业风格：lg:gap-0 lg:p-2】
+       * 早期用 lg:gap-3（12px）+ lg:p-3（12px），两栏之间实际有 12px+12px+12px
+       * 的累计间隙，视觉上松散，且拖拽时分栏手柄与两侧面板之间出现明显"空洞"。
+       * 收紧为 gap-0 + p-2（8px）后：
+       * - 左右两栏**直接相接**，中间的 w-2.5（10px）拖拽手柄本身就是唯一的呼吸间距，
+       *   这 10px 既承载视觉分隔又承载交互命中区，一个元素干两件事；
+       * - 拖拽时宽度变化严丝合缝，不会因为 gap 的固定像素而使比例显得"漂移"
+       *   （有 gap 时：右栏 = pct% × contentW，但 contentW 已扣除 gap，
+       *   而视觉上两栏之间的空隙不随 pct 变化，比例观感会被固定 gap 带偏）。
+       *
+       * 【移动端保持不变】小屏仍是 gap-2 + p-2 + pb-14：
+       * 上下分栏没有拖拽手柄承担间距，需要真实的外边距分隔两个面板；
+       * pb-14 为底部悬浮切换栏（约 44px + 12px 间距）预留安全区，
+       * 否则会盖住 TerminalEcho 与 Copilot 的快捷指令芯片。
        */}
       <main
         ref={mainRef}
-        className="flex min-h-0 flex-1 flex-col gap-2 p-2 pb-14 lg:flex-row lg:gap-3 lg:p-3"
+        className="flex min-h-0 flex-1 flex-col gap-2 p-2 pb-14 lg:flex-row lg:gap-0 lg:p-2"
       >
         {/* ---- 左栏：3D 视口槽位（flex-1 自适应剩余空间）+ 底部悬浮 TerminalEcho ----
          * 【为何从 lg:basis-[65%] 改成 flex-1 min-w-0】

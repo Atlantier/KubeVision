@@ -62,15 +62,34 @@ function section(title) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** 执行命令并收集输出 */
+/**
+ * 执行命令并收集输出。
+ *
+ * 【Windows 下的 shell 处理】Windows 上 npx / git / pnpm 实际是 .cmd 包装脚本，
+ * 无法被 spawn 直接执行，必须经 cmd.exe 解析。
+ *
+ * 旧实现用 `shell: true` + args 数组，Node 会发出 DEP0190 警告
+ * （shell 模式下参数不做转义，只做字符串拼接）。这行警告会混进验收输出，
+ * 让人误以为有真实问题。改为**显式**调用 `cmd.exe /d /s /c <cmd> <args...>`：
+ * - `/d` 跳过 AutoRun 注册表项，避免用户环境里的自动命令干扰；
+ * - `/s` 让 cmd 只剥掉最外层引号，参数原样传递；
+ * - `/c` 执行后立即退出。
+ * 这样既保留 .cmd 解析能力，又不触发该弃用警告。
+ */
 function run(cmd, cmdArgs, opts = {}) {
   return new Promise((resolve) => {
-    const proc = spawn(cmd, cmdArgs, {
-      cwd: ROOT,
-      shell: process.platform === 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      ...opts,
-    });
+    const isWindows = process.platform === 'win32';
+    const proc = isWindows
+      ? spawn('cmd.exe', ['/d', '/s', '/c', cmd, ...cmdArgs], {
+          cwd: ROOT,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          ...opts,
+        })
+      : spawn(cmd, cmdArgs, {
+          cwd: ROOT,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          ...opts,
+        });
     let stdout = '';
     let stderr = '';
     proc.stdout?.on('data', (d) => { stdout += d.toString(); });
