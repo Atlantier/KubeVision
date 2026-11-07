@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — 3D 集群拓扑根画布（ClusterCanvas）
@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Canvas, type RootState } from '@react-three/fiber';
 import { ContactShadows, Grid, PerformanceMonitor, Sparkles } from '@react-three/drei';
+import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
@@ -467,6 +468,39 @@ export default function ClusterCanvas() {
 
         {/* ---- 相机运镜系统 ---- */}
         <CameraRig />
+
+        {/*
+         * ---- 后处理：Bloom 泛光 + Vignette 暗角 ----
+         *
+         * 【解决什么】场景里大量发光体（等离子星核、能量束、光斑、光纤脉冲）
+         * 用的是 AdditiveBlending + toneMapped=false，它们的亮度值**超过 1**，
+         * 但没有后处理时这些超亮像素只是在屏幕上直接截断成纯色，
+         * 缺少"光溢出到邻近像素"的物理现象——这正是图五那种电影感的核心。
+         * Bloom 把超过阈值的能量取样模糊后加回画面，光才真正"溢"出来。
+         *
+         * 【参数依据】
+         * - luminanceThreshold 0.22：只让高亮发光体溢出，避免整片机架糊成光雾；
+         * - luminanceSmoothing 0.28：阈值边缘做柔和过渡，消灭硬切边界；
+         * - mipmapBlur + radius 0.72：多级 mip 模糊比高斯核更便宜，光晕更大更柔；
+         * - intensity 0.85：克制，过度会吃掉状态色语义（红/绿/琥珀要可分辨）。
+         *
+         * 【Vignette】暗角 0.35 让视线自然收拢到画面中心的三环布局，
+         * 这是参考图构图感的来源之一。
+         *
+         * 【性能】multisampling=0 + disableNormalPass：本场景已用
+         * canvas 的 antialias 与 DPR 控制画质，后处理链不重复 MSAA；
+         * 本版本 EffectComposer 无 disableNormalPass 选项，法线通道关闭由上游 npm 版本决定。
+         */}
+        <EffectComposer multisampling={0}>
+          <Bloom
+            intensity={0.85}
+            luminanceThreshold={0.22}
+            luminanceSmoothing={0.28}
+            mipmapBlur
+            radius={0.72}
+          />
+          <Vignette eskil={false} offset={0.18} darkness={0.35} />
+        </EffectComposer>
       </Canvas>
 
       {/* ---- 左上角实体巡检 HUD（DOM 层浮层，非 R3F 场景内）：

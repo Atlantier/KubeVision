@@ -494,6 +494,56 @@ const HARNESS_PER_BUNDLE = 3;
 const HARNESS_CURVE_SEGMENTS = 14;
 
 /**
+ * 光纤线束的流动脉冲着色器（顶点）。
+ *
+ * 传递管道 UV：TubeGeometry 的 uv.x 沿管长方向（0 = 起点，1 = 终点），
+ * uv.y 绕管周向。沿程流动必须用 uv.x。
+ */
+const HARNESS_VERTEX_SHADER = `
+varying vec2 vUv;
+
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+/**
+ * 光纤线束的流动脉冲着色器（片元）。
+ *
+ * 【核心数学】在沿程参数上叠加一个随时间推进的锯齿波：
+ *   flow  = fract(uv.x · FLOW_CYCLES − uTime · FLOW_SPEED)
+ *   pulse = smoothstep(0, 0.12, flow) · (1 − smoothstep(0.12, 0.35, flow))
+ *
+ * `fract` 让脉冲沿管线循环出现，`uTime` 的负号决定流动方向（从起点流向终点）；
+ * 两个 smoothstep 夹出一个**前陡后缓的光头**——这正是数据包在光纤里
+ * 推进时前端亮、尾部拖出余晖的形态，而不是均匀的整条亮线。
+ *
+ * 【为何不用纯 sin】sin 的波峰是平滑对称的，看起来像"呼吸"；而 fract +
+ * 非对称 smoothstep 得到的是一段持续单向移动的亮点，观感才是"在流动"。
+ */
+const HARNESS_FRAGMENT_SHADER = `
+uniform float uTime;
+uniform vec3 uColor;
+uniform float uIntensity;
+
+varying vec2 vUv;
+
+void main() {
+  float flow = fract(vUv.x * 3.0 - uTime * 0.55);
+  float pulse = smoothstep(0.0, 0.12, flow) * (1.0 - smoothstep(0.12, 0.35, flow));
+
+  float base = 0.30 + 0.10 * sin(vUv.x * 18.0 + uTime * 2.0);
+  float alpha = (base + pulse * 0.95) * uIntensity;
+
+  gl_FragColor = vec4(uColor, alpha);
+}
+`;
+
+/** 光纤脉冲的基础不透明度（网骨级别，脉冲在其上叠加） */
+const HARNESS_BASE_INTENSITY = 0.72;
+
+/**
  * 每层的弯曲光纤线束几何（模块加载期一次构建，4 个几何体）。
  *
  * 【路径设计】从刀片底面**前缘**出发，先向内下方弯垂，再收到机架侧柱背面：
@@ -508,26 +558,49 @@ const HARNESS_CURVE_SEGMENTS = 14;
  */
 const HARNESS_GEOMETRIES: readonly THREE.BufferGeometry[] = (() => {
   const sideInnerX = RACK_BODY_SIZE[0] / 2 - 0.20;
-  const frontZ = -(RACK_BODY_SIZE[2] / 2 - 0.12);
+  const halfDepth = RACK_BODY_SIZE[2] / 2;
   const result: THREE.BufferGeometry[] = [];
 
   for (let tier = 0; tier < RACK_TIER_COUNT; tier++) {
     const tierY = RACK_TIER_BASE_Y + tier * RACK_TIER_HEIGHT;
     const tubes: THREE.TubeGeometry[] = [];
 
-    for (let mainSlot = 0; mainSlot < 2; mainSlot++) {
-      const slotIndex = tier * SLOTS_PER_TIER + mainSlot;
-      const local = getRackSlotLocalPose(slotIndex);
-      const sideSign = local.x >= 0 ? 1 : -1;
+    /*
+     * 【前后双面对称】三座机架的 rotationY = α + π，导致局部 ±Z 面交替朝向相机：
+     * rackIndex 0（位置 z = +9.5，angle = 0）→ 局部 −Z 面朝向主相机；
+     * rackIndex 1/2（angle = 120°/240°）→ 局部 +Z 面朝向主相机。
+     * 若只装单面，总有一座机架的正面是"空白背板"。
+     * 因此这里对 zSign ∈ {+1, −1} 各生成一套线束，两者镜像对称。
+     */
+    for (const zSign of [1, -1] as const) {
+      const frontZ = zSign * (halfDepth - 0.12);
 
-      for (let strand = 0; strand < HARNESS_PER_BUNDLE; strand++) {
-        const drift = (strand - 1) * 0.055;
-        const start = new THREE.Vector3(local.x, tierY + 0.10, frontZ + drift * 0.4);
-        const c1 = new THREE.Vector3(local.x + sideSign * 0.16 + drift, tierY - 0.16, frontZ - 0.06);
-        const c2 = new THREE.Vector3(sideSign * sideInnerX * 0.72 + drift, tierY - 0.34, frontZ + 0.22);
-        const end = new THREE.Vector3(sideSign * sideInnerX, tierY - 0.52, RACK_BODY_SIZE[2] / 2 - 0.30);
-        const curve = new THREE.CubicBezierCurve3(start, c1, c2, end);
-        tubes.push(new THREE.TubeGeometry(curve, HARNESS_CURVE_SEGMENTS, HARNESS_TUBE_RADIUS, 5, false));
+      for (let mainSlot = 0; mainSlot < 2; mainSlot++) {
+        const slotIndex = tier * SLOTS_PER_TIER + mainSlot;
+        const local = getRackSlotLocalPose(slotIndex);
+        const sideSign = local.x >= 0 ? 1 : -1;
+
+        for (let strand = 0; strand < HARNESS_PER_BUNDLE; strand++) {
+          const drift = (strand - 1) * 0.055;
+          const start = new THREE.Vector3(local.x, tierY + 0.10, frontZ + zSign * drift * 0.4);
+          const c1 = new THREE.Vector3(
+            local.x + sideSign * 0.16 + drift,
+            tierY - 0.16,
+            frontZ + zSign * 0.06,
+          );
+          const c2 = new THREE.Vector3(
+            sideSign * sideInnerX * 0.72 + drift,
+            tierY - 0.34,
+            frontZ - zSign * 0.22,
+          );
+          const end = new THREE.Vector3(
+            sideSign * sideInnerX,
+            tierY - 0.52,
+            -(halfDepth - 0.30) * zSign,
+          );
+          const curve = new THREE.CubicBezierCurve3(start, c1, c2, end);
+          tubes.push(new THREE.TubeGeometry(curve, HARNESS_CURVE_SEGMENTS, HARNESS_TUBE_RADIUS, 5, false));
+        }
       }
     }
 
@@ -644,6 +717,16 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   /* ---- 动画通道 ref ---- */
   const leftGuideMat = useRef<THREE.MeshBasicMaterial>(null);
   const rightGuideMat = useRef<THREE.MeshBasicMaterial>(null);
+  /**
+   * 背面（局部 −Z 侧）两根导光柱的材质 ref。
+   *
+   * 【为何需要】机架正面朝相机的那一侧随 rackIndex 在 ±Z 间交替，
+   * 只装 +Z 侧的导光柱会让 alpha（−Z 朝相机）整座机架看不到垂直光柱。
+   * 因此背面也各装一根，并由 useFrame 用与正面完全相同的
+   * target/alpha 同步 lerp，两面的色温与呼吸相位严格一致。
+   */
+  const backGuideMatLeft = useRef<THREE.MeshBasicMaterial>(null);
+  const backGuideMatRight = useRef<THREE.MeshBasicMaterial>(null);
   /** 腔体点光源：useFrame 内与导光柱同源 lerp，保证状态色绝对一致 */
   const cavityLightRef = useRef<THREE.PointLight>(null);
 
@@ -672,6 +755,22 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
     (): Record<string, THREE.IUniform> => ({
       uColor: { value: new THREE.Color('#0e7490') },
       uOpacity: { value: 0.62 },
+    }),
+    [],
+  );
+
+  /**
+   * 光纤线束的流动脉冲 uniforms。
+   *
+   * 【为何一个机架共用一份】4 层的线束同属一台节点，状态色与流动相位
+   * 本就应当一致；共用一份 uniform 意味着 useFrame 只需写 2 个标量，
+   * 而不是 4×2 次，且 4 个 mesh 共享同一个 shader program（少 3 次编译）。
+   */
+  const harnessUniforms = useMemo(
+    (): Record<string, THREE.IUniform> => ({
+      uTime: { value: 0 },
+      uColor: { value: new THREE.Color('#22d3ee') },
+      uIntensity: { value: HARNESS_BASE_INTENSITY },
     }),
     [],
   );
@@ -830,6 +929,15 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       rightGuideMat.current.color.lerp(target, alpha);
       rightGuideMat.current.opacity = opacity;
     }
+    /* 背面导光柱：同一 target / 同一 alpha，保证前后两面色温与呼吸完全同步 */
+    if (backGuideMatLeft.current !== null) {
+      backGuideMatLeft.current.color.lerp(target, alpha);
+      backGuideMatLeft.current.opacity = opacity;
+    }
+    if (backGuideMatRight.current !== null) {
+      backGuideMatRight.current.color.lerp(target, alpha);
+      backGuideMatRight.current.opacity = opacity;
+    }
     /* 腔体点光：与导光柱同 target 同 alpha，色温永不脱节 */
     if (cavityLightRef.current !== null) {
       cavityLightRef.current.color.lerp(target, alpha);
@@ -844,7 +952,10 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       (beamBloomUniforms.uColor.value as THREE.Color).copy(leftGuideMat.current.color);
       /* 侧板网孔同源取色：故障时整片侧板也跟着泛红，语义一致 */
       (meshPanelUniforms.uColor.value as THREE.Color).copy(leftGuideMat.current.color);
+      /* 光纤线束同源取色 + 推进流动脉冲相位（原地写，零分配） */
+      (harnessUniforms.uColor.value as THREE.Color).copy(leftGuideMat.current.color);
     }
+    harnessUniforms.uTime.value = state.clock.getElapsedTime();
     beamBloomUniforms.uPulse.value =
       1 + 0.18 * Math.sin(state.clock.getElapsedTime() * BEAM_BLOOM_PULSE_RATE);
 
@@ -987,16 +1098,27 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
             />
           </mesh>
           {/*
-           * ---- 层板正面发光灯眉（4 层科技抽屉的视觉分界线）----
+           * ---- 层板正面发光灯眉（4 层科技抽屉的视觉分界线，**前后双面各一条**）----
            *
-           * 【解决什么】没有这条灯带时，四层隔板在暗场里几乎是同一块深色，
+           * 【解决什么】没有灯带时四层隔板在暗场里几乎是同一块深色，
            * 机架正面读不出"分层"结构，Pod 看起来悬浮在虚空里。
-           * 加一条跟随节点状态色的细长灯眉后，正面呈现出清晰的 4 层横向切片，
-           * 每层容器都被明确地"托"在自己的抽屉里——这是参考图最关键的层次感。
            *
-           * 【位置】局部 −Z 是机柜正面（rotationY = α + π，+Z 朝向圆心），
-           * 因此灯眉贴在隔板前缘外侧，位于机架正面的最外层，不被装甲遮挡。
+           * 【为何必须前后双面】机架 rotationY = α + π，三座机架朝向相机的那一面
+           * 在局部 +Z 与 −Z 之间交替：rackIndex 0（angle 0）的 −Z 面朝相机，
+           * rackIndex 1/2（120°/240°）的 +Z 面朝相机。只装单面时，
+           * 总有一座机架的正面是"没有灯眉的空白背板"。
+           * 前后各一条后，任何机位看到的每座机架都拥有完整的 4 层横向灯带。
            */}
+          <mesh position={[0, tierY, RACK_BODY_SIZE[2] / 2 - 0.05]} raycast={noRaycast}>
+            <boxGeometry args={[RACK_BODY_SIZE[0] - 0.42, 0.016, 0.016]} />
+            <meshBasicMaterial
+              color={statusColor}
+              toneMapped={false}
+              transparent
+              opacity={emphasized ? 0.95 : 0.62}
+              depthWrite={false}
+            />
+          </mesh>
           <mesh position={[0, tierY, -(RACK_BODY_SIZE[2] / 2 - 0.05)]} raycast={noRaycast}>
             <boxGeometry args={[RACK_BODY_SIZE[0] - 0.42, 0.016, 0.016]} />
             <meshBasicMaterial
@@ -1158,13 +1280,14 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           geometry={harness}
           raycast={noRaycast}
         >
-          <meshBasicMaterial
-            color={statusColor}
+          <shaderMaterial
+            uniforms={harnessUniforms}
+            vertexShader={HARNESS_VERTEX_SHADER}
+            fragmentShader={HARNESS_FRAGMENT_SHADER}
             transparent
-            opacity={0.72}
-            toneMapped={false}
             blending={THREE.AdditiveBlending}
             depthWrite={false}
+            toneMapped={false}
           />
         </mesh>
       ))}
@@ -1257,6 +1380,35 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         <boxGeometry args={[0.11, LIGHT_GUIDE_HEIGHT, 0.11]} />
         <meshBasicMaterial
           ref={rightGuideMat}
+          color="#10b981"
+          toneMapped={false}
+          transparent
+          opacity={GUIDE_BASE_OPACITY}
+        />
+      </mesh>
+
+      {/*
+       * ---- 背面导光柱（局部 −Z 侧，与正面镜像对称）----
+       *
+       * 【解决什么】rackIndex 0 的 rotationY = π，其局部 −Z 面朝向主相机；
+       * 若只在 +Z 侧装导光柱，alpha 整座机架从默认机位看完全没有垂直光柱。
+       * 这里补上 −Z 侧的一对，使三座机架无论哪面朝相机都拥有完整光柱。
+       * 颜色由 useFrame 用与正面相同的 target/alpha 同步 lerp，前后不会脱节。
+       */}
+      <mesh position={[-RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, -LIGHT_GUIDE_Z]} raycast={noRaycast}>
+        <boxGeometry args={[0.11, LIGHT_GUIDE_HEIGHT, 0.11]} />
+        <meshBasicMaterial
+          ref={backGuideMatLeft}
+          color="#10b981"
+          toneMapped={false}
+          transparent
+          opacity={GUIDE_BASE_OPACITY}
+        />
+      </mesh>
+      <mesh position={[RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, -LIGHT_GUIDE_Z]} raycast={noRaycast}>
+        <boxGeometry args={[0.11, LIGHT_GUIDE_HEIGHT, 0.11]} />
+        <meshBasicMaterial
+          ref={backGuideMatRight}
           color="#10b981"
           toneMapped={false}
           transparent
