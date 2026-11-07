@@ -32,7 +32,14 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
-public/models
+# ---- 大体积二进制资产（不入库；建模规范文档必须入库）----
+# 只忽略模型二进制本体：.glb 动辄数十 MB，属美术资产。
+# 但 README_BLENDER_SPEC.md 是建模契约文档，必须与代码同源，故用否定规则保留。
+public/models/*.glb
+public/models/*.gltf
+public/models/*.bin
+public/models/*.fbx
+!public/models/README_BLENDER_SPEC.md
 public/onnx
 
 # ---- 本地审查/规划文档（外部输入，不纳入版本库）----
