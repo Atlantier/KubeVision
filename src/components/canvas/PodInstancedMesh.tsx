@@ -145,8 +145,57 @@ const CRASH_JITTER_RATE = 35;
 const CRASH_PULSE_AMPLITUDE = 0.25;
 const CRASH_PULSE_RATE = 14;
 
-/** 过滤不匹配实例的目标缩放（契约指定值：缩小至 0.15 突出目标容器） */
-const FILTER_DIM_SCALE = 0.15;
+/**
+ * 过滤不匹配实例的目标缩放 —— **仅在场景中确有匹配项时使用**。
+ *
+ * 【旧值 0.15 为何是缺陷】早期无论有无匹配都一刀切缩到 0.15。
+ * 稳态下用户点「调度中」（匹配 0 个），24 个正常容器全部被缩成小碎点，
+ * 机架瞬间空荡——用户既没得到"当前无此状态容器"的信息，
+ * 还以为是自己误触了某种"清空"操作。这是本轮要修的核心 bug。
+ */
+const FILTER_DIM_SCALE = 0.22;
+
+/** 匹配实例的高亮放大倍数（让被筛中的容器在机架里明确"跳出来"） */
+const FILTER_MATCH_SCALE = 1.12;
+
+/**
+ * **零匹配**时的"幽灵巡检尺寸" —— 全部实例保持 0.68。
+ *
+ * 【为何不做成 0】0 匹配不代表"这个维度不存在"，而是"当前没有容器处于该状态"。
+ * 保持 0.68 的半透明体积感，机架依旧是完整的三个机柜，
+ * 用户一眼能看出"容器都在，只是当前筛选无命中"，而不是"容器消失了"。
+ */
+const FILTER_NO_MATCH_SCALE = 0.68;
+
+/** 零匹配时颜色向冷灰蓝收敛的目标色（表达"当前过滤条件下无匹配"） */
+const COLOR_FILTER_GHOST = new THREE.Color('#334155');
+
+/** 零匹配时向冷灰蓝收敛的比例（50%：既明显改变色调，又保留状态色的余韵） */
+const FILTER_GHOST_COLOR_MIX = 0.5;
+
+/* ---- 过滤切换扫描波（Scanline Wave）---- */
+
+/**
+ * 扫描波总时长（毫秒）。
+ *
+ * 【解决什么】稳态下「全部 24」与「运行中 24」的 3D 画面**完全一致**
+ * （都是 24 个绿色容器），用户切换时看不出任何变化 → 以为按钮失效。
+ * 扫描波给每次切换一个**明确的时间性反馈**：650ms 内所有匹配实例
+ * 自下而上依次跃升 +12% 并泛青翠光泽，点一次就看得见一次。
+ */
+const FILTER_WAVE_DURATION_MS = 650;
+
+/** 扫描波的高度跃升幅度（+12%，只作用于 Y 轴：表现为"起跳"而非整体变大） */
+const FILTER_WAVE_SCALE_AMPLITUDE = 0.12;
+
+/** 扫描波的颜色叠加基色（青翠：#6ee7b7，与自愈脉冲的白青形成区分） */
+const COLOR_FILTER_WAVE = new THREE.Color('#6ee7b7');
+
+/** 扫描波颜色叠加强度（峰值时约 60% 混入，足够醒目但不淹没状态色） */
+const FILTER_WAVE_COLOR_STRENGTH = 0.6;
+
+/** 扫描波的层间错峰强度：底部实例先响应，顶部实例延后（0.5 = 半个波形） */
+const FILTER_WAVE_TIER_SKEW = 0.5;
 
 /**
  * 悬停标签相对槽位中心的抬升量（世界单位）。
@@ -185,17 +234,34 @@ const RACK_COUNT = 3;
 interface PodSlotPose {
   readonly position: readonly [number, number, number];
   readonly rotationY: number;
+  /**
+   * 层位归一化高度：0 = 机架最低层，1 = 最高层。
+   * 扫描波据此做"自下而上"的错峰延时（底部先亮、顶部后亮）。
+   */
+  readonly tierNorm: number;
 }
 
 const SLOT_POSES: readonly PodSlotPose[] = (() => {
-  const poses: PodSlotPose[] = [];
+  const raw: Array<{ position: readonly [number, number, number]; rotationY: number }> = [];
   for (let rack = 0; rack < RACK_COUNT; rack++) {
     for (let slot = 0; slot < SLOTS_PER_RACK; slot++) {
       const transform = getPodWorldTransform(rack, slot);
-      poses.push({ position: transform.position, rotationY: transform.rotationY });
+      raw.push({ position: transform.position, rotationY: transform.rotationY });
     }
   }
-  return poses;
+  /* 一次求极值后归一化，供扫描波做层间错峰（模块级求值，运行时零开销） */
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const item of raw) {
+    if (item.position[1] < minY) minY = item.position[1];
+    if (item.position[1] > maxY) maxY = item.position[1];
+  }
+  const span = maxY - minY > 0 ? maxY - minY : 1;
+  return raw.map((item): PodSlotPose => ({
+    position: item.position,
+    rotationY: item.rotationY,
+    tierNorm: (item.position[1] - minY) / span,
+  }));
 })();
 
 /**
@@ -372,8 +438,27 @@ export default function PodInstancedMesh() {
   /* ---- 响应轨细粒度订阅（仅过滤器一个字段）+ ref 镜像 ---- */
   const statusFilter = useClusterStore((s): StatusFilter => s.statusFilter);
   const statusFilterRef = useRef<StatusFilter>(statusFilter);
+
+  /**
+   * 过滤切换时刻（performance.now 毫秒时间戳），驱动扫描波。
+   *
+   * 【为何用 performance.now 而非 Date.now】扫描波是纯渲染期动画，
+   * 必须与 `state.clock`（同为 performance 时间域）一致；
+   * 用 Date.now 会跨越到墙钟域，与 useFrame 的 clock 存在相位漂移。
+   */
+  const filterSwitchTimeRef = useRef<number>(Number.NEGATIVE_INFINITY);
+
+  /** 首次挂载不算"用户切换"，避免页面加载时误触发一次全场景扫描波 */
+  const filterWaveArmedRef = useRef<boolean>(false);
+
   useEffect(() => {
     statusFilterRef.current = statusFilter;
+    /* 首个 effect 只做镜像，不触发扫描波 */
+    if (!filterWaveArmedRef.current) {
+      filterWaveArmedRef.current = true;
+      return;
+    }
+    filterSwitchTimeRef.current = performance.now();
   }, [statusFilter]);
 
   /* ---- 选中动作（点击 Pod → 相机特写聚焦的唯一写入口） ---- */
@@ -620,6 +705,31 @@ export default function PodInstancedMesh() {
     const healedPodIds = useClusterStore.getState().healedPodIds;
     const nowMs = Date.now();
 
+    /**
+     * ---- 过滤上下文：匹配计数 + 扫描波进度 ----
+     *
+     * 【每帧统计 matchedCount】容器状态会随混沌演练变化，
+     * 因此"当前筛选是否有匹配"必须逐帧判断，不能用订阅值缓存。
+     * 24 次字符串比较的开销可忽略（远小于一次 setMatrixAt）。
+     *
+     * 【零匹配分支】matchedCount === 0 时**绝不能**沿用 0.22 的缩小逻辑：
+     * 那会把 24 个正常容器一起缩成小碎点，机架看起来像被清空了。
+     */
+    let matchedCount = 0;
+    if (filter !== 'ALL') {
+      for (let i = 0; i < count; i++) {
+        if (pods[i].status === filter) matchedCount += 1;
+      }
+    }
+    const hasMatch = filter === 'ALL' || matchedCount > 0;
+
+    /* 扫描波：切换后 650ms 内的归一化进度；窗口外为负值表示"不激活" */
+    const waveElapsedMs = performance.now() - filterSwitchTimeRef.current;
+    const waveProgress =
+      waveElapsedMs >= 0 && waveElapsedMs < FILTER_WAVE_DURATION_MS
+        ? waveElapsedMs / FILTER_WAVE_DURATION_MS
+        : -1;
+
     for (let i = 0; i < count; i++) {
       const pod = pods[i];
 
@@ -677,15 +787,60 @@ export default function PodInstancedMesh() {
         }
       }
 
-      /* ---- 3. 过滤聚焦：不匹配实例平滑缩小至 0.15 ---- */
+      /* ---- 3. 过滤聚焦：三态目标缩放（匹配 / 无匹配 / 零匹配幽灵态） ----
+       *
+       * 【三态设计】
+       * a) filter === 'ALL'                     → 全部 1.0（常态）
+       * b) filter ≠ ALL 且 matchedCount > 0     → 匹配 1.12 高亮、其余 0.22 退让
+       * c) filter ≠ ALL 且 matchedCount === 0   → **全部 0.68** 幽灵巡检尺寸，
+       *    颜色向冷灰蓝收敛 50%，表达"当前过滤条件下无匹配项"。
+       *    这是修复"点异常状态后整排容器消失"的关键分支：
+       *    没有匹配 ≠ 容器不存在，机架必须保持完整体积感。
+       */
       const matchesFilter = filter === 'ALL' || pod.status === filter;
-      const filterTarget = matchesFilter ? 1 : FILTER_DIM_SCALE;
+      let filterTarget: number;
+      if (filter === 'ALL') {
+        filterTarget = 1;
+      } else if (hasMatch) {
+        filterTarget = matchesFilter ? FILTER_MATCH_SCALE : FILTER_DIM_SCALE;
+      } else {
+        filterTarget = FILTER_NO_MATCH_SCALE;
+      }
       const currentFilterScale =
         filterScaleBuffer[i] + (filterTarget - filterScaleBuffer[i]) * scaleAlpha;
       filterScaleBuffer[i] = currentFilterScale;
       scaleX *= currentFilterScale;
       scaleY *= currentFilterScale;
       scaleZ *= currentFilterScale;
+
+      /* ---- 3b. 零匹配：全体颜色向冷灰蓝收敛（平滑，由颜色阻尼自然过渡） ---- */
+      if (!hasMatch) {
+        tempTargetColor.lerp(COLOR_FILTER_GHOST, FILTER_GHOST_COLOR_MIX);
+      }
+
+      /* ---- 3c. 扫描波：切换过滤器后 650ms 内的自下而上充能 ---- */
+      if (waveProgress >= 0) {
+        /*
+         * 【层间错峰数学】把全局进度按实例层位延后：
+         *   local = clamp(global · 1.5 − tierNorm · 0.5)
+         * 底部实例（tierNorm=0）在 global=0 时立刻起跳，
+         * 顶部实例（tierNorm=1）要等到 global≈0.33 才开始，
+         * 于是整列容器呈现"自下而上扫过"的波浪感，而非齐步跳。
+         *
+         * 【包络】wave = sin(local·π)：两端为 0、中段为 1，
+         * 因此起跳与回落都无阶跃（与自愈脉冲同一包络设计）。
+         */
+        const localProgress = Math.min(
+          1,
+          Math.max(0, waveProgress * 1.5 - pose.tierNorm * FILTER_WAVE_TIER_SKEW),
+        );
+        const wave = Math.sin(localProgress * Math.PI);
+        if (wave > 0) {
+          /* 只放大 Y：表现为"向上跳一下"，而不是整体膨胀 */
+          scaleY *= 1 + FILTER_WAVE_SCALE_AMPLITUDE * wave;
+          tempTargetColor.lerp(COLOR_FILTER_WAVE, FILTER_WAVE_COLOR_STRENGTH * wave);
+        }
+      }
 
       /*
        * ---- 4. 自愈充能脉冲（点击自愈 → 3D 腔体瞬间点亮）----

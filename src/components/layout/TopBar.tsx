@@ -257,19 +257,28 @@ export function HealthRingBadge({
  * 1. **不再画边框**：border 由父级凹槽容器统一提供，此处只负责内容与状态色。
  * 2. **激活态由父级滑块承载**：本组件只负责文字提亮，
  *    滑块（bg-white/[0.09]）由 StatusFilterTrack 用 layoutId 渲染在其下方。
- * 3. **计数为 0 且未选中时自动降级**：文字降到 `text-slate-600` 且计数字隐藏，
- *    让稳态顶栏保持安静——只有真正有数据的项才占据视觉权重。
- * 4. **计数 > 0 的异常状态给强调色**：绯红/琥珀的文字与角标底色。
+ * 3. **数字角标恒显示（含 0）**：早期实现把 0 计数项的数字**隐藏**了，
+ *    结果用户无从知道「调度中 / 崩溃重启 / 内存溢出」当前到底是 0 个还是没统计——
+ *    看上去像三个坏掉的按钮。现在始终展示数字：
+ *    - 0 → 低对比 `text-slate-600` + 极淡底色（明确"这里是 0"，不抢视线）；
+ *    - >0 的异常态 → 对应状态色（琥珀/绯红）+ 呼吸脉冲（提示"这里有东西"）。
+ * 4. **点击即时反馈**：点击由父级统一处理（切换过滤器 + 终端审计回显），
+ *    本组件只负责视觉与无障碍语义。
  */
 export function StatusFilterPill({ filter, label, count, active, onSelect }: StatusFilterPillProps) {
   const alertClass = FILTER_ALERT_CLASS[filter];
   const alertBadgeClass = FILTER_ALERT_BADGE_CLASS[filter];
-  const isZero = count === 0 && filter !== 'ALL';
+  const isZero = count === 0;
+
+  /** 数量 > 0 且属于异常状态时，角标带呼吸脉冲（提示有真实数据） */
+  const isAlertWithCount = count > 0 && alertBadgeClass !== undefined;
 
   return (
     <button
       type="button"
       aria-pressed={active}
+      aria-label={`${label}，${count} 个容器`}
+      title={`${label} · 匹配 ${count} 个容器`}
       onClick={(): void => onSelect(filter)}
       className={cn(
         'relative z-10 flex shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-md px-2 py-1',
@@ -277,7 +286,7 @@ export function StatusFilterPill({ filter, label, count, active, onSelect }: Sta
         // ---- 激活态：文字提亮（滑块由父级渲染） ----
         active
           ? 'text-slate-100'
-          : // ---- 零计数降级：极低对比，不抢视线 ----
+          : // ---- 零计数：低对比但仍可点（点了会看到"无匹配"说明） ----
             isZero
             ? 'text-slate-600 hover:text-slate-400'
             : // ---- 有数据未选中：常规次级文字，异常态带强调色 ----
@@ -286,22 +295,23 @@ export function StatusFilterPill({ filter, label, count, active, onSelect }: Sta
     >
       <span>{label}</span>
       {/*
-       * 计数值：零计数时**完全隐藏**（不是显示 0）。
-       * 一排 "0 0 0" 会让顶栏看起来像监控仪表盘的模板占位，
-       * 隐藏后稳态只剩「全部 24」这一个有效数字，信息密度反而更高。
+       * 计数值：**恒显示**。
+       * 一排 `24 24 0 0 0` 恰好是对当前集群构成的完整描述——
+       * 隐藏 0 反而让用户以为按钮失效，这正是本次要修的交互缺陷。
        */}
-      {count > 0 ? (
-        <span
-          className={cn(
-            'rounded px-1 py-px text-[10px] tabular-nums',
-            active
+      <span
+        className={cn(
+          'rounded px-1 py-px text-[10px] tabular-nums transition-colors',
+          count === 0
+            ? 'bg-white/[0.03] text-slate-600'
+            : active
               ? 'bg-white/[0.08] text-slate-200'
-              : alertBadgeClass ?? 'bg-white/[0.04] text-slate-500',
-          )}
-        >
-          {count}
-        </span>
-      ) : null}
+              : alertBadgeClass ?? 'bg-white/[0.04] text-emerald-300/90',
+          isAlertWithCount && !active && 'animate-glow-pulse',
+        )}
+      >
+        {count}
+      </span>
     </button>
   );
 }
@@ -641,6 +651,7 @@ export default function TopBar() {
   const setMode = useClusterStore((s): ((mode: ConnectionMode) => void) => s.setConnectionMode);
   const setChaosModalOpen = useClusterStore((s): ((open: boolean) => void) => s.setChaosModalOpen);
   const setPerfHudOpen = useClusterStore((s): ((open: boolean) => void) => s.setPerfHudOpen);
+  const appendTerminalLog = useClusterStore((s): ((line: string) => void) => s.appendTerminalLog);
 
   /* ---- 派生数据：分状态计数（快照引用变更才重算） ---- */
   const countByStatus = useMemo((): Readonly<Record<PodStatus | 'ALL', number>> => {
@@ -657,6 +668,31 @@ export default function TopBar() {
   }, [snapshot.pods]);
 
   /* ---- 战术回调（useCallback 稳定引用，避免子组件无谓重渲染） ---- */
+  /**
+   * handleSelectFilter —— 切换视图过滤 + 写入终端审计。
+   *
+   * 【为何要回显终端】此前点击过滤按钮只改一个 store 字段，UI 上除了滑块位移
+   * 没有任何可见反馈；而 3D 场景在「全部 / 运行中」之间切换时视觉几乎无变化
+   * （稳态下两者都是 24 个绿色容器）。用户因此判断"按钮是坏的"。
+   *
+   * 审计日志给出三重确定信息：切换到了哪个视图、该视图匹配多少容器、
+   * 总数是多少。即使 3D 场景看起来没变，用户也能立刻确认操作**已经生效**，
+   * 并且能理解"为什么没变"（匹配 24/24 与全部等价）。
+   */
+  const handleSelectFilter = useCallback(
+    (filter: StatusFilter): void => {
+      selectFilter(filter);
+      const option = STATUS_FILTER_OPTIONS.find(
+        (item): boolean => item.filter === filter,
+      );
+      const label = option?.label ?? filter;
+      appendTerminalLog(
+        `[HUD-FILTER] 视图过滤器已切换 -> ${label} (匹配容器: ${countByStatus[filter]}/${countByStatus.ALL})`,
+      );
+    },
+    [selectFilter, appendTerminalLog, countByStatus],
+  );
+
   const handleTerminateChaos = useCallback((): void => {
     setChaos('NONE');
   }, [setChaos]);
@@ -725,7 +761,7 @@ export default function TopBar() {
 
       {/* ============ 中翼：分段过滤轨道 + QPS 裸表 + ⌘K（横向滚动） ============ */}
       <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <StatusFilterTrack activeFilter={statusFilter} counts={countByStatus} onSelect={selectFilter} />
+        <StatusFilterTrack activeFilter={statusFilter} counts={countByStatus} onSelect={handleSelectFilter} />
 
         <QpsBoard qps={snapshot.totalQps} />
 

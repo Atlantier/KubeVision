@@ -39,12 +39,13 @@
  * 偏移也复位到标准机位）——「关闭卡片 = 退出巡检会话」的语义一致性。
  */
 
-import { useCallback, useId, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
   ChevronDown,
   Cpu,
+  Filter,
   LayoutGrid,
   MemoryStick,
   MousePointerClick,
@@ -54,6 +55,7 @@ import {
   ShieldCheck,
   Sparkles,
   X,
+  Zap,
   ZoomIn,
 } from 'lucide-react';
 
@@ -62,7 +64,7 @@ import { useClusterStore } from '@/store/useClusterStore';
 import { MASTER_ENTITY_ID } from '@/types/canvas';
 import { dispatchViewPreset } from '@/utils/viewPresetBus';
 import type { PodEntity, PodStatus, TelemetrySnapshot, WorkerNodeEntity } from '@/types/cluster';
-import type { SelectedEntityType } from '@/types/store';
+import type { SelectedEntityType, StatusFilter } from '@/types/store';
 import type {
   EntityInspectView,
   GestureHintItem,
@@ -963,6 +965,149 @@ function MiniGauge({
 }
 
 /* ========================================================================== */
+/* 子组件：当前筛选视图横幅                                                     */
+/* ========================================================================== */
+
+/**
+ * 筛选值 → 横幅展示元数据（中文名 + K8s 原始枚举）。
+ *
+ * 【为何同时给中英双语】中文负责扫读，括号里的原始枚举负责与 kubectl 对照：
+ * 值班人员看到「调度中 (Pending)」能立刻对上 `kubectl get pods` 的 STATUS 列。
+ */
+const FILTER_BANNER_META: Readonly<
+  Record<
+    Exclude<StatusFilter, 'ALL'>,
+    { readonly label: string; readonly raw: string }
+  >
+> = {
+  Running: { label: '运行中', raw: 'Running' },
+  Pending: { label: '调度中', raw: 'Pending' },
+  CrashLoopBackOff: { label: '崩溃重启', raw: 'CrashLoopBackOff' },
+  OOMKilled: { label: '内存溢出', raw: 'OOMKilled' },
+  Terminating: { label: '终止中', raw: 'Terminating' },
+};
+
+/**
+ * FilterStatusBanner —— 3D 视口顶部中央的「当前筛选视图」浮动状态条。
+ *
+ * 【解决什么】顶栏筛选按钮生效后，视口里没有任何文字说明当前处于哪个视图：
+ * - 稳态下「全部」与「运行中」的画面**完全一致**（24 个绿容器），
+ *   用户点完不知道自己是否切换成功；
+ * - 点「调度中」这类 0 匹配项时，容器缩小（旧实现）或幽灵化（新实现），
+ *   但没有任何地方告诉他"这是因为当前没有该状态的容器"。
+ *
+ * 横幅把这层信息显式化：
+ * - 有匹配 → 青色条：`正在筛选：「运行中」容器 · 共命中 24 / 24 个实例` + 重置入口；
+ * - 零匹配 → 琥珀条：说明当前集群确实没有该状态，并给「注入故障演练」
+ *   与「返回全部视图」两条出路（既解释了现象，又提供了下一步动作）。
+ *
+ * 【只有 statusFilter ≠ 'ALL' 才渲染】全量视图是默认态，常驻说明属于噪音。
+ */
+function FilterStatusBanner() {
+  const statusFilter = useClusterStore((s): StatusFilter => s.statusFilter);
+  const snapshot = useClusterStore((s): TelemetrySnapshot => s.snapshotSummary);
+  const setStatusFilter = useClusterStore(
+    (s): ((filter: StatusFilter) => void) => s.setStatusFilter,
+  );
+  const setChaosModalOpen = useClusterStore(
+    (s): ((open: boolean) => void) => s.setChaosModalOpen,
+  );
+
+  /**
+   * ESC 返回全部视图。
+   *
+   * 【为何要判 defaultPrevented 与输入焦点】全局 ESC 栈上已有
+   * 「命令面板 / 混沌模态 / 抽屉」等更高层级的消费者，它们会先处理并
+   * preventDefault；这里只在无人认领时兜底，避免"关掉弹窗的同时
+   * 顺手把过滤器也重置了"这种连带操作。
+   */
+  useEffect(() => {
+    if (statusFilter === 'ALL') return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+      setStatusFilter('ALL');
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return (): void => window.removeEventListener('keydown', onKeyDown);
+  }, [statusFilter, setStatusFilter]);
+
+  /* 全量视图：默认态，不渲染任何说明 */
+  if (statusFilter === 'ALL') return null;
+
+  const meta = FILTER_BANNER_META[statusFilter];
+  const total = snapshot.pods.length;
+  const matched = snapshot.pods.filter((pod): boolean => pod.status === statusFilter).length;
+  const isEmpty = matched === 0;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -10 }}
+      transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+      role="status"
+      aria-live="polite"
+      className={cn(
+        'kv-panel pointer-events-auto flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-2 rounded-full px-3 py-1.5',
+        isEmpty ? 'border-amber-500/45' : 'border-cyan-500/40',
+      )}
+    >
+      <Filter
+        className={cn('h-3 w-3 shrink-0', isEmpty ? 'text-amber-400' : 'text-cyan-400')}
+        aria-hidden
+      />
+
+      {isEmpty ? (
+        <span className="font-mono text-[11px] leading-tight text-amber-300">
+          当前集群无处于「{meta.label} ({meta.raw})」状态的容器 ({matched} / {total})
+        </span>
+      ) : (
+        <span className="font-mono text-[11px] leading-tight text-cyan-300">
+          正在筛选：「{meta.label}」容器 · 共命中 {matched} / {total} 个实例
+        </span>
+      )}
+
+      {isEmpty ? (
+        <>
+          {/* 零匹配：给"注入故障演练"这条出路，让用户能制造出该状态 */}
+          <button
+            type="button"
+            onClick={(): void => setChaosModalOpen(true)}
+            className="flex shrink-0 items-center gap-1 rounded-full border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] tracking-tight text-amber-300 transition-colors hover:bg-amber-500/20"
+          >
+            <Zap className="h-2.5 w-2.5" aria-hidden />
+            注入故障演练
+          </button>
+          <button
+            type="button"
+            onClick={(): void => setStatusFilter('ALL')}
+            className="shrink-0 rounded-full border border-white/[0.08] px-2 py-0.5 font-mono text-[10px] tracking-tight text-slate-400 transition-colors hover:border-white/[0.16] hover:text-slate-200"
+          >
+            返回全部视图
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={(): void => setStatusFilter('ALL')}
+          className="shrink-0 rounded-full border border-cyan-500/40 px-2 py-0.5 font-mono text-[10px] tracking-tight text-cyan-300 transition-colors hover:bg-cyan-500/15"
+        >
+          重置为全部 (ESC)
+        </button>
+      )}
+    </motion.div>
+  );
+}
+
+/* ========================================================================== */
 /* NodeInspectHUD 主体                                                         */
 /* ========================================================================== */
 
@@ -1062,10 +1207,24 @@ export default function NodeInspectHUD({ className }: NodeInspectHUDProps) {
   }, [view, healEntity, appendTerminalLog]);
 
   return (
-    <div
-      className={cn('pointer-events-none absolute left-3 top-3 z-20 max-w-[calc(100%-1.5rem)]', className)}
-      aria-label="实体巡检 HUD"
-    >
+    <>
+      {/*
+       * ---- 当前筛选视图横幅（视口顶部中央） ----
+       *
+       * 独立于左上角的巡检卡：筛选是"全局视图状态"，与"某个实体被选中"
+       * 是两个正交的维度，放在中央顶部才不会与实体探针争位。
+       * z-20 与探针卡同级（高于画布内 <Html> 的 [10,0]）。
+       */}
+      <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2">
+        <AnimatePresence>
+          <FilterStatusBanner />
+        </AnimatePresence>
+      </div>
+
+      <div
+        className={cn('pointer-events-none absolute left-3 top-3 z-20 max-w-[calc(100%-1.5rem)]', className)}
+        aria-label="实体巡检 HUD"
+      >
       <AnimatePresence mode="wait">
         {view === null ? (
           <motion.div
@@ -1093,7 +1252,8 @@ export default function NodeInspectHUD({ className }: NodeInspectHUDProps) {
             />
           </motion.div>
         )}
-      </AnimatePresence>
-    </div>
+        </AnimatePresence>
+      </div>
+    </>
   );
 }
