@@ -31,24 +31,30 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import dynamic from 'next/dynamic';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
+  Activity,
   AlertTriangle,
   ArrowUpRight,
   Bot,
   Camera,
   CheckCircle2,
   ChevronDown,
+  Cpu,
   Eraser,
+  Flame,
   Info,
   Loader2,
   Mic,
+  Network,
   RotateCw,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
   Square,
+  Terminal,
   Volume2,
   VolumeX,
   X,
+  type LucideIcon,
 } from 'lucide-react';
 
 import ActionConfirm from '@/components/ai/GenUI/ActionConfirm';
@@ -109,25 +115,78 @@ function AuditorSkeleton() {
 /* ========================================================================== */
 
 /**
- * 战术指令表（空状态 2×2 启动舱的数据源）。
+ * 战术指令条目（强类型，替代早期 `icon: string` 的 Emoji 方案）。
  *
- * 【两个字段分工】
- * - `label`：卡片上展示的**短标题**（6~10 字，扫读友好）；
- * - `text` ：真实发送给模型的**完整指令**（保留全部限定词，
- *   让模型知道要做什么、以什么形式产出）。
+ * 【为何彻底废除 Emoji】早期用四枚彩色 Emoji（听诊器 / 爆炸 / 天平 / 地球）指代指令，
+ * 在深空运维台里是**最强的"AI 模板感"信号**：Emoji 由系统字体渲染，
+ * 色调、笔画、光栅化方式与周围的等宽细线图标完全不在一个视觉体系内，
+ * 一眼就能看出是"随手贴上去的"。本项目其余部分（顶栏、探针卡、卡片）
+ * 全部使用单色 Lucide 矢量图标，Emoji 属于异类。
  *
- * 早期版本只有 `text`，直接把整句当按钮文案显示，导致胶囊行文字过长、
- * 在窄抽屉里换行成两排。拆分后卡片清爽，而语义一点没丢。
+ * 【改用「战术编号 + 单色矢量图标」】编号（CMD-01~04）提供工业仪表式的
+ * 序号感与可引用性（文档/答辩里可以直说"点 CMD-02"），图标只承担语义速读，
+ * 不争抢注意力。
  */
-const QUICK_PROMPTS: ReadonlyArray<{
-  readonly icon: string;
+interface TacticalCommand {
+  /** 战术编号：卡片左上角的等宽徽标 */
+  readonly id: string;
+  /** 指令条上的短码：仅两位数，无需 `CMD-` 前缀 */
+  readonly code: string;
+  /** 单色矢量图标组件 */
+  readonly icon: LucideIcon;
+  /** 主标题（卡片） */
   readonly label: string;
+  /** 技术副标题（卡片，一行） */
+  readonly subtitle: string;
+  /** 指令条上的极简短名 */
+  readonly short: string;
+  /** 真实发送给模型的完整指令（保留全部限定词） */
   readonly text: string;
-}> = [
-  { icon: '🩺', label: '全面巡检集群异常', text: '全面巡检当前集群异常' },
-  { icon: '💥', label: '诊断 OOM 并自愈', text: '诊断 OOMKilled 根因并生成自愈方案' },
-  { icon: '⚖️', label: '分析节点负载均衡', text: '结合 3D 视图分析节点负载均衡度' },
-  { icon: '🌐', label: '评估网络吞吐瓶颈', text: '评估当前网络吞吐瓶颈' },
+}
+
+/**
+ * 战术指令表（空状态 2×2 矩阵 + 对话态指令条的数据源）。
+ *
+ * 【text 与展示文案分离】展示文案要短，发送给模型的指令要保留限定词，
+ * 否则模型不知道该产出什么形式。两者分开后卡片清爽、指令语义完整。
+ */
+const QUICK_PROMPTS: readonly TacticalCommand[] = [
+  {
+    id: 'CMD-01',
+    code: '01',
+    icon: Activity,
+    label: '全集群健康巡检',
+    subtitle: '扫描 3 节点 24 容器水位与 QoS 裕量',
+    short: '集群巡检',
+    text: '全面巡检当前集群健康状态',
+  },
+  {
+    id: 'CMD-02',
+    code: '02',
+    icon: Flame,
+    label: 'OOM 内存溢出排障',
+    subtitle: '定位 Cgroup Exit 137 容器并生成自愈方案',
+    short: 'OOM 排障',
+    text: '诊断 OOMKilled 根因并生成自愈方案',
+  },
+  {
+    id: 'CMD-03',
+    code: '03',
+    icon: Cpu,
+    label: '节点算力均衡分析',
+    subtitle: '评估 CFS 节流风险与跨机架负载偏斜',
+    short: '负载均衡',
+    text: '结合 3D 视图分析节点负载均衡度',
+  },
+  {
+    id: 'CMD-04',
+    code: '04',
+    icon: Network,
+    label: 'CNI 网络链路诊断',
+    subtitle: '探测 VXLAN 隧道丢包与跨节点吞吐瓶颈',
+    short: '网络诊断',
+    text: '评估当前网络吞吐瓶颈',
+  },
 ];
 
 /** 3D 视口截图压缩质量（JPEG 0.8：清晰度与体积的平衡点） */
@@ -1159,8 +1218,8 @@ export default function CopilotDrawer() {
             isStreaming: false,
             text:
               m.text.length > 0
-                ? `${m.text}\n\n> ⚠️ 诊断流意外中断：${reason}`
-                : `> ⚠️ 诊断请求失败：${reason}`,
+                ? `${m.text}\n\n> [WARN] 诊断流意外中断：${reason}`
+                : `> [ERR] 诊断请求失败：${reason}`,
             /* 标记失败态，气泡底部渲染"一键重试" */
             failed: true,
             failedPrompt: text,
@@ -1305,7 +1364,7 @@ export default function CopilotDrawer() {
       detailParts.push(`集群健康度已提升至 ${snapshot.clusterHealthScore.toFixed(0)} 分`);
 
       const summary =
-        `✅ [MCP Verification] 目标容器 \`${targetLabel}\` 已通过 ` +
+        `[OK] [MCP Verification] 目标容器 \`${targetLabel}\` 已通过 ` +
         `\`mcp://k8s-cluster/tools/${actionType}\` ${detailParts.join('，')}。`;
 
       /* 追加为一条独立的系统消息（非 AI 推理消息，不带思考链/卡片） */
@@ -1329,7 +1388,7 @@ export default function CopilotDrawer() {
   /* ========================================================================== */
 
   /**
-   * 消费外部快捷指令（如 3D 画布工具条的"📸 快照诊断"经 triggerQuickPrompt 写入）。
+   * 消费外部快捷指令（如 3D 画布工具条的"快照诊断"经 triggerQuickPrompt 写入）。
    * 读取后立即清空 store 载荷，防止重复触发。
    */
   useEffect(() => {
@@ -1592,7 +1651,7 @@ export default function CopilotDrawer() {
            * ---- 极简单行状态栏（h-8）----
            *
            * 【本轮删掉的两样东西】
-           * 1. `{ttsEnabled ? '🔊 tts 已开启 · 根因诊断将语音播报' : '🔇 tts 已关闭'}`
+           * 1. TTS 状态文字行（喇叭图标 + 「tts 已开启 / 已关闭」文案）
            *    整行文字。它把"一个开关的当前状态"用一整行来复述，而开关本身
            *    就在旁边（图标按钮的选中态已经说明了状态）。这是纯冗余信息，
            *    却常年占据 32px 高度。**删除，不是折叠。**
@@ -1681,38 +1740,56 @@ export default function CopilotDrawer() {
                 </div>
 
                 {/*
-                 * 2×2 指令卡片网格。
-                 * 每张卡片右上角带 ↗ 微箭头，暗示"点击后会进入下一层"。
+                 * 2×2 战术指令矩阵（工业风：编号 + 单色矢量图标，零 Emoji）。
+                 *
+                 * 卡片结构：左上 `CMD-0X` 等宽编号 + 14px 矢量图标容器，
+                 * 右上 ArrowUpRight 微箭头；下方主标题 + 一行技术副标题。
                  * 流式生成中禁用（避免并发请求打架）。
                  */}
                 <div className="grid w-full grid-cols-2 gap-2">
-                  {QUICK_PROMPTS.map((prompt): React.ReactElement => (
-                    <button
-                      key={prompt.text}
-                      type="button"
-                      onClick={(): void => void sendMessage(prompt.text)}
-                      disabled={isStreaming}
-                      title={prompt.text}
-                      className={cn(
-                        'group relative rounded-lg border p-2.5 text-left transition-all duration-150',
-                        isStreaming
-                          ? 'cursor-not-allowed border-white/[0.04] bg-white/[0.01] opacity-50'
-                          : 'border-white/[0.07] bg-white/[0.025] hover:border-cyan-400/40 hover:bg-white/[0.05]',
-                      )}
-                    >
-                      {/* 右上角微箭头 */}
-                      <ArrowUpRight
-                        className="absolute right-1.5 top-1.5 h-3 w-3 text-slate-600 transition-colors group-hover:text-cyan-400/80"
-                        aria-hidden
-                      />
-                      <span className="text-[13px] leading-none" aria-hidden>
-                        {prompt.icon}
-                      </span>
-                      <span className="mt-1.5 block pr-3 text-[11px] font-medium leading-snug text-slate-300">
-                        {prompt.label}
-                      </span>
-                    </button>
-                  ))}
+                  {QUICK_PROMPTS.map((prompt): React.ReactElement => {
+                    const Icon = prompt.icon;
+                    return (
+                      <button
+                        key={prompt.id}
+                        type="button"
+                        onClick={(): void => void sendMessage(prompt.text)}
+                        disabled={isStreaming}
+                        title={prompt.text}
+                        className={cn(
+                          'group relative rounded-lg border p-2.5 text-left transition-all duration-150',
+                          isStreaming
+                            ? 'cursor-not-allowed border-white/[0.04] bg-white/[0.01] opacity-50'
+                            : 'border-white/[0.07] bg-white/[0.025] hover:border-cyan-400/40 hover:bg-white/[0.05]',
+                        )}
+                      >
+                        {/* 顶部：编号 + 图标容器（左） / 微箭头（右） */}
+                        <div className="flex items-start justify-between gap-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-[10px] tracking-wider text-slate-500">
+                              {prompt.id}
+                            </span>
+                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-800 bg-slate-900/80 text-cyan-400 transition-colors group-hover:border-cyan-400/40 group-hover:text-cyan-300">
+                              <Icon className="h-3.5 w-3.5" aria-hidden />
+                            </span>
+                          </div>
+                          <ArrowUpRight
+                            className="mt-0.5 h-3 w-3 shrink-0 text-slate-600 transition-colors group-hover:text-cyan-400/80"
+                            aria-hidden
+                          />
+                        </div>
+
+                        {/* 主标题 */}
+                        <span className="mt-2 block text-[12px] font-medium leading-snug text-slate-200">
+                          {prompt.label}
+                        </span>
+                        {/* 技术副标题：一行，超出省略，保持卡片等高 */}
+                        <span className="mt-0.5 block truncate text-[11px] leading-snug text-slate-500">
+                          {prompt.subtitle}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ) : (
@@ -1838,7 +1915,54 @@ export default function CopilotDrawer() {
               </div>
             ) : null}
 
-            {/* ---- 中部：无边框 textarea（焦点态由容器统一表达） ---- */}
+            {/*
+               * ---- 战术指令条（对话态专用，展开时为输入框上方一行） ----
+               *
+               * 只在「已有对话 + 用户主动展开」时出现：
+               * - 空状态：由中央 2×2 矩阵承担入口，这里完全不渲染（不重复）；
+               * - 对话态：默认收起，点工具栏「战术指令」才展开，用完即收，
+               *   不常驻占用消息可视区。
+               *
+               * 视觉：纯等宽字体 + 单色矢量图标，无 Emoji。
+               */}
+              <AnimatePresence initial={false}>
+                {messages.length > 0 && isQuickPromptsOpen ? (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.15 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="mb-1.5 flex flex-wrap items-center gap-1 border-b border-white/[0.05] pb-1.5">
+                      {QUICK_PROMPTS.map((prompt): React.ReactElement => {
+                        const Icon = prompt.icon;
+                        return (
+                          <button
+                            key={prompt.id}
+                            type="button"
+                            onClick={(): void => void sendMessage(prompt.text)}
+                            disabled={isStreaming}
+                            title={`${prompt.id} · ${prompt.subtitle}`}
+                            className={cn(
+                              'flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-tight transition-colors',
+                              isStreaming
+                                ? 'cursor-not-allowed border-white/[0.04] text-slate-600'
+                                : 'border-white/[0.07] text-slate-400 hover:border-cyan-400/40 hover:bg-white/[0.03] hover:text-cyan-300',
+                            )}
+                          >
+                            <Icon className="h-2.5 w-2.5 shrink-0" aria-hidden />
+                            <span className="text-slate-600">{prompt.code}</span>
+                            {prompt.short}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+
+              {/* ---- 中部：无边框 textarea（焦点态由容器统一表达） ---- */}
               <textarea
                 value={inputValue}
                 onChange={(e): void => setInputValue(e.target.value)}
@@ -1857,7 +1981,7 @@ export default function CopilotDrawer() {
 
               {/* ---- 底部内嵌工具栏 ---- */}
               <div className="mt-1 flex items-center gap-1">
-                {/* 📸 截取 3D 视口 */}
+                {/* 截取 3D 视口 */}
                 <button
                   type="button"
                   onClick={captureViewport}
@@ -1869,7 +1993,7 @@ export default function CopilotDrawer() {
                   <span className="truncate">截取 3D 视口</span>
                 </button>
 
-                {/* 🎙️ 语音输入 */}
+                {/* 语音输入 */}
                 <button
                   type="button"
                   onClick={toggleListening}
@@ -1893,6 +2017,33 @@ export default function CopilotDrawer() {
                     </span>
                   ) : null}
                 </button>
+
+                {/*
+                 * 【战术指令开关 —— 仅对话态提供】
+                 *
+                 * 空状态时画面中央已有 2×2 战术矩阵，底部再放同一个入口就是
+                 * **同一批指令出现两次**，纯属冗余。因此本按钮只在
+                 * messages.length > 0（已进入对话）时渲染，
+                 * 点击后在输入框上方展开一条极简工业风指令条。
+                 */}
+                {messages.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={(): void => setQuickPromptsOpen((prev): boolean => !prev)}
+                    aria-expanded={isQuickPromptsOpen}
+                    aria-label={isQuickPromptsOpen ? '收起战术指令' : '展开战术指令'}
+                    title="战术指令（Tactical Commands）"
+                    className={cn(
+                      'flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-1 font-mono text-[10px] tracking-tight transition-colors',
+                      isQuickPromptsOpen
+                        ? 'bg-cyan-400/10 text-cyan-300'
+                        : 'text-slate-400 hover:bg-white/[0.05] hover:text-cyan-300',
+                    )}
+                  >
+                    <Terminal className="h-3 w-3 shrink-0" aria-hidden />
+                    <span className="truncate">战术指令</span>
+                  </button>
+                ) : null}
 
                 {/* 弹性间隙：把发送按钮推到最右 */}
                 <span className="min-w-0 flex-1" />
@@ -1938,69 +2089,6 @@ export default function CopilotDrawer() {
                 )}
               </div>
             </div>
-
-            {/*
-               * ---- 快捷指令：仅在已有对话时保留一行极简可折叠入口 ----
-               *
-               * 【为何删掉常驻的 4 个胶囊】空状态下它们与 2×2 战术卡片重复
-               * （同一批指令出现两次）；有对话时它们仍永久占据一整行高度，
-               * 把消息可视区压掉约 32px。两种情形都不该常驻。
-               *
-               * 现在：空状态由 2×2 卡片承担入口（不渲染本区块）；
-               * 有对话时折叠为一行"快捷指令 ▾"，需要时展开。
-               */}
-              {messages.length > 0 ? (
-                <div className="mt-1.5">
-                  <button
-                    type="button"
-                    onClick={(): void => setQuickPromptsOpen((prev): boolean => !prev)}
-                    aria-expanded={isQuickPromptsOpen}
-                    aria-label={isQuickPromptsOpen ? '折叠快捷指令' : '展开快捷指令'}
-                    className="flex items-center gap-1 rounded px-1 py-0.5 font-mono text-[10px] tracking-tight text-slate-500 transition-colors hover:text-slate-300"
-                  >
-                    <ChevronDown
-                      className={cn(
-                        'h-2.5 w-2.5 transition-transform duration-150',
-                        isQuickPromptsOpen ? 'rotate-0' : '-rotate-90',
-                      )}
-                      aria-hidden
-                    />
-                    快捷指令
-                  </button>
-
-                  <AnimatePresence initial={false}>
-                    {isQuickPromptsOpen ? (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        exit={{ opacity: 0, height: 0 }}
-                        transition={{ duration: 0.15 }}
-                        className="overflow-hidden"
-                      >
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {QUICK_PROMPTS.map((prompt): React.ReactElement => (
-                            <button
-                              key={prompt.text}
-                              type="button"
-                              onClick={(): void => void sendMessage(prompt.text)}
-                              disabled={isStreaming}
-                              title={prompt.text}
-                              className={cn(
-                                'rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors',
-                                isStreaming
-                                  ? 'cursor-not-allowed border-white/[0.04] text-slate-600'
-                                  : 'border-white/[0.07] text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
-                              )}
-                            >
-                              <span aria-hidden>{prompt.icon}</span> {prompt.label}
-                            </button>
-                          ))}
-                        </div>
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
-                </div>
-              ) : null}
           </div>
         </div>
       )}
