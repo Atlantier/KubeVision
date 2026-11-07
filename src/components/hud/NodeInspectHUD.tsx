@@ -475,19 +475,35 @@ function deriveEntityView(
 /* ========================================================================== */
 
 /**
- * Sparkline —— 纯 SVG 绘制的实时迷你波形图（描边 + 面积渐变填充）。
+ * Sparkline —— 纯 SVG 绘制的实时迷你波形图（平滑描边 + 面积渐变填充）。
  *
  * 【绘制数学】
  * 1. 值域映射：v ∈ [0,100] → y = H − PAD − (v/100) × (H − 2·PAD)。
  *    减去 PAD 并压缩可用高度，使 100% 峰值与 0% 谷值都不贴边（防削顶）。
  * 2. 横轴等距：n 个点均分宽度，x_i = i × W / (n − 1)。
- * 3. 折线：<polyline points="x0,y0 x1,y1 …"> 描边发光；
- * 4. 面积：闭合路径 M x0,y0 L … L x_{n-1},y_{n-1} L W,H L 0,H Z，
- *    填充指向 <linearGradient>（上方 color@0.45 → 下方 color@0）；
- *    渐变 id 由 useId 生成，避免同页多实例 id 冲突（SVG id 全局唯一）。
- * 5. 末端高亮：最后一个点画实心圆 + 外圈光环，强调「当前值」。
+ * 3. **平滑曲线（本轮核心改动）**：由生硬的 `<polyline>` 折线升级为
+ *    `<path>` 三次贝塞尔（C 指令），用 **Catmull-Rom 样条**插值生成控制点。
+ *    Catmull-Rom 的几何意义是：曲线在 P1 处的切线方向平行于 (P2 − P0)，
+ *    因此相邻线段在节点处**切线连续（C¹）**——这正是示波器轨迹那种
+ *    "不带折角"的柔顺感来源。折线只是 C⁰ 连续，每个采样点都是一个可见拐点。
  *
- * 【为何用 SVG 而非 Canvas】6 点折线用 SVG 开销极低，且能直接复用
+ *    由 Catmull-Rom 转三次贝塞尔的公式（张力 τ = 1 的标准型）：
+ *      对于 P1 → P2 这一段，
+ *        C1 = P1 + (P2 − P0) / 6
+ *        C2 = P2 − (P3 − P1) / 6
+ *      端点处的 P0 / P3 用 P1 / P2 自身顶替（虚拟端点），
+ *      等价于把端点切线压平——这符合"最新值在右端"的读图直觉。
+ *
+ * 4. **控制点纵坐标夹逼**：Catmull-Rom 在剧烈跳变处会产生**过冲（overshoot）**，
+ *    控制点可能落到绘图带之外，曲线就会冲出 PAD 区间甚至越出 viewBox。
+ *    因此把 C1.y / C2.y 夹逼回 [PAD, H − PAD]，保证曲线始终留在安全带内。
+ *    夹逼只在极端跳变时发生，常态下控制点本就落在带内，不影响平滑度。
+ * 5. 面积：复用同一条平滑路径闭合到底边（L W,H → L 0,H → Z），
+ *    填充指向 <linearGradient>（上方 color@0.45 → 下方 color@0），
+ *    渐变 id 由 useId 生成，避免同页多实例 id 冲突（SVG id 全局唯一）。
+ * 6. 末端高亮：最后一个点画实心圆 + 外圈光环，强调「当前值」。
+ *
+ * 【为何用 SVG 而非 Canvas】6 点曲线用 SVG 开销极低，且能直接复用
  * Tailwind 的 currentColor 与 CSS 过渡（stroke 颜色随状态变化时平滑过渡）。
  */
 function Sparkline({ series, width = SPARKLINE_WIDTH, height = SPARKLINE_HEIGHT }: SparklineProps) {
@@ -495,27 +511,66 @@ function Sparkline({ series, width = SPARKLINE_WIDTH, height = SPARKLINE_HEIGHT 
   const rawId = useId();
   const gradientId = `kv-spark-${rawId.replace(/:/g, '')}`;
 
-  const geometry = useMemo((): { readonly line: string; readonly area: string; readonly lastX: number; readonly lastY: number } => {
+  const geometry = useMemo((): {
+    readonly line: string;
+    readonly area: string;
+    readonly lastX: number;
+    readonly lastY: number;
+  } => {
     const values = series.values;
     const count = values.length;
     const usableHeight = height - SPARKLINE_PAD_Y * 2;
     const stepX = count > 1 ? width / (count - 1) : width;
 
-    const points: string[] = [];
-    let lastX = 0;
-    let lastY = height - SPARKLINE_PAD_Y;
+    /* ---- 1. 采样点：等距 x + 线性映射 y ---- */
+    const points: Array<{ readonly x: number; readonly y: number }> = [];
     for (let i = 0; i < count; i++) {
       const x = i * stepX;
       const y = height - SPARKLINE_PAD_Y - (clampPercent(values[i]) / 100) * usableHeight;
-      points.push(`${x.toFixed(2)},${y.toFixed(2)}`);
-      lastX = x;
-      lastY = y;
+      points.push({ x, y });
     }
 
-    /* 面积路径：折线 + 右下角 + 左下角 + 闭合，形成填充区域 */
-    const area = `M ${points[0]} L ${points.slice(1).join(' L ')} L ${width.toFixed(2)},${height} L 0,${height} Z`;
+    const first = points[0];
+    const last = points[points.length - 1];
 
-    return { line: points.join(' '), area, lastX, lastY };
+    /* 防御：0 点（理论上不会出现，values 契约要求长度 ≥ 2） */
+    if (first === undefined || last === undefined) {
+      return { line: '', area: '', lastX: 0, lastY: height - SPARKLINE_PAD_Y };
+    }
+
+    /* 控制点纵坐标的安全带：与采样点的可用高度一致，防过冲越界 */
+    const minY = SPARKLINE_PAD_Y;
+    const maxY = height - SPARKLINE_PAD_Y;
+    const clampY = (v: number): number => Math.min(maxY, Math.max(minY, v));
+
+    /* ---- 2. Catmull-Rom → 三次贝塞尔 ---- */
+    let path = `M ${first.x.toFixed(2)},${first.y.toFixed(2)}`;
+    for (let i = 0; i < points.length - 1; i++) {
+      /* 虚拟端点：首段用 P1 顶替 P0，末段用 P2 顶替 P3 */
+      const p0 = points[i > 0 ? i - 1 : i];
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const p3 = points[i + 2 < points.length ? i + 2 : i + 1];
+
+      /* 标准 Catmull-Rom（张力 1）→ 贝塞尔控制点，除以 6 是公式常数 */
+      const c1x = p1.x + (p2.x - p0.x) / 6;
+      const c1y = clampY(p1.y + (p2.y - p0.y) / 6);
+      const c2x = p2.x - (p3.x - p1.x) / 6;
+      const c2y = clampY(p2.y - (p3.y - p1.y) / 6);
+
+      path +=
+        ` C ${c1x.toFixed(2)},${c1y.toFixed(2)}` +
+        ` ${c2x.toFixed(2)},${c2y.toFixed(2)}` +
+        ` ${p2.x.toFixed(2)},${p2.y.toFixed(2)}`;
+    }
+
+    /* ---- 3. 面积路径：同一条平滑曲线闭合到底边 ---- */
+    const area =
+      `${path}` +
+      ` L ${width.toFixed(2)},${height.toFixed(2)}` +
+      ` L 0,${height.toFixed(2)} Z`;
+
+    return { line: path, area, lastX: last.x, lastY: last.y };
   }, [series.values, width, height]);
 
   return (
@@ -536,9 +591,9 @@ function Sparkline({ series, width = SPARKLINE_WIDTH, height = SPARKLINE_HEIGHT 
       </defs>
       {/* 面积填充（引用渐变，形成由浓到透的体积感） */}
       <path d={geometry.area} fill={`url(#${gradientId})`} stroke="none" />
-      {/* 折线描边（发光由 SVG 自身 filter 之外的浅色 stroke 叠加实现） */}
-      <polyline
-        points={geometry.line}
+      {/* 平滑曲线描边（C 指令贝塞尔，节点处切线连续） */}
+      <path
+        d={geometry.line}
         fill="none"
         stroke={series.color}
         strokeWidth={1.5}
@@ -569,20 +624,37 @@ function Sparkline({ series, width = SPARKLINE_WIDTH, height = SPARKLINE_HEIGHT 
  *
  * 现在改为：**常态只有一行紧凑胶囊**（三个色点 + "读图说明"），
  * 点击才展开完整图例。既保留了新用户的可发现性（色点本身就是图例），
- * 又把稳态下的画面占用从 ~200px 高压缩到 ~24px。
+ * 又把稳态下的画面占用从 ~200px 高压缩到 ~28px。
+ *
+ * 【本轮：外框升级为悬浮胶囊徽章】
+ * 原先套的是通用 `.kv-panel`（含纵向渐变 + 大投影），在收起态像一块
+ * 被截断的矩形卡片，与它自身"一行小胶囊"的体量不匹配。
+ * 现改为专用胶囊外壳：`rounded-full border-white/[0.08] bg-slate-950/75
+ * backdrop-blur-md`——半透明深底 + 毛玻璃让背后的 3D 场景仍隐约可见，
+ * 视觉上像一枚浮在视口上的精致徽章，而不是又一个面板。
+ *
+ * 【圆角随展开态切换】收起态 `rounded-full` 是胶囊；展开后高度达到
+ * 十几行内容，若仍是 full 圆角会变成两端半圆的怪异形状，
+ * 故展开时切到 `rounded-2xl`。两者用 transition 平滑过渡。
  */
 function TopologyLegendPanel() {
   const [expanded, setExpanded] = useState<boolean>(false);
 
   return (
-    <div className="kv-panel pointer-events-auto max-w-full overflow-hidden">
+    <div
+      className={cn(
+        'pointer-events-auto max-w-full overflow-hidden border border-white/[0.08] bg-slate-950/75 backdrop-blur-md',
+        'transition-[border-radius] duration-200',
+        expanded ? 'rounded-2xl' : 'rounded-full',
+      )}
+    >
       {/* ---- 常态：一行紧凑胶囊（点击切换展开） ---- */}
       <button
         type="button"
         onClick={(): void => setExpanded((prev): boolean => !prev)}
         aria-expanded={expanded}
         aria-label="展开或收起读图说明"
-        className="flex w-full items-center gap-1.5 px-2 py-1 transition-colors hover:bg-slate-100/5"
+        className="flex w-full items-center gap-1.5 px-3 py-1 transition-colors hover:bg-white/[0.04]"
       >
         <LayoutGrid className="h-3 w-3 shrink-0 text-cyan-400" aria-hidden />
         {/* 三个状态色点：图例语义在收起态由它们承载，无需文字也能读懂 */}
@@ -614,7 +686,7 @@ function TopologyLegendPanel() {
             transition={{ type: 'spring', stiffness: 420, damping: 34 }}
             className="overflow-hidden"
           >
-            <div className="border-t border-slate-800 px-2.5 py-2">
+            <div className="border-t border-white/[0.06] px-3 pb-2.5 pt-2">
               {/* 状态图例 */}
               <ul className="space-y-1.5">
                 {TOPOLOGY_LEGEND.map((item) => (
