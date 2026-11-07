@@ -47,6 +47,7 @@ import type {
   StatusFilter,
 } from '@/types/store';
 import { syncSnapshotToTransientRef } from '@/store/useTelemetryRef';
+import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
 
 /* ========================================================================== */
 /* 模块级常量（容量上限与持久化键，集中定义防漂移）                               */
@@ -365,6 +366,32 @@ export const useClusterStore = create<ClusterStore>()(
           set({ selectedEntityId: null, selectedEntityType: null });
           return;
         }
+
+        /**
+         * 【幽灵 ID 入口拦截】
+         *
+         * 历史缺陷：selectEntity 直接信任调用方传入的 ID，任何字符串都会被写入
+         * selectedEntityId。当上游（大模型动作卡的 targetId、旧持久化会话）
+         * 传来 `n/a` 这类不存在的值时，选中态就变成**指向空气**：
+         * 探针卡片渲染 `POD n/a`、相机聚焦找不到目标而静默失败、
+         * 后续 healEntity 还会基于这个假 ID 打印成功回执。
+         *
+         * 现在在写入前做一次存在性校验：只有真实存在于当前快照的 Pod /
+         * Node，或等于 MASTER_ENTITY_ID 的控制平面，才允许成为选中实体。
+         * 非法 ID 一律**静默归零**（不抛错、不写日志）——UI 层不该因为
+         * 上游的一个脏值而中断，直接当作"没有选中"即可。
+         */
+        const snapshot = get().snapshotSummary;
+        const existsInCluster =
+          entityId === MASTER_ENTITY_ID ||
+          snapshot.pods.some((pod): boolean => pod.id === entityId) ||
+          snapshot.nodes.some((node): boolean => node.id === entityId);
+
+        if (!existsInCluster) {
+          set({ selectedEntityId: null, selectedEntityType: null });
+          return;
+        }
+
         const resolvedType: SelectedEntityType =
           entityType ??
           (entityId.startsWith('node-')
@@ -457,6 +484,28 @@ export const useClusterStore = create<ClusterStore>()(
           (node): boolean => node.id === targetId,
         );
         const targetIsPod = snapshot.pods.some((pod): boolean => pod.id === targetId);
+
+        /**
+         * ---- 步骤 2b：目标不存在 → 安全返回，绝不写虚假回执 ----
+         *
+         * 【为何这是最关键的一道闸】此前若 targetId 不在快照里（例如 'n/a'），
+         * 下面的 healPodIds 为空、healNodeId 为 null，deriveHealedSnapshot 原样
+         * 返回未变快照——但代码仍会继续执行到步骤 4/5：
+         * - healedPodIds 被写入 { 'n/a': now }，污染持久化的免疫窗口；
+         * - remediationHistory 追加一条目标为 'n/a' 的修复记录；
+         * - 终端打印 `Executed ... on n/a -> Status verified: Running`，
+         *   **一条彻头彻尾的假成功回执**。
+         *
+         * 现在在最前面拦下：目标不在当前集群就什么都不写、不打印成功行，
+         * 只留一条 SKIPPED 审计说明（让排障者知道"有调用但被拒绝"，
+         * 而不是毫无痕迹）。
+         */
+        if (!targetIsPod && !targetIsNode) {
+          get().appendTerminalLog(
+            `[KUBE-CONTROLLER] REJECTED ${actionType} on ${targetId} -> target not found in cluster snapshot`,
+          );
+          return;
+        }
 
         const healPodIds = new Set<string>();
         if (targetIsPod) {

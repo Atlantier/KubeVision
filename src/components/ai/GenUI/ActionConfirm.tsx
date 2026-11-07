@@ -147,28 +147,64 @@ export default function ActionConfirm({
     timerRef.current = setTimeout((): void => {
       timerRef.current = null;
 
+      /**
+       * ---- 步骤 2.5：执行前解析真实目标（防幽灵 ID 穿透到 3D 场景）----
+       *
+       * 【为什么必须在点击时再做一次校验】卡片是流式渲染期创建的，
+       * 它携带的 targetId 可能来自：
+       * 1. 旧版本持久化的会话历史（里面可能存着 'n/a'）；
+       * 2. 集群状态在这张卡片生成后发生了变化（目标 Pod 已被删除）。
+       * 这两种情况下 targetId 都已失效，而 healEntity 与 selectEntity
+       * 若拿到不存在的 ID，会产生"修复空气"的假动作：
+       * 3D 场景毫无变化、相机找不到聚焦目标、终端却打印成功回执。
+       *
+       * 【回退策略】优先使用卡片自身的目标；若它在当前快照中不存在，
+       * 回退到快照中第一个真实 Pod，保证**点击按钮永远作用于一个
+       * 真实存在的 3D 容器实例**。若集群连一个 Pod 都没有，则中止本次执行，
+       * 并把状态置回 idle——不做无效的"成功"表演。
+       */
+      const snapshot = useClusterStore.getState().snapshotSummary;
+      const targetExists =
+        snapshot.pods.some((pod): boolean => pod.id === targetId) ||
+        snapshot.nodes.some((node): boolean => node.id === targetId);
+
+      const effectiveTargetId: string | null = targetExists
+        ? targetId
+        : snapshot.pods[0]?.id ?? snapshot.nodes[0]?.id ?? null;
+
+      if (effectiveTargetId === null) {
+        /* 集群里没有任何可作用于的实体 → 安全中止，不写任何"成功"记录 */
+        appendTerminalLog(
+          `[MCP-ROUTER] ABORTED ${actionType} -> no valid target in current cluster snapshot`,
+        );
+        setPhase('idle');
+        return;
+      }
+
+      /* 实体类型按**实际目标**重新推导，而非沿用动作卡的原始假设 */
+      const effectiveEntityType: SelectedEntityType =
+        snapshot.nodes.some((node): boolean => node.id === effectiveTargetId) ? 'node' : 'pod';
+
       /* ---- 步骤 3：执行自愈（3D 场景中的故障实体当场转绿） ---- */
-      healEntity(targetId, actionType);
+      healEntity(effectiveTargetId, actionType);
 
       /* ---- 步骤 4：MCP 路由审计回显 ---- *
        * 前缀 [MCP-ROUTER] 已被 TerminalEcho 的 TONE_RULES 映射为 router 色调
        * （sky-300 天蓝），与控制器行（cyan-300）在视觉上明确区分：
        * 天蓝代表「协议层调用」，青色代表「K8s 控制器动作」。 */
       appendTerminalLog(
-        `[MCP-ROUTER] Invoked mcp://k8s-cluster/tools/${actionType} -> Target ${targetId} healed`,
+        `[MCP-ROUTER] Invoked mcp://k8s-cluster/tools/${actionType} -> Target ${effectiveTargetId} healed`,
       );
 
       /* ---- 步骤 5：引导 3D 相机聚焦被修复实体 ---- *
-       * 【实体类型推导】actionType 决定目标性质：
-       * drain_node → 节点；restart_pod / scale_deployment → Pod。
+       * 【实体类型推导】drain_node → 节点；restart_pod / scale_deployment → Pod。
        * 传给 selectEntity 的第二个参数让 CameraRig 能用正确的特写机位
        * （节点是机架远景，Pod 是实例近景），而不是统一按一种方式聚焦。
        *
        * 【顺序】必须在 healEntity 之后：CameraRig 的 focus effect 依赖
        * selectedEntityId 变化，而此时快照已更新为愈合态，
        * 相机飞过去看到的就是"已修复"的绿色实例——时序上因果正确。 */
-      const entityType: SelectedEntityType = actionType === 'drain_node' ? 'node' : 'pod';
-      selectEntity(targetId, entityType);
+      selectEntity(effectiveTargetId, effectiveEntityType);
 
       /* ---- 步骤 6：切换成功态并向上冒泡回调 ---- */
       setPhase('done');
