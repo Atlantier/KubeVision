@@ -255,6 +255,15 @@ export interface ChatStreamToolResultEvent {
   readonly toolName: string;
   /** 生成式 UI 卡片载荷（三选一，按 toolName 窄化） */
   readonly args: PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps;
+  /**
+   * 是否为**服务端补全**（缺省 false 表示模型原生调用）。
+   *
+   * 【为何需要】实测 deepseek-flash 约 40%~50% 的请求只调用 1~2 个工具就结束，
+   * 用户会看到残缺的诊断卡片组。路由层在流结束后用**真实集群数据**补齐缺失卡片，
+   * 保证演示与使用的完整性。但「补全」与「模型主动产出」语义不同，必须如实标注，
+   * 否则等于把服务端兜底伪装成模型的理解能力——不可接受的信息欺骗。
+   */
+  readonly synthesized?: boolean;
 }
 
 /**
@@ -464,6 +473,11 @@ export interface CopilotToolCard {
   readonly state: 'skeleton' | 'ready' | 'error';
   /** 卡片载荷（仅 ready 态存在） */
   readonly args?: PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps;
+  /**
+   * 是否为服务端补全的卡片（见 ChatStreamToolResultEvent.synthesized）。
+   * UI 据此显示「服务端补全」角标，诚实标注卡片来源。
+   */
+  readonly synthesized?: boolean;
 }
 
 /**

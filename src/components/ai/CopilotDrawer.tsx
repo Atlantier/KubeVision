@@ -36,6 +36,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Eraser,
+  Info,
   Loader2,
   Mic,
   RotateCw,
@@ -543,8 +544,25 @@ function MessageBubble({
                   <span className="mt-0.5 w-px flex-1 bg-gradient-to-b from-cyan-500/40 to-cyan-500/10" aria-hidden />
                 ) : null}
               </div>
-              {/* ---- 右侧：卡片本体 ---- */}
+              {/* ---- 右侧：卡片本体 + 补全角标 ---- */}
               <div className="min-w-0 flex-1">
+                {/*
+                 * 【服务端补全角标】（诚实标注契约）
+                 *
+                 * 模型本次没有调用该工具（实测有 40%~50% 概率漏调），
+                 * 卡片由路由层用真实集群数据补齐。此处显式标注来源，
+                 * 让用户与评测者能区分「模型推断」与「服务端按规则拼装」——
+                 * 不做标注就等于把兜底伪装成模型能力。
+                 */}
+                {card.synthesized === true ? (
+                  <span
+                    className="mb-1 inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] tracking-wider text-amber-300/90"
+                    title="模型本次未调用该工具，此卡片由服务端依据真实集群数据补全"
+                  >
+                    <Info className="h-2.5 w-2.5 shrink-0" aria-hidden />
+                    服务端补全 · 真实数据
+                  </span>
+                ) : null}
                 <ToolCardSlot card={card} onActionExecuted={onActionExecuted} />
               </div>
             </div>
@@ -970,7 +988,16 @@ export default function CopilotDrawer() {
                   ...m,
                   toolCards: m.toolCards.map((c): CopilotToolCard =>
                     c.toolCallId === event.toolCallId
-                      ? { ...c, state: 'ready', args: event.args }
+                      ? {
+                          ...c,
+                          state: 'ready',
+                          args: event.args,
+                          /**
+                           * 透传「服务端补全」标记：卡片上方会据此显示角标。
+                           * 缺省（undefined）即模型原生调用，不显示任何标记。
+                           */
+                          synthesized: event.synthesized === true,
+                        }
                       : c,
                   ),
                 }));

@@ -620,14 +620,29 @@ async function streamWithLLM(params: {
   readonly runbooks: readonly RagRunbookDoc[];
   /** 上下文中的真实实体（校正模型复述 ID 时的幻觉） */
   readonly knownEntities: readonly KnownEntity[];
+  /**
+   * 完整集群上下文。
+   *
+   * 【为何引擎 A 也需要它】模型漏调工具时，路由层要用**同一份真实上下文**
+   * 补齐缺失卡片（见 emitMissingCards）。此参数原实现中不存在于本函数，
+   * 是为此功能新增的——没有它就无法保证补出来的卡片与引擎 B 指向同一实体。
+   */
+  readonly clusterContext: ClusterContext;
   readonly emit: (event: ChatStreamEvent) => void;
   readonly signal: AbortSignal;
 }): Promise<boolean> {
-  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, emit, signal } = params;
+  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, emit, signal } = params;
 
   try {
     const provider = createOpenAI({ apiKey, baseURL });
     const model = provider(modelName);
+
+    /**
+     * 本次流已成功产出的工具名集合（用于流结束后做补全差集）。
+     * 只记录**通过载荷校验并真正下发**的工具——校验失败的卡片前端不会渲染，
+     * 计入"已产出"会导致该卡永久缺失。
+     */
+    const emittedToolNames = new Set<string>();
 
     /* ---- 组装消息：多模态时把图片作为最后一条 user 消息的附件 ---- */
     /**
@@ -711,6 +726,15 @@ async function streamWithLLM(params: {
         /* 步骤 1：tool-start（前端立即渲染骨架屏） */
         emit({ type: 'tool-start', toolCallId, toolName, mcpUri });
 
+        /**
+         * 【在 tool-start 处即登记，而非 tool-result 之后】
+         * 若模型调用了工具但参数校验失败（下方 validated === null），
+         * 前端会留下一个永久骨架屏。此时若补全逻辑再补同一张卡，
+         * 用户会看到「一个卡住的骨架 + 一张补全卡」两块重复 UI。
+         * 在 start 处登记可让补全逻辑跳过该工具，保持"一张卡位对应一张卡"。
+         */
+        emittedToolNames.add(toolName);
+
         /* 步骤 2：延迟 300ms —— 让骨架屏有可见的存在感 */
         await sleep(TOOL_RESULT_DELAY_MS_A, signal);
 
@@ -737,6 +761,15 @@ async function streamWithLLM(params: {
         throw part.error instanceof Error ? part.error : new Error(String(part.error));
       }
     }
+
+    /*
+     * ---- 服务端补全（模型漏调工具时的兜底）----
+     *
+     * 【为何放在流结束、返回 true 之前】此刻正文已完整吐完、模型决策已定，
+     * 补卡不会打断正文的流式节奏；且只有确认引擎 A 成功（未抛错、未中断）
+     * 才补——若走 catch 回落引擎 B，引擎 B 自身就会产出完整三卡。
+     */
+    emitMissingCards({ ctx: clusterContext, runbooks, emitted: emittedToolNames, emit });
 
     return true;
   } catch (error) {
@@ -918,6 +951,212 @@ function validateToolArgs(
 /* 引擎 B 的 NDJSON 流式实现                                                    */
 /* ========================================================================== */
 
+/* -------------------------------------------------------------------------- */
+/* 卡片载荷构造器（引擎 B 与服务端补全共用）                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 一次完整诊断应答必须产出的三张卡片（顺序即展示顺序）。
+ *
+ * 【为何集中在常量里】服务端补全需要按「还缺哪几张」做差集判断，
+ * 引擎 B 的固定三步也需要同一份清单；两处共用可避免
+ * 「补全逻辑认为有 3 种卡、而引擎 B 只产出 2 种」这类静默漂移。
+ */
+const REQUIRED_TOOL_NAMES = [
+  'renderPodMetrics',
+  'renderRootCauseAnalysis',
+  'proposeRemediationAction',
+] as const;
+
+/**
+ * buildMetricsArgs —— 用真实故障快照构造指标卡载荷。
+ *
+ * 【数据口径】五个数值全部直接取自 clusterContext 的 faultyPods 条目
+ * （真实采集），历史序列经 normalizeHistory 归一化为契约要求的 6 点。
+ * 绝不在此生成任何随机数或占位值。
+ *
+ * @param target 已解析出的故障 Pod 快照
+ * @returns 可直接下发给前端的指标卡载荷
+ */
+function buildMetricsArgs(target: ClusterFaultSnapshot): PodMetricsCardProps {
+  return {
+    podId: target.id,
+    podName: target.name,
+    namespace: target.namespace,
+    cpuUsage: target.cpuUsage,
+    memoryUsage: target.memoryUsage,
+    restarts: target.restarts,
+    cpuHistory: normalizeHistory(target.cpuHistory),
+    memHistory: normalizeHistory(target.memHistory),
+  };
+}
+
+/**
+ * buildRootCauseArgs —— 用真实上下文与 RAG 命中项构造根因卡载荷。
+ *
+ * 【证据链口径】每条 evidence 都是由 clusterContext / runbooks 中的真实字段
+ * 拼接而成（节点水位、重启次数、健康分、手册相似度），不含推断性的编造内容；
+ * 唯一的"推断"是 rootCauseSummary，且优先直接引用命中的手册机制描述。
+ *
+ * @param ctx      集群上下文
+ * @param runbooks 本次检索命中的手册
+ * @param resolved 目标解析结果（Pod 优先 / 节点次之 / 皆无则集群级）
+ */
+function buildRootCauseArgs(
+  ctx: ClusterContext,
+  runbooks: readonly RagRunbookDoc[],
+  resolved: SimulatorTarget,
+): RootCauseAlertProps {
+  const target = resolved.pod;
+  const nodeTarget = resolved.node;
+
+  const severity: RootCauseAlertProps['severity'] =
+    ctx.clusterHealthScore < 60 ? 'P0' : ctx.clusterHealthScore < 85 ? 'P1' : 'P2';
+
+  const title =
+    target !== null
+      ? `${target.name} 触发 ${target.status}，疑似资源超限或依赖异常`
+      : nodeTarget !== null
+        ? `节点 ${nodeTarget.name} 水位异常（CPU ${nodeTarget.cpuUsage.toFixed(1)}% / MEM ${nodeTarget.memUsage.toFixed(1)}%）`
+        : `集群健康分下降至 ${ctx.clusterHealthScore}/100`;
+
+  const evidenceChain: string[] = [];
+  if (target !== null) {
+    evidenceChain.push(
+      `${target.nodeId} 上 ${target.name} 内存水位 ${target.memoryUsage.toFixed(1)}%`,
+    );
+    evidenceChain.push(`kubelet 记录 ${target.status}，累计重启 ${target.restarts} 次`);
+  } else if (nodeTarget !== null) {
+    evidenceChain.push(
+      `节点 ${nodeTarget.name}（rack-${nodeTarget.rackIndex}）状态 ${nodeTarget.status}`,
+    );
+    evidenceChain.push(
+      `节点水位 CPU ${nodeTarget.cpuUsage.toFixed(1)}% / MEM ${nodeTarget.memUsage.toFixed(1)}%`,
+    );
+  }
+  evidenceChain.push(`集群健康分 ${ctx.clusterHealthScore}/100，活跃场景 ${ctx.activeChaos}`);
+  if (runbooks[0] !== undefined) {
+    evidenceChain.push(
+      `知识库命中 ${runbooks[0].id}（Similarity ${((runbooks[0].similarityScore ?? 0) * 100).toFixed(1)}%）`,
+    );
+  }
+
+  return {
+    severity,
+    title,
+    confidence: runbooks.length > 0 ? 0.92 : 0.74,
+    rootCauseSummary:
+      runbooks[0] !== undefined
+        ? `${runbooks[0].rootCauseMechanism}`
+        : '未命中知识库手册，依据通用排障经验推断为资源超限或依赖不可达。',
+    evidenceChain,
+    impactScope:
+      target !== null
+        ? `${target.namespace} / ${target.name}（受影响副本 1 个，宿主机 ${target.nodeId}）`
+        : nodeTarget !== null
+          ? `节点 ${nodeTarget.name}（rack-${nodeTarget.rackIndex}）上的全部工作负载`
+          : '集群整体（暂无单点故障）',
+    ragReferences: [...runbooks],
+  };
+}
+
+/**
+ * buildActionArgs —— 构造自愈动作卡载荷（Pod 优先，节点次之，皆无则不产卡）。
+ *
+ * 【宁可无卡，不可假卡】此前曾用 `ctx.selectedEntityId ?? 'unknown-target'`
+ * 兜底，产出一张「对未知目标执行操作」的卡片；现在两者都没有时返回 null，
+ * 由调用方整张不输出。
+ *
+ * @param resolved 目标解析结果
+ * @returns 动作卡载荷；确无目标时返回 null
+ */
+function buildActionArgs(resolved: SimulatorTarget): ActionConfirmProps | null {
+  const target = resolved.pod;
+  if (target !== null) {
+    return {
+      actionType: 'restart_pod',
+      /* 真实 id / name 直接取自解析后的 Pod 快照，绝不使用裸 ID 或占位串 */
+      targetId: target.id,
+      targetName: target.name,
+      paramDescription: `重启 Pod ${target.name}，容器将重新拉起（预计恢复时间 8s，期间该副本不可用）。`,
+      mcpEndpoint: 'mcp://k8s-cluster/tools/restart_pod',
+      isHighRisk: false,
+    };
+  }
+  const nodeTarget = resolved.node;
+  if (nodeTarget !== null) {
+    return {
+      actionType: 'drain_node',
+      targetId: nodeTarget.id,
+      targetName: nodeTarget.name,
+      paramDescription: `驱逐节点 ${nodeTarget.name} 上的工作负载，Pod 将平滑迁移至其他节点（预计 30~60s 完成）。`,
+      mcpEndpoint: 'mcp://k8s-cluster/tools/drain_node',
+      isHighRisk: true,
+    };
+  }
+  return null;
+}
+
+/**
+ * emitMissingCards —— 服务端补全：模型漏调的工具，用真实数据补齐。
+ *
+ * 【解决什么】实测 deepseek-flash 在约 40%~50% 的请求里只调用 1~2 个工具
+ * 就结束（同一上下文 5 次回放：3/5 完整、2/5 残缺）。刻意留白让用户看到
+ * 「有指标卡没有根因卡」这种半截诊断，是比任何视觉瑕疵都更严重的问题——
+ * 它直接损害工具本身的可信度。
+ *
+ * 【为何由路由层补，而不是继续改提示词】提示词已三次强调"三个工具一个都不能少"，
+ * 甚至把 podId 直接写进上下文以省掉一次决策，回放结果仍是 2/5。
+ * 这说明问题不在指令清晰度，而在小模型的**指令遵循能力上限**——
+ * 继续加约束只会让正文变差。而"该给哪张卡"本就是服务端可确定的事实
+ * （用同一套真实数据），交给服务端生成是更可靠的工程选择。
+ *
+ * 【诚实标注】每张补全卡片都带 `synthesized: true`，前端据此显示角标。
+ * 这不是为了免责，而是为了让**评测者与用户都能区分**
+ * 「模型自己推断出的结论」与「服务端按规则拼出的结论」。
+ *
+ * 【不会产出的情况】renderPodMetrics 需要真实的故障 Pod 数据，若上下文里
+ * 既无故障 Pod、用户也未选中 Pod，则返回 null 而跳过——宁可只有两张卡，
+ * 也绝不用编造的指标填充（与 buildActionArgs 同一原则）。
+ *
+ * @param params 上下文、手册、已产出工具集合、事件发射器
+ */
+function emitMissingCards(params: {
+  readonly ctx: ClusterContext;
+  readonly runbooks: readonly RagRunbookDoc[];
+  readonly emitted: ReadonlySet<string>;
+  readonly emit: (event: ChatStreamEvent) => void;
+}): void {
+  const { ctx, runbooks, emitted, emit } = params;
+
+  const missing = REQUIRED_TOOL_NAMES.filter((name): boolean => !emitted.has(name));
+  if (missing.length === 0) return;
+
+  /* 目标解析与引擎 B 完全一致：用户选中优先，其次最严重故障，避免两张卡指向不同实体 */
+  const resolved = resolveSimulatorTarget(ctx);
+
+  for (const toolName of missing) {
+    let args: PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps | null = null;
+    if (toolName === 'renderPodMetrics') {
+      args = resolved.pod !== null ? buildMetricsArgs(resolved.pod) : null;
+    } else if (toolName === 'renderRootCauseAnalysis') {
+      args = buildRootCauseArgs(ctx, runbooks, resolved);
+    } else {
+      args = buildActionArgs(resolved);
+    }
+    /* 无真实数据支撑 → 跳过（宁可少一张卡，不可假造） */
+    if (args === null) continue;
+
+    const toolCallId = `fill-${toolName}-${Date.now()}`;
+    emit({ type: 'tool-start', toolCallId, toolName, mcpUri: `mcp://k8s-cluster/tools/${toolName}` });
+    emit({ type: 'tool-result', toolCallId, toolName, args, synthesized: true });
+  }
+}
+
+/* ========================================================================== */
+/* 引擎 B 的 NDJSON 流式实现                                                    */
+/* ========================================================================== */
+
 /**
  * streamWithSimulator —— 引擎 B：确定性 SRE 仿真器（无 Key / 调用失败时接管）。
  *
@@ -959,7 +1198,7 @@ async function streamWithSimulator(params: {
   const resolved = resolveSimulatorTarget(ctx);
   const target: ClusterFaultSnapshot | null = resolved.pod;
 
-  /* ---- 3a. 卡片一：Pod 指标（真实数据，直接取自 clusterContext） ---- */
+  /* ---- 3a. 卡片一：Pod 指标（真实数据，载荷由 buildMetricsArgs 统一构造） ---- */
   if (target !== null) {
     const toolCallId = `sim-metrics-${Date.now()}`;
     emit({
@@ -969,52 +1208,16 @@ async function streamWithSimulator(params: {
       mcpUri: 'mcp://k8s-cluster/tools/renderPodMetrics',
     });
     await sleep(TOOL_RESULT_DELAY_MS_B, signal);
-    const metricsArgs: PodMetricsCardProps = {
-      podId: target.id,
-      podName: target.name,
-      namespace: target.namespace,
-      cpuUsage: target.cpuUsage,
-      memoryUsage: target.memoryUsage,
-      restarts: target.restarts,
-      /* 历史序列归一化为契约要求的 6 点（防客户端传入残缺窗口） */
-      cpuHistory: normalizeHistory(target.cpuHistory),
-      memHistory: normalizeHistory(target.memHistory),
-    };
-    emit({ type: 'tool-result', toolCallId, toolName: 'renderPodMetrics', args: metricsArgs });
+    emit({
+      type: 'tool-result',
+      toolCallId,
+      toolName: 'renderPodMetrics',
+      args: buildMetricsArgs(target),
+    });
     await sleep(120, signal);
   }
 
-  /* ---- 4. 卡片二：根因分析（携带真实 RAG 引用） ---- */
-  const severity: RootCauseAlertProps['severity'] =
-    ctx.clusterHealthScore < 60 ? 'P0' : ctx.clusterHealthScore < 85 ? 'P1' : 'P2';
-  const nodeTarget = resolved.node;
-  const rootCauseTitle =
-    target !== null
-      ? `${target.name} 触发 ${target.status}，疑似资源超限或依赖异常`
-      : nodeTarget !== null
-        ? `节点 ${nodeTarget.name} 水位异常（CPU ${nodeTarget.cpuUsage.toFixed(1)}% / MEM ${nodeTarget.memUsage.toFixed(1)}%）`
-        : `集群健康分下降至 ${ctx.clusterHealthScore}/100`;
-  const evidenceChain: string[] = [];
-  if (target !== null) {
-    evidenceChain.push(
-      `${target.nodeId} 上 ${target.name} 内存水位 ${target.memoryUsage.toFixed(1)}%`,
-    );
-    evidenceChain.push(`kubelet 记录 ${target.status}，累计重启 ${target.restarts} 次`);
-  } else if (nodeTarget !== null) {
-    evidenceChain.push(
-      `节点 ${nodeTarget.name}（rack-${nodeTarget.rackIndex}）状态 ${nodeTarget.status}`,
-    );
-    evidenceChain.push(
-      `节点水位 CPU ${nodeTarget.cpuUsage.toFixed(1)}% / MEM ${nodeTarget.memUsage.toFixed(1)}%`,
-    );
-  }
-  evidenceChain.push(`集群健康分 ${ctx.clusterHealthScore}/100，活跃场景 ${ctx.activeChaos}`);
-  if (runbooks[0] !== undefined) {
-    evidenceChain.push(
-      `知识库命中 ${runbooks[0].id}（Similarity ${((runbooks[0].similarityScore ?? 0) * 100).toFixed(1)}%）`,
-    );
-  }
-
+  /* ---- 4. 卡片二：根因分析（携带真实 RAG 引用；载荷由 buildRootCauseArgs 统一构造） ---- */
   const rcCallId = `sim-rca-${Date.now()}`;
   emit({
     type: 'tool-start',
@@ -1023,93 +1226,38 @@ async function streamWithSimulator(params: {
     mcpUri: 'mcp://k8s-cluster/tools/renderRootCauseAnalysis',
   });
   await sleep(TOOL_RESULT_DELAY_MS_B, signal);
-  const rcaArgs: RootCauseAlertProps = {
-    severity,
-    title: rootCauseTitle,
-    confidence: runbooks.length > 0 ? 0.92 : 0.74,
-    rootCauseSummary:
-      runbooks[0] !== undefined
-        ? `${runbooks[0].rootCauseMechanism}`
-        : '未命中知识库手册，依据通用排障经验推断为资源超限或依赖不可达。',
-    evidenceChain,
-    impactScope:
-      target !== null
-        ? `${target.namespace} / ${target.name}（受影响副本 1 个，宿主机 ${target.nodeId}）`
-        : nodeTarget !== null
-          ? `节点 ${nodeTarget.name}（rack-${nodeTarget.rackIndex}）上的全部工作负载`
-          : '集群整体（暂无单点故障）',
-    ragReferences: [...runbooks],
-  };
-  emit({ type: 'tool-result', toolCallId: rcCallId, toolName: 'renderRootCauseAnalysis', args: rcaArgs });
+  emit({
+    type: 'tool-result',
+    toolCallId: rcCallId,
+    toolName: 'renderRootCauseAnalysis',
+    args: buildRootCauseArgs(ctx, runbooks, resolved),
+  });
   await sleep(120, signal);
 
-  /* ---- 5. 卡片三：修复动作建议（真实目标 + 二次确认） ----
+  /* ---- 5. 卡片三：修复动作建议（载荷由 buildActionArgs 统一构造） ----
    *
-   * 【数据绑定修正】动作卡此前存在两个真实缺陷：
-   * 1. 动作类型取自 `ctx.selectedEntityType === 'node'`，与实际绑定的 target
-   *    可能不一致——例如用户选中节点、但同时存在异常 Pod 时，会输出
-   *    drain_node 却把 Pod 的 id 填进 targetId，语义自相矛盾；
-   * 2. 无 target 时退化为 `ctx.selectedEntityId ?? 'unknown-target'`，
-   *    把裸 ID 同时当作 targetId 与 targetName，甚至产出 'unknown-target'
-   *    这类占位值——用户会看到一张「对未知目标执行操作」的卡片。
-   *
-   * 现统一改为：动作类型与目标全部由 resolveSimulatorTarget 的解析结果决定，
+   * 【数据绑定契约】动作类型与目标全部由 resolveSimulatorTarget 的解析结果决定，
    * **Pod 优先**（restart_pod），仅当确无 Pod 级目标时才做节点级 drain_node，
-   * 两者都没有则**整张卡不输出**（宁可无卡，不可假卡）。
+   * 两者都没有则**整张卡不输出**（宁可无卡，不可对 'unknown-target' 假卡）。
+   * 该原则同样适用于服务端补全路径（见 emitMissingCards）。
    */
-  /* nodeTarget 已在上方「卡片二」处由 resolved.node 解构，此处直接复用 */
-
-  /**
-   * 【为何用嵌套分支而非布尔标志 + 断言】
-   * 布尔标志（hasPodTarget）无法让 TS 窄化 target 的类型，
-   * 于是不得不写 `target as ClusterFaultSnapshot` 这类断言——
-   * 断言绕过编译器检查，未来若 target 类型变化不会报错。
-   * 改成 if/else if 分支后，`target !== null` 即可完成窄化，
-   * 全程零类型断言（AGENTS.md 第 2 条的契约精神）。
-   */
-  if (target !== null) {
-    /* ---- Pod 级目标：restart_pod（中危，无需二次确认） ---- */
-    const actionCallId = `sim-action-${Date.now()}`;
+  const actionToolCallId = `sim-action-${Date.now()}`;
+  const actionArgs = buildActionArgs(resolved);
+  if (actionArgs !== null) {
     emit({
       type: 'tool-start',
-      toolCallId: actionCallId,
+      toolCallId: actionToolCallId,
       toolName: 'proposeRemediationAction',
       mcpUri: 'mcp://k8s-cluster/tools/proposeRemediationAction',
     });
     await sleep(TOOL_RESULT_DELAY_MS_B, signal);
-
-    const actionArgs: ActionConfirmProps = {
-      actionType: 'restart_pod',
-      /* 真实 id / name 直接取自解析后的 Pod 快照，绝不使用裸 ID 或占位串 */
-      targetId: target.id,
-      targetName: target.name,
-      paramDescription: `重启 Pod ${target.name}，容器将重新拉起（预计恢复时间 8s，期间该副本不可用）。`,
-      mcpEndpoint: 'mcp://k8s-cluster/tools/restart_pod',
-      isHighRisk: false,
-    };
-    emit({ type: 'tool-result', toolCallId: actionCallId, toolName: 'proposeRemediationAction', args: actionArgs });
-  } else if (nodeTarget !== null) {
-    /* ---- 节点级目标（确无 Pod 级目标时）：drain_node（高危，强制二次确认） ---- */
-    const actionCallId = `sim-action-${Date.now()}`;
     emit({
-      type: 'tool-start',
-      toolCallId: actionCallId,
+      type: 'tool-result',
+      toolCallId: actionToolCallId,
       toolName: 'proposeRemediationAction',
-      mcpUri: 'mcp://k8s-cluster/tools/proposeRemediationAction',
+      args: actionArgs,
     });
-    await sleep(TOOL_RESULT_DELAY_MS_B, signal);
-
-    const actionArgs: ActionConfirmProps = {
-      actionType: 'drain_node',
-      targetId: nodeTarget.id,
-      targetName: nodeTarget.name,
-      paramDescription: `驱逐节点 ${nodeTarget.name} 上的工作负载，Pod 将平滑迁移至其他节点（预计 30~60s 完成）。`,
-      mcpEndpoint: 'mcp://k8s-cluster/tools/drain_node',
-      isHighRisk: true,
-    };
-    emit({ type: 'tool-result', toolCallId: actionCallId, toolName: 'proposeRemediationAction', args: actionArgs });
   }
-  /* 两者皆无 → 整张动作卡不输出（宁可无卡，不可对 'unknown-target' 假卡） */
 }
 
 /* ========================================================================== */
@@ -1444,6 +1592,7 @@ export async function POST(request: Request): Promise<Response> {
             viewportImage,
             runbooks,
             knownEntities,
+            clusterContext,
             emit,
             signal,
           });
