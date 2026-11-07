@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — 3D 集群拓扑根画布（ClusterCanvas）
@@ -511,11 +511,11 @@ export default function ClusterCanvas() {
           position={[0, -0.02, 0]}
           args={[140, 140]}
           cellSize={6}
-          cellThickness={0.34}
-          cellColor="#0b5563"
+          cellThickness={0.25}
+          cellColor="#07333b"
           sectionSize={30}
-          sectionThickness={0.8}
-          sectionColor="#0e7490"
+          sectionThickness={0.55}
+          sectionColor="#084656"
           fadeDistance={86}
           fadeStrength={1.6}
           infiniteGrid
@@ -524,11 +524,11 @@ export default function ClusterCanvas() {
           position={[0, 0.004, 0]}
           args={[44, 44]}
           cellSize={1.6}
-          cellThickness={0.4}
-          cellColor="#12414e"
+          cellThickness={0.25}
+          cellColor="#0b272f"
           sectionSize={8}
-          sectionThickness={0.8}
-          sectionColor="#1c8ea6"
+          sectionThickness={0.55}
+          sectionColor="#115564"
           fadeDistance={40}
           fadeStrength={1.4}
         />

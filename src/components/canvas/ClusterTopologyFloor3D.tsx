@@ -658,16 +658,54 @@ attribute float aPhase;
 
 uniform float uTime;
 uniform float uScale;
+uniform vec3 uFaultAngles;
+uniform vec3 uFaultLevels;
+uniform float uFaultSectorHalf;
 
 varying vec3 vColor;
 varying float vGlow;
 
-void main() {
-  vColor = aColor;
+/*
+ * ---- 故障扇区传染（Fault Contagion）----
+ *
+ * 【核心数学】把节点的极角与该机架的极角求最小角距：
+ *   d = min(|ang − angle_i|, 2π − |ang − angle_i|)
+ * 若 d < 扇区半角（±35°，即 0.611 rad），说明该节点落在故障机架的扇区内。
+ * 再乘一个 smoothstep 边缘衰减（0.6~1.0 半角之间渐弱），
+ * 避免扇区边界出现一刀切的硬边。
+ *
+ * 【为何 useFrame 里 lerp 而不是直接传布尔】故障是突变事件，
+ * 但地面染红应当是"扩散过去"的过程；电平 uFaultLevels 在 CPU 侧逐帧
+ * 指数阻尼逼近目标值，因此颜色过渡自然，且不需要在着色器里做时间积分。
+ */
+float sectorFault(float ang) {
+  float maxLevel = 0.0;
+  for (int i = 0; i < 3; i++) {
+    float target = uFaultAngles[i];
+    float delta = abs(ang - target);
+    float dist = min(delta, 6.2831853 - delta);
+    float falloff = 1.0 - smoothstep(uFaultSectorHalf * 0.6, uFaultSectorHalf, dist);
+    maxLevel = max(maxLevel, falloff * uFaultLevels[i]);
+  }
+  return maxLevel;
+}
 
+void main() {
   float radius = length(position.xz);
   float wave = 0.5 + 0.5 * sin(uTime * 1.6 - radius * 0.9 + aPhase);
   vGlow = 0.35 + 0.75 * wave;
+
+  /* 故障扇区染红：状态色向绯红 #f43f5e 混合，并叠加 6Hz 告警脉冲 */
+  float ang = atan(position.z, position.x);
+  float fault = sectorFault(ang);
+  if (fault > 0.001) {
+    vec3 alertColor = vec3(0.957, 0.247, 0.369);
+    float pulse = 0.72 + 0.28 * sin(uTime * 6.0 + radius * 1.4);
+    vColor = mix(aColor, alertColor, clamp(fault, 0.0, 1.0) * 0.85 * pulse);
+    vGlow = max(vGlow, fault * 1.15 * pulse);
+  } else {
+    vColor = aColor;
+  }
 
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   gl_Position = projectionMatrix * mvPosition;
@@ -807,9 +845,50 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
     (): Record<string, THREE.IUniform> => ({
       uTime: { value: 0 },
       uScale: { value: 1 },
+      /* 三个机架的极角（与 getRackTransform 同源，由 racks 派生） */
+      uFaultAngles: { value: new THREE.Vector3(0, 0, 0) },
+      /* 三个扇区当前的故障电平 0~1（useFrame 内指数阻尼逼近目标） */
+      uFaultLevels: { value: new THREE.Vector3(0, 0, 0) },
+      /* 扇区半角：±35° = 0.6109 rad */
+      uFaultSectorHalf: { value: (35 * Math.PI) / 180 },
     }),
     [],
   );
+
+  /**
+   * 故障扇区目标电平（由 racks 派生，低频）。
+   *
+   * 【角度口径必须与着色器一致】着色器用 `atan(position.z, position.x)`，
+   * 因此这里也用 `Math.atan2(z, x)`——若一端用 atan2(x,z)，
+   * 扇区会整体旋转 90°，故障染红会跑到错误的机架方向上去。
+   */
+  const faultTargets = useMemo((): THREE.Vector3 => {
+    const levels = new THREE.Vector3(0, 0, 0);
+    racks.forEach((rack, index): void => {
+      if (index >= 3) return;
+      levels.setComponent(index, rack.faulted ? 1 : 0);
+    });
+    return levels;
+  }, [racks]);
+
+  /**
+   * 三个机架的极角（与 getRackTransform 同源）。
+   *
+   * 【角度口径必须与着色器一致】着色器用 `atan(z, x)`，
+   * 因此这里也用 `Math.atan2(z, x)`——若一端用 atan2(x,z)，
+   * 扇区会整体旋转 90°，故障染红会跑到错误的机架方向上。
+   */
+  const faultAngles = useMemo((): THREE.Vector3 => {
+    const angles = new THREE.Vector3(0, 0, 0);
+    racks.forEach((rack, index): void => {
+      if (index >= 3) return;
+      angles.setComponent(index, Math.atan2(rack.z, rack.x));
+    });
+    return angles;
+  }, [racks]);
+
+  /** 当前故障电平持久态（跨帧 lerp 的"当前值"） */
+  const faultLevelsCurrent = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
 
   teethRefs.current.length = racks.length;
   lanePulseRefs.current.length = racks.length;
@@ -879,7 +958,7 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
    * 【为何脉冲用 fract 而不是 sin】sin 会在两端折返（看起来像来回滑动），
    * fract 让脉冲沿总线**单向循环**输送，语义正确且无回程。
    */
-  useFrame((state): void => {
+  useFrame((state, delta): void => {
     const t = state.clock.getElapsedTime();
 
     /* 0) 数据星城推进径向数据波 + 雷达装甲弧批次自转（原地写，零分配） */
@@ -887,6 +966,22 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
     if (radarArcRef.current !== null) {
       radarArcRef.current.rotation.y = t * RADAR_ARC_SPIN_RATE;
     }
+
+    /*
+     * 0b) 故障扇区电平：向目标值做帧率无关指数阻尼。
+     *
+     * 【为何在 CPU 侧插值而非着色器】故障是突变事件，地面染红应"扩散过去"；
+     * 在这里把电平从当前值平滑推向目标值（α = 1 − e^(−4·Δt)），
+     * 着色器只需读一个连续标量，逻辑最简且零额外 GPU 分支。
+     * 三个分量逐个更新后整体 copy 进 uniform（Vector3 原地写，零分配）。
+     */
+    const clampedDelta = Math.min(delta, 0.1);
+    const faultAlpha = 1 - Math.exp(-4 * clampedDelta);
+    faultLevelsCurrent.x += (faultTargets.x - faultLevelsCurrent.x) * faultAlpha;
+    faultLevelsCurrent.y += (faultTargets.y - faultLevelsCurrent.y) * faultAlpha;
+    faultLevelsCurrent.z += (faultTargets.z - faultLevelsCurrent.z) * faultAlpha;
+    (dataCityUniforms.uFaultLevels.value as THREE.Vector3).copy(faultLevelsCurrent);
+    (dataCityUniforms.uFaultAngles.value as THREE.Vector3).copy(faultAngles);
 
     /* 1) 主轨道脉冲流光弧：缓慢绕环扫过 */
     if (orbitPulseRef.current !== null) {
