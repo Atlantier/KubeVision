@@ -431,6 +431,7 @@ function ChaosDrillControl({
       <button
         type="button"
         onClick={onOpenModal}
+        aria-label="打开故障演练场景选择"
         title="打开混沌工程控制台，注入故障演练场景"
         className={cn(
           'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5',
@@ -440,6 +441,11 @@ function ChaosDrillControl({
         )}
       >
         <Zap className="h-3.5 w-3.5" aria-hidden />
+        {/*
+         * 【窄屏图标化仍需可访问名称】文案在 < lg 时隐藏，只剩一个闪电图标；
+         * 若不给 aria-label，屏幕阅读器只会读出"按钮"，用户不知道它做什么。
+         * 因此上方补 aria-label，且其值不依赖可见文案。
+         */}
         <span className="hidden lg:inline">故障演练</span>
       </button>
     );
@@ -669,7 +675,7 @@ export default function TopBar() {
   );
 
   return (
-    <header className="kv-panel relative z-30 flex h-14 shrink-0 items-center gap-3 rounded-none border-x-0 border-t-0 px-3 sm:px-4">
+    <header className="kv-panel relative z-30 flex h-12 shrink-0 items-center gap-3 rounded-none border-x-0 border-t-0 border-b border-white/[0.07] px-3 sm:px-4">
       {/* ============ 左翼：品牌 + 竖分割线 + 紧凑健康环 ============ */}
       <div className="flex shrink-0 items-center gap-2.5">
         {/*
@@ -763,6 +769,8 @@ export default function TopBar() {
           type="button"
           onClick={handleTogglePerfHud}
           aria-pressed={isPerfHudOpen}
+          aria-label={`性能监控 HUD（快捷键 Shift+P）· 当前${isPerfHudOpen ? '已开启' : '已关闭'}`}
+          aria-keyshortcuts="Shift+P"
           className={cn(
             'flex items-center gap-1.5 rounded-lg border px-2 py-1.5',
             'font-mono text-[11px] tracking-tight transition-colors duration-150',
@@ -777,6 +785,7 @@ export default function TopBar() {
           ) : (
             <Terminal className="h-3.5 w-3.5" aria-hidden />
           )}
+          {/* 文案在 < xl 隐藏，故 aria-label 承担完整可访问名称（见上方注释） */}
           <span className="hidden xl:inline">性能</span>
         </button>
       </div>
