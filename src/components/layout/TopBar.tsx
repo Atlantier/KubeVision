@@ -427,10 +427,13 @@ export function ChaosBanner({ scenario, onTerminate }: ChaosBannerProps) {
  */
 function ChaosDrillControl({
   activeChaos,
+  isLive,
   onOpenModal,
   onTerminate,
 }: {
   readonly activeChaos: ChaosScenario;
+  /** 当前是否处于实时遥测模式（决定按钮提示文案） */
+  readonly isLive: boolean;
   readonly onOpenModal: () => void;
   readonly onTerminate: () => void;
 }): React.ReactElement {
@@ -442,7 +445,15 @@ function ChaosDrillControl({
         type="button"
         onClick={onOpenModal}
         aria-label="打开故障演练场景选择"
-        title="打开混沌工程控制台，注入故障演练场景"
+        /*
+         * 实时模式下提前说明"点击后会切回合成模式"——
+         * 让用户在点击**之前**就知道会发生什么，而不是事后才看到模式被改动。
+         */
+        title={
+          isLive
+            ? '实时模式反映物理机真实水位；点击将切回「合成演练」模式以注入故障场景'
+            : '打开混沌工程控制台，注入故障演练场景'
+        }
         className={cn(
           'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5',
           'font-mono text-[11px] tracking-tight transition-colors duration-150',
@@ -579,51 +590,78 @@ function CommandPaletteTrigger(): React.ReactElement {
  * 与 Linear / Datadog 的克制语言一致。
  */
 export function ModeToggle({ mode, onChange, disabled = false }: ModeToggleProps) {
+  const isLive = mode === 'live';
   return (
-    <div
-      role="radiogroup"
-      aria-label="数据源模式切换"
-      className={cn(
-        'relative flex shrink-0 items-center rounded-lg border border-white/[0.08] bg-slate-950/70 p-0.5',
-        disabled && 'pointer-events-none opacity-45',
-      )}
-    >
-      {(['demo', 'live'] as const satisfies readonly ConnectionMode[]).map((value) => {
-        const active = mode === value;
-        return (
-          <button
-            key={value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            disabled={disabled}
-            onClick={(): void => onChange(value)}
-            className={cn(
-              'relative z-10 flex items-center gap-1.5 rounded-md px-2 py-1',
-              'font-mono text-[10px] tracking-tight transition-colors duration-200',
-              active ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300',
-            )}
-          >
-            {active ? (
-              <motion.span
-                layoutId="topbar-mode-toggle-thumb"
-                transition={{ type: 'spring', stiffness: 500, damping: 34 }}
-                aria-hidden
-                className="absolute inset-0 -z-10 rounded-md border border-white/[0.1] bg-white/[0.08]"
-              />
-            ) : null}
-            {/* 激活态配呼吸小绿点（仅 live 有意义：表示隧道连通） */}
-            {active ? (
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400 animate-glow-pulse" aria-hidden />
-            ) : value === 'demo' ? (
-              <Boxes className="h-3 w-3 shrink-0" aria-hidden />
-            ) : (
-              <Radio className="h-3 w-3 shrink-0" aria-hidden />
-            )}
-            <span className="hidden sm:inline">{value === 'demo' ? '合成' : '实时'}</span>
-          </button>
-        );
-      })}
+    <div className="flex shrink-0 items-center gap-1.5">
+      <div
+        role="radiogroup"
+        aria-label="数据源模式切换"
+        className={cn(
+          'relative flex shrink-0 items-center rounded-lg border border-white/[0.08] bg-slate-950/70 p-0.5',
+          disabled && 'pointer-events-none opacity-45',
+        )}
+      >
+        {(['demo', 'live'] as const satisfies readonly ConnectionMode[]).map((value) => {
+          const active = mode === value;
+          return (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              disabled={disabled}
+              onClick={(): void => onChange(value)}
+              className={cn(
+                'relative z-10 flex items-center gap-1.5 rounded-md px-2 py-1',
+                'font-mono text-[10px] tracking-tight transition-colors duration-200',
+                active ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300',
+              )}
+            >
+              {active ? (
+                <motion.span
+                  layoutId="topbar-mode-toggle-thumb"
+                  transition={{ type: 'spring', stiffness: 500, damping: 34 }}
+                  aria-hidden
+                  className="absolute inset-0 -z-10 rounded-md border border-white/[0.1] bg-white/[0.08]"
+                />
+              ) : null}
+              {/* 图标恒定存在（合成=数据块 / 实时=天线），呼吸脉冲交给外侧 LIVE 徽标承担 */}
+              {value === 'demo' ? (
+                <Boxes className="h-3 w-3 shrink-0" aria-hidden />
+              ) : (
+                <Radio className="h-3 w-3 shrink-0" aria-hidden />
+              )}
+              <span className="hidden sm:inline">{value === 'demo' ? '合成' : '实时'}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/*
+       * ---- LIVE 脉冲徽标（仅实时模式）----
+       *
+       * 【为什么单独做一个徽标】「实时」二字只是模式名，用户无法从它判断
+       * 数据是否真的在流动。一枚带脉冲的 LIVE 徽标把"当前数据来自真实链路"
+       * 这件事显式化——脉冲本身就是"还有数据在进来"的视觉证据。
+       *
+       * 【tooltip 说明数据来源】实时模式有两条真实链路（K8s API / 宿主机 OS
+       * 探针），用户需要知道点下去连的到底是什么，而不是盲信一个绿色小点。
+       */}
+      {isLive ? (
+        <span
+          role="status"
+          aria-label="实时遥测模式已启用：数据来自宿主机 OS 硬件探针或 K8s API 实时数据流"
+          title="实时遥测模式：已连接宿主机 OS 硬件探针 / K8s API 实时数据流"
+          className="flex shrink-0 cursor-help items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider text-emerald-300"
+        >
+          <span className="relative flex h-1.5 w-1.5" aria-hidden>
+            {/* animate-ping 外环 + 实心内点 = 真实的"心跳"而非静态圆点 */}
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-70" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
+          </span>
+          LIVE
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -697,9 +735,29 @@ export default function TopBar() {
     setChaos('NONE');
   }, [setChaos]);
 
+  /**
+   * handleOpenChaosModal —— 打开混沌演练控制台。
+   *
+   * 【实时模式下必须先切回合成】这是一个**语义冲突**，不是体验瑕疵：
+   * 实时模式显示的是物理机真实水位 / 真实 K8s 数据流，而混沌注入只作用于
+   * 合成引擎的状态机——在实时模式下点「故障演练」，注入后画面根本不会有
+   * 变化（真实硬件不会因为我们的 chaos 参数而负载飙升）。
+   * 用户会以为演练功能坏了。
+   *
+   * 因此这里**自动切回合成模式**并在终端留下一行说明：
+   * 既保证演练立刻可见效果，也如实告知"为什么帮你切了"。
+   * 相比弹一个提示框再让用户手动切，自动切换 + 可追溯的审计行更省事，
+   * 而且用户从终端能看懂因果关系。
+   */
   const handleOpenChaosModal = useCallback((): void => {
+    if (connectionMode === 'live') {
+      setMode('demo');
+      appendTerminalLog(
+        '[HUD-MODE] 实时模式反映物理机真实水位，混沌注入仅作用于合成引擎 → 已自动切回「合成演练」模式',
+      );
+    }
     setChaosModalOpen(true);
-  }, [setChaosModalOpen]);
+  }, [connectionMode, setMode, appendTerminalLog, setChaosModalOpen]);
 
   const handleTogglePerfHud = useCallback((): void => {
     setPerfHudOpen(!isPerfHudOpen);
@@ -796,6 +854,7 @@ export default function TopBar() {
         {/* 混沌演练二合一控件：未激活是按钮，激活后原地变为告警胶囊 */}
         <ChaosDrillControl
           activeChaos={activeChaos}
+          isLive={connectionMode === 'live'}
           onOpenModal={handleOpenChaosModal}
           onTerminate={handleTerminateChaos}
         />
