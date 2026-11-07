@@ -32,6 +32,8 @@ import dynamic from 'next/dynamic';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertTriangle,
+  ArrowUpRight,
+  Bot,
   Camera,
   CheckCircle2,
   ChevronDown,
@@ -40,8 +42,8 @@ import {
   Loader2,
   Mic,
   RotateCw,
-  Send,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Square,
   Volume2,
@@ -104,12 +106,26 @@ function AuditorSkeleton() {
 /* 常量                                                                       */
 /* ========================================================================== */
 
-/** 快捷指令芯片（高价值一键提问） */
-const QUICK_PROMPTS: ReadonlyArray<{ readonly icon: string; readonly text: string }> = [
-  { icon: '🩺', text: '全面巡检当前集群异常' },
-  { icon: '💥', text: '诊断 OOMKilled 根因并生成自愈方案' },
-  { icon: '⚖️', text: '结合 3D 视图分析节点负载均衡度' },
-  { icon: '🌐', text: '评估当前网络吞吐瓶颈' },
+/**
+ * 战术指令表（空状态 2×2 启动舱的数据源）。
+ *
+ * 【两个字段分工】
+ * - `label`：卡片上展示的**短标题**（6~10 字，扫读友好）；
+ * - `text` ：真实发送给模型的**完整指令**（保留全部限定词，
+ *   让模型知道要做什么、以什么形式产出）。
+ *
+ * 早期版本只有 `text`，直接把整句当按钮文案显示，导致胶囊行文字过长、
+ * 在窄抽屉里换行成两排。拆分后卡片清爽，而语义一点没丢。
+ */
+const QUICK_PROMPTS: ReadonlyArray<{
+  readonly icon: string;
+  readonly label: string;
+  readonly text: string;
+}> = [
+  { icon: '🩺', label: '全面巡检集群异常', text: '全面巡检当前集群异常' },
+  { icon: '💥', label: '诊断 OOM 并自愈', text: '诊断 OOMKilled 根因并生成自愈方案' },
+  { icon: '⚖️', label: '分析节点负载均衡', text: '结合 3D 视图分析节点负载均衡度' },
+  { icon: '🌐', label: '评估网络吞吐瓶颈', text: '评估当前网络吞吐瓶颈' },
 ];
 
 /** 3D 视口截图压缩质量（JPEG 0.8：清晰度与体积的平衡点） */
@@ -650,6 +666,14 @@ export default function CopilotDrawer() {
   const [guardWarning, setGuardWarning] = useState<string | null>(null);
   /** 用户是否已向上滚离底部（驱动「回到最新诊断」胶囊显隐） */
   const [isAwayFromBottom, setIsAwayFromBottom] = useState<boolean>(false);
+  /**
+   * 底部「快捷指令」折叠入口的展开状态。
+   *
+   * 【默认折叠】已有对话时，快捷指令只是"偶尔想用"的辅助入口，
+   * 默认收起以把高度全部让给消息流；空状态则由 2×2 卡片承担，
+   * 根本不渲染这个入口（见输入区 JSX）。
+   */
+  const [isQuickPromptsOpen, setQuickPromptsOpen] = useState<boolean>(false);
 
   /* ---- Refs ---- */
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -1379,9 +1403,15 @@ export default function CopilotDrawer() {
    * 不必为了测试而牺牲界面语言。
    */
   const tabItems = useMemo(
-    (): ReadonlyArray<{ readonly key: RightPanelTab; readonly label: string; readonly sub: string }> => [
-      { key: 'copilot', label: 'AI 运维副驾', sub: 'SRE Copilot' },
-      { key: 'auditor', label: '端侧隐私日志审计', sub: 'Edge Log Auditor (WASM)' },
+    (): ReadonlyArray<{
+      readonly key: RightPanelTab;
+      readonly label: string;
+      readonly sub: string;
+      readonly icon: typeof Bot;
+    }> => [
+      /* sub 仅作为 sr-only 测试锚点与 title 提示，视觉上不渲染 */
+      { key: 'copilot', label: 'AI 运维副驾', sub: 'SRE Copilot', icon: Bot },
+      { key: 'auditor', label: '端侧日志审计', sub: 'Edge Log Auditor (WASM)', icon: ShieldCheck },
     ],
     [],
   );
@@ -1390,14 +1420,24 @@ export default function CopilotDrawer() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* ============ 顶部：双模态 Tab 切换器 ============ */}
+      {/* ============ 顶部：单行页签（图标 + 纯中文标题） ============ *
+       * 【为何改成单行】此前是"中文主标 + 英文副标"上下两行的堆叠布局，
+       * 视觉上像两个小标签叠在一起，既占高度又显得啰嗦。
+       * 现改为单行横向：图标 + 中文标题，清爽且与顶栏的控制语言一致。
+       *
+       * 【sr-only 护航】第二个页签内部保留 `<span className="sr-only">Edge Log Auditor</span>`：
+       * scripts/verify.mjs 用 `/Edge Log Auditor/i` 正则匹配页签 textContent 来定位该 Tab，
+       * 若彻底删除英文，验收套件会失配。sr-only 让文本存在于 DOM 与 textContent 中，
+       * 但视觉上完全不可见——测试与观感两者兼得。
+       */}
       <div
         role="tablist"
         aria-label="AI 抽屉视图切换"
-        className="flex h-9 shrink-0 items-stretch gap-0.5 border-b border-slate-800 bg-slate-900/40 px-1.5"
+        className="flex h-9 shrink-0 items-stretch gap-1 border-b border-white/[0.06] bg-white/[0.015] px-1.5"
       >
         {tabItems.map((tab) => {
           const active = activeRightTab === tab.key;
+          const TabIcon = tab.icon;
           return (
             <button
               key={tab.key}
@@ -1406,21 +1446,23 @@ export default function CopilotDrawer() {
               aria-selected={active}
               onClick={(): void => setActiveRightTab(tab.key)}
               className={cn(
-                'relative flex min-w-0 flex-1 flex-col items-center justify-center px-2 transition-colors',
+                'relative flex min-w-0 flex-1 items-center justify-center gap-1.5 px-2 transition-colors',
                 active ? 'text-cyan-300' : 'text-slate-500 hover:text-slate-300',
               )}
-              title={`${tab.label} · ${tab.sub}`}
+              title={tab.label}
             >
-              {/* 中文主标（用户读） + 英文副标（术语锚点 & 测试选择器） */}
-              <span className="truncate text-[12px] font-semibold leading-none">{tab.label}</span>
-              <span className="mt-0.5 truncate font-mono text-[10px] leading-none opacity-60">
-                {tab.sub}
-              </span>
+              <TabIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span className="truncate text-[11.5px] font-medium leading-none">{tab.label}</span>
+              {/*
+               * 测试锚点：英文原名仅存在于可访问性树（sr-only），
+               * 视觉上不渲染任何英文副标。
+               */}
+              <span className="sr-only">{tab.sub}</span>
               {active ? (
                 <motion.span
                   layoutId="copilot-drawer-tab-underline"
                   transition={{ type: 'spring', stiffness: 500, damping: 34 }}
-                  className="absolute inset-x-1 bottom-0 h-px bg-cyan-400 shadow-glow-cyan"
+                  className="absolute inset-x-1 bottom-0 h-px bg-cyan-400/90"
                 />
               ) : null}
             </button>
@@ -1453,56 +1495,62 @@ export default function CopilotDrawer() {
             onDismiss={dismissBanner}
           />
 
-          {/* ---- 状态控制头 ---- */}
-          <div className="flex shrink-0 flex-col gap-1.5 border-b border-slate-800/70 px-2 py-1.5">
-            <div className="flex items-center gap-1.5">
-              {/* 在线状态呼吸灯 */}
-              <span className="flex items-center gap-1" title="Copilot 在线">
-                <span className="relative flex h-1.5 w-1.5">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                </span>
-                <span className="font-mono text-[11px] tracking-wider text-emerald-400/90">
-                  在线就绪
-                </span>
+          {/*
+           * ---- 极简单行状态栏（h-8）----
+           *
+           * 【本轮删掉的两样东西】
+           * 1. `{ttsEnabled ? '🔊 tts 已开启 · 根因诊断将语音播报' : '🔇 tts 已关闭'}`
+           *    整行文字。它把"一个开关的当前状态"用一整行来复述，而开关本身
+           *    就在旁边（图标按钮的选中态已经说明了状态）。这是纯冗余信息，
+           *    却常年占据 32px 高度。**删除，不是折叠。**
+           * 2. 原有的 `flex-col gap-1.5` 双层容器 —— 改成单行 flex。
+           *
+           * 【现状】在线就绪 · ContextPill · TTS 开关 · 清空会话 全部收进
+           * 一条 32px 细栏，border-b 用 white/[0.06] 而非 slate-800，
+           * 与顶栏、页签的分隔线材质统一。
+           */}
+          <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-white/[0.015] px-3">
+            {/* 在线状态：微呼吸点 + 小字，不再占用整行 */}
+            <span className="flex shrink-0 items-center gap-1" title="Copilot 在线">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-50" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
               </span>
+              <span className="font-mono text-[10px] tracking-wide text-emerald-400/85">在线</span>
+            </span>
 
-              {/* 已绑定实体上下文胶囊 */}
-              <span className="min-w-0 flex-1 truncate">
-                <ContextPill entityId={selectedEntityId} entityType={selectedEntityType} />
-              </span>
+            {/* 已绑定实体上下文胶囊 */}
+            <span className="min-w-0 flex-1 truncate">
+              <ContextPill entityId={selectedEntityId} entityType={selectedEntityType} />
+            </span>
 
-              {/* TTS 开关 */}
-              <button
-                type="button"
-                onClick={(): void => setTtsEnabled((prev): boolean => !prev)}
-                aria-pressed={ttsEnabled}
-                aria-label="语音播报开关"
-                title={ttsEnabled ? '关闭语音播报' : '开启语音播报'}
-                className={cn(
-                  'shrink-0 rounded border px-1 py-0.5 transition-colors',
-                  ttsEnabled
-                    ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-300'
-                    : 'border-slate-700 bg-slate-800/50 text-slate-500 hover:text-slate-300',
-                )}
-              >
-                {ttsEnabled ? <Volume2 className="h-3 w-3" aria-hidden /> : <VolumeX className="h-3 w-3" aria-hidden />}
-              </button>
+            {/* TTS 开关（图标按钮自身的选中态即状态，无需额外文字说明） */}
+            <button
+              type="button"
+              onClick={(): void => setTtsEnabled((prev): boolean => !prev)}
+              aria-pressed={ttsEnabled}
+              aria-label="语音播报开关"
+              title={ttsEnabled ? '关闭语音播报' : '开启语音播报'}
+              className={cn(
+                'shrink-0 rounded p-1 transition-colors',
+                ttsEnabled
+                  ? 'text-cyan-300 hover:text-cyan-200'
+                  : 'text-slate-500 hover:text-slate-300',
+              )}
+            >
+              {ttsEnabled ? <Volume2 className="h-3 w-3" aria-hidden /> : <VolumeX className="h-3 w-3" aria-hidden />}
+            </button>
 
-              {/* 清空会话 */}
-              <button
-                type="button"
-                onClick={clearSession}
-                aria-label="清空会话"
-                title="清空会话"
-                className="shrink-0 rounded border border-slate-700 bg-slate-800/50 px-1 py-0.5 text-slate-500 transition-colors hover:border-rose-500/40 hover:text-rose-300"
-              >
-                <Eraser className="h-3 w-3" aria-hidden />
-              </button>
-            </div>
-            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">
-              {ttsEnabled ? '🔊 tts 已开启 · 根因诊断将语音播报' : '🔇 tts 已关闭'}
-            </p>
+            {/* 清空会话 */}
+            <button
+              type="button"
+              onClick={clearSession}
+              aria-label="清空会话"
+              title="清空会话"
+              className="shrink-0 rounded p-1 text-slate-500 transition-colors hover:text-rose-300"
+            >
+              <Eraser className="h-3 w-3" aria-hidden />
+            </button>
           </div>
 
           {/* ---- 消息流 ---- */}
@@ -1514,16 +1562,65 @@ export default function CopilotDrawer() {
             aria-label="对话消息流"
           >
             {messages.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
-                <Sparkles className="h-6 w-6 text-slate-700" aria-hidden />
-                <p className="font-mono text-[11px] tracking-[0.15em] text-slate-600">
-                  智能运维副驾已就绪
-                </p>
-                <p className="text-[10px] leading-relaxed text-slate-600">
-                  提问集群故障、或使用下方快捷指令开始诊断。
-                  <br />
-                  支持语音输入与 3D 视口快照多模态分析。
-                </p>
+              /*
+               * ---- 2×2 战术指令启动舱 ----
+               *
+               * 【为何要改】旧空状态是"灰底 + 死灰字 + 两行说明"，读起来像
+               * 一个还没做完的占位页；而空状态恰恰是用户**第一次**接触
+               * Copilot 的地方，应当直接给出"你可以做什么"的可点击入口。
+               *
+               * 现改为：微光徽标 + 标题 + 一句说明 + 2×2 指令卡片。
+               * 卡片即入口——用户不必先想"我该问什么"，点一张就能开始。
+               */
+              <div className="flex h-full flex-col items-center justify-center gap-4 px-4 py-6">
+                {/* 微光徽标：单层细描边 + 柔和内发光，克制不刺眼 */}
+                <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+                  <Sparkles className="h-5 w-5 text-cyan-300/90" aria-hidden />
+                </span>
+
+                <div className="text-center">
+                  <p className="text-[13px] font-medium tracking-tight text-slate-200">
+                    KubeVision SRE 智能副驾
+                  </p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                    选择一条战术指令，或直接描述你观察到的异常。
+                  </p>
+                </div>
+
+                {/*
+                 * 2×2 指令卡片网格。
+                 * 每张卡片右上角带 ↗ 微箭头，暗示"点击后会进入下一层"。
+                 * 流式生成中禁用（避免并发请求打架）。
+                 */}
+                <div className="grid w-full grid-cols-2 gap-2">
+                  {QUICK_PROMPTS.map((prompt): React.ReactElement => (
+                    <button
+                      key={prompt.text}
+                      type="button"
+                      onClick={(): void => void sendMessage(prompt.text)}
+                      disabled={isStreaming}
+                      title={prompt.text}
+                      className={cn(
+                        'group relative rounded-lg border p-2.5 text-left transition-all duration-150',
+                        isStreaming
+                          ? 'cursor-not-allowed border-white/[0.04] bg-white/[0.01] opacity-50'
+                          : 'border-white/[0.07] bg-white/[0.025] hover:border-cyan-400/40 hover:bg-white/[0.05]',
+                      )}
+                    >
+                      {/* 右上角微箭头 */}
+                      <ArrowUpRight
+                        className="absolute right-1.5 top-1.5 h-3 w-3 text-slate-600 transition-colors group-hover:text-cyan-400/80"
+                        aria-hidden
+                      />
+                      <span className="text-[13px] leading-none" aria-hidden>
+                        {prompt.icon}
+                      </span>
+                      <span className="mt-1.5 block pr-3 text-[11px] font-medium leading-snug text-slate-300">
+                        {prompt.label}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : (
               messages.map((message) => (
@@ -1557,7 +1654,7 @@ export default function CopilotDrawer() {
                 transition={{ duration: 0.16 }}
                 onClick={jumpToLatest}
                 aria-label="回到最新诊断"
-                className="absolute bottom-[124px] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-cyan-500/50 bg-slate-900/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-cyan-300 shadow-glow-cyan backdrop-blur-md transition-colors hover:border-cyan-400 hover:bg-slate-800/90 active:scale-95"
+                className="absolute bottom-[104px] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-cyan-500/50 bg-slate-900/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-cyan-300 shadow-glow-cyan backdrop-blur-md transition-colors hover:border-cyan-400 hover:bg-slate-800/90 active:scale-95"
               >
                 <ChevronDown className="h-3 w-3" aria-hidden />
                 回到最新诊断
@@ -1565,39 +1662,53 @@ export default function CopilotDrawer() {
             ) : null}
           </AnimatePresence>
 
-          {/* ---- 输入区 ---- */}
-          <div className="shrink-0 border-t border-slate-800/70 px-2 py-1.5">
-            {/* 视口快照预览（待发送） */}
-            <AnimatePresence>
-              {capturedViewportDataUrl !== null ? (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="mb-1.5 overflow-hidden"
-                >
-                  <div className="relative inline-block overflow-hidden rounded border border-cyan-500/40 bg-slate-900/60">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={capturedViewportDataUrl}
-                      alt="待发送的 3D 视口快照"
-                      className="h-14 w-24 object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={(): void => setCapturedViewport(null)}
-                      aria-label="移除快照"
-                      className="absolute right-0.5 top-0.5 rounded bg-slate-950/80 p-0.5 text-slate-300 transition-colors hover:text-rose-400"
-                    >
-                      <X className="h-2.5 w-2.5" aria-hidden />
-                    </button>
-                    <p className="px-1 py-0.5 font-mono text-[10px] tracking-wider text-cyan-400/80">
-                      3D 视口快照就绪
-                    </p>
-                  </div>
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
+          {/*
+           * ---- 一体化圆角输入舱（Unified Composer）----
+           *
+           * 【为何要重做】此前是"边框 textarea + 右侧竖排三个小方钮 + 底部
+           * 4 个快捷胶囊"的三段式拼装：看起来像三个独立控件被硬塞进同一块区域，
+           * 而且那 4 个胶囊**永久固定**在底部——即使对话早已开始，它们仍占着
+           * 一整行高度，把消息可视区压掉一截。
+           *
+           * 现在合成为一个圆角容器（Cursor / Raycast 语言）：
+           * 顶部可选缩略图条 → 中部无边框 textarea → 底部内嵌工具栏。
+           * 焦点态由容器统一响应（focus-within），输入框本身不再画边框，
+           * 视觉上只有一个"输入舱"而不是"输入框 + 一堆按钮"。
+           */}
+          <div className="shrink-0 px-2 pb-2 pt-1.5">
+            <div className="rounded-xl border border-white/[0.09] bg-slate-950/80 p-2 shadow-inner transition-colors focus-within:border-cyan-400/50">
+              {/* ---- 顶部：视口快照缩略图预览条 ---- */}
+              <AnimatePresence>
+                {capturedViewportDataUrl !== null ? (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mb-2 overflow-hidden"
+                  >
+                    <div className="flex items-center gap-2 rounded-lg border border-white/[0.07] bg-white/[0.03] p-1">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={capturedViewportDataUrl}
+                        alt="待发送的 3D 视口快照"
+                        className="h-9 w-14 shrink-0 rounded border border-white/[0.06] object-cover"
+                      />
+                      <p className="min-w-0 flex-1 truncate font-mono text-[10px] tracking-wide text-cyan-300/80">
+                        3D 视口快照就绪
+                      </p>
+                      <button
+                        type="button"
+                        onClick={(): void => setCapturedViewport(null)}
+                        aria-label="移除快照"
+                        title="移除快照"
+                        className="shrink-0 rounded p-0.5 text-slate-500 transition-colors hover:text-rose-400"
+                      >
+                        <X className="h-3 w-3" aria-hidden />
+                      </button>
+                    </div>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
 
             {/* 语音错误/不支持提示 */}
             {speechError !== null || !speechSupported ? (
@@ -1633,8 +1744,7 @@ export default function CopilotDrawer() {
               </div>
             ) : null}
 
-            {/* 输入行 */}
-            <div className="flex items-end gap-1">
+            {/* ---- 中部：无边框 textarea（焦点态由容器统一表达） ---- */}
               <textarea
                 value={inputValue}
                 onChange={(e): void => setInputValue(e.target.value)}
@@ -1646,24 +1756,26 @@ export default function CopilotDrawer() {
                   }
                 }}
                 rows={2}
-                placeholder="描述故障现象，或使用快捷指令…（Enter 发送 / Shift+Enter 换行）"
+                placeholder="描述故障现象，或直接提问…（Enter 发送 / Shift+Enter 换行）"
                 aria-label="对话输入框"
-                className="min-h-0 min-w-0 flex-1 resize-none rounded border border-slate-700 bg-slate-800/50 px-2 py-1.5 text-[11px] leading-relaxed text-slate-200 outline-none transition-colors placeholder:text-slate-600 focus:border-cyan-500/50"
+                className="w-full resize-none bg-transparent px-1 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none"
               />
 
-              <div className="flex shrink-0 flex-col gap-1">
-                {/* 捕获 3D 视图 */}
+              {/* ---- 底部内嵌工具栏 ---- */}
+              <div className="mt-1 flex items-center gap-1">
+                {/* 📸 截取 3D 视口 */}
                 <button
                   type="button"
                   onClick={captureViewport}
                   aria-label="捕获当前 3D 视图"
-                  title="📸 捕获当前 3D 视图"
-                  className="rounded border border-slate-700 bg-slate-800/50 p-1 text-slate-400 transition-colors hover:border-cyan-500/40 hover:text-cyan-300"
+                  title="截取当前 3D 视口快照，作为多模态输入"
+                  className="flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-1 font-mono text-[10px] tracking-tight text-slate-400 transition-colors hover:bg-white/[0.05] hover:text-cyan-300"
                 >
-                  <Camera className="h-3 w-3" aria-hidden />
+                  <Camera className="h-3 w-3 shrink-0" aria-hidden />
+                  <span className="truncate">截取 3D 视口</span>
                 </button>
 
-                {/* 语音输入 */}
+                {/* 🎙️ 语音输入 */}
                 <button
                   type="button"
                   onClick={toggleListening}
@@ -1671,13 +1783,14 @@ export default function CopilotDrawer() {
                   aria-pressed={isListening}
                   title={speechSupported ? '语音输入' : '浏览器不支持语音识别'}
                   className={cn(
-                    'relative rounded border p-1 transition-colors',
+                    'relative flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-1 font-mono text-[10px] tracking-tight transition-colors',
                     isListening
-                      ? 'border-rose-500/60 bg-rose-500/15 text-rose-400'
-                      : 'border-slate-700 bg-slate-800/50 text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300',
+                      ? 'bg-rose-500/15 text-rose-300'
+                      : 'text-slate-400 hover:bg-white/[0.05] hover:text-cyan-300',
                   )}
                 >
-                  {isListening ? <Mic className="h-3 w-3" aria-hidden /> : <Mic className="h-3 w-3" aria-hidden />}
+                  <Mic className="h-3 w-3 shrink-0" aria-hidden />
+                  <span className="truncate">语音输入</span>
                   {/* 录音脉冲红点 */}
                   {isListening ? (
                     <span className="absolute -right-0.5 -top-0.5 flex h-1.5 w-1.5">
@@ -1687,6 +1800,9 @@ export default function CopilotDrawer() {
                   ) : null}
                 </button>
 
+                {/* 弹性间隙：把发送按钮推到最右 */}
+                <span className="min-w-0 flex-1" />
+
                 {/*
                  * 【发送 / 停止生成 双态按钮】（审查报告 §4.3）
                  *
@@ -1694,7 +1810,7 @@ export default function CopilotDrawer() {
                  * 一段啰嗦的长回复，唯一出路是点「清空会话」把历史全删光。
                  * 这是把"停止"与"销毁"混为一谈的产品缺陷。
                  *
-                 * 现在流式中切换为高辨识度的玫瑰红方形停止按钮，
+                 * 现在流式中切换为高辨识度的玫瑰红停止按钮，
                  * 点击调用 abortRef.abort()：已生成的内容保留，流优雅收尾。
                  */}
                 {isStreaming ? (
@@ -1703,9 +1819,10 @@ export default function CopilotDrawer() {
                     onClick={handleStopGeneration}
                     aria-label="停止生成"
                     title="停止生成（保留已生成内容）"
-                    className="rounded border border-rose-500/60 bg-rose-500/15 p-1 text-rose-300 transition-colors hover:border-rose-400 hover:bg-rose-500/25 active:scale-95"
+                    className="flex shrink-0 items-center gap-1 rounded-md border border-rose-500/50 bg-rose-500/15 px-2 py-1 font-mono text-[10px] font-semibold text-rose-300 transition-colors hover:bg-rose-500/25 active:scale-95"
                   >
-                    <Square className="h-3 w-3" aria-hidden />
+                    <Square className="h-2.5 w-2.5" aria-hidden />
+                    停止
                   </button>
                 ) : (
                   <button
@@ -1715,38 +1832,81 @@ export default function CopilotDrawer() {
                     aria-label="发送消息"
                     title="发送"
                     className={cn(
-                      'rounded border p-1 transition-colors',
+                      'flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] font-semibold transition-colors',
                       canSend
-                        ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25'
-                        : 'cursor-not-allowed border-slate-700 bg-slate-800/50 text-slate-600',
+                        ? 'border-cyan-400/50 bg-cyan-400/15 text-cyan-300 shadow-glow-cyan hover:bg-cyan-400/25'
+                        : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-600',
                     )}
                   >
-                    <Send className="h-3 w-3" aria-hidden />
+                    发送
+                    <kbd className="text-[9px] opacity-70">↵</kbd>
                   </button>
                 )}
               </div>
             </div>
 
-            {/* 快捷指令芯片 */}
-            <div className="mt-1.5 flex flex-wrap gap-1">
-              {QUICK_PROMPTS.map((chip) => (
-                <button
-                  key={chip.text}
-                  type="button"
-                  onClick={(): void => void sendMessage(chip.text)}
-                  disabled={isStreaming}
-                  className={cn(
-                    'rounded-full border px-1.5 py-0.5 font-mono text-[11px] transition-colors',
-                    isStreaming
-                      ? 'cursor-not-allowed border-slate-800 bg-slate-800/30 text-slate-600'
-                      : 'border-slate-700 bg-slate-800/50 text-slate-400 hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-300',
-                  )}
-                  title={chip.text}
-                >
-                  <span aria-hidden>{chip.icon}</span> {chip.text}
-                </button>
-              ))}
-            </div>
+            {/*
+               * ---- 快捷指令：仅在已有对话时保留一行极简可折叠入口 ----
+               *
+               * 【为何删掉常驻的 4 个胶囊】空状态下它们与 2×2 战术卡片重复
+               * （同一批指令出现两次）；有对话时它们仍永久占据一整行高度，
+               * 把消息可视区压掉约 32px。两种情形都不该常驻。
+               *
+               * 现在：空状态由 2×2 卡片承担入口（不渲染本区块）；
+               * 有对话时折叠为一行"快捷指令 ▾"，需要时展开。
+               */}
+              {messages.length > 0 ? (
+                <div className="mt-1.5">
+                  <button
+                    type="button"
+                    onClick={(): void => setQuickPromptsOpen((prev): boolean => !prev)}
+                    aria-expanded={isQuickPromptsOpen}
+                    aria-label={isQuickPromptsOpen ? '折叠快捷指令' : '展开快捷指令'}
+                    className="flex items-center gap-1 rounded px-1 py-0.5 font-mono text-[10px] tracking-tight text-slate-500 transition-colors hover:text-slate-300"
+                  >
+                    <ChevronDown
+                      className={cn(
+                        'h-2.5 w-2.5 transition-transform duration-150',
+                        isQuickPromptsOpen ? 'rotate-0' : '-rotate-90',
+                      )}
+                      aria-hidden
+                    />
+                    快捷指令
+                  </button>
+
+                  <AnimatePresence initial={false}>
+                    {isQuickPromptsOpen ? (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {QUICK_PROMPTS.map((prompt): React.ReactElement => (
+                            <button
+                              key={prompt.text}
+                              type="button"
+                              onClick={(): void => void sendMessage(prompt.text)}
+                              disabled={isStreaming}
+                              title={prompt.text}
+                              className={cn(
+                                'rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors',
+                                isStreaming
+                                  ? 'cursor-not-allowed border-white/[0.04] text-slate-600'
+                                  : 'border-white/[0.07] text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
+                              )}
+                            >
+                              <span aria-hidden>{prompt.icon}</span> {prompt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+                </div>
+              ) : null}
           </div>
         </div>
       )}
