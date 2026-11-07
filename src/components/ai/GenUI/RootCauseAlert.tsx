@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import MarkdownLite, { InlineMarkdown } from '@/components/ai/MarkdownLite';
 import type { RootCauseAlertProps } from '@/types/ai';
 
 /* ========================================================================== */
@@ -122,7 +123,7 @@ export default function RootCauseAlert({
         <div className="flex items-center gap-1.5">
           <Gauge className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
           <span className="shrink-0 font-mono text-[11px] uppercase tracking-wider text-slate-500">
-            confidence
+            根因置信度
           </span>
           <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-800">
             <div
@@ -132,7 +133,7 @@ export default function RootCauseAlert({
               aria-valuenow={confidencePct}
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-label="根因confidence"
+              aria-label="根因置信度"
             />
           </div>
           <span className="shrink-0 font-mono text-[11px] font-bold tabular-nums text-slate-300">
@@ -141,22 +142,29 @@ export default function RootCauseAlert({
         </div>
       </div>
 
-      {/* ============ 根因摘要 ============ */}
+      {/* ============ 根因摘要 ============ *
+       * 【MarkdownLite 渲染】rootCauseSummary 由模型生成，实测含
+       * `**88.1%**`、`` `memory.max` ``、`**建议暂缓执行**` 等标记。
+       * 裸 `<p>{rootCauseSummary}</p>` 会把星号与反引号直接暴露。
+       */}
       <div className="px-2.5 pb-2">
         <p className="flex items-start gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
           <Target className="mt-[2px] h-2.5 w-2.5 shrink-0" aria-hidden />
           核心根因判定
         </p>
-        <p className="mt-1 whitespace-pre-wrap break-words border-l-2 border-slate-700 pl-2 text-[10.5px] leading-relaxed text-slate-300">
-          {rootCauseSummary}
-        </p>
+        <div className="mt-1 border-l-2 border-slate-700 pl-2">
+          <MarkdownLite markdown={rootCauseSummary} className="text-[11px] leading-relaxed text-slate-300" />
+        </div>
       </div>
 
       {/* ============ 影响范围 ============ */}
       {impactScope.length > 0 ? (
         <div className="px-2.5 pb-2">
           <p className="font-mono text-[11px] uppercase tracking-wider text-slate-500">故障爆炸半径</p>
-          <p className="mt-0.5 text-[10px] leading-relaxed text-amber-300/90">{impactScope}</p>
+          {/* 单段文本 → InlineMarkdown，避免块级容器撑散卡片 */}
+          <p className="mt-0.5 text-[10.5px] leading-relaxed text-amber-300/90">
+            <InlineMarkdown text={impactScope} />
+          </p>
         </div>
       ) : null}
 
@@ -176,9 +184,16 @@ export default function RootCauseAlert({
             {evidenceChain.map((evidence, index) => (
               <li key={`${index}-${evidence.slice(0, 16)}`} className="flex items-start gap-1.5">
                 <span className="relative z-10 mt-[5px] h-1 w-1 shrink-0 rounded-full bg-slate-500" aria-hidden />
-                <code className="min-w-0 flex-1 break-words font-mono text-[12px] leading-relaxed text-slate-400">
-                  {evidence}
-                </code>
+                {/*
+                 * 【InlineMarkdown 渲染】证据条目里常出现
+                 * `memory.max`、**88.1%**、`RUNBOOK-K8S-042` 这类标记。
+                 * 此前整条塞进 `<code>` 里等比等宽渲染，反引号裸露且毫无层级；
+                 * 现在由行内解析器识别，代码片段自动获得胶囊高亮、
+                 * 加粗数字获得强调，证据链才真正"可读"。
+                 */}
+                <span className="min-w-0 flex-1 break-words font-mono text-[12px] leading-relaxed text-slate-400">
+                  <InlineMarkdown text={evidence} />
+                </span>
               </li>
             ))}
           </ol>
@@ -199,8 +214,12 @@ export default function RootCauseAlert({
             <ChevronRight className="h-2.5 w-2.5 shrink-0 text-emerald-400" aria-hidden />
           )}
           <BookOpen className="h-3 w-3 shrink-0 text-emerald-400" aria-hidden />
+          {/*
+           * 文案不带 Emoji：左侧已有 <BookOpen /> 矢量图标，
+           * "📚 + 图标"叠床架屋，是廉价 AI 模板的典型痕迹。
+           */}
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] font-bold uppercase tracking-wider text-emerald-300">
-            📚 RAG 检索增强知识库溯源
+            RAG 检索增强知识库溯源
           </span>
           <span className="shrink-0 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-emerald-300">
             {ragReferences.length} 条引用

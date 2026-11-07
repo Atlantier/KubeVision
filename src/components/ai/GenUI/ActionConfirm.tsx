@@ -41,6 +41,7 @@ import { CheckCircle2, Loader2, ShieldAlert, Terminal, Wrench } from 'lucide-rea
 
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
+import MarkdownLite from '@/components/ai/MarkdownLite';
 import type { ActionConfirmProps, RemediationActionType } from '@/types/ai';
 import type { SelectedEntityType } from '@/types/store';
 
@@ -272,9 +273,15 @@ export default function ActionConfirm({
         </div>
       </div>
 
-      {/* ============ 参数说明 ============ */}
+      {/* ============ 参数说明 ============ *
+       * 【为何改为 MarkdownLite 渲染】paramDescription 由大模型生成，
+       * 实测会输出「当前**建议暂缓执行**」与「`kubectl cordon --grace-period=300`」
+       * 这类带标记的说明。直接 `<p>{paramDescription}</p>` 会把 ** 与反引号
+       * 原样暴露给用户——在一个"要求用户确认高危操作"的卡片上出现语法噪音，
+       * 会直接削弱这个安全闸门的严肃性。
+       */}
       <div className="px-2.5 pb-2">
-        <p className="text-[10px] leading-relaxed text-slate-400">{paramDescription}</p>
+        <MarkdownLite markdown={paramDescription} className="text-[11px] leading-relaxed text-slate-300" />
       </div>
 
       {/* ============ 高危二次确认复选框（仅 isHighRisk 渲染） ============ */}

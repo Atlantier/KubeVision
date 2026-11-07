@@ -12,8 +12,8 @@
  * 【为什么不引入 react-markdown / marked】
  * AGENTS.md 第 9 条锁定了依赖世代矩阵。引入新依赖需要连带评估 ESM/CJS
  * 互操作、tree-shaking 与 SSR 行为，成本远高于收益；而本项目实际用到的
- * Markdown 子集非常小（标题/加粗/行内代码/引用/列表）。
- * 自己写约 200 行状态机，**零新增依赖、零 SSR 风险、完全可控**。
+ * Markdown 子集非常小（标题/加粗/斜体/行内代码/引用/列表/表格）。
+ * 自己写约 400 行状态机，**零新增依赖、零 SSR 风险、完全可控**。
  *
  * 【安全契约：绝不使用 dangerouslySetInnerHTML】
  * LLM 输出是**不可信的外部输入**。任何把模型文本塞进 HTML 字符串的做法
@@ -21,12 +21,20 @@
  * 本实现把文本解析为**数据结构**，再由 React 渲染为元素——
  * React 会自动转义所有文本节点，天然免疫注入。
  *
- * 【解析策略：逐行状态机】
- * 按行扫描，识别块级元素（标题/引用/列表），块内再按行内标记切分。
- * 这是 Markdown 的最小可行实现，覆盖 AI 回答的绝大多数形态。
+ * 【解析策略：逐行状态机 + 行内扫描】
+ * 按行扫描识别块级元素（标题/引用/列表/表格/代码块），块内再按行内标记切分。
+ *
+ * 【本轮升级（实测缺陷修复）】
+ * 1. 新增 `InlineMarkdown` 组件——生成式 UI 卡片里的单段说明/证据条目
+ *    只需行内渲染，不该套一层块级 `<div className="space-y-1.5">`；
+ * 2. 标题支持 `#` ~ `####` 四级（此前只认 `##`/`###`，一级标题会裸露 `#`）；
+ * 3. 行内支持 `*斜体*`（区分单星与双星）与「加粗内嵌行内代码」；
+ * 4. 新增 GFM 表格解析与渲染（大模型最爱输出的形态）；
+ * 5. 列表项允许前导空格（模型常输出 2~4 空格的子列表，
+ *    此前这些行会掉进段落分支，把 `- ` 与 `2. ` 原样渲染出来）。
  */
 
-import { Fragment, useMemo, type ReactNode } from 'react';
+import { Fragment, useId, useMemo, type ReactNode } from 'react';
 
 import { cn } from '@/utils/cn';
 
@@ -44,26 +52,83 @@ export interface MarkdownLiteProps {
   readonly className?: string;
 }
 
+/** InlineMarkdown 的 Props */
+export interface InlineMarkdownProps {
+  /** 单段文本（仅做行内解析，不产生块级元素） */
+  readonly text: string;
+  /** 附加类名（字号/颜色由调用方按上下文决定） */
+  readonly className?: string;
+}
+
 /* ========================================================================== */
 /* 行内解析                                                                    */
 /* ========================================================================== */
 
 /** 行内片段类型 */
-type InlineKind = 'text' | 'bold' | 'code';
+type InlineKind = 'text' | 'bold' | 'italic' | 'code';
 
 /** 行内片段 */
 interface InlineSegment {
   readonly kind: InlineKind;
   readonly text: string;
+  /**
+   * 加粗片段内部的子片段。
+   *
+   * 【为何需要】实测模型会输出「**当前（`kubectl cordon` 建议暂缓）**」——
+   * 加粗内部还嵌着行内代码。若把整段粗体当纯文本直接渲染，
+   * 反引号就会裸露出来（这正是本轮要修的缺陷之一）。
+   * 因此加粗片段会递归解析内部，只允许 code / italic 子类型（禁止嵌套 bold，
+   * 避免 `**a **b** c**` 这类畸形输入造成无限递归）。
+   */
+  readonly children?: readonly InlineSegment[];
 }
 
 /**
- * parseInline —— 把一行文本切分为「普通 / 加粗 / 行内代码」片段。
+ * parseInlineNoBold —— 只解析「行内代码 + 斜体」，不解析加粗。
+ *
+ * 供加粗片段的内部内容使用：加粗内部再出现 `**` 属于畸形输入，
+ * 在此层不再处理，从而保证递归一定会终止。
+ *
+ * @param text 待解析文本
+ * @returns 片段数组
+ */
+function parseInlineNoBold(text: string): InlineSegment[] {
+  const segments: InlineSegment[] = [];
+  /* code 优先于 italic：反引号里的 * 是字面量，不该被当成斜体标记 */
+  const pattern = /`([^`]+?)`|\*([^\s*](?:[^*\n]*[^\s*])?)\*/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null = pattern.exec(text);
+
+  while (match !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ kind: 'text', text: text.slice(lastIndex, match.index) });
+    }
+    if (match[1] !== undefined) {
+      segments.push({ kind: 'code', text: match[1] });
+    } else if (match[2] !== undefined) {
+      segments.push({ kind: 'italic', text: match[2] });
+    }
+    lastIndex = match.index + match[0].length;
+    match = pattern.exec(text);
+  }
+
+  if (lastIndex < text.length) {
+    segments.push({ kind: 'text', text: text.slice(lastIndex) });
+  }
+  return segments.length > 0 ? segments : [{ kind: 'text', text }];
+}
+
+/**
+ * parseInline —— 把一行文本切分为「普通 / 加粗 / 斜体 / 行内代码」片段。
  *
  * 【核心逻辑】用一个组合正则一次性扫描三种标记，避免多次遍历：
- *   `\*\*(.+?)\*\*`  加粗（非贪婪，防止跨段误吞）
- *   `` `(.+?)` ``    行内代码
- * 正则带 g 标志逐段推进，未命中部分归入 text。
+ *   `\*\*(.+?)\*\*`        加粗（非贪婪，防止跨段误吞）
+ *   `` `([^`]+?)` ``       行内代码
+ *   `\*([^\s*]…)\*`        斜体（要求内容首尾非空白，避开 `2 * 3 * 4` 这类误判）
+ *
+ * 【为何加粗必须排在斜体之前】正则的交替分支是**从左到右**尝试的。
+ * 若斜体在前，`**重点**` 会被拆成「空斜体 + 重点 + 空斜体」或直接错位；
+ * 把双星放前面可保证 `**…**` 优先整体匹配。
  *
  * 【流式容错】流式输出时标记可能尚未闭合（如只收到 `**重点`）。
  * 由于正则要求成对出现，未闭合的标记会被当作普通文本渲染——
@@ -74,10 +139,10 @@ interface InlineSegment {
  */
 function parseInline(line: string): InlineSegment[] {
   const segments: InlineSegment[] = [];
-  /* 一次扫描匹配加粗与行内代码两种标记 */
-  const pattern = /\*\*(.+?)\*\*|`([^`]+?)`/g;
+  /* 交替顺序：加粗 → 行内代码 → 斜体 */
+  const pattern = /\*\*([\s\S]+?)\*\*|`([^`]+?)`|\*([^\s*](?:[^*\n]*[^\s*])?)\*/g;
   let lastIndex = 0;
-  let match = pattern.exec(line);
+  let match: RegExpExecArray | null = pattern.exec(line);
 
   while (match !== null) {
     /* 标记前的普通文本 */
@@ -85,9 +150,13 @@ function parseInline(line: string): InlineSegment[] {
       segments.push({ kind: 'text', text: line.slice(lastIndex, match.index) });
     }
     if (match[1] !== undefined) {
-      segments.push({ kind: 'bold', text: match[1] });
+      /* 加粗：内部递归解析行内代码与斜体 */
+      const inner = match[1];
+      segments.push({ kind: 'bold', text: inner, children: parseInlineNoBold(inner) });
     } else if (match[2] !== undefined) {
       segments.push({ kind: 'code', text: match[2] });
+    } else if (match[3] !== undefined) {
+      segments.push({ kind: 'italic', text: match[3] });
     }
     lastIndex = match.index + match[0].length;
     match = pattern.exec(line);
@@ -105,10 +174,11 @@ function parseInline(line: string): InlineSegment[] {
  * renderInline —— 把行内片段渲染为 React 节点。
  *
  * 【样式契约】
- * - bold → 接近纯白的字体加重（`text-slate-50 font-semibold`），
- *   在深色背景上形成清晰的视觉强调但不刺眼；
- * - code → 深色胶囊 + 等宽 + 青色文字（K8s 实体名/命令的统一表达），
- *   与全站的 `.font-mono` 遥测数字语言一致。
+ * - bold   → 接近纯白的字体加重（`text-slate-50 font-semibold`），
+ *            在深色背景上形成清晰强调但不刺眼；内部子片段继续按 code/italic 渲染；
+ * - italic → 轻微倾斜 + 略亮的字色，不做夸张处理；
+ * - code   → 深色胶囊 + 等宽 + 青色文字（K8s 实体名/命令的统一表达），
+ *            与全站的 `.font-mono` 遥测数字语言一致。
  *
  * @param segments 片段数组
  * @param keyPrefix 用于生成稳定 key 的前缀（避免 React 警告）
@@ -119,8 +189,15 @@ function renderInline(segments: readonly InlineSegment[], keyPrefix: string): Re
     if (seg.kind === 'bold') {
       return (
         <strong key={key} className="font-semibold text-slate-50">
-          {seg.text}
+          {seg.children !== undefined ? renderInline(seg.children, `${key}-b`) : seg.text}
         </strong>
+      );
+    }
+    if (seg.kind === 'italic') {
+      return (
+        <em key={key} className="italic text-slate-200/90">
+          {seg.text}
+        </em>
       );
     }
     if (seg.kind === 'code') {
@@ -142,7 +219,18 @@ function renderInline(segments: readonly InlineSegment[], keyPrefix: string): Re
 /* ========================================================================== */
 
 /** 块类型 */
-type BlockKind = 'h2' | 'h3' | 'quote' | 'ul' | 'ol' | 'hr' | 'codeblock' | 'p';
+type BlockKind =
+  | 'h1'
+  | 'h2'
+  | 'h3'
+  | 'h4'
+  | 'quote'
+  | 'ul'
+  | 'ol'
+  | 'hr'
+  | 'codeblock'
+  | 'table'
+  | 'p';
 
 /** 块结构 */
 interface Block {
@@ -151,16 +239,44 @@ interface Block {
   readonly lines: readonly string[];
   /** 代码块的语言标识（如 bash / yaml），无则为空串 */
   readonly lang?: string;
+  /** 列表项缩进层级（0 为顶层，1 为一级子项），与 lines 一一对应 */
+  readonly depths?: readonly number[];
+  /** 表格表头 */
+  readonly headers?: readonly string[];
+  /** 表格数据行 */
+  readonly rows?: readonly (readonly string[])[];
+}
+
+/**
+ * 表格分隔行判定。
+ *
+ * 形如 `| --- | :---: | ---: |`，只允许竖线、连字符、冒号与空白。
+ * 这是 GFM 表格的必要条件：没有分隔行就只是一堆带竖线的普通文本。
+ */
+const TABLE_SEPARATOR_PATTERN = /^\|?[\s:|-]+\|[\s:|-]+\|?$/;
+
+/**
+ * 拆表格行 —— 去掉首尾竖线后按竖线切分，逐格 trim。
+ *
+ * @param line 形如 `| 节点 | CPU |` 的行
+ * @returns 单元格数组
+ */
+function splitTableRow(line: string): string[] {
+  let trimmed = line.trim();
+  if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+  if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
+  return trimmed.split('|').map((cell): string => cell.trim());
 }
 
 /**
  * parseBlocks —— 把 Markdown 源文本解析为块级结构。
  *
  * 【状态机逻辑】逐行扫描并维护「当前块」：
- * - `## ` / `### ` 开启新的标题块；
- * - `> ` 连续行合并为一个引用块（多行引用保持段落连续）；
- * - `- ` / `* ` 连续行合并为无序列表；
- * - `1. ` 等数字序号连续行合并为有序列表；
+ * - `# ` / `## ` / `### ` / `#### ` 开启标题块（从长到短匹配，防止 `####` 被 `#` 吞掉）；
+ * - `> ` 连续行合并为引用块；
+ * - `- ` / `* ` / `• ` 连续行合并为无序列表（允许前导空格做子列表）；
+ * - `1. ` / `1)` / `1、` 连续行合并为有序列表（同样允许前导空格）；
+ * - 连续 `| … |` 且第二行是分隔行 → 表格；
  * - `---` 分隔线；
  * - 其余非空行作为段落（连续行合并，保留换行语义为空格）；
  * - 空行结束当前块。
@@ -176,7 +292,7 @@ function parseBlocks(source: string): Block[] {
   const rawLines = source.split('\n');
 
   /** 当前正在累积的块（null 表示无） */
-  let current: { kind: BlockKind; lines: string[] } | null = null;
+  let current: { kind: BlockKind; lines: string[]; depths: number[] } | null = null;
 
   /**
    * 【围栏代码块状态】模型经常输出 ```bash … ``` 形式的命令块。
@@ -190,22 +306,28 @@ function parseBlocks(source: string): Block[] {
   /** 收尾当前块并入列 */
   const flush = (): void => {
     if (current !== null && current.lines.length > 0) {
-      blocks.push({ kind: current.kind, lines: current.lines });
+      blocks.push({
+        kind: current.kind,
+        lines: current.lines,
+        ...(current.kind === 'ul' || current.kind === 'ol' ? { depths: current.depths } : {}),
+      });
     }
     current = null;
   };
 
   /** 追加一行到指定类型的块；若类型不同则先收尾 */
-  const push = (kind: BlockKind, text: string): void => {
+  const push = (kind: BlockKind, text: string, depth = 0): void => {
     if (current === null || current.kind !== kind) {
       flush();
-      current = { kind, lines: [text] };
+      current = { kind, lines: [text], depths: [depth] };
     } else {
       current.lines.push(text);
+      current.depths.push(depth);
     }
   };
 
-  for (const rawLine of rawLines) {
+  for (let index = 0; index < rawLines.length; index += 1) {
+    const rawLine = rawLines[index];
     const line = rawLine.trimEnd();
 
     /* ---- 围栏代码块：开启 / 结束 ---- */
@@ -242,40 +364,77 @@ function parseBlocks(source: string): Block[] {
       continue;
     }
 
-    /* ---- 三级标题（先匹配更长的前缀，避免 ### 被 ## 吞掉） ---- */
+    /* ---- 表格：当前行以 | 开头，且下一行是分隔行 ---- */
+    if (line.trim().startsWith('|') && index + 1 < rawLines.length) {
+      const separator = rawLines[index + 1].trim();
+      if (separator.startsWith('|') && TABLE_SEPARATOR_PATTERN.test(separator)) {
+        flush();
+        const headers = splitTableRow(line);
+        const rows: string[][] = [];
+        /* 跳过表头与分隔行，收集后续所有表格行 */
+        let cursor = index + 2;
+        while (cursor < rawLines.length && rawLines[cursor].trim().startsWith('|')) {
+          rows.push(splitTableRow(rawLines[cursor]));
+          cursor += 1;
+        }
+        blocks.push({ kind: 'table', lines: [], headers, rows });
+        /* 游标停在第一条非表格行之前（循环自增会跳过它，故回退一位） */
+        index = cursor - 1;
+        continue;
+      }
+    }
+
+    /* ---- 标题：从四级到一级依次尝试（长前缀优先，防止 # 吞掉 ####） ---- */
+    const h4 = /^####\s+(.+)$/.exec(line);
+    if (h4 !== null) {
+      flush();
+      blocks.push({ kind: 'h4', lines: [h4[1]] });
+      continue;
+    }
     const h3 = /^###\s+(.+)$/.exec(line);
     if (h3 !== null) {
       flush();
       blocks.push({ kind: 'h3', lines: [h3[1]] });
       continue;
     }
-
-    /* ---- 二级标题 ---- */
     const h2 = /^##\s+(.+)$/.exec(line);
     if (h2 !== null) {
       flush();
       blocks.push({ kind: 'h2', lines: [h2[1]] });
       continue;
     }
+    const h1 = /^#\s+(.+)$/.exec(line);
+    if (h1 !== null) {
+      flush();
+      blocks.push({ kind: 'h1', lines: [h1[1]] });
+      continue;
+    }
 
     /* ---- 引用 ---- */
-    const quote = /^>\s?(.*)$/.exec(line);
+    const quote = /^\s*>\s?(.*)$/.exec(line);
     if (quote !== null) {
       push('quote', quote[1]);
       continue;
     }
 
-    /* ---- 无序列表 ---- */
-    const ul = /^[-*]\s+(.+)$/.exec(line);
+    /**
+     * ---- 无序列表（允许前导空格） ----
+     *
+     * 【为何要接受前导空格】模型极爱输出两层子列表：
+     * `  - 子项 A`。旧正则 `^[-*]\s+` 锚定行首，带空格的子项匹配失败后
+     * 掉进段落分支，结果是界面上原样渲染出「- 子项 A」——比不缩进更糟。
+     * 这里把前导空白纳入匹配，并把缩进量换算成层级深度用于视觉缩进。
+     */
+    const ul = /^(\s*)[-*•]\s+(.+)$/.exec(line);
     if (ul !== null) {
-      push('ul', ul[1]);
+      push('ul', ul[2], Math.floor(ul[1].length / 2));
       continue;
     }
 
-    /* ---- 有序列表 ---- */
-    const ol = /^\d+[.)]\s+(.+)$/.exec(line);
+    /* ---- 有序列表（允许前导空格；支持 `1.` / `1)` / `1、`） ---- */
+    const ol = /^(\s*)\d+[.)、]\s+(.+)$/.exec(line);
     if (ol !== null) {
-      push('ol', ol[1]);
+      push('ol', ol[2], Math.floor(ol[1].length / 2));
       continue;
     }
 
@@ -298,14 +457,36 @@ function parseBlocks(source: string): Block[] {
 }
 
 /* ========================================================================== */
+/* 行内渲染组件                                                                */
+/* ========================================================================== */
+
+/**
+ * InlineMarkdown —— 单段文本的行内 Markdown 渲染（不产生块级元素）。
+ *
+ * 【为什么单独导出】生成式 UI 卡片里的 `paramDescription`、`impactScope`、
+ * 证据链每一条 `evidence` 都是**单段文本**。若强行套 `MarkdownLite`
+ * （最外层是 `<div className="space-y-1.5">`），会在卡片内部引入块级间距，
+ * 把紧凑的卡片撑散。`InlineMarkdown` 只用 `<span>` 包裹，可以安全地嵌在
+ * `<p>` / `<li>` / `<code>` 原来的位置。
+ *
+ * @param props 见 InlineMarkdownProps
+ */
+export function InlineMarkdown({ text, className }: InlineMarkdownProps) {
+  const uid = useId();
+  const segments = useMemo((): InlineSegment[] => parseInline(text), [text]);
+  return <span className={className}>{renderInline(segments, `im-${uid}`)}</span>;
+}
+
+/* ========================================================================== */
 /* 组件主体                                                                    */
 /* ========================================================================== */
 
 /**
  * MarkdownLite —— 零依赖、XSS 安全的轻量 Markdown 渲染器。
  *
- * 支持：`## / ###` 标题、`**加粗**`、`` `行内代码` ``、`> 引用`、
- * 有序/无序列表、`---` 分隔线，以及流式呼吸光标。
+ * 支持：`#` ~ `####` 四级标题、`**加粗**`（可内嵌行内代码）、`*斜体*`、
+ * `` `行内代码` ``、`> 引用`、有序/无序列表（含缩进子项）、GFM 表格、
+ * `---` 分隔线，以及流式呼吸光标。
  *
  * @param props 见 MarkdownLiteProps
  */
@@ -327,6 +508,17 @@ export default function MarkdownLite({
         const key = `b-${blockIndex}`;
 
         switch (block.kind) {
+          /* ---- 一级标题：最重的章节锚点（左侧粗青条 + 更大字号） ---- */
+          case 'h1':
+            return (
+              <h2
+                key={key}
+                className="mt-3 flex items-center gap-1.5 border-l-[3px] border-cyan-400 pl-2 text-sm font-bold text-slate-50 first:mt-0"
+              >
+                {renderInline(parseInline(block.lines[0]), `${key}-h`)}
+              </h2>
+            );
+
           /* ---- 二级标题：左侧青色竖线 + 加粗，形成章节锚点 ---- */
           case 'h2':
             return (
@@ -346,6 +538,22 @@ export default function MarkdownLite({
               </h4>
             );
 
+          /**
+           * ---- 四级标题：最轻的一级 ----
+           * 用等宽小字 + 前缀细条表达"这是一个更细的段落标签"，
+           * 与三级标题形成明确的层级落差，而不是仅仅小 1px。
+           */
+          case 'h4':
+            return (
+              <h5
+                key={key}
+                className="mt-1 flex items-center gap-1 font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-400 first:mt-0"
+              >
+                <span className="h-2.5 w-px shrink-0 bg-slate-600" aria-hidden />
+                {renderInline(parseInline(block.lines[0]), `${key}-h`)}
+              </h5>
+            );
+
           /* ---- 引用块：琥珀色左描边 + 半透明底，用于告警摘要 ---- */
           case 'quote':
             return (
@@ -359,36 +567,98 @@ export default function MarkdownLite({
               </blockquote>
             );
 
-          /* ---- 无序列表 ---- */
+          /* ---- 无序列表（支持缩进子项） ---- */
           case 'ul':
             return (
-              <ul key={key} className="space-y-0.5 pl-3.5">
-                {block.lines.map((line, i): ReactNode => (
-                  <li key={`${key}-li-${i}`} className="relative leading-relaxed">
-                    {/* 自定义圆点：默认 list-disc 在深色背景下偏暗 */}
-                    <span
-                      className="absolute -left-2.5 top-[0.55em] h-1 w-1 rounded-full bg-cyan-400/70"
-                      aria-hidden
-                    />
-                    {renderInline(parseInline(line), `${key}-li-${i}`)}
-                  </li>
-                ))}
+              <ul key={key} className="space-y-0.5">
+                {block.lines.map((line, i): ReactNode => {
+                  const depth = block.depths?.[i] ?? 0;
+                  return (
+                    <li
+                      key={`${key}-li-${i}`}
+                      className="relative leading-relaxed"
+                      style={{ paddingLeft: `${14 + depth * 12}px` }}
+                    >
+                      {/* 自定义圆点：默认 list-disc 在深色背景下偏暗 */}
+                      <span
+                        className={cn(
+                          'absolute top-[0.55em] h-1 w-1 rounded-full',
+                          depth > 0 ? 'bg-slate-500' : 'bg-cyan-400/70',
+                        )}
+                        style={{ left: `${4.5 + depth * 12}px` }}
+                        aria-hidden
+                      />
+                      {renderInline(parseInline(line), `${key}-li-${i}`)}
+                    </li>
+                  );
+                })}
               </ul>
             );
 
           /* ---- 有序列表：保留模型给出的序号语义 ---- */
           case 'ol':
             return (
-              <ol key={key} className="space-y-0.5 pl-1">
-                {block.lines.map((line, i): ReactNode => (
-                  <li key={`${key}-li-${i}`} className="flex gap-1.5 leading-relaxed">
-                    <span className="shrink-0 font-mono text-[11px] font-bold tabular-nums text-cyan-400/80">
-                      {i + 1}.
-                    </span>
-                    <span className="min-w-0 flex-1">{renderInline(parseInline(line), `${key}-li-${i}`)}</span>
-                  </li>
-                ))}
+              <ol key={key} className="space-y-0.5">
+                {block.lines.map((line, i): ReactNode => {
+                  const depth = block.depths?.[i] ?? 0;
+                  return (
+                    <li
+                      key={`${key}-li-${i}`}
+                      className="flex gap-1.5 leading-relaxed"
+                      style={{ paddingLeft: `${depth * 12}px` }}
+                    >
+                      <span className="shrink-0 font-mono text-[11px] font-bold tabular-nums text-cyan-400/80">
+                        {i + 1}.
+                      </span>
+                      <span className="min-w-0 flex-1">{renderInline(parseInline(line), `${key}-li-${i}`)}</span>
+                    </li>
+                  );
+                })}
               </ol>
+            );
+
+          /**
+           * ---- GFM 表格 ----
+           *
+           * 【为何必须支持】大模型在 SRE 报告里极度偏爱表格（节点水位对比、
+           * 五问排查矩阵）。不支持时整张表会退化成段落，
+           * 用户看到的是一行行 `| 节点 | CPU |` 的裸竖线。
+           *
+           * 单元格内同样走 parseInline，因此 `**88.1%**` 与 `` `memory.max` ``
+           * 在表格里也能获得加粗与胶囊高亮，而不是裸露原始标记。
+           */
+          case 'table':
+            return (
+              <div key={key} className="my-1.5 overflow-x-auto rounded border border-slate-800 bg-slate-950/60">
+                <table className="w-full border-collapse text-left">
+                  <thead>
+                    <tr className="bg-slate-900/90">
+                      {(block.headers ?? []).map((header, i): ReactNode => (
+                        <th
+                          key={`${key}-th-${i}`}
+                          className="whitespace-nowrap border-b border-slate-800 px-2 py-1 font-mono text-[11px] font-bold text-slate-300"
+                        >
+                          {renderInline(parseInline(header), `${key}-th-${i}`)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(block.rows ?? []).map((row, rowIndex): ReactNode => (
+                      <tr key={`${key}-tr-${rowIndex}`} className="border-b border-slate-800/60 last:border-b-0">
+                        {row.map((cell, cellIndex): ReactNode => (
+                          <td
+                            key={`${key}-td-${rowIndex}-${cellIndex}`}
+                            className="px-2 py-1 align-top text-[11px] leading-relaxed text-slate-300"
+                          >
+                            {renderInline(parseInline(cell), `${key}-td-${rowIndex}-${cellIndex}`)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             );
 
           /* ---- 分隔线 ---- */
