@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — 相机运镜系统（CameraRig）
@@ -32,7 +32,7 @@
  */
 
 import { useEffect, useMemo, useRef, type ComponentRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 
@@ -63,16 +63,16 @@ type OrbitControlsImpl = ComponentRef<typeof OrbitControls>;
 const MIN_POLAR_ANGLE = 0.2;
 
 /** 极角上限（弧度）：θ ≤ π/2 − 0.05，防止相机穿入地面以下 */
-const MAX_POLAR_ANGLE = Math.PI / 2 - 0.05;
+const MAX_POLAR_ANGLE = Math.PI / 2 - 0.04;
 
 /** 轨道最大距离：35 世界单位（全景鸟瞰 [0,14,22] 的模长 ≈ 26，留有余量） */
-const MAX_ORBIT_DISTANCE = 35;
+const MAX_ORBIT_DISTANCE = 36;
 
 /** 轨道最小距离：0.8（防止滚轮推近时相机穿入 Pod/机架几何体内部） */
-const MIN_ORBIT_DISTANCE = 0.8;
+const MIN_ORBIT_DISTANCE = 1.8;
 
 /** 阻尼系数（需求契约值）：0.05，OrbitControls 惯性旋转的松紧度 */
-const ORBIT_DAMPING_FACTOR = 0.05;
+const ORBIT_DAMPING_FACTOR = 0.065;
 
 /** 飞行指数阻尼率 k（1/秒）：越大飞行越快；4 ≈ 0.7 秒内完成 95% 行程 */
 const FLIGHT_DAMPING_RATE = 4;
@@ -82,6 +82,29 @@ const ARRIVAL_EPSILON = 0.15;
 
 /** 单帧 Δt 钳制上限（秒）：掉帧时限制插值步长，防相机瞬移穿模 */
 const MAX_FRAME_DELTA = 0.1;
+
+/* --------------------------------------------------------------------------
+ * 弧线绕飞（Arc Avoidance）
+ * -------------------------------------------------------------------------- */
+
+/**
+ * 飞行进度推进速率（每秒，归一化域）。
+ *
+ * 【为何需要进度】直线阻尼插值只能得到一条**连接起点与终点的直线**：
+ * 从环外飞向环内机架时，这条直线会直接穿过机架隔板、甚至穿过中央八面体水晶。
+ * 引入归一化进度 p ∈ [0,1] 后，可在直线上叠加 sin(π·p) 包络的偏移，
+ * 把轨迹弯成弧线——两端偏移为 0（起终点精确），中段最大（绕开障碍）。
+ * 速率 1.6 ≈ 0.62 秒走完全程，比纯阻尼略慢，弧线才有"看得见的优雅"。
+ */
+const FLIGHT_ARC_RATE = 1.6;
+
+/** 弧线抬升幅度：min(MAX, 飞行距离 × RATIO)——短途不抬太高，长途从容越过机架 */
+const FLIGHT_ARC_LIFT_MAX = 2.4;
+const FLIGHT_ARC_LIFT_RATIO = 0.16;
+
+/** 弧线切向偏摆幅度：让轨迹不只是"抬高"，而是真正侧向绕行 */
+const FLIGHT_ARC_SIDESTEP_MAX = 1.8;
+const FLIGHT_ARC_SIDESTEP_RATIO = 0.12;
 
 /**
  * 环绕巡检自转速度（OrbitControls autoRotateSpeed 单位：60FPS 下 2.0 = 30 秒/圈）。
@@ -102,6 +125,16 @@ const ORBIT_PATROL_SPEED = 2.0;
  * 因此 1Hz 快照流**不会**触发本组件重渲染——相机逻辑与遥测频率完全解耦。
  */
 export default function CameraRig() {
+  /**
+   * 场景相机引用（用于在**起飞瞬间**快照当前机位，供弧线绕飞起算）。
+   *
+   * 【为何从 useThree 取而不在 useFrame 里用 state.camera】
+   * 两个飞行触发 effect 需要"此刻相机在哪"，而 effect 无法拿到 useFrame 的 state。
+   * useThree 的 camera 引用在整个 Canvas 生命周期内稳定，
+   * 不会引起额外重渲染（它只在 camera 对象被替换时变化）。
+   */
+  const camera = useThree((s): THREE.Camera => s.camera);
+
   /* ---- Store 细粒度订阅（选中态两字段 + 巡检开关） ---- */
   const selectedEntityId = useClusterStore((s): string | null => s.selectedEntityId);
   const selectedEntityType = useClusterStore((s): SelectedEntityType | null => s.selectedEntityType);
@@ -123,6 +156,18 @@ export default function CameraRig() {
    */
   const targetPosVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
   const targetLookVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
+
+  /* ---- 弧线绕飞预分配向量（useFrame 内零分配） ---- */
+  /** 本次飞行的起点（focus 变更时快照当前相机位置） */
+  const flightStartVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
+  /** 起点 → 终点的单位方向 */
+  const flightDirVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
+  /** 水平切向（垂直于飞行方向，用于侧向绕行） */
+  const flightSideVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
+  /** 叠加弧线后的本帧期望机位 */
+  const arcPointVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
+  /** 归一化飞行进度 [0,1] */
+  const flightProgressRef = useRef<number>(0);
 
   /**
    * disengagePatrolIfActive —— 若环绕巡检开启则自动解除（经 Store Action 回写）。
@@ -148,8 +193,15 @@ export default function CameraRig() {
     // getState() 按需读取最新快照（不订阅：1Hz 快照流不触发本组件重渲染）
     const snapshot = useClusterStore.getState().snapshotSummary;
     focusRef.current = resolveCameraFocus(selectedEntityId, selectedEntityType, snapshot);
+    /*
+     * 起点快照 + 进度归零：弧线绕飞依赖这两个量。
+     * 起点必须在**起飞瞬间**取相机真实位置（而非上一次的目标机位），
+     * 否则打断动画后再次点击会让弧线从错误的位置起算。
+     */
+    flightStartVec.copy(camera.position);
+    flightProgressRef.current = 0;
     isAnimatingRef.current = true;
-  }, [selectedEntityId, selectedEntityType]);
+  }, [selectedEntityId, selectedEntityType, camera, flightStartVec]);
 
   /* ---- 飞行触发通道 2：外部视角预设（viewPresetBus 广播，UI 层零 three 依赖） ---- */
   useEffect(() => {
@@ -157,9 +209,11 @@ export default function CameraRig() {
       disengagePatrolIfActive();
       // 穷举 ViewPresetKey（overview / topdown），机位解算收敛在 cameraFocus 纯函数层
       focusRef.current = resolveViewPresetFocus(preset);
+      flightStartVec.copy(camera.position);
+      flightProgressRef.current = 0;
       isAnimatingRef.current = true;
     });
-  }, []);
+  }, [camera, flightStartVec]);
 
   /* ---- 控制权交接通道：用户拖拽 onStart → 立即终止动画（防锁死核心） ---- */
   useEffect(() => {
@@ -191,7 +245,63 @@ export default function CameraRig() {
     targetPosVec.set(focus.position[0], focus.position[1], focus.position[2]);
     targetLookVec.set(focus.lookAt[0], focus.lookAt[1], focus.lookAt[2]);
 
-    state.camera.position.lerp(targetPosVec, alpha);
+    /*
+     * ================= 弧线绕飞（Arc Avoidance）=================
+     *
+     * 【解决什么】旧实现直接对 targetPosVec 做阻尼 lerp：起点与终点之间
+     * 的轨迹是一条**直线**。从环外飞向环内机架特写位时，这条直线会从
+     * 机架背后斜穿过去——穿过隔板、穿过刀片，严重时穿过中央八面体水晶，
+     * 观感就是"镜头钻进模型里"。
+     *
+     * 【轨迹构造】设 p ∈ [0,1] 为飞行进度，start 为起飞瞬间的相机位置：
+     *   L(p) = start + (target − start)·p          直线点
+     *   w(p) = sin(π·p)                            包络：两端 0、中段 1
+     *   P(p) = L(p) + up·(lift·w) + side·(step·w)  弧线点
+     *
+     * - w 两端为 0 ⇒ 起终点精确不变，不会有"起飞一抖 / 到位一偏"；
+     * - up 抬高让镜头从障碍上方越过（抬升量按飞行距离缩放）；
+     * - side 取飞行方向的**水平垂线**，让轨迹真的侧向绕出去——
+     *   只抬高而不横移时，正俯冲的视角仍会切到水晶，横向分量是必要的。
+     *
+     * 【为何仍保留阻尼】相机向 P(p) 做指数阻尼而非直接 set：
+     * 掉帧或切后台时进度仍连续，机位变化依旧平滑，且与既有的
+     * 到达判定（距离 < 0.15 吸附）天然兼容。
+     */
+    flightProgressRef.current = Math.min(
+      1,
+      flightProgressRef.current + FLIGHT_ARC_RATE * clampedDelta,
+    );
+    const progress = flightProgressRef.current;
+
+    /* 飞行向量与距离（起飞点 → 目标） */
+    flightDirVec.subVectors(targetPosVec, flightStartVec);
+    const flightDistance = flightDirVec.length();
+
+    if (flightDistance > 0.001) {
+      /* 归一化方向；水平切向 = 世界 Y × 方向，恒垂直于飞行方向 */
+      flightDirVec.multiplyScalar(1 / flightDistance);
+      flightSideVec.set(0, 1, 0).cross(flightDirVec);
+      const sideLength = flightSideVec.length();
+      if (sideLength > 0.001) {
+        flightSideVec.multiplyScalar(1 / sideLength);
+      } else {
+        /* 近乎纯竖直飞行时叉积退化为零向量：放弃侧摆，只保留抬升 */
+        flightSideVec.set(0, 0, 0);
+      }
+
+      const envelope = Math.sin(Math.PI * progress);
+      const lift = Math.min(FLIGHT_ARC_LIFT_MAX, flightDistance * FLIGHT_ARC_LIFT_RATIO) * envelope;
+      const sideStep =
+        Math.min(FLIGHT_ARC_SIDESTEP_MAX, flightDistance * FLIGHT_ARC_SIDESTEP_RATIO) * envelope;
+
+      arcPointVec.lerpVectors(flightStartVec, targetPosVec, progress);
+      arcPointVec.y += lift;
+      arcPointVec.addScaledVector(flightSideVec, sideStep);
+    } else {
+      arcPointVec.copy(targetPosVec);
+    }
+
+    state.camera.position.lerp(arcPointVec, alpha);
     if (controls !== null) {
       controls.target.lerp(targetLookVec, alpha);
       // 手动 update 使本帧的 target 变更立即生效（drei 内部 update 在下一帧）
@@ -206,6 +316,7 @@ export default function CameraRig() {
         controls.update();
       }
       isAnimatingRef.current = false;
+      flightProgressRef.current = 1;
     }
   });
 

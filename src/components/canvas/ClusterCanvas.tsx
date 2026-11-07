@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — 3D 集群拓扑根画布（ClusterCanvas）
@@ -473,7 +473,21 @@ export default function ClusterCanvas() {
           <circleGeometry args={[32, 64]} />
           <MeshReflectorMaterial
             blur={[320, 90]}
-            resolution={512}
+            /*
+             * ---- 反射贴图分辨率随自适应 DPR 分级 ----
+             *
+             * 【为什么必须分级】MeshReflectorMaterial 会把整个场景**再渲染一遍**
+             * 到一张 512² 的 RT，这是本场景最重的一笔固定开销。
+             * 在集显/低端设备上，它往往就是压垮 60FPS 的最后一根稻草——
+             * 而恰恰是这类设备最先触发 PerformanceMonitor 的降级。
+             *
+             * 【分级策略】以 adaptiveDpr 为信号（它是现有降级链的真实输出）：
+             *   ≥ 1.5 → 512（正常/高分屏）
+             *   < 1.5 → 256（已降级设备，反射面积减到 1/4，肉眼几乎无感）
+             * 反射本来就是模糊柔化的（blur 320×90），降采样后观感损失极小，
+             * 但填充率开销直接降到四分之一。
+             */
+            resolution={adaptiveDpr >= 1.5 ? 512 : 256}
             mixBlur={0.85}
             mixStrength={15}
             roughness={0.62}
