@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — 计算节点机架程序化 3D 模型（WorkerRack3D）
@@ -390,6 +390,153 @@ const SLOT_GHOSTS: readonly SlotGhostPose[] = (() => {
 })();
 
 /* ========================================================================== */
+/* 半透明蜂窝散热网侧板 / 层间弯曲光纤线束 / 顶冠蚀刻                             */
+/* ========================================================================== */
+
+/**
+ * 侧板蜂窝网孔着色器（顶点）。
+ *
+ * 传递平面 UV：x ∈ [0,1] 对应机架纵深，y ∈ [0,1] 对应机架高度。
+ */
+const MESH_PANEL_VERTEX_SHADER = `
+varying vec2 vUv;
+
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+/**
+ * 侧板蜂窝网孔着色器（片元）。
+ *
+ * 【核心数学】用两个正交的高频正弦相乘生成网孔矩阵：
+ *   cell = sin(u·110) · sin(v·220)
+ * 乘积 > 0 的区域是**网骨**（实心金属），< 0 的区域是**网孔**（透明通透），
+ * 边界处用 smoothstep 做柔和过渡，避免锯齿。
+ *
+ * 【为什么这样就有质感】真实机柜侧板是冲孔钢板：远看是一整片半透明金属，
+ * 近看是规整的密集孔阵；网骨要有一点金属光泽、孔洞要真的透光。
+ * 单纯用一张半透明平面做不到这个层次，必须靠程序化孔阵。
+ *
+ * alpha：网骨 0.62、孔洞 0.08，因此整体是"半透明"的，能看到内部刀片。
+ */
+const MESH_PANEL_FRAGMENT_SHADER = `
+uniform vec3 uColor;
+uniform float uOpacity;
+
+varying vec2 vUv;
+
+void main() {
+  float cell = sin(vUv.x * 110.0) * sin(vUv.y * 220.0);
+  float bone = smoothstep(-0.18, 0.18, cell);
+  float edgeGlow = smoothstep(0.0, 0.06, vUv.x) * (1.0 - smoothstep(0.94, 1.0, vUv.x));
+
+  vec3 color = mix(uColor * 0.55, uColor, bone);
+  float alpha = mix(0.08, uOpacity, bone) * edgeGlow;
+
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+
+/**
+ * 把一组 TubeGeometry 合并成单个 BufferGeometry（手工拼装，无额外依赖）。
+ *
+ * 【为什么必须合并】每层 2 个槽位 × 3 根光纤 = 6 根管；若不合并，
+ * 单机架 4 层共 24 次 Draw Call × 3 机架 = 72 次，直接吃掉整帧预算。
+ * 合并后每层 1 次、单机架 4 次、全局 12 次。
+ *
+ * @param tubes 待合并的管几何体（合并后原始几何体被 dispose）
+ */
+function mergeTubeGeometries(tubes: readonly THREE.TubeGeometry[]): THREE.BufferGeometry {
+  let vertexTotal = 0;
+  let indexTotal = 0;
+  for (const tube of tubes) {
+    vertexTotal += tube.attributes.position.count;
+    indexTotal += tube.index === null ? 0 : tube.index.count;
+  }
+
+  const positions = new Float32Array(vertexTotal * 3);
+  const normals = new Float32Array(vertexTotal * 3);
+  const uvs = new Float32Array(vertexTotal * 2);
+  const indices = new Uint32Array(indexTotal);
+
+  let vertexOffset = 0;
+  let indexOffset = 0;
+  for (const tube of tubes) {
+    const positionAttr = tube.attributes.position;
+    const normalAttr = tube.attributes.normal;
+    const uvAttr = tube.attributes.uv;
+    positions.set(positionAttr.array as Float32Array, vertexOffset * 3);
+    normals.set(normalAttr.array as Float32Array, vertexOffset * 3);
+    uvs.set(uvAttr.array as Float32Array, vertexOffset * 2);
+    if (tube.index !== null) {
+      for (let k = 0; k < tube.index.count; k++) {
+        indices[indexOffset + k] = tube.index.getX(k) + vertexOffset;
+      }
+      indexOffset += tube.index.count;
+    }
+    vertexOffset += positionAttr.count;
+    tube.dispose();
+  }
+
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  merged.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  merged.setIndex(new THREE.BufferAttribute(indices, 1));
+  return merged;
+}
+
+/** 层间光纤线束的管半径与每束根数 */
+const HARNESS_TUBE_RADIUS = 0.012;
+const HARNESS_PER_BUNDLE = 3;
+const HARNESS_CURVE_SEGMENTS = 14;
+
+/**
+ * 每层的弯曲光纤线束几何（模块加载期一次构建，4 个几何体）。
+ *
+ * 【路径设计】从刀片底面**前缘**出发，先向内下方弯垂，再收到机架侧柱背面：
+ *   起点 slotX, tierY + 0.10, frontZ(−0.42)
+ *   控制点依次向下、向内、向后收束
+ *   终点 侧柱内侧, tierY − 0.52, +0.10
+ * 这正是图五里"每台刀片下方垂着一束发光线"的形态：从设备后下方垂下、
+ * 贴着隔板边缘收进侧轨，而不是居中的直线垂挂。
+ *
+ * 【3 根错落】同一槽位的 3 根管用微小的 X/Z 偏移错开成"束"，
+ * 远看是一股线，近看能分辨根数。
+ */
+const HARNESS_GEOMETRIES: readonly THREE.BufferGeometry[] = (() => {
+  const sideInnerX = RACK_BODY_SIZE[0] / 2 - 0.20;
+  const frontZ = -(RACK_BODY_SIZE[2] / 2 - 0.12);
+  const result: THREE.BufferGeometry[] = [];
+
+  for (let tier = 0; tier < RACK_TIER_COUNT; tier++) {
+    const tierY = RACK_TIER_BASE_Y + tier * RACK_TIER_HEIGHT;
+    const tubes: THREE.TubeGeometry[] = [];
+
+    for (let mainSlot = 0; mainSlot < 2; mainSlot++) {
+      const slotIndex = tier * SLOTS_PER_TIER + mainSlot;
+      const local = getRackSlotLocalPose(slotIndex);
+      const sideSign = local.x >= 0 ? 1 : -1;
+
+      for (let strand = 0; strand < HARNESS_PER_BUNDLE; strand++) {
+        const drift = (strand - 1) * 0.055;
+        const start = new THREE.Vector3(local.x, tierY + 0.10, frontZ + drift * 0.4);
+        const c1 = new THREE.Vector3(local.x + sideSign * 0.16 + drift, tierY - 0.16, frontZ - 0.06);
+        const c2 = new THREE.Vector3(sideSign * sideInnerX * 0.72 + drift, tierY - 0.34, frontZ + 0.22);
+        const end = new THREE.Vector3(sideSign * sideInnerX, tierY - 0.52, RACK_BODY_SIZE[2] / 2 - 0.30);
+        const curve = new THREE.CubicBezierCurve3(start, c1, c2, end);
+        tubes.push(new THREE.TubeGeometry(curve, HARNESS_CURVE_SEGMENTS, HARNESS_TUBE_RADIUS, 5, false));
+      }
+    }
+
+    result.push(mergeTubeGeometries(tubes));
+  }
+  return result;
+})();
+
+/* ========================================================================== */
 /* 底座底板 / 导光柱 / 腔体光源                                                  */
 /* ========================================================================== */
 
@@ -511,6 +658,20 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
     (): Record<string, THREE.IUniform> => ({
       uColor: { value: new THREE.Color('#22d3ee') },
       uPulse: { value: 1 },
+    }),
+    [],
+  );
+
+  /**
+   * 侧板蜂窝网 uniforms：颜色同样由导光柱状态色驱动（useFrame 内 copy）。
+   *
+   * 【uOpacity 0.62】网骨不透明度。孔洞固定 0.08（见片元着色器），
+   * 因此整体是"半透明冲孔钢板"：既挡住内部杂乱，又透出刀片绿光。
+   */
+  const meshPanelUniforms = useMemo(
+    (): Record<string, THREE.IUniform> => ({
+      uColor: { value: new THREE.Color('#0e7490') },
+      uOpacity: { value: 0.62 },
     }),
     [],
   );
@@ -681,6 +842,8 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
      */
     if (leftGuideMat.current !== null) {
       (beamBloomUniforms.uColor.value as THREE.Color).copy(leftGuideMat.current.color);
+      /* 侧板网孔同源取色：故障时整片侧板也跟着泛红，语义一致 */
+      (meshPanelUniforms.uColor.value as THREE.Color).copy(leftGuideMat.current.color);
     }
     beamBloomUniforms.uPulse.value =
       1 + 0.18 * Math.sin(state.clock.getElapsedTime() * BEAM_BLOOM_PULSE_RATE);
@@ -944,6 +1107,90 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         <boxGeometry args={[CROWN_WIDTH - 0.42, 0.02, CROWN_DEPTH - 0.42]} />
         <meshBasicMaterial color="#22d3ee" toneMapped={false} transparent opacity={0.5} />
       </mesh>
+
+      {/*
+       * ---- 半透明蜂窝散热网侧板（左右各一片）----
+       *
+       * 【解决什么】机柜两侧此前只有四根角柱与透视内部，侧向看是"空架子"。
+       * 图五的机柜是冲孔钢板侧板：远看是一整片半透明金属，近看是密集孔阵，
+       * 内部刀片的绿光透过孔洞渗出。程序化孔阵（见 MESH_PANEL_FRAGMENT_SHADER）
+       * 用一个平面就能做到，成本仅 2 次 Draw Call。
+       *
+       * 【位置】x = ±(机架半宽 − 0.02)，略内收避免与角柱 Z 向穿插；
+       * 面片尺寸取机架宽高的 90%，留出顶/底框边。
+       * 【朝向】rotation.y = ±π/2 使平面法线指向 ±X，正对机柜侧面。
+       */}
+      {[1, -1].map((sideSign): ReactNode => (
+        <mesh
+          key={`mesh-panel-${sideSign > 0 ? 'right' : 'left'}`}
+          position={[sideSign * (RACK_BODY_SIZE[0] / 2 - 0.02), RACK_BODY_CENTER_Y, 0]}
+          rotation={[0, sideSign * (Math.PI / 2), 0]}
+          raycast={noRaycast}
+        >
+          <planeGeometry args={[RACK_BODY_SIZE[2] * 0.9, RACK_BODY_SIZE[1] * 0.9]} />
+          <shaderMaterial
+            uniforms={meshPanelUniforms}
+            vertexShader={MESH_PANEL_VERTEX_SHADER}
+            fragmentShader={MESH_PANEL_FRAGMENT_SHADER}
+            transparent
+            depthWrite={false}
+            side={THREE.DoubleSide}
+            toneMapped={false}
+          />
+        </mesh>
+      ))}
+
+      {/*
+       * ---- 层间弯曲数字光纤线束（每层一束，共 4 束）----
+       *
+       * 【解决什么】图五最有辨识度的细节之一：每台刀片下方垂着一束
+       * 弯曲的发光光纤，收进侧轨。有了它机柜内部立刻"通电了"，
+       * 而不是几个悬空的盒子。
+       *
+       * 【几何】每层的 6 根 TubeGeometry 已在模块加载期合并为 1 个
+       * BufferGeometry（见 HARNESS_GEOMETRIES），因此每层仅 1 次 Draw Call。
+       * 材质用 meshBasicMaterial + 状态色 + 加色混合：光纤本身不参与光照，
+       * 亮度恒定，像真正的导光线缆。
+       */}
+      {HARNESS_GEOMETRIES.map((harness, tierIndex): ReactNode => (
+        <mesh
+          key={`harness-${tierIndex}`}
+          geometry={harness}
+          raycast={noRaycast}
+        >
+          <meshBasicMaterial
+            color={statusColor}
+            transparent
+            opacity={0.72}
+            toneMapped={false}
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+
+      {/*
+       * ---- 顶冠全息蚀刻电路面板 ----
+       *
+       * 【解决什么】顶盖此前是一整块干净的金属，缺少图五那种"精密设备顶部
+       * 布满刻线与刻度"的细节。这里在接口环外围铺 4 条细长刻度框 +
+       * 2 条侧向散热灯条，用极低高度的 boxGeometry 贴面，成本仅 6 次 Draw Call。
+       */}
+      {[
+        { key: 'crown-etch-a', x: 0, z: -0.42, w: CROWN_WIDTH - 0.18, d: 0.012 },
+        { key: 'crown-etch-b', x: 0, z: 0.42, w: CROWN_WIDTH - 0.18, d: 0.012 },
+        { key: 'crown-etch-c', x: -(CROWN_WIDTH / 2 - 0.12), z: 0, w: 0.012, d: CROWN_DEPTH - 0.18 },
+        { key: 'crown-etch-d', x: CROWN_WIDTH / 2 - 0.12, z: 0, w: 0.012, d: CROWN_DEPTH - 0.18 },
+      ].map((bar): ReactNode => (
+        <mesh
+          key={bar.key}
+          position={[bar.x, CROWN_Y + CROWN_HEIGHT / 2 + 0.004, bar.z]}
+          raycast={noRaycast}
+        >
+          <boxGeometry args={[bar.w, 0.004, bar.d]} />
+          <meshBasicMaterial color="#38bdf8" toneMapped={false} transparent opacity={0.42} />
+        </mesh>
+      ))}
 
       {/*
        * ---- 光纤接口环（顶冠中心的水平发光端口）----

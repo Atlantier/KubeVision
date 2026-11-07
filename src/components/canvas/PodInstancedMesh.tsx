@@ -377,77 +377,97 @@ function injectCrystalShader(shader: THREE.WebGLProgramParametersWithUniforms): 
        /* 几何局部坐标（未经实例矩阵变换）：用于纵向能量渐变。
           InstancedMesh 中 position 是盒体本地坐标，y ∈ [-0.28, 0.28]，
           不随机架自转改变，保证整排刀片的渐变方向一致。 */
-       varying vec3 vLocalPos;`,
+       varying vec3 vLocalPos;
+       /* 几何局部法线：片元据此判定本像素属于哪个面（顶/侧/前后），
+          这是"六面差异化着色"的唯一依据。 */
+       varying vec3 vLocalNormal;`,
     )
     .replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
        vCrystalUv = uv;
        vViewNormal = normalize(normalMatrix * normal);
-       vLocalPos = position;`,
+       vLocalPos = position;
+       vLocalNormal = normal;`,
     );
 
-  /* ---- 片元着色器：四层光学结构叠加到自发光通道 ---- */
+  /* ---- 片元着色器：六面差异化工业结构 ----
+   *
+   * 【本轮重构动机】旧实现把「霓虹棱边 + 绿色内芯」平铺到全部 6 个面，
+   * 于是盒子看起来像廉价的"六面同图积木"——真实刀片服务器的顶面是
+   * 暗钛拉丝机箱盖、侧面前后是带 3 排子刀片槽与 LED 阵的发光面板，
+   * 两者在**明度、纹理、发光逻辑**上完全不同。
+   *
+   * 【实现方式】用局部法线判定面朝向：
+   *   abs(n.y) > 0.5 → 顶/底面（暗钛金属）
+   *   其余（|n.z| / |n.x|）→ 面板与侧面（精密发光刀片）
+   * 两条分支的 diffuse 压暗系数、纹理频率、发光结构全部独立。
+   */
   shader.fragmentShader = shader.fragmentShader
     .replace(
       '#include <common>',
       `#include <common>
        varying vec2 vCrystalUv;
        varying vec3 vViewNormal;
-       varying vec3 vLocalPos;`,
+       varying vec3 vLocalPos;
+       varying vec3 vLocalNormal;`,
     )
     .replace(
       '#include <emissivemap_fragment>',
       `#include <emissivemap_fragment>
        {
-         /* 到最近面边缘的归一化距离（0 = 恰在边上，0.5 = 面心） */
+         /* ---- 面朝向判定 ---- */
+         vec3 nLocal = normalize(vLocalNormal);
+         float isCap = step(0.5, abs(nLocal.y));
+
+         /* 到最近面边缘的归一化距离（0 = 边上，0.5 = 面心） */
          float edgeDist = min(min(vCrystalUv.x, 1.0 - vCrystalUv.x),
                               min(vCrystalUv.y, 1.0 - vCrystalUv.y));
 
-         /* ── 1. 最外圈锐利霓虹棱边（0 ~ 0.042）──
-            陡峭的 smoothstep 让亮边只有约 4% 面宽，锐利而不糊。 */
-         float outerRim = 1.0 - smoothstep(0.01, 0.042, edgeDist);
+         vec3 stateColor = diffuseColor.rgb;
+         /* 状态色与冷白的 25% 混合：保留语义又不刺眼（旧实现是死白粗框） */
+         vec3 panelEdge = mix(stateColor, vec3(0.85, 1.0, 0.96), 0.25);
 
-         /* ── 2. 暗色阳极氧化凹槽内框（0.042 ~ 0.115）──
-            左边界 0.038 与 outerRim 的 0.042 刻意重叠 0.004，避免出现黑缝；
-            右边界 0.125 与内芯窗口起点 0.10 衔接，形成
-            「亮边 → 暗槽 → 内芯」的三段层次。 */
-         float bezelMask = smoothstep(0.038, 0.055, edgeDist) *
-                           (1.0 - smoothstep(0.095, 0.125, edgeDist));
+         /* ================= 分支 A：顶 / 底面（暗钛金属机箱盖）================= */
+         float capRim   = 1.0 - smoothstep(0.0, 0.018, edgeDist);
+         float brush    = 0.5 + 0.5 * sin(vCrystalUv.x * 240.0);
+         float duct     = 0.5 + 0.5 * sin(vCrystalUv.y * 26.0);
+         float railMask = smoothstep(0.30, 0.32, abs(vCrystalUv.x - 0.5)) *
+                          (1.0 - smoothstep(0.34, 0.36, abs(vCrystalUv.x - 0.5)));
+         vec3 capGlow = panelEdge * capRim * 1.35
+                      + vec3(0.10, 0.22, 0.26) * duct * 0.30
+                      + panelEdge * railMask * 0.50;
 
-         /* ── 3. 内芯纵向能量渐变 + 微米级散热格栅扫描纹 ──
-            vLocalPos.y ∈ [-0.28, 0.28]（盒高 POD_BOX_SIZE[1] = 0.56），
-            归一化后映射到 [0.55, 1.0]：底部 55%、顶部 100% 的
-            「下重上轻」服务器刀片质感。
-            scanline 取 36 个横向周期：0.56 高约每 1.5cm 一道，
-            近看有栅格、远看平均掉不产生摩尔纹。 */
-         float verticalGrad = smoothstep(-0.28, 0.28, vLocalPos.y) * 0.45 + 0.55;
-         float scanline = 0.92 + 0.08 * sin(vCrystalUv.y * 36.0);
-         float innerWindow = smoothstep(0.10, 0.16, edgeDist) * verticalGrad * scanline;
+         /* ================= 分支 B：前后面板 / 侧面（精密刀片面板）================= */
+         float bayLocal = fract(vCrystalUv.y * 3.0);
+         float bayMask  = smoothstep(0.04, 0.10, bayLocal) *
+                          (1.0 - smoothstep(0.78, 0.92, bayLocal));
+         float grille   = 0.55 + 0.45 * sin(vCrystalUv.x * 80.0);
+         float ledBand  = smoothstep(0.78, 0.80, vCrystalUv.x);
+         float ledDots  = step(0.55, fract(vCrystalUv.y * 44.0));
+         float panelRim = 1.0 - smoothstep(0.0, 0.030, edgeDist);
+         float bezel    = smoothstep(0.028, 0.072, edgeDist) *
+                          (1.0 - smoothstep(0.074, 0.094, edgeDist));
+         float inner    = smoothstep(0.092, 0.142, edgeDist);
 
-         /* ── 4. 视线掠射菲涅尔高光 ──
-            指数 2.8 比 2.6 更贴身，轮廓光集中在边缘而非整个侧面发亮，
-            与 outerRim 的硬描边形成「硬边 + 柔包裹」的双重轮廓。 */
+         vec3 panelGlow = panelEdge * panelRim * 1.70
+                        + panelEdge * bezel * 0.22
+                        + stateColor * bayMask * inner * (0.40 + 0.28 * grille)
+                        + vec3(1.0, 1.0, 0.95) * ledBand * ledDots * bayMask * inner * 2.10;
+
+         /* ================= 合成 ================= */
+         vec3 faceGlow = mix(panelGlow, capGlow, isCap);
+         /* 压暗固有漫反射：面板 0.30、顶面 0.16（金属更暗） */
+         diffuseColor.rgb *= mix(0.30, 0.16, isCap);
+         /* 顶面叠加拉丝纹理调制，进一步强化金属感 */
+         diffuseColor.rgb = mix(diffuseColor.rgb,
+                                vec3(0.06, 0.09, 0.10) * brush,
+                                isCap * 0.50);
+
          vec3 viewDir = normalize(-vViewPosition);
          float fresnel = pow(1.0 - clamp(dot(normalize(vViewNormal), viewDir), 0.0, 1.0), 2.8);
 
-         /* ── 压暗固有漫反射（消除平涂塑料感的关键一步）──
-            外围 ×0.28、凹槽内 ×0.06。明暗不再只由「面朝哪」决定，
-            而由结构化自发光层次接管；这一步必须在光照计算之前生效，
-            故此注入点（emissivemap_fragment）是正确的。 */
-         diffuseColor.rgb *= mix(0.28, 0.06, bezelMask);
-
-         /* ── 三层自发光叠加 ──
-            rimGlow：状态色与冷白(0.92,1.0,0.98)混合 38% → 霓虹质感且保留语义；
-                     ×1.95 让描边成为视觉主角。
-            windowGlow：内芯按纵向渐变与扫描纹发光，被 bezelMask 衰减 85%
-                    （凹槽内不发光，强化金属包边阴影）。
-            fresnelGlow：柔和轮廓包裹，权重 0.48 不抢锐边。 */
-         vec3 rimGlow = mix(diffuseColor.rgb, vec3(0.92, 1.0, 0.98), 0.38) * outerRim * 1.95;
-         vec3 windowGlow = diffuseColor.rgb * innerWindow * 0.72 * (1.0 - bezelMask * 0.85);
-         vec3 fresnelGlow = diffuseColor.rgb * fresnel * 0.48;
-
-         totalEmissiveRadiance += rimGlow + windowGlow + fresnelGlow;
+         totalEmissiveRadiance += faceGlow + diffuseColor.rgb * fresnel * 0.35;
        }`,
     );
 }
