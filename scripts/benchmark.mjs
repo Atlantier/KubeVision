@@ -480,7 +480,7 @@ function renderMarkdown() {
     md.push('## 渲染性能（1920×1080 稳态）');
     md.push('');
     if (sw) {
-      md.push('> ⚠️ **本数据采集于 SwiftShader 软件光栅化环境（无 GPU 加速）**。');
+      md.push('> **本数据采集于 SwiftShader 软件光栅化环境（无 GPU 加速）**。');
       md.push('> FPS 与 Frame Time 显著低于真实显卡，仅供参考渲染循环是否健康；');
       md.push('> **Draw Calls 与 Triangles 为硬件无关指标，可作批量渲染优化的有效证据**。');
       md.push('');
@@ -498,7 +498,7 @@ function renderMarkdown() {
 
     if (r.rendering.viewportSleep) {
       const vs = r.rendering.viewportSleep;
-      md.push(`**视口休眠**：前台 \`frameloop=${vs.visible}\` → 后台 \`frameloop=${vs.hidden}\` ${vs.works ? '✅ 生效' : '❌ 未生效'}`);
+      md.push(`**视口休眠**：前台 \`frameloop=${vs.visible}\` → 后台 \`frameloop=${vs.hidden}\` ${vs.works ? '已生效' : '未生效'}`);
       md.push('');
     }
   }

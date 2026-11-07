@@ -254,7 +254,7 @@ export default function ClusterCanvas() {
   }, [isOrbitPatrolActive, setOrbitPatrolActive]);
 
   /**
-   * handleCaptureDiagnose —— 📸 3D 视口多模态快照诊断（契约链路）。
+   * handleCaptureDiagnose —— 3D 视口多模态快照诊断（契约链路）。
    *
    * 【核心流转】
    * 1. document.querySelector('canvas')?.toDataURL('image/jpeg', 0.8)

@@ -7,7 +7,7 @@
  * - 桌面端（≥ lg / 1024px）：flex-row 双栏——左栏 65%（lg:basis-[65%]，
  *   相对定位容器承载 3D 视口槽位 + 悬浮其底部的 TerminalEcho），
  *   右栏 35%（lg:basis-[35%]，AI 抽屉槽位）。
- *   ⚠️ tailwind-merge 陷阱：比例类必须写作 `lg:basis-[65%] lg:grow-0 lg:shrink-0`，
+ *   tailwind-merge 陷阱：比例类必须写作 `lg:basis-[65%] lg:grow-0 lg:shrink-0`，
  *   严禁与 `lg:flex-none` 同变体共存——cn()（twMerge）冲突表将 flex-none 归入
  *   flex 组，会**静默移除**同变体的 basis 组类（实测 twMerge('flex-1
  *   lg:basis-[65%] lg:flex-none') → 'flex-1 lg:flex-none'），导致 65/35
@@ -192,7 +192,7 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
   const activeChaos = useClusterStore((s): ChaosScenario => s.activeChaos);
 
   /* ---- 移动端视图键（Store 状态，非持久化）：
-     由本地 useState 提升而来——画布视口工具条的「📸 快照诊断」经
+     由本地 useState 提升而来——画布视口工具条的「快照诊断」经
      triggerQuickPrompt 联动切至 copilot 视图，跨组件唤醒只有经 Store 才能贯通 ---- */
   const mobileView = useClusterStore((s): MobileViewKey => s.activeMobileView);
   const setMobileView = useClusterStore((s): ((view: MobileViewKey) => void) => s.setActiveMobileView);

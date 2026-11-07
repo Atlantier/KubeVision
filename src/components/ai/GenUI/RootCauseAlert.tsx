@@ -216,7 +216,7 @@ export default function RootCauseAlert({
           <BookOpen className="h-3 w-3 shrink-0 text-emerald-400" aria-hidden />
           {/*
            * 文案不带 Emoji：左侧已有 <BookOpen /> 矢量图标，
-           * "📚 + 图标"叠床架屋，是廉价 AI 模板的典型痕迹。
+           * "Emoji + 图标"叠床架屋，是廉价 AI 模板的典型痕迹。
            */}
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] font-bold uppercase tracking-wider text-emerald-300">
             RAG 检索增强知识库溯源

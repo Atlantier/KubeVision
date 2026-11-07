@@ -361,7 +361,7 @@ export default function ActionConfirm({
       {/* ============ 执行完成后的回执 ============ */}
       {isDone ? (
         <p className="border-t border-slate-800 px-2.5 py-1.5 font-mono text-[11px] tracking-wider text-emerald-400/80">
-          ✓ 自愈指令已下发 → 免疫窗口已登记 → 3D 视口已同步更新
+          [OK] 自愈指令已下发 → 免疫窗口已登记 → 3D 视口已同步更新
         </p>
       ) : null}
     </div>

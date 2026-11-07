@@ -63,7 +63,7 @@ function ToolbarButton({ label, active = false, onClick, children }: ToolbarButt
  * 1. 全景鸟瞰（Globe2）：广播 'overview' 预设，复位到 [0,14,22] 环形全览；
  * 2. 俯视拓扑（Map）：广播 'topdown' 预设，近垂直俯视三机架槽位阵列；
  * 3. 环绕巡检（Rotate3d）：切换 autoRotate 自动旋转（激活态持续辉光）；
- * 4. 📸 多模态快照诊断（Camera）：截取当前 3D 帧 → setCapturedViewport →
+ * 4. 多模态快照诊断（Camera）：截取当前 3D 帧 → setCapturedViewport →
  *    triggerQuickPrompt 自动唤醒右侧 Copilot（移动端联动切视图）。
  *
  * 前两个预设按钮的高亮互斥（isOverviewActive / isTopDownActive 由父层
@@ -104,7 +104,7 @@ export default function ViewportToolbar({
         type="button"
         onClick={onCaptureDiagnose}
         aria-label="3D 视口多模态快照诊断"
-        title="📸 截取当前 3D 帧并唤醒 AI Copilot 执行多模态空间异常联合诊断"
+        title="截取当前 3D 帧并唤醒 AI Copilot 执行多模态空间异常联合诊断"
         className="relative flex h-9 w-9 items-center justify-center rounded-md border border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-300 transition-all duration-150 hover:border-fuchsia-400 hover:bg-fuchsia-500/20 hover:shadow-[0_0_12px_0_rgba(217,70,239,0.45)] active:scale-90"
       >
         <Camera className="h-4 w-4" aria-hidden />

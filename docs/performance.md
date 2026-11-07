@@ -15,7 +15,7 @@
 
 ## 渲染性能（1920×1080 稳态）
 
-> ⚠️ **本数据采集于 SwiftShader 软件光栅化环境（无 GPU 加速）**。
+> **本数据采集于 SwiftShader 软件光栅化环境（无 GPU 加速）**。
 > FPS 与 Frame Time 显著低于真实显卡，仅供参考渲染循环是否健康；
 > **Draw Calls 与 Triangles 为硬件无关指标，可作批量渲染优化的有效证据**。
 
@@ -28,7 +28,7 @@
 | Draw Calls | 141 | 141 | 141 | 141 | 141 |
 | Triangles | 24288 | 24288 | 24288 | 24288 | 24288 |
 
-**视口休眠**：前台 `frameloop=always` → 后台 `frameloop=demand` ✅ 生效
+**视口休眠**：前台 `frameloop=always` → 后台 `frameloop=demand` 生效
 
 ## 批量渲染优化效果
 

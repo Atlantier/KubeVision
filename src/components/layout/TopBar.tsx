@@ -406,7 +406,7 @@ export function ChaosBanner({ scenario, onTerminate }: ChaosBannerProps) {
  * 用户此刻唯一关心的是"演练正在进行，怎么停"，而不是"能不能再开一个演练"。
  *
  * 【两态设计】
- * - `activeChaos === 'NONE'`：普通按钮 [⚡ 故障演练]，点击打开场景选择模态框。
+ * - `activeChaos === 'NONE'`：普通按钮 [故障演练]，点击打开场景选择模态框。
  * - `activeChaos !== 'NONE'`：原地变形为告警胶囊 [● 演练中: 场景名 | ×]。
  *   点击**左侧主体**切回场景选择（换一个场景演练）；
  *   点击**右侧 ×** 直接终止恢复稳态，且必须 stopPropagation

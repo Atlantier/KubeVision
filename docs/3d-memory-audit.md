@@ -113,11 +113,11 @@ GPU 资源之外的泄漏同样值得警惕，本次一并核查：
 
 | 风险点 | 位置 | 状态 |
 |---|---|---|
-| 事件监听 | `CameraRig`（OrbitControls `start` 监听） | ✅ add/remove 配平 |
-| 定时器 | 全 5 个组件 | ✅ 无 setInterval |
-| requestAnimationFrame | 全 5 个组件 | ✅ 无独立 rAF 循环（统一走 useFrame） |
-| Web Worker | `useEdgeLogClassifier` | ✅ 卸载时 terminate() + 看门狗 clearTimeout |
-| 音频 / 语音 | `CopilotDrawer` | ✅ 卸载时 abort + speechSynthesis.cancel() |
+| 事件监听 | `CameraRig`（OrbitControls `start` 监听） | add/remove 配平 |
+| 定时器 | 全 5 个组件 | 无 setInterval |
+| requestAnimationFrame | 全 5 个组件 | 无独立 rAF 循环（统一走 useFrame） |
+| Web Worker | `useEdgeLogClassifier` | 卸载时 terminate() + 看门狗 clearTimeout |
+| 音频 / 语音 | `CopilotDrawer` | 卸载时 abort + speechSynthesis.cancel() |
 
 ---
 

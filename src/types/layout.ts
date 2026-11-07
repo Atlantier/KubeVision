@@ -261,7 +261,7 @@ export interface ViewportToolbarProps {
   readonly onTopDown: () => void;
   /** 点击「环绕巡检」切换自动旋转 */
   readonly onTogglePatrol: () => void;
-  /** 点击「📸 多模态快照诊断」：截帧 + 唤醒 Copilot */
+  /** 点击「多模态快照诊断」：截帧 + 唤醒 Copilot */
   readonly onCaptureDiagnose: () => void;
 }
 

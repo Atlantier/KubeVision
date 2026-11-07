@@ -459,7 +459,7 @@ export interface ChatMessage {
  * ChatRequestBody —— /api/chat 的完整请求载荷。
  *
  * 【viewportImage 说明】3D 视口快照的 Base64 DataURL（形如
- * 'data:image/jpeg;base64,...'）。仅在用户点击「📸 多模态快照诊断」时携带；
+ * 'data:image/jpeg;base64,...'）。仅在用户点击「多模态快照诊断」时携带；
  * 存在时引擎会额外推送 MULTIMODAL_VISION 推理步骤，并在有 Key 时
  * 走多模态模型通道。
  */

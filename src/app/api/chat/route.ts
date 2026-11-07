@@ -606,7 +606,7 @@ function buildSystemPrompt(
      */
     ...(metricsTargetId !== null
       ? [
-          `  ★ 指标卡目标已指定：renderPodMetrics 的 podId 必须填 "${metricsTargetId}"，`,
+          `  ▸ 指标卡目标已指定：renderPodMetrics 的 podId 必须填 "${metricsTargetId}"，`,
           '    无需再自行挑选目标——请直接使用该 id。',
         ]
       : []),
@@ -674,7 +674,7 @@ function buildIntentDirective(
         '  第 2 步：调用 **一次** `renderPodMetrics`，展示被指定目标的实时指标趋势。',
         '  第 3 步：一两句话收尾，说明当前无异常需要处置。',
         '',
-        '【⚠️ 严禁事项】',
+        '【严禁事项】',
         '  · **严禁**调用 `renderRootCauseAnalysis`——集群无故障，虚构根因会误导用户。',
         '  · **严禁**调用 `proposeRemediationAction`——没有任何故障需要修复，',
         '    此时弹出高危「驱逐节点」确认卡属于严重的产品事故。',
@@ -694,7 +694,7 @@ function buildIntentDirective(
         '  第 1 步：用一小段文字说明该实体当前水位与趋势判断（不少于 60 字）。',
         '  第 2 步：调用 **一次** `renderPodMetrics` 渲染其指标卡。',
         '',
-        '【⚠️ 严禁事项】',
+        '【严禁事项】',
         '  · 严禁调用 `renderRootCauseAnalysis` 与 `proposeRemediationAction`；',
         '  · 该实体处于健康态，不要虚构故障、不要给出重启/驱逐建议。',
       ];
@@ -718,7 +718,7 @@ function buildIntentDirective(
         '          ③ proposeRemediationAction（渲染自愈动作卡）',
         '  第 3 步：三张卡片全部调用完毕后，用一两句话总结结束。',
         '',
-        '  ⚠️ 强制约束：',
+        '  【强制约束】',
         '  · 禁止跳过正文直接调用工具；',
         '  · 禁止只调用一两个工具就结束——实测发现模型容易在第二张卡后停止，',
         '    这会使用户看不到完整的自愈动作建议；',
@@ -1078,7 +1078,7 @@ async function streamWithLLM(params: {
         if (validated === null) {
           emit({
             type: 'text',
-            content: `\n\n> ⚠️ 工具 \`${toolName}\` 返回的参数未通过校验，已跳过渲染以保护界面。\n\n`,
+            content: `\n\n> [ SCHEMA-GUARD ] 工具 \`${toolName}\` 返回的参数未通过校验，已跳过渲染以保护界面。\n\n`,
           });
           continue;
         }
@@ -1382,7 +1382,7 @@ function validateToolArgs(
     /**
      * 【用真实检索结果填充溯源】runbooks 来自请求入口处的
      * retrieveSreRunbooks 调用，含 id / title / similarityScore。
-     * 这样前端「📚 RAG 检索增强知识库溯源」区展示的就是**实际命中**的手册，
+     * 这样前端「RAG 检索增强知识库溯源」区展示的就是**实际命中**的手册，
      * 而不是模型杜撰的引用——溯源的公信力完全取决于这一点。
      */
     return { ...parsed.data, ragReferences: [...runbooks] } as RootCauseAlertProps;
@@ -1866,7 +1866,7 @@ function buildGreetingReport(ctx: ClusterContext): string {
   const healthyNodes = ctx.nodes.filter((n): boolean => n.status === 'Ready').length;
   const allReady = healthyNodes === ctx.nodes.length;
   return [
-    '你好，我是 KubeVision 的 SRE 智能副驾 👋',
+    '你好，我是 KubeVision 的 SRE 智能副驾。',
     '',
     allReady
       ? `当前集群健康度 **${ctx.clusterHealthScore}/100**，${ctx.nodes.length} 台计算节点全部就绪，入口流量约 **${ctx.totalQps.toLocaleString('en-US')} req/s**，整体处于稳态运行。`
@@ -2365,7 +2365,7 @@ export async function POST(request: Request): Promise<Response> {
             emit({
               type: 'text',
               content:
-                '> ⚠️ 远程模型调用未成功（可能是网络或额度问题），已自动切换至本地确定性 SRE 推理引擎。\n\n',
+                '> [ ENGINE-FALLBACK ] 远程模型响应异常（网络 / 额度 / 模型不受支持），已无缝切换至本地确定性 SRE 推理引擎。\n\n',
             });
             await streamWithSimulator({
               ctx: clusterContext,
@@ -2406,7 +2406,7 @@ export async function POST(request: Request): Promise<Response> {
           console.error('[kubevision][chat] stream failed:', error);
           emit({
             type: 'text',
-            content: `\n\n> ❌ 推理中断：${error instanceof Error ? error.message : 'unknown error'}\n\n`,
+            content: `\n\n> [ ENGINE-ERROR ] 推理中断：${error instanceof Error ? error.message : 'unknown error'}\n\n`,
           });
         }
         safeClose();
