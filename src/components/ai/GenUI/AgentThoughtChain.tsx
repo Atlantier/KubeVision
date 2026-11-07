@@ -1,20 +1,21 @@
 'use client';
 
 /**
- * KubeVision AI — AI 思考与规划过程可视化（AgentThoughtChain）
+ * KubeVision AI — Agent 思考链时间轴（AgentThoughtChain）
  *
- * 【设计意图】LLM 给出的结论若只有结果没有过程，用户无从判断可信度。
- * 本组件把 AgentReasoningStep[] 渲染为一条可折叠的赛博极客风时间轴：
- * 折叠态只给「几步 / 总耗时」的摘要（不喧宾夺主），
- * 展开态逐条呈现阶段徽标、步骤标题、完整思考叙述、
- * mcp:// 协议 URI 高亮标签与每步耗时——把「AI 怎么想的」变成可审计的证据。
+ * 【设计意图】把 LLM/本地引擎的推理过程以**结构化步骤流**呈现，而不是一段
+ * 不可解释的"思考文本"。每一步带阶段徽标、标题、耗时与详情，配合纵向时间轴
+ * 形成"推理轨迹"的可视化。
  *
- * 【视觉契约】深空赛博运维美学：纵向时间轴（左侧发光竖线 + 节点圆点），
- * 每阶段有独立语义色（规划青 / 视觉品红 / 检索翠绿 / 工具琥珀 / 护栏红），
- * 与项目状态色体系保持一致，不引入新的色彩语义。
- *
- * 【性能契约】纯展示组件：无定时器、无订阅、无副作用；
- * 展开/折叠为本地 useState，切换不触发父级重渲染。
+ * 【流式契约（本轮重点升级）】
+ * 服务端现在按阶段真实推送推理步骤（步骤之间插入真实等待），组件侧必须
+ * 让这种"逐条到达"被**看见**：
+ * 1. 每条新步骤用 framer-motion 做入场过渡（淡入 + 轻微上浮）；
+ * 2. 流式进行中时，**最新一条**步骤右侧挂一枚旋转加载器，明确表示
+ *    "这一步还在进行"；
+ * 3. 底部提示文案随**最新步骤的 phase** 动态变化，而不是千篇一律的
+ *    "深度思考中…"——用户看到的是"正在比对 SRE 权威排障手册"这类
+ *    具体动作描述，信息密度与可信度都更高。
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -25,6 +26,7 @@ import {
   ChevronRight,
   Eye,
   Library,
+  Loader2,
   Plug,
   ShieldAlert,
 } from 'lucide-react';
@@ -88,6 +90,22 @@ const PHASE_DOT: Readonly<Record<AgentReasoningPhase, string>> = {
   RAG_RETRIEVAL: 'bg-emerald-400',
   MCP_TOOL_INVOKE: 'bg-amber-400',
   SAFETY_GUARD: 'bg-rose-500',
+};
+
+/**
+ * 阶段 → 流式底部提示文案。
+ *
+ * 【为何要按阶段区分】旧实现固定显示"深度思考中…"——这句话对任何阶段成立，
+ * 因此也不传递任何信息。现在按最新到达步骤的真实阶段给出**具体动作描述**：
+ * 用户在等待时能知道"系统此刻到底在做什么"，这既是体验优化，
+ * 也是对推理链本身的可信度背书（如果文案与实际阶段不符，用户会立刻察觉）。
+ */
+const PHASE_STREAMING_HINT: Readonly<Record<AgentReasoningPhase, string>> = {
+  INTENT_PLANNING: '正在分析集群上下文...',
+  MULTIMODAL_VISION: '正在解析 3D 视口快照的空间异常特征...',
+  RAG_RETRIEVAL: '正在比对 SRE 权威排障手册...',
+  MCP_TOOL_INVOKE: '正在调用 MCP 协议工具并生成交互卡片...',
+  SAFETY_GUARD: '正在执行安全护栏校验...',
 };
 
 /* ========================================================================== */
@@ -155,6 +173,13 @@ export default function AgentThoughtChain({
     return phases.has('RAG_RETRIEVAL') ? 'AI 诊断推理链' : '工具调度推理';
   }, [ordered.sorted]);
 
+  /**
+   * 最新一步的阶段（驱动底部提示文案）。
+   * 无步骤时回落到意图规划，保证流式刚开始就有合理文案。
+   */
+  const latestPhase: AgentReasoningPhase =
+    ordered.sorted.length > 0 ? ordered.sorted[ordered.sorted.length - 1].phase : 'INTENT_PLANNING';
+
   /* 无步骤且不在流式中：不渲染（避免空白面板占位） */
   if (ordered.sorted.length === 0 && !isStreaming) return null;
 
@@ -211,32 +236,39 @@ export default function AgentThoughtChain({
           />
 
           {/*
-           * 【逐步骤入场动画 —— 让"流式推进"真正被看见】
+           * 【流式逐项入场 —— 让"推理推进"真正被看见】
            *
-           * 旧实现里步骤是一次性全部塞入的（服务端在请求开头连发四条），
-           * 用户看到的就是"整块内容瞬间出现"，完全没有推理推进的观感。
-           * 服务端现在改成按阶段真实推送后，这里再用 motion 的逐项入场
-           * 把每一次追加都渲染成一次"新的思考发生"——
-           * 新步骤从左侧轻微滑入并淡入，配合 AnimatePresence 处理移除。
+           * 服务端已改为按阶段真实推送（每步之间插入 280~320ms 等待），
+           * 组件侧用 motion 把每一次追加渲染成一次"新的思考发生"：
+           * 淡入 + 从下方 6px 上浮到位，220ms easeOut。
+           *
+           * 【为何用 y 而非 x】推理步骤是**纵向时间轴**上的追加项，
+           * 沿 y 轴上浮与"时间向下延展"的方向一致；x 偏移会让它看起来像
+           * 从侧边滑入的卡片，与时间轴的语义不符。
            */}
           <AnimatePresence initial={false}>
             {ordered.sorted.map((step, index) => {
               const Icon = PHASE_ICON[step.phase];
               const isLatest = index === ordered.sorted.length - 1;
+              /* 只有"最新一步"且仍在流式时才显示进行中加载器 */
+              const isPending = isLatest && isStreaming;
               return (
                 <motion.li
                   key={step.stepIndex}
-                  initial={{ opacity: 0, x: -6 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -6 }}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 6 }}
                   transition={{ duration: 0.22, ease: 'easeOut' }}
                   className="relative flex gap-2 py-1.5 pl-0"
                 >
                   {/* 时间轴节点圆点：最新一步在流式中带脉冲光环 */}
                   <span className="relative z-10 mt-1 flex h-2 w-2 shrink-0 items-center justify-center">
-                    {isLatest && isStreaming ? (
+                    {isPending ? (
                       <span
-                        className={cn('absolute h-2 w-2 animate-ping rounded-full opacity-50', PHASE_DOT[step.phase])}
+                        className={cn(
+                          'absolute h-2 w-2 animate-ping rounded-full opacity-50',
+                          PHASE_DOT[step.phase],
+                        )}
                         aria-hidden
                       />
                     ) : null}
@@ -244,7 +276,7 @@ export default function AgentThoughtChain({
                   </span>
 
                   <div className="min-w-0 flex-1">
-                    {/* 阶段徽标 + 标题 + 耗时 */}
+                    {/* 阶段徽标 + 标题 + 耗时 + 进行中加载器 */}
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span
                         className={cn(
@@ -259,6 +291,19 @@ export default function AgentThoughtChain({
                       <span className="min-w-0 flex-1 font-mono text-[10px] font-bold text-slate-200">
                         {step.title}
                       </span>
+
+                      {/*
+                       * 【进行中加载器】流式期间只有最新一步挂旋转圈，
+                       * 用来表达"这一步尚未完成，后续步骤可能继续到达"。
+                       * 已完成步骤不挂——那会让整条链看起来永远在忙。
+                       */}
+                      {isPending ? (
+                        <Loader2
+                          className={cn('h-2.5 w-2.5 shrink-0 animate-spin', PHASE_TEXT[step.phase])}
+                          aria-label="该步骤进行中"
+                        />
+                      ) : null}
+
                       <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-600">
                         {step.latencyMs} ms
                       </span>
@@ -282,13 +327,19 @@ export default function AgentThoughtChain({
             })}
           </AnimatePresence>
 
-          {/* 流式进行中的收尾标记：表示"还有下一步在生成" */}
+          {/*
+           * 流式收尾标记：表示"还有下一步在生成"。
+           * 文案按最新步骤的 phase 动态变化——用户能读到系统此刻的具体动作，
+           * 而不是一句对任何阶段都成立、因而毫无信息量的"深度思考中"。
+           */}
           {isStreaming ? (
             <li className="relative flex items-center gap-2 py-1">
               <span className="relative z-10 flex h-2 w-2 shrink-0 items-center justify-center">
                 <span className="h-1.5 w-1.5 animate-glow-pulse rounded-full bg-cyan-400" aria-hidden />
               </span>
-              <span className="font-mono text-[10px] italic text-cyan-400/70">深度思考中…</span>
+              <span className="font-mono text-[10px] italic text-cyan-400/70">
+                {PHASE_STREAMING_HINT[latestPhase]}
+              </span>
             </li>
           ) : null}
         </ol>
