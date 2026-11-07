@@ -1012,14 +1012,43 @@ function FilterStatusBanner() {
   const setChaosModalOpen = useClusterStore(
     (s): ((open: boolean) => void) => s.setChaosModalOpen,
   );
+  const selectEntity = useClusterStore(
+    (s): ((entityId: string | null, entityType?: SelectedEntityType | null) => void) =>
+      s.selectEntity,
+  );
 
   /**
-   * ESC 返回全部视图。
+   * handleExitFilteredView —— 统一退出「筛选视图」。
+   *
+   * 【为什么要同时清空选中实体】
+   * 筛选视图与相机聚焦是**同一段观察意图的两个侧面**：用户按下「崩溃重启」
+   * 过滤器时，往往同时点开了某个实例看细节；此时按 ESC 若只退回全部视图而
+   * 保留选中态，相机会继续锁在那个实例上——视图退出了，镜头却没退出，
+   * 用户还得再找一次关闭按钮。统一处理让一次 ESC 回到"干净的初始观察态"。
+   *
+   * 【相机如何复位】`selectEntity(null)` 已足够：CameraRig 的聚焦 effect
+   * 观察到 entityId 为 null 即回到全景鸟瞰位（见 cameraFocus 的类型契约），
+   * 无需额外 dispatchViewPreset。
+   *
+   * 【复用点】ESC 与横幅上两个「返回全部」按钮共用本函数，
+   * 保证键盘与鼠标两条路径行为完全一致。
+   */
+  const handleExitFilteredView = useCallback((): void => {
+    setStatusFilter('ALL');
+    selectEntity(null);
+  }, [setStatusFilter, selectEntity]);
+
+  /**
+   * ESC 退出筛选视图（同时清空选中实体）。
    *
    * 【为何要判 defaultPrevented 与输入焦点】全局 ESC 栈上已有
    * 「命令面板 / 混沌模态 / 抽屉」等更高层级的消费者，它们会先处理并
    * preventDefault；这里只在无人认领时兜底，避免"关掉弹窗的同时
    * 顺手把过滤器也重置了"这种连带操作。
+   *
+   * 【触发条件严格限定 statusFilter !== 'ALL'】只有处于筛选态时 ESC 才是
+   * "退出筛选"。全量视图下 ESC 不该顺手清掉用户正在看的实体——
+   * 那属于探针卡关闭按钮（X）的职责，两条路径语义不同。
    */
   useEffect(() => {
     if (statusFilter === 'ALL') return;
@@ -1033,11 +1062,11 @@ function FilterStatusBanner() {
       ) {
         return;
       }
-      setStatusFilter('ALL');
+      handleExitFilteredView();
     };
     window.addEventListener('keydown', onKeyDown);
     return (): void => window.removeEventListener('keydown', onKeyDown);
-  }, [statusFilter, setStatusFilter]);
+  }, [statusFilter, handleExitFilteredView]);
 
   /* 全量视图：默认态，不渲染任何说明 */
   if (statusFilter === 'ALL') return null;
@@ -1088,7 +1117,7 @@ function FilterStatusBanner() {
           </button>
           <button
             type="button"
-            onClick={(): void => setStatusFilter('ALL')}
+            onClick={handleExitFilteredView}
             className="shrink-0 rounded-full border border-white/[0.08] px-2 py-0.5 font-mono text-[10px] tracking-tight text-slate-400 transition-colors hover:border-white/[0.16] hover:text-slate-200"
           >
             返回全部视图
@@ -1097,7 +1126,7 @@ function FilterStatusBanner() {
       ) : (
         <button
           type="button"
-          onClick={(): void => setStatusFilter('ALL')}
+          onClick={handleExitFilteredView}
           className="shrink-0 rounded-full border border-cyan-500/40 px-2 py-0.5 font-mono text-[10px] tracking-tight text-cyan-300 transition-colors hover:bg-cyan-500/15"
         >
           重置为全部 (ESC)
