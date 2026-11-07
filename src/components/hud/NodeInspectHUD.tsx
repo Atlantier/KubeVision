@@ -45,7 +45,6 @@ import {
   Activity,
   ChevronDown,
   Cpu,
-  HardDrive,
   LayoutGrid,
   MemoryStick,
   MousePointerClick,
@@ -62,10 +61,9 @@ import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import { MASTER_ENTITY_ID } from '@/types/canvas';
 import { dispatchViewPreset } from '@/utils/viewPresetBus';
-import type { PodEntity, TelemetrySnapshot, WorkerNodeEntity } from '@/types/cluster';
+import type { PodEntity, PodStatus, TelemetrySnapshot, WorkerNodeEntity } from '@/types/cluster';
 import type { SelectedEntityType } from '@/types/store';
 import type {
-  EntityHistorySource,
   EntityInspectView,
   GestureHintItem,
   InspectMetaRow,
@@ -84,12 +82,46 @@ import type {
 const CPU_COLOR = '#22d3ee';
 const MEM_COLOR = '#a78bfa';
 
+/**
+ * 内存波形在实体处于 critical 态时的告警配色（绯红）。
+ *
+ * 【为何只切内存不切 CPU】内存溢出（OOMKilled / 节点内存打满）是这套系统
+ * 里最典型的故障形态，而 OOM 的因果链恰恰是"内存先顶满 → 容器被杀"。
+ * 把内存曲线单独染成绯红，等于把故障的**直接证据**高亮出来，
+ * 比整张卡片变色更有指向性，也不会让 CPU 曲线失去与常态的可比性。
+ */
+const MEM_CRITICAL_COLOR = '#f43f5e';
+
+/** Pod 状态 → 中文徽标文案。英文原文保留在 title 提示中供 kubectl 对照。 */
+const POD_STATUS_LABEL: Readonly<Record<PodStatus, string>> = {
+  Running: '运行中',
+  Pending: '调度中',
+  CrashLoopBackOff: '崩溃重启',
+  OOMKilled: '内存溢出',
+  Terminating: '终止中',
+};
+
+/**
+ * 节点状态 → 中文徽标文案。
+ *
+ * 【Ready 保留英文原文】节点就绪态在 K8s 运维语境里几乎等同于专有名词
+ * （`kubectl get node` 的输出列就叫 READY，取值 Ready/NotReady），
+ * 因此写成「就绪 (Ready)」：中文先行便于扫读，括号保留原文便于核对。
+ * 另外两态（高负载 / 网络分区）是本系统自有的语义扩展，无官方英文对标，
+ * 故直接中文化。
+ */
+const NODE_STATUS_LABEL: Readonly<Record<WorkerNodeEntity['status'], string>> = {
+  Ready: '就绪 (Ready)',
+  HighLoad: '高负载',
+  NetworkPartition: '网络分区',
+};
+
 /** 历史序列目标点数（与 PodEntity 契约的 6 点 FIFO 对齐） */
 const HISTORY_POINTS = 6;
 
 /** Sparkline 默认视口尺寸（用户单位；preserveAspectRatio=none 自适应拉伸） */
 const SPARKLINE_WIDTH = 132;
-const SPARKLINE_HEIGHT = 34;
+const SPARKLINE_HEIGHT = 32;
 
 /** Sparkline 垂直内边距（用户单位）：防峰值削顶/触底，留 12% 呼吸空间 */
 const SPARKLINE_PAD_Y = 4;
@@ -136,13 +168,13 @@ const TONE_GLOW_CLASS: Readonly<Record<InspectTone, string>> = {
 const TOPOLOGY_LEGEND: readonly TopologyLegendItem[] = [
   {
     key: 'running',
-    label: 'Running',
+    label: '运行正常',
     tone: 'healthy',
     description: '容器正常运行，服务健康',
   },
   {
     key: 'pending',
-    label: 'Pending',
+    label: '调度启动中',
     tone: 'warning',
     description: '调度或启动中，尚未就绪',
   },
@@ -268,7 +300,7 @@ function derivePodView(
     entityId: pod.id,
     entityType: 'pod',
     displayName: pod.name,
-    statusLabel: pod.status,
+    statusLabel: POD_STATUS_LABEL[pod.status],
     statusTone,
     metaRows,
     restarts: pod.restarts,
@@ -279,7 +311,7 @@ function derivePodView(
       latestText: formatPercent(pod.cpuUsage),
     },
     memSeries: {
-      label: 'MEM',
+      label: '内存',
       values: padHistory(pod.memHistory),
       color: MEM_COLOR,
       latestText: formatPercent(pod.memoryUsage),
@@ -324,7 +356,7 @@ function deriveNodeView(
     entityId: node.id,
     entityType: 'node',
     displayName: node.name,
-    statusLabel: node.status,
+    statusLabel: NODE_STATUS_LABEL[node.status],
     statusTone,
     metaRows,
     restarts,
@@ -335,7 +367,7 @@ function deriveNodeView(
       latestText: formatPercent(node.cpuUsage),
     },
     memSeries: {
-      label: 'MEM',
+      label: '内存',
       values: avgMem,
       color: MEM_COLOR,
       latestText: formatPercent(node.memUsage),
@@ -388,8 +420,8 @@ function deriveMasterView(snapshot: TelemetrySnapshot): EntityInspectView {
   return {
     entityId: MASTER_ENTITY_ID,
     entityType: 'master',
-    displayName: 'MASTER control plane',
-    statusLabel: `Health ${Math.round(score)}`,
+    displayName: '控制平面 · API-Server',
+    statusLabel: `健康分 ${Math.round(score)}`,
     statusTone,
     metaRows,
     restarts,
@@ -400,7 +432,7 @@ function deriveMasterView(snapshot: TelemetrySnapshot): EntityInspectView {
       latestText: formatPercent(cpuNow),
     },
     memSeries: {
-      label: 'MEM',
+      label: '内存',
       values: avgMem,
       color: MEM_COLOR,
       latestText: formatPercent(memNow),
@@ -643,13 +675,27 @@ function TopologyLegendPanel() {
 /**
  * EntityProbeCard —— 玻璃态实体详情探针（选中实体时展示）。
  *
- * 【核心流转】
- * 1. 头部：实体类型图标 + 名称（truncate 防长 Pod 名撑破）+ 关闭按钮；
- * 2. 状态徽标：语义色圆点 + 状态原文（高亮描边随状态色变化）；
- * 3. 元信息网格：NAMESPACE / NODE / IP / RACK-SLOT（按实体类型裁剪）；
- * 4. 重启次数：Restarts 指标（>0 时以琥珀/红强调，0 时中性）；
- * 5. 双波形：CPU / MEM Sparkline 并排；
- * 6. 双按钮：AI 根因诊断（triggerQuickPrompt）+ 隔离并重启（healEntity）。
+ * 【本轮的布局改造：从竖排长卡改为 176px 双列紧凑卡】
+ * 旧卡片是 5 段竖排：头部（名称 + 类型行）→ 状态徽标行 → 4 行元信息 dl →
+ * 竖排双波形 → 数据口径说明 → 竖排双按钮。总高约 300px+，在 3D 视口左上角
+ * 占据过大面积，把拓扑场景压得只剩右侧一条。问题不在信息量，而在**排布方式**：
+ * 每一行都只有一个信息单元，纵向堆叠必然变长。
+ *
+ * 现压缩为 4 行，横向利用空间：
+ *  1. 头部：状态呼吸点 + 名称 + 内联状态徽标 + 重启徽标 + 关闭按钮（单行）
+ *  2. 波形：CPU / 内存 **左右并排**（grid-cols-2），各含百分比大数字 + 32px Sparkline
+ *  3. 元数据：4 行 dl 压成一行 `·` 分隔条
+ *  4. 战术按钮：两枚按钮 **左右并排**（grid-cols-2）
+ *
+ * 删掉的两项：
+ * - 单独占一行的 `RESTARTS` 框 → 并入头部徽标（且仅 restarts > 0 时出现，
+ *   0 次重启是常态，不该在稳态占用头部空间）；
+ * - `history source · direct samples` 英文说明行 → 该信息对用户零价值
+ *   （用户不关心曲线是直接采集还是聚合派生，只关心趋势），且是纯英文。
+ *   数据口径仍保留在视图模型里，供需要时在别处呈现。
+ *
+ * 【状态语义】statusTone 同时驱动：呼吸点颜色、徽标配色、卡片外环、
+ * 以及 **内存波形在 critical 态转为绯红**（OOM 故障的直接证据高亮）。
  */
 function EntityProbeCard({
   view,
@@ -664,9 +710,25 @@ function EntityProbeCard({
 }) {
   const EntityIcon = view.entityType === 'pod' ? Sparkles : view.entityType === 'node' ? Server : Activity;
 
-  /* 重启次数强调：≥3 次视为反复崩溃（rose），1~2 次琥珀，0 中性 */
+  /* 重启次数强调：≥3 次视为反复崩溃（rose），1~2 次琥珀 */
   const restartsTone: InspectTone =
     view.restarts >= 3 ? 'critical' : view.restarts > 0 ? 'warning' : 'healthy';
+
+  /**
+   * 内存序列配色：critical 态切换为绯红。
+   *
+   * 【为何在渲染层而非派生层做】派生层（derivePodView 等）只负责"数据是什么"，
+   * 配色是"怎么显示"的问题，属于渲染层职责。放在这里也保证同一个序列
+   * 在不同上下文中可以被赋予不同颜色，而不必改动视图模型。
+   */
+  const memSeries = useMemo((): SparklineSeries => {
+    if (view.statusTone !== 'critical') return view.memSeries;
+    return { ...view.memSeries, color: MEM_CRITICAL_COLOR };
+  }, [view.memSeries, view.statusTone]);
+
+  /** 元数据条：只取 value 并用 `·` 连接（label 保留在 title 中供核对） */
+  const metaLine = view.metaRows.map((row): string => row.value).join(' · ');
+  const metaTitle = view.metaRows.map((row): string => `${row.label}: ${row.value}`).join(' / ');
 
   return (
     <div
@@ -676,17 +738,49 @@ function EntityProbeCard({
         TONE_GLOW_CLASS[view.statusTone],
       )}
     >
-      {/* ---- 头部：图标 + 名称 + 关闭 ---- */}
-      <div className="flex items-start gap-1.5">
-        <EntityIcon className={cn('mt-[2px] h-3.5 w-3.5 shrink-0', TONE_TEXT_CLASS[view.statusTone])} aria-hidden />
-        <div className="min-w-0 flex-1">
-          <p className="truncate font-mono text-[11px] font-bold tracking-wide text-slate-100" title={view.displayName}>
-            {view.displayName}
-          </p>
-          <p className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.18em] text-slate-600">
-            {view.entityType}
-          </p>
-        </div>
+      {/* ============ 第 1 行：状态点 + 名称 + 状态徽标 + 重启徽标 + 关闭 ============ */}
+      <div className="flex items-center gap-1.5">
+        {/* 状态呼吸点：critical 时叠加 ping 脉冲，稳态只保留静点 */}
+        <span className="relative flex h-1.5 w-1.5 shrink-0" aria-hidden>
+          {view.statusTone === 'critical' ? (
+            <span className={cn('absolute inline-flex h-full w-full animate-ping rounded-full opacity-60', TONE_BG_CLASS[view.statusTone])} />
+          ) : null}
+          <span className={cn('relative inline-flex h-1.5 w-1.5 rounded-full', TONE_BG_CLASS[view.statusTone])} />
+        </span>
+
+        <EntityIcon className={cn('h-3 w-3 shrink-0', TONE_TEXT_CLASS[view.statusTone])} aria-hidden />
+
+        <p className="min-w-0 flex-1 truncate font-mono text-xs font-bold text-slate-100" title={view.displayName}>
+          {view.displayName}
+        </p>
+
+        {/* 内联状态徽标胶囊 */}
+        <span
+          className={cn(
+            'shrink-0 rounded border px-1 py-0.5 font-mono text-[9px] font-bold leading-none tracking-wide',
+            TONE_RING_CLASS[view.statusTone],
+            TONE_TEXT_CLASS[view.statusTone],
+          )}
+          title={view.statusLabel}
+        >
+          {view.statusLabel}
+        </span>
+
+        {/* 重启徽标：仅 > 0 时出现（0 次是常态，不占头部空间） */}
+        {view.restarts > 0 ? (
+          <span
+            className={cn(
+              'shrink-0 rounded border px-1 py-0.5 font-mono text-[9px] font-bold leading-none tabular-nums tracking-wide',
+              restartsTone === 'critical'
+                ? 'border-rose-500/50 text-rose-300'
+                : 'border-amber-500/50 text-amber-300',
+            )}
+            title={`累计重启 ${view.restarts} 次`}
+          >
+            重启 {view.restarts} 次
+          </span>
+        ) : null}
+
         <button
           type="button"
           onClick={onClose}
@@ -694,90 +788,71 @@ function EntityProbeCard({
           title="关闭并重置视角"
           className="shrink-0 rounded p-0.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200 active:scale-95"
         >
-          <X className="h-3.5 w-3.5" aria-hidden />
+          <X className="h-3 w-3" aria-hidden />
         </button>
       </div>
 
-      {/* ---- 状态徽标 ---- */}
-      <div className={cn('mt-2 flex items-center gap-1.5 rounded border px-2 py-1', TONE_RING_CLASS[view.statusTone])}>
-        <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', TONE_BG_CLASS[view.statusTone])} aria-hidden />
-        <span className={cn('font-mono text-[10px] font-bold tracking-wider', TONE_TEXT_CLASS[view.statusTone])}>
-          {view.statusLabel}
-        </span>
-        <span className="ml-auto flex items-center gap-1 font-mono text-[11px] text-slate-500">
-          RESTARTS
-          <span className={cn('font-bold tabular-nums', TONE_TEXT_CLASS[restartsTone])}>{view.restarts}</span>
-        </span>
+      {/* ============ 第 2 行：CPU / 内存 双列波形 ============ */}
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <MiniGauge series={view.cpuSeries} icon={<Cpu className="h-2.5 w-2.5" aria-hidden />} />
+        <MiniGauge series={memSeries} icon={<MemoryStick className="h-2.5 w-2.5" aria-hidden />} />
       </div>
 
-      {/* ---- 元信息网格 ---- */}
-      <dl className="mt-2 space-y-1">
-        {view.metaRows.map((row) => (
-          <div key={row.label} className="flex items-baseline justify-between gap-2">
-            <dt className="shrink-0 font-mono text-[11px] uppercase tracking-wider text-slate-600">{row.label}</dt>
-            <dd
-              className="min-w-0 truncate font-mono text-[10px] tabular-nums text-slate-300"
-              title={row.value.length > 0 ? row.value : '—'}
-            >
-              {row.value.length > 0 ? row.value : '—'}
-            </dd>
-          </div>
-        ))}
-      </dl>
-
-      {/* ---- 双波形（CPU / MEM） ---- */}
-      <div className="mt-2.5 space-y-2">
-        <SparklineBlock series={view.cpuSeries} icon={<Cpu className="h-2.5 w-2.5" aria-hidden />} />
-        <SparklineBlock series={view.memSeries} icon={<MemoryStick className="h-2.5 w-2.5" aria-hidden />} />
-      </div>
-
-      {/* ---- 数据口径标注（direct 真实采集 / derived 聚合派生） ---- */}
-      <p className="mt-1.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-700">
-        <HardDrive className="h-2 w-2" aria-hidden />
-        history&nbsp;source&nbsp;·&nbsp;{view.historySource === 'direct' ? 'direct samples' : 'derived from pod samples'}
+      {/* ============ 第 3 行：单行浓缩元数据条 ============ */}
+      <p
+        className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded bg-white/[0.03] px-2 py-1 font-mono text-[10px] text-slate-400"
+        title={metaTitle}
+      >
+        {view.metaRows.length === 0 ? (
+          <span className="text-slate-600">—</span>
+        ) : (
+          view.metaRows.map((row, index): ReactNode => (
+            <span key={row.label} className="flex items-center gap-x-2">
+              {index > 0 ? <span className="text-slate-600" aria-hidden>·</span> : null}
+              <span className="max-w-[9rem] truncate">{row.value}</span>
+            </span>
+          ))
+        )}
       </p>
 
-      {/* ---- 战术按钮组 ---- */}
-      <div className="mt-2.5 space-y-1.5">
+      {/* ============ 第 4 行：双战术按钮并排 ============ */}
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
         <button
           type="button"
           onClick={onDiagnose}
-          className="flex w-full items-center justify-center gap-1.5 rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300 transition-all duration-150 hover:border-cyan-400/70 hover:bg-cyan-500/20 active:scale-[0.98]"
+          className="flex items-center justify-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-cyan-300 transition-all duration-150 hover:border-cyan-400/70 hover:bg-cyan-500/20 active:scale-[0.98]"
         >
-          <Sparkles className="h-3 w-3" aria-hidden />
-          交由 AI Copilot 根因诊断
+          <Sparkles className="h-2.5 w-2.5 shrink-0" aria-hidden />
+          <span className="truncate">AI 深度诊断</span>
         </button>
+
         {/*
-         * 【按实体类型定制动作】此前 Master / Node / Pod 一律渲染
-         * 「隔离并重启实例」并统一调用 healEntity(id,'restart_pod')：
-         * - 选中 MASTER 时会传出 'master-control-plane' 这个不存在的 Pod ID，
-         *   Store 查不到却仍打印成功的 [KUBE-CONTROLLER] 日志——**虚假成功回执**；
-         * - 选中 Worker 节点时对节点传 'restart_pod' 语义也不对。
-         *
-         * 真实 K8s 运维中这三类实体的处置动作完全不同，此处按类型区分：
+         * 【按实体类型定制动作】Master / Node / Pod 的处置动作完全不同：
          * - pod    → 重启 Pod（可执行）
          * - node   → 驱逐节点并恢复水位（可执行，节点级动作）
          * - master → 控制面只读巡检（禁用破坏性操作，符合生产安全逻辑）
+         * 早期一律渲染「隔离并重启实例」并传 'master-control-plane' 给
+         * healEntity，会打印虚假成功回执。
          */}
         {view.entityType === 'master' ? (
           <button
             type="button"
             disabled
             aria-disabled
-            className="flex w-full cursor-not-allowed items-center justify-center gap-1.5 rounded border border-slate-700 bg-slate-800/40 px-2 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-600"
+            className="flex cursor-not-allowed items-center justify-center gap-1 rounded border border-white/[0.06] bg-white/[0.02] px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-slate-600"
             title="控制面为只读保护对象，不提供破坏性运维动作"
           >
-            <ShieldCheck className="h-3 w-3" aria-hidden />
-            控制面只读巡检
+            <ShieldCheck className="h-2.5 w-2.5 shrink-0" aria-hidden />
+            <span className="truncate">控制面只读</span>
           </button>
         ) : (
           <button
             type="button"
             onClick={onHeal}
-            className="flex w-full items-center justify-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-300 transition-all duration-150 hover:border-emerald-400/70 hover:bg-emerald-500/20 active:scale-[0.98]"
+            className="flex items-center justify-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-emerald-300 transition-all duration-150 hover:border-emerald-400/70 hover:bg-emerald-500/20 active:scale-[0.98]"
           >
-            <RotateCcw className="h-3 w-3" aria-hidden />
-            {view.entityType === 'node' ? '驱逐节点并恢复水位' : '隔离并重启 Pod'}
+            <RotateCcw className="h-2.5 w-2.5 shrink-0" aria-hidden />
+            <span className="truncate">{view.entityType === 'node' ? '驱逐并恢复水位' : '隔离并重启'}</span>
           </button>
         )}
       </div>
@@ -785,26 +860,32 @@ function EntityProbeCard({
   );
 }
 
-/** SparklineBlock —— 单条波形的标题行 + SVG 组合（CPU/MEM 复用） */
-function SparklineBlock({
+/**
+ * MiniGauge —— 双列波形格（左侧标题 + 右侧大号百分比 + 下方 32px Sparkline）。
+ *
+ * 【为何百分比放大、标题缩小】这是仪表盘的核心读图逻辑：用户扫一眼需要的是
+ * **当前水位数值**（89.0%），而不是「CPU」这个词（它由位置与图标已经说明）。
+ * 因此百分比用 font-bold 大号，标题保持小号淡色。
+ */
+function MiniGauge({
   series,
   icon,
 }: {
   readonly series: SparklineSeries;
-  readonly icon: React.ReactNode;
+  readonly icon: ReactNode;
 }) {
   return (
-    <div>
-      <div className="mb-0.5 flex items-baseline justify-between gap-2">
-        <span className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+    <div className="min-w-0">
+      <div className="flex items-baseline justify-between gap-1">
+        <span className="flex min-w-0 items-center gap-0.5 font-mono text-[10px] tracking-wide text-slate-500">
           <span style={{ color: series.color }}>{icon}</span>
-          {series.label}
+          <span className="truncate">{series.label}</span>
         </span>
-        <span className="font-mono text-[10px] font-bold tabular-nums" style={{ color: series.color }}>
+        <span className="shrink-0 font-mono text-[13px] font-bold tabular-nums leading-none" style={{ color: series.color }}>
           {series.latestText}
         </span>
       </div>
-      <Sparkline series={series} />
+      <Sparkline series={series} height={SPARKLINE_HEIGHT} />
     </div>
   );
 }

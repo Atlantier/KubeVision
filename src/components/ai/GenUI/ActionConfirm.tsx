@@ -223,7 +223,7 @@ export default function ActionConfirm({
             ) : null}
           </p>
           <p className="mt-0.5 truncate font-mono text-[10px] text-slate-300" title={targetName}>
-            target · {targetName}
+            作用目标 · {targetName}
           </p>
         </div>
       </div>
