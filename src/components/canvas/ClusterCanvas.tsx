@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — 3D 集群拓扑根画布（ClusterCanvas）
@@ -425,10 +425,26 @@ export default function ClusterCanvas() {
          * 【frames={1} 是性能关键】只在首帧烘焙一次，之后零每帧开销。
          * 机架与中心晶体都是静态几何，只有 Pod 会动——而它们离地很远，
          * 不会影响接地阴影的正确性。这是"静态阴影资产"而非动态阴影。
+        * 【Y 轴层级契约（本轮修正）】
+         * 地面现在叠了四层半透明结构，必须严格定序，否则透明面片会
+         * z-fighting 闪烁、且接触阴影会把发光数码环压暗：
+         *   −0.025  MeshReflectorMaterial 反射地面（最底，承托一切）
+         *   −0.020  外层大网格（远景坐标网，infiniteGrid）
+         *    0.004  内层细网格（近景坐标网，蚀刻在镜面上的质感）
+         *    0.008  ContactShadows 接触阴影面片
+         *    0.014  ClusterTopologyFloor3D 数码阵环（发光层，最高）
+         *
+         * 关键修正：ContactShadows 原在 0.02，**高于**拓扑环的 0.014，
+         * 于是阴影面片反过来盖在发光环上——既与环共面造成 z-fighting 闪烁，
+         * 又用黑色半透明把环压暗。下移到 0.008 后，阴影永远在环之下，
+         * 只压暗网格与地面，发光环保持通透。
+         *
+         * 同时把 opacity 从 0.68 降到 0.5：镜面地面上阴影过重会形成一块
+         * 死黑泥斑，反而破坏"通透的反射感"。
          */}
         <ContactShadows
-          position={[0, 0.02, 0]}
-          opacity={0.68}
+          position={[0, 0.008, 0]}
+          opacity={0.5}
           scale={34}
           blur={2.2}
           far={8}
@@ -471,9 +487,10 @@ export default function ClusterCanvas() {
         </mesh>
 
         {/* ---- 赛博极客双层地面网格（蚀刻在镜面上的坐标网）----
-          下层（y=-0.02）：大尺度粗格延伸至雾效远端，构建深空坐标系纵深；
-          上层（y=+0.01）：小尺度细格聚焦中心作战区，与 .bg-cyber-grid 的
-          48px 网格质感呼应。双层 Y 向错位 0.03 杜绝 z-fighting。
+          下层（y=-0.020）：大尺度粗格延伸至雾效远端，构建深空坐标系纵深；
+          上层（y=+0.004）：小尺度细格聚焦中心作战区。
+          两者与反射地面（−0.025）、接触阴影（0.008）、拓扑环（0.014）
+          共同构成 5 级非重叠 Y 顺序（详见上方层级契约注释）。
           【本轮调整】线宽与对比度双双调低——地面已是反光材质，
           网格若太亮会与倒影争视觉权重，变成"两张网"的噪音。 */}
         <Grid
@@ -490,7 +507,7 @@ export default function ClusterCanvas() {
           infiniteGrid
         />
         <Grid
-          position={[0, 0.01, 0]}
+          position={[0, 0.004, 0]}
           args={[44, 44]}
           cellSize={1.6}
           cellThickness={0.4}
