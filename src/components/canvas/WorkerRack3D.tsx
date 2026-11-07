@@ -9,23 +9,41 @@
  * 共用 spatialLayout 单一事实源，保证「机架外壳、内部 Pod、观察相机」三者
  * 空间关系永不漂移。
  *
- * 【几何构成】
- * 1. 半透明磨砂装甲外框：meshStandardMaterial（transparent + 高 roughness）
- *    叠加 drei <Edges> 棱线，冷冽的金属机柜质感；
- * 2. 4 层水平服务器托盘隔板：Y 坐标 = RACK_TIER_BASE_Y + i·RACK_TIER_HEIGHT，
- *    与 getPodWorldTransform 的 Pod 槽位层位严格同源（下一轮 Pod 实例正好落在隔板上）；
- * 3. 两侧垂直霓虹导光柱：meshBasicMaterial（toneMapped=false 纯霓虹），
- *    useFrame 中按节点状态/负载在翠绿→琥珀→警示红间**平滑变色**；
- * 4. 顶部全息铭牌：drei <Html> 显示节点名 + 实时 CPU/MEM 百分比
- *    （zIndexRange=[10,0] + pointer-events-none 契约）。
+ * 【几何构成】（由外及内）
+ * 1. **半透明磨砂装甲外框**：meshStandardMaterial + drei <Edges> 棱线，
+ *    useFrame 驱动「选中态青色呼吸描边 / hover 提亮 / 常态低对比」三态；
+ * 2. **四根重工承重角柱**：贴四角内侧的细长方柱，给出机柜的「重工骨架」，
+ *    而非薄薄一层火柴盒外壳；
+ * 3. **4 层水平托盘隔板**：Y = RACK_TIER_BASE_Y + i·RACK_TIER_HEIGHT − 偏移，
+ *    与 getPodWorldTransform 的 Pod 槽位层位严格同源（Pod 正好立于隔板之上）；
+ * 4. **16 个刀片插槽幽灵框**：每层 4 槽（2 行 × 2 列），在隔板顶面平铺
+ *    正方形细环，让后排未占用的槽位也呈现整齐的工业插槽阵列，
+ *    消除「后排一片黑洞」的空洞感；
+ * 5. **双层阶梯顶冠**：下层顶盖 + 上层内缩散热冠（青色棱线），
+ *    顶冠中心再平铺一枚**水平光纤接口环**，正好承接上方飞来的网络光缆终点；
+ * 6. **两侧垂直霓虹导光柱**：useFrame 按节点状态/负载在翠绿→琥珀→警示红间平滑变色；
+ * 7. **腔体氛围点光源**：机架内部一盏跟随状态色变化的点光，
+ *    真实照亮每层隔板与立柱内壁，让「状态色」不只是几根灯条的颜色；
+ * 8. **贴地全息铭牌**：drei <Html>，落在机柜前方地面上，完全避开第一层 Pod。
  *
- * 【60FPS 红线合规 · 平滑变色核心】（AGENTS.md 第 3 条）
- * - 三色常量（COLOR_HEALTHY/WARNING/CRITICAL）与选中色在**模块级一次性预分配**，
+ * 【60FPS 红线合规 · 零 GC】（AGENTS.md 第 3 条）
+ * - 三态目标色（COLOR_HEALTHY/WARNING/CRITICAL/SELECTED）在**模块级一次性预分配**，
  *   useFrame 内仅做 `material.color.lerp(targetConst, α)`——原地突变、零 new THREE.Color；
- * - lerp 的 target 是只读共享常量，多个机架实例并发 lerp 互不干扰；
+ * - 16 个插槽幽灵框的局部坐标、4 根立柱的 XZ 坐标全部在**模块顶层预计算**，
+ *   渲染期只做数组映射，不进热路径；
+ * - 幽灵框以单个 InstancedMesh 承载 16 个实例（1 次 Draw Call），
+ *   矩阵在挂载 useEffect 中一次性写入，useFrame 完全不触碰；
  * - 帧率无关阻尼 α = 1 − e^(−k·Δt)，Δt 钳制 0.1s（掉帧不突变）；
  * - 最新 node 数据经 nodeRef 喂入渲染循环（useEffect 1Hz 刷新），
- *   useFrame 零 setState / 零 React 重渲染，变色动画与遥测频率解耦。
+ *   useFrame 零 setState / 零 React 重渲染。
+ *
+ * 【射线让位契约】（AGENTS.md 第 6 条射线安全的延伸）
+ * Pod 实例位于本机架装甲腔体内部，任何命中 Pod 的射线必先穿过更近的装甲面。
+ * R3F 按距离升序派发事件且 stopPropagation 会 break 整个命中循环——若机架
+ * 无条件抢占，Pod 的 onClick 将永远收不到事件。故 handleSelect / onPointerOver
+ * 都先调用 isPodHitInRack()，命中本机架名下 Pod 时静默 return 放行。
+ * 另：**新增的插槽幽灵框与腔体点光一律不参与射线拾取**（raycast 置空），
+ * 它们是纯装饰，若可拾取会在视觉上"贴在" Pod 之上抢先命中，直接破坏让位协议。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -37,12 +55,15 @@ import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import {
+  COL_SPACING,
   RACK_BODY_CENTER_Y,
   RACK_BODY_SIZE,
   RACK_LIGHT_GUIDE_X,
   RACK_TIER_BASE_Y,
   RACK_TIER_COUNT,
   RACK_TIER_HEIGHT,
+  ROW_DEPTH,
+  SLOTS_PER_TIER,
   getRackTransform,
 } from '@/utils/spatialLayout';
 import type { NodeStatus } from '@/types/cluster';
@@ -124,6 +145,124 @@ const STATUS_TEXT_COLOR: Readonly<Record<NodeStatus, string>> = {
   NetworkPartition: '#f43f5e',
 };
 
+/* ========================================================================== */
+/* 硬件材质契约（修复「死黑顶盖 / 吞光底座」）                                       */
+/* ========================================================================== */
+
+/**
+ * 底座与顶盖的暗金属材质参数。
+ *
+ * 【为何必须改】原配置 metalness 0.7 / roughness 0.35 且无环境贴图——
+ * 按 PBR 能量守恒，金属度 0.7 会把 70% 的漫反射固有色替换成「环境反射」，
+ * 而本项目场景没有 <Environment>/envMap，环境即 #020617 纯黑背景，
+ * 于是这些结构件把「反射到的黑」直接画到屏幕上，成为两坨死黑。
+ *
+ * 修复策略（三重保险，缺一不可）：
+ * 1. **降金属度到绝缘体区间**（0.2）：保留绝大部份固有色漫反射，
+ *    由场景的三盏灯真实照亮；
+ * 2. **补微弱自发光**（emissive #083344 / 0.25）：即使处在灯光照不到的
+ *    背光面，也能透出深邃的青蓝底光，呈现「暗金属」而非「纯黑」；
+ * 3. **加 <Edges> 棱线**（#1e3a5f）：用结构线把体积轮廓勾出来。
+ *    纯色块在深空背景下没有边界，棱线是「看懂这是个立方体」的最后保障。
+ */
+const HARDWARE_COLOR = '#0f172a';
+const HARDWARE_METALNESS = 0.2;
+const HARDWARE_ROUGHNESS = 0.45;
+const HARDWARE_EMISSIVE = '#083344';
+const HARDWARE_EMISSIVE_INTENSITY = 0.25;
+const HARDWARE_EDGE_COLOR = '#1e3a5f';
+
+/* ========================================================================== */
+/* 四角承重立柱                                                                 */
+/* ========================================================================== */
+
+/** 立柱截面边长与内缩量（使柱体外缘恰在机架壳体之内，不刺出外壳） */
+const PILLAR_SIZE = 0.1;
+const PILLAR_INSET = 0.06;
+
+/** 立柱的局部 X / Z 偏移（由机架壳体外包尺寸减去内缩量推导） */
+const PILLAR_X = RACK_BODY_SIZE[0] / 2 - PILLAR_INSET;
+const PILLAR_Z = RACK_BODY_SIZE[2] / 2 - PILLAR_INSET;
+
+/** 立柱材质（暗钢蓝 + 极弱青色自发光，属于「结构」而非「发光体」） */
+const PILLAR_COLOR = '#1e293b';
+const PILLAR_EMISSIVE = '#0e7490';
+const PILLAR_EMISSIVE_INTENSITY = 0.18;
+
+/**
+ * 四根立柱的局部 XZ 坐标（模块顶层预计算，渲染期只做映射）。
+ * 顺序固定 XZ 四象限，保证渲染次序稳定、无帧间闪烁。
+ */
+const PILLAR_POSITIONS: ReadonlyArray<{ readonly x: number; readonly z: number }> = [
+  { x: PILLAR_X, z: PILLAR_Z },
+  { x: PILLAR_X, z: -PILLAR_Z },
+  { x: -PILLAR_X, z: PILLAR_Z },
+  { x: -PILLAR_X, z: -PILLAR_Z },
+];
+
+/* ========================================================================== */
+/* 双层阶梯顶冠 + 光纤接口环                                                      */
+/* ========================================================================== */
+
+/**
+ * 顶冠各层的高度基准（全部相对机架局部原点，即底座中心地面）。
+ *
+ * 【数值推导】
+ * - 下层顶盖：中心 RACK_BODY_SIZE[1] + 0.06 = 4.46，厚 0.12 → 上沿 4.52；
+ * - 上层散热冠：中心 RACK_BODY_SIZE[1] + 0.16 = 4.56，厚 0.08 →
+ *   下沿 4.52（正好压在下层顶盖上）、上沿 4.60；
+ * - 光纤接口环：RACK_BODY_SIZE[1] + 0.21 = 4.61，比冠顶高 0.01（避免共面闪烁）。
+ * 与 NetworkStream3D 的 RACK_TOP_Y = +0.21 严格同值——光缆终点正落在环上。
+ */
+const COVER_Y = RACK_BODY_SIZE[1] + 0.06;
+const COVER_HEIGHT = 0.12;
+const CROWN_Y = RACK_BODY_SIZE[1] + 0.16;
+const CROWN_HEIGHT = 0.08;
+
+/** 散热顶冠相对下层顶盖的内缩量（两侧合计，视觉上形成「阶梯」） */
+const CROWN_INSET = 0.36;
+const CROWN_WIDTH = RACK_BODY_SIZE[0] - CROWN_INSET;
+const CROWN_DEPTH = RACK_BODY_SIZE[2] - CROWN_INSET;
+
+/** 光纤接口环（平铺在冠顶中心，承接网络光缆终点） */
+const FIBER_RING_Y = RACK_BODY_SIZE[1] + 0.21;
+const FIBER_RING_INNER = 0.12;
+const FIBER_RING_OUTER = 0.22;
+const FIBER_RING_SEGMENTS = 32;
+
+/* ========================================================================== */
+/* 刀片插槽幽灵框                                                                */
+/* ========================================================================== */
+
+/** 幽灵框平铺在隔板顶面之上 0.032（顶层留 0.0045 间隙，避免与隔板共面闪烁） */
+const SLOT_GHOST_LIFT = 0.032;
+
+/** 幽灵框几何：极薄的正方形细环（半径 0.24~0.28） */
+const SLOT_GHOST_INNER = 0.24;
+const SLOT_GHOST_OUTER = 0.28;
+
+/**
+ * 正方形环的径向分段数。
+ *
+ * ringGeometry 在 4 段时顶点位于 0°/90°/180°/270°，连成的多边形是一个
+ * **菱形**（对角朝 ±X / ±Z）。要让它看起来是与机架轴向对齐的正方形，
+ * 需再绕环自身法线旋转 π/4——详见下方矩阵构建处的推导。
+ */
+const SLOT_GHOST_SEGMENTS = 4;
+
+/** 幽灵框透明度（极淡，仅作插槽位置提示，不得抢走 Pod 的视觉主体） */
+const SLOT_GHOST_OPACITY = 0.22;
+
+/** 幽灵框总数：4 层 × 每层 4 槽 = 16（与 SLOTS_PER_RACK 一致） */
+const SLOT_GHOST_COUNT = RACK_TIER_COUNT * SLOTS_PER_TIER;
+
+/** 单个幽灵框的局部坐标 */
+interface SlotGhostPose {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
 /** 隔板相对 Pod 槽位中心的下移量（精确推导：Pod 半高 0.46 + 隔板半厚 0.0275 = 0.4875） */
 const TIER_DIVIDER_OFFSET = 0.4875;
 
@@ -134,9 +273,8 @@ const TIER_DIVIDER_OFFSET = 0.4875;
  * Pod 盒高 POD_BOX_HEIGHT = 0.92 → Pod 底面 = y_t − 0.46。
  * 隔板是「Pod 坐落的层板」，故隔板顶面必须恰在 Pod 底面之下：
  *   隔板中心 = y_t − 0.46 − 隔板半厚(0.0275) = y_t − 0.4875（精确值，
- *   任何取整都会让 Pod 陷入或悬空，运行期几何回归断言逐层校验 gap ∈ [0, 0.03)）。
- * 逐层验证：t=0 → 0.0625、t=3 → 3.2125，均落在机柜内且互不重叠；
- * 下一轮 Pod InstancedMesh 按同一公式摆放时正好立于隔板之上，零穿插。
+ *   任何取整都会让 Pod 陷入或悬空）。
+ * 逐层验证：t=0 → 0.0625、t=3 → 3.2125，均落在机柜内且互不重叠。
  */
 const TIER_DIVIDER_YS: readonly number[] = Array.from(
   { length: RACK_TIER_COUNT },
@@ -144,11 +282,48 @@ const TIER_DIVIDER_YS: readonly number[] = Array.from(
 );
 
 /**
+ * 16 个刀片插槽幽灵框的局部坐标（模块顶层一次性预计算）。
+ *
+ * 【坐标公式 · 与 getPodWorldTransform 严格同构】
+ * 槽位在一层内的混合进制分解为 (row, col)：
+ *   row = ⌊slot / 2⌋ ∈ {0 前排, 1 后排}
+ *   col = slot % 2   ∈ {0 左列, 1 右列}
+ * 于是
+ *   localX = (col − 0.5) · COL_SPACING = ±0.43   （COL_SPACING = 0.86）
+ *   localZ = (0.5 − row) · ROW_DEPTH  = ±0.31   （ROW_DEPTH = 0.62）
+ *   localY = 隔板中心 + 0.032（即隔板顶面再抬高一点点）
+ *
+ * 【为何复用导入常量而不写字面量】COL_SPACING / ROW_DEPTH / SLOTS_PER_TIER
+ * 直接从 spatialLayout 导入，与 Pod 真身共用同一事实源。若这里复制 0.86/0.62，
+ * 一旦布局契约调整，幽灵框会与 Pod 悄悄错位——这类漂移极难在截图中察觉。
+ */
+const SLOT_GHOSTS: readonly SlotGhostPose[] = (() => {
+  const poses: SlotGhostPose[] = [];
+  for (let tier = 0; tier < RACK_TIER_COUNT; tier++) {
+    const y = TIER_DIVIDER_YS[tier] + SLOT_GHOST_LIFT;
+    for (let slot = 0; slot < SLOTS_PER_TIER; slot++) {
+      const row = Math.floor(slot / 2);
+      const col = slot % 2;
+      poses.push({
+        x: (col - 0.5) * COL_SPACING,
+        y,
+        z: (0.5 - row) * ROW_DEPTH,
+      });
+    }
+  }
+  return poses;
+})();
+
+/* ========================================================================== */
+/* 底座底板 / 导光柱 / 腔体光源                                                  */
+/* ========================================================================== */
+
+/**
  * 底座底板厚度与中心高度。
  *
  * 【取值依据】tier-0 隔板中心在 y=0.0625、底面在 y=0.035，故底板顶面必须
  * ≤ 0.035 才不吞没隔板——取厚度 0.03（中心 0.015，顶面 0.03），
- * 隔板恰好「坐」在底板之上并留 0.005 间隙，视觉上是层板承于机柜地板，零几何穿插。
+ * 隔板恰好「坐」在底板之上并留 0.005 间隙，视觉上是层板承于机柜地板，零穿插。
  */
 const BASE_PLATE_HEIGHT = 0.03;
 const BASE_PLATE_CENTER_Y = BASE_PLATE_HEIGHT / 2;
@@ -158,6 +333,27 @@ const LIGHT_GUIDE_Z = RACK_BODY_SIZE[2] / 2 - 0.1;
 
 /** 导光柱几何：细长竖直方柱（高度略短于机柜，留出顶盖与底座） */
 const LIGHT_GUIDE_HEIGHT = RACK_BODY_SIZE[1] - 0.5;
+
+/**
+ * 腔体氛围点光源参数。
+ *
+ * 【设计意图】状态色此前只体现在两根导光柱上，机柜内部仍是均匀的暗色，
+ * 「故障」与「健康」在腔体层面毫无区别。在机架中心挂一盏跟随状态色
+ * 平滑过渡的点光后，绿/琥珀/绯红会真实洒在每层隔板与立柱内壁，
+ * 让「整座机柜在发光」而不只是「两根灯条在变色」。
+ *
+ * 【取值依据】decay = 2 为物理正确衰减，distance = 4.8 略大于机架体高（4.4），
+ * 保证光能覆盖到最顶层而不溢出到相邻机架（相邻机架间距 ≈16.45）；
+ * intensity 2.2 在 r≈1 处仍有可见照度，且不会把深色材质打爆成白。
+ */
+const CAVITY_LIGHT_POSITION: readonly [number, number, number] = [0, RACK_BODY_CENTER_Y, 0.2];
+const CAVITY_LIGHT_INTENSITY = 2.2;
+const CAVITY_LIGHT_DISTANCE = 4.8;
+const CAVITY_LIGHT_DECAY = 2;
+
+/* ========================================================================== */
+/* 射线让位判定                                                                 */
+/* ========================================================================== */
 
 /**
  * isPodHitInRack —— 判定一次射线命中链中是否包含「指定机架名下」的 Pod 实例。
@@ -170,9 +366,7 @@ const LIGHT_GUIDE_HEIGHT = RACK_BODY_SIZE[1] - 0.5;
  *
  * 【归属校验】进一步以瞬态池快照核对 pods[instanceId].nodeId === rackNodeId：
  * 只有命中**本机架腔体内**的 Pod 才让位。若不加此校验，点击本机架装甲缝隙
- * 时视线深处另一机架的 Pod 也在 intersections 里，会导致本机架被错误跳过
- * （用户明明点的是装甲却选中了远处 Pod）。归属校验把让位范围精确限定在
- * 「Pod 确实位于本机架内」的几何事实上。
+ * 时视线深处另一机架的 Pod 也在 intersections 里，会导致本机架被错误跳过。
  *
  * @param event       R3F 指针/鼠标事件（读取其 intersections 命中列表）
  * @param rackNodeId  本机架节点 ID（WorkerNodeEntity.id）
@@ -192,6 +386,11 @@ function isPodHitInRack(
   return false;
 }
 
+/** 装饰件共享的空射线实现（模块级单例，避免每次渲染新建闭包） */
+function noRaycast(): void {
+  return undefined;
+}
+
 /* ========================================================================== */
 /* WorkerRack3D 主体                                                           */
 /* ========================================================================== */
@@ -203,14 +402,12 @@ function isPodHitInRack(
  * 传入（父级 ClusterCanvas 1Hz 细粒度订阅），导光柱变色与装甲呼吸描边走
  * useFrame ref 通道，与 React 渲染完全解耦。
  *
- * 【指针事件契约】装甲外框、底座底板、顶盖三处「结构件」各自挂载显式
- * onClick（stopPropagation + selectEntity），保证点击机柜任意金属部位都能选中；
- * 隔板/导光柱等内部件经事件冒泡由根 group 的 onClick 兜底。stopPropagation
- * 阻断 R3F 射线命中链上更远的对象（如背后的另一机架），杜绝一次点击多选。
+ * 【指针事件契约】结构件（装甲外框 / 底座 / 顶盖）各自挂载显式 onClick，
+ * 其余内部件经事件冒泡由根 group 的 onClick 兜底。stopPropagation 阻断
+ * R3F 射线命中链上更远的对象（如背后的另一机架），杜绝一次点击多选。
  *
  * 【棱线 ref 类型】采用 drei 官方导出的 EdgesRef（内部即 three-stdlib 的
- * LineSegments2 + LineMaterial），不自造结构化类型也不深链 three-stdlib
- * （后者未被提升到根 node_modules，pnpm 隔离树下直接 import 是脆弱依赖）。
+ * LineSegments2 + LineMaterial），不自造结构化类型也不深链 three-stdlib。
  */
 export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   /* ---- Store 细粒度订阅 ---- */
@@ -225,6 +422,10 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   /* ---- 动画通道 ref ---- */
   const leftGuideMat = useRef<THREE.MeshBasicMaterial>(null);
   const rightGuideMat = useRef<THREE.MeshBasicMaterial>(null);
+  /** 腔体点光源：useFrame 内与导光柱同源 lerp，保证状态色绝对一致 */
+  const cavityLightRef = useRef<THREE.PointLight>(null);
+  /** 插槽幽灵框实例网格：矩阵在挂载 effect 一次性写入，此后只读 */
+  const slotGhostsRef = useRef<THREE.InstancedMesh>(null);
   /** 装甲棱线（drei Edges，官方 EdgesRef 类型）ref：useFrame 驱动选中态呼吸描边 */
   const armorEdgesRef = useRef<EdgesRef | null>(null);
   /** 最新 node 快照引用：useFrame 读取，避免把 node 塞进渲染循环依赖 */
@@ -237,6 +438,9 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
 
   /* 机架世界位姿：与 Pod 槽位/相机机位同源（spatialLayout 单一事实源） */
   const rackTransform = useMemo(() => getRackTransform(node.rackIndex), [node.rackIndex]);
+
+  /** 矩阵合成用的临时对象（组件生命周期内复用，绝不进 useFrame） */
+  const ghostTempObject = useMemo((): THREE.Object3D => new THREE.Object3D(), []);
 
   const isSelected = selectedEntityId === node.id;
   const emphasized = isSelected || hovered;
@@ -252,18 +456,43 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   }, [hovered]);
 
   /**
+   * 插槽幽灵框矩阵初始化（挂载时一次，含 StrictMode 双挂载安全）。
+   *
+   * 【旋转推导 · 为何是 rotation.set(−π/2, 0, π/4)】
+   * ringGeometry 的几何平面是 XY（法线 = 局部 +Z）。分两步摆平：
+   *   ① 绕 X 轴 −90°：法线 (0,0,1) → (0,1,0)，平铺于世界 XZ 平面；
+   *      此时 4 段环的顶点落在 ±X / ±Z（菱形朝向）。
+   *   ② 绕（已被映射为世界 Y 的）局部 Z 轴 +45°：菱形转为**轴向对齐的正方形**。
+   * three 的 Euler 默认 XYZ 序构造 R = Rx·Ry·Rz，于向量是先 Rz 后 Rx，
+   * 与上述「先转 45° 再平铺」的推导等价，故此处 x = −π/2、z = π/4。
+   *
+   * 【为何用 InstancedMesh 而非 16 个独立 mesh】
+   * 每个机架 16 个装饰环 × 3 机架 = 48 次额外 Draw Call；
+   * 改用单实例网格后每机架仅 1 次。实例矩阵在此一次性写入，
+   * useFrame 完全不触碰，满足零 GC 契约。
+   */
+  useEffect((): void => {
+    const mesh = slotGhostsRef.current;
+    if (mesh === null) return;
+
+    for (let i = 0; i < SLOT_GHOSTS.length; i++) {
+      const slot = SLOT_GHOSTS[i];
+      ghostTempObject.position.set(slot.x, slot.y, slot.z);
+      ghostTempObject.rotation.set(-Math.PI / 2, 0, Math.PI / 4);
+      ghostTempObject.scale.set(1, 1, 1);
+      ghostTempObject.updateMatrix();
+      mesh.setMatrixAt(i, ghostTempObject.matrix);
+    }
+    mesh.count = SLOT_GHOSTS.length;
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [ghostTempObject]);
+
+  /**
    * handleSelect —— 机架选中统一入口（装甲框/底座/顶盖的显式 onClick 复用）。
    *
    * stopPropagation 阻断射线命中链继续向后传播：既防止一次点击同时选中
    * 前后两个重叠机架，也防止命中穿透到地面 Grid 触发 onPointerMissed 取消选中。
-   *
-   * 【Pod 命中让位协议】（见文件头指针事件契约）Pod 实例位于本机架装甲腔体
-   * 内部，任何命中 Pod 的射线必先穿过更近的装甲面；R3F 按距离升序派发且
-   * stopPropagation 会 break 整个命中循环——若此处无条件抢占，Pod 的 onClick
-   * 将永远收不到事件。故先检查 event.intersections 中是否存在**本机架名下**
-   * 的 Pod 实例命中（instanceId 仅 InstancedMesh 命中才有，且经 nodeId 归属
-   * 校验，杜绝「点击本机架缝隙却误选远处机架 Pod」的跨机架错选）；命中则
-   * 静默 return 放行，由 PodInstancedMesh 接管该次交互。
+   * 命中本机架名下 Pod 时静默 return 放行（让位协议，详见 isPodHitInRack）。
    */
   const handleSelect = useCallback(
     (event: ThreeEvent<MouseEvent>): void => {
@@ -275,23 +504,19 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   );
 
   /**
-   * useFrame —— 导光柱按状态/负载平滑变色（+ 分区态告警呼吸脉冲）
-   *            + 装甲棱线选中态青色呼吸描边。
+   * useFrame —— 导光柱 / 腔体点光按状态平滑变色 + 装甲棱线三态描边。
    *
-   * 【核心流转 · 导光柱】
+   * 【核心流转】
    * 1. 读 nodeRef.current 最新遥测；
    * 2. 离散选目标色：选中→青；NetworkPartition→红；
    *    HighLoad 或 CPU/MEM ≥ 85%→琥珀；否则→翠绿；
-   * 3. 连续过渡：material.color.lerp(targetConst, α)，α = 1 − e^(−3.5·Δt)；
+   * 3. 连续过渡：color.lerp(targetConst, α)，α = 1 − e^(−3.5·Δt)；
    * 4. 分区态叠加透明度脉冲（sin 呼吸），其余状态恒定 GUIDE_BASE_OPACITY。
    *
-   * 【核心流转 · 装甲棱线呼吸描边】
-   * 选中态：opacity 与 linewidth 以 2.8 rad/s 正弦脉动（[0.62,1.0] / [1.6,3.4]px），
-   * 颜色锁定主题青——「高亮青色呼吸描边」的完整表达；
-   * hover 未选中：棱线提亮到 0.72 恒定透明度（静态强调，不呼吸）；
-   * 常态：深板岩蓝 0.4 透明度、1px 线宽（仅作轮廓提示）。
-   * 三态切换均由 useFrame 独占驱动（React prop 不参与 opacity/linewidth），
-   * 杜绝 1Hz 重渲染把动画值重置回 JSX 初始值造成的「呼吸跳变」。
+   * 【为何腔体点光与导光柱共用同一个 target】二者若各自取色，
+   * 选中态会出现「灯条变青而腔内仍绿」的割裂；共用同一 Color 常量后，
+   * 整座机柜的色温永远同步。
+   *
    * 全程零 new、零 setState；target 为只读模块常量，多实例并发安全。
    */
   useFrame((state, delta): void => {
@@ -330,6 +555,10 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       rightGuideMat.current.color.lerp(target, alpha);
       rightGuideMat.current.opacity = opacity;
     }
+    /* 腔体点光：与导光柱同 target 同 alpha，色温永不脱节 */
+    if (cavityLightRef.current !== null) {
+      cavityLightRef.current.color.lerp(target, alpha);
+    }
 
     /* ---- 装甲棱线：选中态青色呼吸描边 / hover 静态提亮 / 常态低对比 ---- */
     const edges = armorEdgesRef.current;
@@ -361,8 +590,6 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         // Pod 命中让位：本机架腔体内有 Pod 被命中时不抢占 hover——
         // onPointerOver 的 stopPropagation 会 break 距离升序派发链，
         // 阻断更远处 Pod 实例的 onPointerMove（悬停标签将永不出现）。
-        // 在 stopPropagation 之前 return，localState.stopped 保持 false，
-        // 派发继续抵达 PodInstancedMesh。
         if (isPodHitInRack(event, node.id)) return;
         event.stopPropagation();
         setHovered(true);
@@ -371,13 +598,12 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
     >
       {/* ---- 半透明磨砂装甲外框（+ 棱线勾勒机柜轮廓；显式点击选中）。
          【Edges 控制权契约】color/opacity/linewidth 三个动画属性的初始值仅作
-         首帧种子，此后由 useFrame 独占驱动（选中态青色呼吸 / hover 提亮 /
-         常态低对比）；React prop 保持恒定字面量，1Hz 重渲染经 R3F props
-         diff 不会重放，动画值零跳变。 ---- */}
+         首帧种子，此后由 useFrame 独占驱动；React prop 保持恒定字面量，
+         1Hz 重渲染经 R3F props diff 不会重放，动画值零跳变。 ---- */}
       <mesh position={[0, RACK_BODY_CENTER_Y, 0]} onClick={handleSelect}>
         <boxGeometry args={[RACK_BODY_SIZE[0], RACK_BODY_SIZE[1], RACK_BODY_SIZE[2]]} />
         <meshStandardMaterial
-          color="#0f172a"
+          color={HARDWARE_COLOR}
           metalness={0.35}
           roughness={0.72}
           transparent
@@ -387,40 +613,146 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         />
         <Edges
           ref={armorEdgesRef}
-          color="#1e3a5f"
+          threshold={15}
+          color={HARDWARE_EDGE_COLOR}
           transparent
           opacity={EDGE_IDLE_OPACITY}
           linewidth={EDGE_IDLE_WIDTH}
         />
       </mesh>
 
+      {/*
+       * ---- 四根重工承重角柱 ----
+       *
+       * 【设计意图】此前机架只有一层半透明外壳，侧面看是「一张纸片」，
+       * 缺少机柜应有的骨架重量。四角立柱补上纵向承重结构，
+       * 透过磨砂外壳可见，立刻有了「重工机柜」的实体感。
+       * 高度取满机架体高（0 → RACK_BODY_SIZE[1]），中心在 RACK_BODY_CENTER_Y。
+       */}
+      {PILLAR_POSITIONS.map((pillar, index): ReactNode => (
+        <mesh key={`pillar-${index}`} position={[pillar.x, RACK_BODY_CENTER_Y, pillar.z]}>
+          <boxGeometry args={[PILLAR_SIZE, RACK_BODY_SIZE[1], PILLAR_SIZE]} />
+          <meshStandardMaterial
+            color={PILLAR_COLOR}
+            metalness={0.3}
+            roughness={0.5}
+            emissive={PILLAR_EMISSIVE}
+            emissiveIntensity={PILLAR_EMISSIVE_INTENSITY}
+          />
+        </mesh>
+      ))}
+
       {/* ---- 底座底板（薄承板：顶面 0.03 恰在 tier-0 隔板底面 0.035 之下，零穿插；
-         显式点击选中——底座是用户点选机架的高频落点） ---- */}
+         显式点击选中——底座是用户点选机架的高频落点）。
+         材质修复：metalness 0.7 → 0.2、补自发光与棱线，杜绝深空背景下的死黑。 ---- */}
       <mesh position={[0, BASE_PLATE_CENTER_Y, 0]} onClick={handleSelect}>
         <boxGeometry args={[RACK_BODY_SIZE[0] + 0.16, BASE_PLATE_HEIGHT, RACK_BODY_SIZE[2] + 0.16]} />
-        <meshStandardMaterial color="#1e293b" metalness={0.7} roughness={0.35} />
+        <meshStandardMaterial
+          color={HARDWARE_COLOR}
+          metalness={HARDWARE_METALNESS}
+          roughness={HARDWARE_ROUGHNESS}
+          emissive={HARDWARE_EMISSIVE}
+          emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
+        />
+        <Edges threshold={15} color={HARDWARE_EDGE_COLOR} />
       </mesh>
 
-      {/* ---- 顶盖（层次细节 + 铭牌基座；显式点击选中——顶盖与铭牌同视线，
-         是鸟瞰视角下最易命中的部位） ---- */}
-      <mesh position={[0, RACK_BODY_SIZE[1] + 0.06, 0]} onClick={handleSelect}>
-        <boxGeometry args={[RACK_BODY_SIZE[0] + 0.14, 0.12, RACK_BODY_SIZE[2] + 0.14]} />
-        <meshStandardMaterial color="#1e293b" metalness={0.7} roughness={0.35} />
-      </mesh>
-
-      {/* ---- 4 层水平服务器托盘隔板（Y 坐标与 Pod 槽位层位同源，推导见常量 JSDoc） ---- */}
+      {/* ---- 4 层水平服务器托盘隔板（Y 坐标与 Pod 槽位层位同源，推导见常量 JSDoc）。
+         metalness 0.55 → 0.2：让腔体点光能以漫反射真实照亮层板，
+         否则金属度过高会把光全部转成环境反射而再次吞光。 ---- */}
       {TIER_DIVIDER_YS.map((tierY, index): ReactNode => (
-        <mesh key={index} position={[0, tierY, 0]}>
+        <mesh key={`divider-${index}`} position={[0, tierY, 0]}>
           <boxGeometry args={[RACK_BODY_SIZE[0] - 0.16, 0.055, RACK_BODY_SIZE[2] - 0.14]} />
           <meshStandardMaterial
             color="#1e293b"
-            metalness={0.55}
+            metalness={0.2}
             roughness={0.5}
             emissive="#0e7490"
             emissiveIntensity={0.06}
           />
         </mesh>
       ))}
+
+      {/*
+       * ---- 16 个刀片插槽幽灵框（单实例网格，1 次 Draw Call）----
+       *
+       * 【解决什么】初始快照只填满前排槽位，后排 8 个位置是纯黑洞——
+       * 观感上机柜「后面是空的」。在每个槽位铺一枚极淡的正方形细环后，
+       * 即使空槽也呈现出整齐的工业插槽阵列，机柜立刻「装满了」。
+       *
+       * 【为何必须禁用射线拾取】这些环平铺在 Pod 正下方的隔板表面，
+       * 若可拾取会抢先命中并吃掉了本该属于 Pod 的点击/悬停，
+       * 直接破坏本文件头部声明的射线让位契约。
+       *
+       * 【为何 frustumCulled=false】实例散布在机架内部（Y 跨 0.09~3.24），
+       * 而 InstancedMesh 的包围球默认按几何体原点（半径 0.28）计算，
+       * 不关闭视锥剔除会在斜视角下被整群错误剔除（集体消失）。
+       */}
+      <instancedMesh
+        ref={slotGhostsRef}
+        args={[undefined, undefined, SLOT_GHOST_COUNT]}
+        frustumCulled={false}
+        raycast={noRaycast}
+      >
+        <ringGeometry args={[SLOT_GHOST_INNER, SLOT_GHOST_OUTER, SLOT_GHOST_SEGMENTS]} />
+        <meshBasicMaterial
+          color="#22d3ee"
+          transparent
+          opacity={SLOT_GHOST_OPACITY}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+          toneMapped={false}
+        />
+      </instancedMesh>
+
+      {/* ---- 下层顶盖（材质与底座同规格，补棱线勾出阶梯轮廓；显式点击选中）---- */}
+      <mesh position={[0, COVER_Y, 0]} onClick={handleSelect}>
+        <boxGeometry args={[RACK_BODY_SIZE[0] + 0.14, COVER_HEIGHT, RACK_BODY_SIZE[2] + 0.14]} />
+        <meshStandardMaterial
+          color={HARDWARE_COLOR}
+          metalness={HARDWARE_METALNESS}
+          roughness={HARDWARE_ROUGHNESS}
+          emissive={HARDWARE_EMISSIVE}
+          emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
+        />
+        <Edges threshold={15} color={HARDWARE_EDGE_COLOR} />
+      </mesh>
+
+      {/*
+       * ---- 上层内缩散热顶冠（阶梯第二级）----
+       * 尺寸比下层每侧内缩 0.18，形成「先宽后窄」的阶梯轮廓；
+       * 棱线改用主题青（#22d3ee）而非暗蓝——它是整座机柜的最高点，
+       * 用青色勾勒让顶部在俯瞰机位下能从深色背景里跳出来。
+       */}
+      <mesh position={[0, CROWN_Y, 0]}>
+        <boxGeometry args={[CROWN_WIDTH, CROWN_HEIGHT, CROWN_DEPTH]} />
+        <meshStandardMaterial
+          color={HARDWARE_COLOR}
+          metalness={HARDWARE_METALNESS}
+          roughness={HARDWARE_ROUGHNESS}
+          emissive={HARDWARE_EMISSIVE}
+          emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
+        />
+        <Edges threshold={15} color="#22d3ee" />
+      </mesh>
+
+      {/*
+       * ---- 光纤接口环（顶冠中心的水平发光端口）----
+       * 平铺在冠顶上方 0.01，是 NetworkStream3D 拱形光缆的落点：
+       * 网络流量的终点 Y 与 FIBER_RING_Y 同值（+0.21），
+       * 因此光缆看起来是**插进这个端口**，而不是消失在机柜顶面上。
+       */}
+      <mesh position={[0, FIBER_RING_Y, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noRaycast}>
+        <ringGeometry args={[FIBER_RING_INNER, FIBER_RING_OUTER, FIBER_RING_SEGMENTS]} />
+        <meshBasicMaterial
+          color="#22d3ee"
+          toneMapped={false}
+          transparent
+          opacity={0.85}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
 
       {/* ---- 两侧垂直霓虹导光柱（useFrame 平滑变色：翠绿/琥珀/警示红） ---- */}
       <mesh position={[-RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, LIGHT_GUIDE_Z]}>
@@ -444,9 +776,19 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         />
       </mesh>
 
+      {/* ---- 腔体氛围点光源（状态色真实照亮隔板与立柱内壁；useFrame lerp 同步）---- */}
+      <pointLight
+        ref={cavityLightRef}
+        position={[CAVITY_LIGHT_POSITION[0], CAVITY_LIGHT_POSITION[1], CAVITY_LIGHT_POSITION[2]]}
+        color={statusColor}
+        intensity={CAVITY_LIGHT_INTENSITY}
+        distance={CAVITY_LIGHT_DISTANCE}
+        decay={CAVITY_LIGHT_DECAY}
+      />
+
       {/* ---- 底座选中/hover 光环（青色辉光圆环贴地） ---- */}
       {emphasized ? (
-        <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noRaycast}>
           <ringGeometry args={[1.9, 2.15, 48]} />
           <meshBasicMaterial
             color="#22d3ee"
@@ -454,23 +796,38 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
             transparent
             opacity={isSelected ? 0.9 : 0.45}
             side={THREE.DoubleSide}
+            depthWrite={false}
           />
         </mesh>
       ) : null}
 
       {/*
-       * 铭牌：从"机柜顶部的三行大卡片"改为"贴地紧凑标签"（对标图二）。
+       * ---- 贴地全息铭牌 ----
        *
-       * 【为何必须改】原位置 [0, RACK_BODY_SIZE[1] + 0.72, 0] = y 5.12，
-       * 三行深色卡片正好横在拱形网络光缆的中段——实拍确认它把弧线切断了，
-       * 是"画面杂乱"的主要来源之一（蓝图 §1.4）。
+       * 【位置修复 · Y 轴】从 0.34 下移到 **0.06**：
+       * tier-0 的 Pod 槽位中心 0.55，叠加落座偏移 −0.18 后中心在 0.37，
+       * 可视盒高 0.56 → 底面 = 0.37 − 0.28 = **0.09**。
+       * 铭牌压到 0.06 即完全低于第一层 Pod 的底面，从此不再遮挡任何 Pod。
        *
-       * 【新形态】贴地单行 `● worker-alpha`，数值仅在 hover/选中时展开。
-       * 常态下只占一行极小面积，不侵入 3D 构图主体；需要数值时鼠标一放上去
-       * 就展开，信息不丢失。
+       * 【位置修复 · Z 轴为何取负值（−1.62 而非 +1.62）】
+       * 机架的 rotationY = α + π，使**局部 +Z 指向集群圆心**（见 spatialLayout
+       * 的 getRackTransform 注释：「正面（局部 +Z）朝向世界中心」）。
+       * 相机位于环外，因此局部 +Z 是背对观察者的一侧：
+       *   · +1.62 → 距圆心 9.5 − 1.62 = **7.88**，落在轨道**内侧**、
+       *     且从机位看位于机柜**背后**，铭牌会叠在机柜本体上；
+       *   · −1.62 → 距圆心 9.5 + 1.62 = **11.12**，落在轨道**外侧**、
+       *     位于机柜与相机之间，是真正的「机柜正前方地面」。
+       * 用户描述的「前推至…地面轨道外侧」对应的是后者，故取负号。
+       *
+       * 【样式】去掉厚重深色边框，改为无底色的全息微发光文字 +
+       * 自带同色辉光的状态圆点。暗场中像地面上的投影标牌，
+       * 而不是一块压在画面上的 UI 卡片。
+       *
+       * 【drei Html 契约】zIndexRange=[10,0] + pointer-events-none，
+       * 永不遮挡右侧 Copilot 抽屉与顶层 Modal（AGENTS.md 第 6 条）。
        */}
       <Html
-        position={[0, 0.34, RACK_BODY_SIZE[2] / 2 + 0.35]}
+        position={[0, 0.06, -(RACK_BODY_SIZE[2] / 2 + 0.72)]}
         center
         distanceFactor={14}
         zIndexRange={[10, 0]}
@@ -478,22 +835,25 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       >
         <div
           className={cn(
-            'flex items-center gap-1.5 whitespace-nowrap rounded border px-1.5 py-0.5 backdrop-blur-sm transition-colors',
-            isSelected || hovered
-              ? 'border-cyan-400/70 bg-slate-950/90'
-              : 'border-slate-700/50 bg-slate-950/70',
+            'flex items-center gap-1.5 whitespace-nowrap px-2 py-0.5 font-mono text-[10px] tracking-[0.16em] transition-colors',
+            emphasized
+              ? 'text-cyan-100 drop-shadow-[0_0_8px_rgba(34,211,238,0.75)]'
+              : 'text-slate-300/85 drop-shadow-[0_0_6px_rgba(15,23,42,0.9)]',
           )}
         >
-          {/* 状态圆点：常态下唯一的色彩信号，一眼扫过即可判断健康度 */}
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: statusColor }} />
-          <span className="font-mono text-[10px] font-bold tracking-wide text-slate-200">{node.name}</span>
+          {/* 状态圆点：常态下唯一的色彩信号，自带同色辉光 */}
+          <span
+            className="h-1.5 w-1.5 shrink-0 rounded-full"
+            style={{ backgroundColor: statusColor, boxShadow: `0 0 6px ${statusColor}` }}
+          />
+          <span className="font-bold">{node.name}</span>
           {/* 数值仅在交互态展开，避免常态遮挡画面 */}
-          {isSelected || hovered ? (
+          {emphasized ? (
             <>
-              <span className="font-mono text-[10px] tabular-nums" style={{ color: statusColor }}>
+              <span className="tabular-nums" style={{ color: statusColor }}>
                 CPU {node.cpuUsage}%
               </span>
-              <span className="font-mono text-[10px] tabular-nums text-slate-500">MEM {node.memUsage}%</span>
+              <span className="tabular-nums text-slate-500">MEM {node.memUsage}%</span>
             </>
           ) : null}
         </div>

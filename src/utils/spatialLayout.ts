@@ -59,8 +59,14 @@ export const RACK_RADIUS = 9.5;
 /** 每机架槽位总数：4 层 × 每层 4 槽 = 16（slotIndex ∈ [0, 15] 契约的物理来源） */
 const SLOTS_PER_RACK = 16;
 
-/** 每层托盘槽位数：2 行（纵深）× 2 列（水平）= 4 */
-const SLOTS_PER_TIER = 4;
+/**
+ * 每层托盘槽位数：2 行（纵深）× 2 列（水平）= 4。
+ *
+ * 【导出理由】WorkerRack3D 需要在隔板顶面绘制与 Pod 槽位**一一对齐**的
+ * 幽灵插槽框；若组件自行写死 4，一旦布局契约调整，插槽框会与真实 Pod
+ * 位置错位。导出后两侧共用同一常量，杜绝这类静默漂移。
+ */
+export const SLOTS_PER_TIER = 4;
 
 /** 层数（垂直方向托盘数） */
 const TIER_COUNT = SLOTS_PER_RACK / SLOTS_PER_TIER; // = 4
@@ -71,20 +77,32 @@ const TIER_HEIGHT = 1.05;
 /** 首层（tier 0）托盘中心的局部 Y 高度：机架底座抬升，保证最底层 Pod 悬浮于地面之上 */
 const TIER_BASE_Y = 0.55;
 
-/** 同层两列（col 0 / col 1）的水平中心距 */
-const COL_SPACING = 0.86;
+/**
+ * 同层两列（col 0 / col 1）的水平中心距。
+ *
+ * 【导出理由】WorkerRack3D 的幽灵插槽框定位需要复现槽位的局部 X 偏移；
+ * 导出后与 getPodWorldTransform 共用同一数值，任何布局调整都不会造成
+ * 「框与 Pod 错位」。
+ */
+export const COL_SPACING = 0.86;
 
-/** 同层两行（row 0 前排 / row 1 后排）的纵深中心距（沿局部 Z 轴） */
-const ROW_DEPTH = 0.62;
+/**
+ * 同层两行（row 0 前排 / row 1 后排）的纵深中心距（沿局部 Z 轴）。
+ *
+ * 【导出理由】同上：幽灵插槽框需按同一公式还原前后排的局部 Z 偏移。
+ * 该值同时是 Pod 可视盒深度（0.56）的上界约束——深度不得超过 0.62，
+ * 否则前后排 Pod 会互相插入。
+ */
+export const ROW_DEPTH = 0.62;
 
 /**
  * Pod 容器盒子的契约参考高度（世界单位）。
  *
  * 【双重职责】
  * 1. 相机取景计算的高度基准（见 CAMERA_FOCUS_DISTANCE 推导）；
- * 2. **渲染落座基准**：PodInstancedMesh 的可视盒高（0.38）小于本契约值，
- *    其落座偏移必须由「契约盒底面 = 隔板顶面」关系推导：
- *    seatOffset = 可视盒高/2 − POD_BOX_HEIGHT/2 = 0.19 − 0.46 = −0.27，
+ * 2. **渲染落座基准**：PodInstancedMesh 的可视盒高（POD_BOX_SIZE[1] = 0.56）
+ *    小于本契约值，其落座偏移必须由「契约盒底面 = 隔板顶面」关系推导：
+ *    seatOffset = 可视盒高/2 − POD_BOX_HEIGHT/2 = 0.28 − 0.46 = −0.18，
  *    导出本常量使渲染器与布局数学共享单一事实源，严禁在组件里硬编码 0.46。
  */
 export const POD_BOX_HEIGHT = 0.92;
