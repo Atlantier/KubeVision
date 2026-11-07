@@ -114,19 +114,63 @@ const ARCH_LIFT = 3.4;
  * 粒子基准半径（发光数据包颗粒感）。
  *
  * 【为何从 0.07 缩到 0.038】粒子越小、越密，越像"星尘"；
- * 越大越像"珠子"。配合三级粒径倍率（下方 PACKET_SIZE_TIERS），
+ * 越大越像"珠子"。配合主包/尾迹粒径倍率（下方 PACKET_MAIN_SCALE 等），
  * 大小参差才是真实粒子流的观感。
  */
 const PACKET_RADIUS = 0.038;
 
-/**
- * 三级粒径倍率：按粒子在车道内的序号循环取值。
+/* --------------------------------------------------------------------------
+ * 主数据包 + 尾迹次级粒子（脉冲星点感）
  *
- * 【设计意图】统一大小的粒子无论多密都会呈现"规则阵列"；
- * 引入 0.7 / 1.0 / 1.4 三档差异后，视觉上形成前后景深错落，
- * 这是图二那种"星尘"质感的核心技巧之一。
+ * 【演进说明】早期实现用三级等距粒径（0.7 / 1.0 / 1.4）循环，
+ * 虽有一定景深错落，但三档等概率出现导致"主次不分"——
+ * 看上去像一串大小随机的珠子，而不是有节奏的数据流。
+ * 现改为「每 3 颗一组：1 颗主包 + 2 颗尾迹」，且尾迹在曲线上落后于主包，
+ * 形成"亮核拖尾"的脉冲星点节奏。
+ * -------------------------------------------------------------------------- */
+
+/** 每 N 颗出现一个主包（其余为尾迹），形成"大核 + 小尾"的节奏 */
+const PACKET_MAIN_PERIOD = 3;
+
+/**
+ * 主数据包粒径（相对 PACKET_RADIUS）。
+ *
+ * 【为何是 1.35】旧实现三档等距循环（0.7 / 1.0 / 1.4）主次不分，
+ * 看上去是一串大小随机的珠子。改为"每 3 颗中 1 颗主包 1.35×、另两颗为
+ * 明显更小的尾迹"后，视觉上形成脉冲星点：一个亮核拖着两点微光。
  */
-const PACKET_SIZE_TIERS: readonly number[] = [0.7, 1.0, 1.4];
+const PACKET_MAIN_SCALE = 1.35;
+
+/** 尾迹粒子粒径 A（紧跟主包） */
+const PACKET_TAIL_SCALE_A = 0.42;
+
+/** 尾迹粒子粒径 B（更靠后、更暗，形成衰减尾迹） */
+const PACKET_TAIL_SCALE_B = 0.3;
+
+/**
+ * 尾迹粒子的曲线参数回退量（u 域）。
+ *
+ * 【几何含义】尾迹粒子在同一车道上取 `u − offset` 的位置采样，
+ * 因此它们**始终跟在主包后面**，而不是各自独立游走。
+ * 0.012 约为拱形光缆弧长的 1.2%，在 32 颗/车道的密度下刚好形成
+ * 可辨识的拖尾，又不会与主包重叠成一坨。
+ */
+const PACKET_TAIL_OFFSET_U = 0.012;
+
+/** 尾迹 B 相对尾迹 A 的额外回退（两级衰减） */
+const PACKET_TAIL_OFFSET_EXTRA_U = 0.011;
+
+/* ---- 车道严重度枚举与阈值 ---- */
+
+/** 严重度：健康 */
+const SEVERITY_HEALTHY = 0;
+/** 严重度：高负载（琥珀橙） */
+const SEVERITY_HOT = 1;
+/** 严重度：故障（绯红） */
+const SEVERITY_FAULT = 2;
+
+/** 高负载判定阈值（与节点 HighLoad 语义同源） */
+const HIGH_LOAD_CPU_THRESHOLD = 85;
 
 /* --------------------------------------------------------------------------
  * 径向微螺旋绕流（让粒子"绕着光缆飞"而不是"串在光缆上"）
@@ -185,9 +229,10 @@ const FAULT_FLICKER_GAIN = 0.45;
 const COLOR_LERP_RATE = 6;
 const MAX_FRAME_DELTA = 0.1;
 
-/** 健康/故障双色（模块级预分配，useFrame 内只读，color.lerp 的 target） */
+/** 健康/高负载/故障三色（模块级预分配，useFrame 内只读，color.lerp 的 target） */
 const COLOR_HEALTHY = new THREE.Color('#22d3ee'); // 主题青：链路健康
-const COLOR_FAULT = new THREE.Color('#f43f5e'); // 警示红：链路故障（契约指定 #f43f5e）
+const COLOR_HOT = new THREE.Color('#f97316'); // 琥珀橙：高负载（对标参考图的告警流）
+const COLOR_FAULT = new THREE.Color('#f43f5e'); // 警示红：链路故障
 
 /**
  * 三条车道曲线（模块级一次构建）。
@@ -228,41 +273,53 @@ const LANE_POINTS: readonly (readonly THREE.Vector3[])[] = LANE_CURVES.map(
  */
 export default function NetworkStream3D() {
   /**
-   * 车道故障标志（低频派生 selector + shallow）。
+   * 车道严重度（0 = 健康 / 1 = 高负载 / 2 = 故障）。
    *
-   * 【判定契约】车道 k 故障 ⇔ 以下任一成立：
-   * 1. 节点状态非 'Ready'（HighLoad / NetworkPartition）；
-   * 2. 节点名下存在 CrashLoopBackOff / OOMKilled 的 Pod；
-   * 3. 全局混沌场景为 NET_PACKET_LOSS（网络层演练 → 三车道全部告警）。
+   * 【为什么从 boolean 升级为三档】只有"故障/正常"二元判定时，一台 CPU 跑到
+   * 92% 但还没崩的机器显示得和健康机架一模一样，观察者无法从链路上看出
+   * 压力正在积累。三档语义：
+   * - 0 健康：`#22d3ee` 主题青；
+   * - 1 高负载：`#f97316` 琥珀橙（node.status === 'HighLoad' 或 CPU ≥ 85）；
+   * - 2 故障：`#f43f5e` 绯红（NetworkPartition / 名下存在崩溃 Pod / 网络丢包演练）。
    */
-  const laneFaults = useClusterStore(
-    (s): readonly boolean[] => {
+  const laneSeverity = useClusterStore(
+    (s): readonly number[] => {
       const snapshot = s.snapshotSummary;
       const netLoss = s.activeChaos === 'NET_PACKET_LOSS';
-      const faults: boolean[] = [];
+      const severities: number[] = [];
       for (let k = 0; k < LANE_COUNT; k++) {
         const node = snapshot.nodes.find((n): boolean => n.rackIndex === k);
         if (node === undefined) {
-          faults.push(netLoss);
-        } else {
-          const hasCrashPod = snapshot.pods.some(
-            (p): boolean =>
-              p.nodeId === node.id &&
-              (p.status === 'CrashLoopBackOff' || p.status === 'OOMKilled'),
-          );
-          faults.push(node.status !== 'Ready' || hasCrashPod || netLoss);
+          severities.push(netLoss ? SEVERITY_FAULT : SEVERITY_HEALTHY);
+          continue;
         }
+        const hasCrashPod = snapshot.pods.some(
+          (p): boolean =>
+            p.nodeId === node.id &&
+            (p.status === 'CrashLoopBackOff' || p.status === 'OOMKilled'),
+        );
+        const critical = netLoss || node.status === 'NetworkPartition' || hasCrashPod;
+        const hot = node.status === 'HighLoad' || node.cpuUsage >= HIGH_LOAD_CPU_THRESHOLD;
+        severities.push(critical ? SEVERITY_FAULT : hot ? SEVERITY_HOT : SEVERITY_HEALTHY);
       }
-      return faults;
+      return severities;
     },
     shallow,
   );
 
-  /* 故障标志镜像进 ref：useFrame 恒读最新值，渲染循环零 zustand 访问 */
+  /** 故障布尔视图（供既有卡顿门控复用，避免重复判定） */
+  const laneFaults = useMemo(
+    (): readonly boolean[] => laneSeverity.map((v): boolean => v >= SEVERITY_FAULT),
+    [laneSeverity],
+  );
+
+  /* 严重度与故障标志镜像进 ref：useFrame 恒读最新值，渲染循环零 zustand 访问 */
   const laneFaultsRef = useRef<readonly boolean[]>(laneFaults);
+  const laneSeverityRef = useRef<readonly number[]>(laneSeverity);
   useEffect(() => {
     laneFaultsRef.current = laneFaults;
-  }, [laneFaults]);
+    laneSeverityRef.current = laneSeverity;
+  }, [laneFaults, laneSeverity]);
 
   /* ---- 渲染对象与动画通道 ---- */
   const packetsRef = useRef<THREE.InstancedMesh>(null);
@@ -356,8 +413,14 @@ export default function NetworkStream3D() {
         curve.getPointAt(uBuffer[idx], tempVec);
         tempObject.position.copy(tempVec);
         tempObject.rotation.set(0, 0, 0);
-        /* 初始帧也必须应用三级粒径，否则首帧所有粒子等大，会闪一下 */
-        tempObject.scale.setScalar(PACKET_SIZE_TIERS[j % PACKET_SIZE_TIERS.length]);
+        /* 初始帧也必须应用主包/尾迹粒径，否则首帧所有粒子等大，会闪一下 */
+        tempObject.scale.setScalar(
+          j % PACKET_MAIN_PERIOD === 0
+            ? PACKET_MAIN_SCALE
+            : j % PACKET_MAIN_PERIOD === 1
+              ? PACKET_TAIL_SCALE_A
+              : PACKET_TAIL_SCALE_B,
+        );
         tempObject.updateMatrix();
         mesh.setMatrixAt(idx, tempObject.matrix);
         mesh.setColorAt(idx, laneColor);
@@ -396,10 +459,12 @@ export default function NetworkStream3D() {
     const colorAlpha = 1 - Math.exp(-COLOR_LERP_RATE * dt);
     const netArray = telemetryTransientRef.nodeNetFloat32;
     const faults = laneFaultsRef.current;
+    const severities = laneSeverityRef.current;
 
     for (let k = 0; k < LANE_COUNT; k++) {
       const curve = LANE_CURVES[k];
       const fault = faults[k] === true;
+      const severity = severities[k] ?? SEVERITY_HEALTHY;
 
       /* 速度合成（NaN 防御：瞬态同步层已拦截，二道保险） */
       const mbpsRaw = netArray[k];
@@ -411,7 +476,13 @@ export default function NetworkStream3D() {
         speed = 0;
       }
 
-      const targetColor = fault ? COLOR_FAULT : COLOR_HEALTHY;
+      /* 三态目标色：健康青 / 高负载琥珀橙 / 故障绯红 */
+      const targetColor =
+        severity >= SEVERITY_FAULT
+          ? COLOR_FAULT
+          : severity === SEVERITY_HOT
+            ? COLOR_HOT
+            : COLOR_HEALTHY;
 
       /* 车道级颜色阻尼插值（每帧每车道仅 1 次，替代逐实例 18 次读改写） */
       const laneColor = laneColors[k];
@@ -425,8 +496,27 @@ export default function NetworkStream3D() {
         u -= Math.floor(u); // 等价 mod 1.0（对负数同样安全，此处 u 恒非负）
         uBuffer[idx] = u;
 
+        /*
+         * ---- 主包 / 尾迹分层 ----
+         *
+         * 每 3 颗粒子为一组：第 0 颗是主数据包（1.35×），
+         * 第 1、2 颗是尾迹次级粒子（0.42× / 0.30×），且**采样位置倒退**
+         * PACKET_TAIL_OFFSET_U，因此它们物理上跟在主包后面。
+         *
+         * 【为何用 u 回退而不是单独加速度】所有粒子共享同一条推进公式
+         * u = (u + v·Δt) mod 1，只在采样时回退，速度恒等 ⇒ 尾迹永远
+         * 与主包保持固定间距，不会慢慢拉开或追上。
+         */
+        const pattern = j % PACKET_MAIN_PERIOD;
+        const isMain = pattern === 0;
+        let sampleU = u;
+        if (!isMain) {
+          sampleU = u - PACKET_TAIL_OFFSET_U - (pattern === 2 ? PACKET_TAIL_OFFSET_EXTRA_U : 0);
+          if (sampleU < 0) sampleU += 1;
+        }
+
         /* 弧长参数化取点（查表插值，零分配写入 tempVec） */
-        curve.getPointAt(u, tempVec);
+        curve.getPointAt(sampleU, tempVec);
 
         /*
          * ---- 径向微螺旋绕流（2/3 的粒子参与，1/3 严格贴线）----
@@ -454,19 +544,22 @@ export default function NetworkStream3D() {
         }
 
         /*
-         * 粒子尺寸：三级基准粒径 × （故障时叠加闪烁）。
+         * 粒子尺寸：主包 / 尾迹两档粒径 × （故障时叠加急促闪烁）。
          *
-         * 【为何要分三级】统一大小的粒子即使打散了间距，仍会呈现"规则感"；
-         * 引入 0.7 / 1.0 / 1.4 三档大小差异后，视觉上产生前后景深错落，
-         * 这才是图二那种"星尘粒子流"的观感（而非一串等大的珠子）。
-         * 档位按粒子序号取模循环，天然可复现。
+         * 【脉冲星点感】主包 1.35×、尾迹 0.42× / 0.30×，且尾迹在曲线上
+         * 落后于主包，视觉上形成"亮核拖尾"——这是参考图光纤流的关键节奏，
+         * 比旧的三档等距循环（0.7/1.0/1.4）主次分明得多。
          */
-        const tier = PACKET_SIZE_TIERS[j % PACKET_SIZE_TIERS.length];
+        const baseScale = isMain
+          ? PACKET_MAIN_SCALE
+          : pattern === 1
+            ? PACKET_TAIL_SCALE_A
+            : PACKET_TAIL_SCALE_B;
         const scale = fault
-          ? tier *
+          ? baseScale *
             (FAULT_FLICKER_MIN +
               FAULT_FLICKER_GAIN * Math.abs(Math.sin(t * FAULT_FLICKER_RATE + j)))
-          : tier;
+          : baseScale;
 
         tempObject.position.copy(tempVec);
         tempObject.scale.setScalar(scale);
@@ -506,27 +599,29 @@ export default function NetworkStream3D() {
        * 核心线因此压在护套之上，边缘不会被宽线遮糊。
        */}
       {LANE_POINTS.map((points, k): ReactNode => {
-        const faulted = laneFaults[k];
-        const laneColor = faulted ? '#f43f5e' : '#22d3ee';
+        const severity = laneSeverity[k] ?? SEVERITY_HEALTHY;
+        const faulted = severity >= SEVERITY_FAULT;
+        const hot = severity === SEVERITY_HOT;
+        const laneColor = faulted ? '#f43f5e' : hot ? '#f97316' : '#22d3ee';
         return (
           <group key={k}>
-            {/* 外层：柔光护套（加色、不写深度） */}
+            {/* 外层：柔光护套（加色、不写深度）——故障/高负载时整体增亮 */}
             <Line
               points={points}
               color={laneColor}
               transparent
-              opacity={faulted ? 0.22 : 0.14}
-              lineWidth={5.5}
+              opacity={faulted ? 0.26 : hot ? 0.2 : 0.14}
+              lineWidth={faulted ? 7 : hot ? 6.4 : 5.5}
               depthWrite={false}
               blending={THREE.AdditiveBlending}
             />
-            {/* 内层：高亮核心线 */}
+            {/* 内层：高亮核心线——对比度提升（更细更亮，压在外层护套上） */}
             <Line
               points={points}
               color={laneColor}
               transparent
-              opacity={faulted ? 0.9 : 0.65}
-              lineWidth={2.0}
+              opacity={faulted ? 0.98 : hot ? 0.9 : 0.78}
+              lineWidth={faulted ? 3.0 : hot ? 2.8 : 2.4}
             />
           </group>
         );

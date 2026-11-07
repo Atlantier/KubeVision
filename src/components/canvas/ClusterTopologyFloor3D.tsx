@@ -323,6 +323,52 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
                 blending={THREE.AdditiveBlending}
               />
             </mesh>
+
+            {/*
+             * ---- 故障态第三环 + 外扩辉光环（三环绯红能量波纹）----
+             *
+             * 【为什么必须加到三环】两环在正常态下是"基座边界"，语义是静态的；
+             * 一旦机架出问题，地面必须**自己开口说话**。参考图右下角那种
+             * 三环同心、由内向外逐层变淡的绯红能量场，是"这里出事了"最强、
+             * 也最不依赖 UI 文字的地面信号。
+             *
+             * 【几何】中环（1.38~1.50）为能量场主体实环；外扩辉光环
+             * （1.86~1.92）比基座外圈更大，视觉上溢出机架轮廓，
+             * 形成"波纹正在向外扩散"的冲击感。
+             *
+             * 【零开销】仅故障机架挂载本组：正常态下这三个 mesh 根本不存在，
+             * 不产生 draw call，也不参与任何每帧计算（本文件全程无 useFrame）。
+             */}
+            {rack.faulted ? (
+              <group position={[0, FLOOR_Y + 0.002, 0]}>
+                {/* 中环：能量场主体 */}
+                <mesh rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
+                  <ringGeometry args={[1.38, 1.5, RING_SEGMENTS]} />
+                  <meshBasicMaterial
+                    color={COLOR_FAULT}
+                    transparent
+                    opacity={0.72}
+                    side={THREE.DoubleSide}
+                    toneMapped={false}
+                    depthWrite={false}
+                    blending={THREE.AdditiveBlending}
+                  />
+                </mesh>
+                {/* 外扩辉光环：溢出基座轮廓，制造波纹扩散感 */}
+                <mesh rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
+                  <ringGeometry args={[1.86, 1.92, RING_SEGMENTS]} />
+                  <meshBasicMaterial
+                    color={COLOR_FAULT}
+                    transparent
+                    opacity={0.34}
+                    side={THREE.DoubleSide}
+                    toneMapped={false}
+                    depthWrite={false}
+                    blending={THREE.AdditiveBlending}
+                  />
+                </mesh>
+              </group>
+            ) : null}
           </group>
         );
       })}
