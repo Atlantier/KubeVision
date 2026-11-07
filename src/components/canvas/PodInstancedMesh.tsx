@@ -166,12 +166,34 @@ const POD_REST_OFFSET_Y = -POD_BOX_HEIGHT / 2 + BASE_PAD_CLEARANCE + POD_BOX_SIZ
 const PENDING_PULSE_RATE = 2.4;
 const PENDING_PULSE_MIN = 0.72;
 
-/* ---- Crash/OOM 态：高频抖动 + 剧烈尺寸脉冲参数 ---- */
-/** 水平抖动振幅与角频率（契约指定 Δx = 0.04·sin(35t)；相位逐实例错开防同步机械感） */
-const CRASH_JITTER_AMPLITUDE = 0.04;
+/* ---- Crash/OOM 态：高频抖动 + 尺寸脉冲参数 ---- */
+
+/**
+ * 水平抖动振幅（世界单位）与角频率（rad/s）。
+ *
+ * 【振幅硬约束：≤ 0.025】
+ * 抖动沿**机架局部 X 轴**发生，因此与同层邻位刀片的净间距为：
+ *   COL_SPACING − 盒宽·scaleX − 抖动振幅
+ *   = 0.92 − 0.74×1.15 − 0.025 ≈ 0.094 > 0
+ * 取 0.025 是在"看得出在颤抖"与"绝不撞到邻位"之间留足余量的上限值：
+ * 旧值 0.04 在脉冲峰值时会吃掉大半间距。
+ */
+const CRASH_JITTER_AMPLITUDE = 0.025;
+
 const CRASH_JITTER_RATE = 35;
-/** 尺寸脉冲振幅与角频率（±25% 剧烈缩放，≈0.45 秒/次） */
-const CRASH_PULSE_AMPLITUDE = 0.25;
+
+/**
+ * 尺寸脉冲振幅与角频率（±15%，≈0.45 秒/次）。
+ *
+ * 【为何从 ±25% 降到 ±15%】脉冲同时作用于 scaleX，
+ * 而相邻刀片中心距 = COL_SPACING = 0.92、盒宽 0.74：
+ *   ±25% → 0.74×1.25 = 0.925 > 0.92  ← **邻位刀片直接互相插入**
+ *   ±15% → 0.74×1.15 = 0.851 < 0.92  ← 净间距剩余 0.069，安全
+ * 15% 仍能表达"剧烈"（抖动 + 高亮 + 红色已承担主要告警语义），
+ * 但不会再与邻位相撞。
+ */
+const CRASH_PULSE_AMPLITUDE = 0.15;
+
 const CRASH_PULSE_RATE = 14;
 
 /**
@@ -867,9 +889,29 @@ export default function PodInstancedMesh() {
         case 'OOMKilled': {
           // 高亮鲜红：×1.5 过曝增强发光感（契约指定调用）
           tempTargetColor.multiplyScalar(CRASH_GLOW_BOOST);
-          // 高频正弦水平抖动（契约公式 Δx = 0.04·sin(35t)，逐实例错相）
-          posX += CRASH_JITTER_AMPLITUDE * Math.sin(CRASH_JITTER_RATE * t + phase);
-          // 剧烈尺寸脉冲（±25%，三轴均匀）
+
+          /*
+           * ---- 水平抖动：沿**机架局部 X 轴**，而非世界 X 轴 ----
+           *
+           * 【缺陷复现】旧代码写 `posX += A·sin(...)`，只在世界 X 方向位移。
+           * 机架被 getRackTransform 旋转了 θ ≈ 30°~150°，因此世界 X 位移在
+           * 机架坐标系里会被分解成"局部 X 分量 cos θ + 局部 Z 分量 −sin θ"：
+           * 结果刀片是斜着朝邻位刀片蹭过去的，视觉上既晃错了方向，
+           * 又额外侵占了纵深空间（可能顶到前排/隔板）。
+           *
+           * 【正确公式】把标量抖动 j 映射到设备局部 X 单位向量在世界系的投影：
+           *   局部 X = (cos θ, 0, −sin θ)
+           *   → posX += j·cos θ；posZ −= j·sin θ
+           * 这与 getPodWorldTransform 的 R_y(θ) 复合规则完全一致。
+           *
+           * 【为何用 pose.rotationY 而不是重新算 θ】pose 就是本实例槽位的位姿查表
+           * 结果，机架旋转角在构建时已写入，直接复用零成本、且与矩阵复合同源。
+           */
+          const jitter = CRASH_JITTER_AMPLITUDE * Math.sin(CRASH_JITTER_RATE * t + phase);
+          posX += jitter * Math.cos(pose.rotationY);
+          posZ -= jitter * Math.sin(pose.rotationY);
+
+          /* 尺寸脉冲（±15%，三轴均匀；不穿透由末段底面锚定保证） */
           const pulse = 1 + CRASH_PULSE_AMPLITUDE * Math.sin(t * CRASH_PULSE_RATE + phase);
           scaleX = pulse;
           scaleY = pulse;
@@ -977,6 +1019,17 @@ export default function PodInstancedMesh() {
        * 结算之后**才计算的，所以无论盒子怎么放大缩小，底面永远固定在
        * `shelfTopY + 0.026 + hoverLift`，物理上不可能穿过隔板。
        * 而且缩放自然变成"向上生长"而非"向上下同时膨胀"，更符合刀片插拔的直觉。
+       *
+       * 【覆盖范围：全状态，含故障态】
+       * 本赋值是**无条件**的，位于 switch（Running / Pending / Crash）之后，
+       * 因此 CrashLoopBackOff / OOMKilled 的 ±15% 尺寸脉冲同样只有两条出路：
+       * 盒子变高时顶点上抬、变矮时顶点下降，**底面恒在隔板之上 0.026**。
+       * 故障态 hoverLift 恒为 0（只有 Running 会赋值），所以故障刀片是
+       * "贴着自己的承托底座剧烈搏动"，绝不会随脉冲扎进隔板。
+       *
+       * 【水平安全】故障脉冲同时作用于 scaleX：
+       * 盒宽 0.74 × 最大 1.15 = 0.851，邻位中心距 0.92 → 净间距 0.069 > 0；
+       * 再叠加 0.025 的局部 X 抖动，仍有 0.094 的余量，不会撞击相邻刀片。
        */
       const shelfTopY = pose.position[1] - POD_BOX_HEIGHT / 2;
       const halfCurrentHeight = (POD_BOX_SIZE[1] * scaleY) / 2;
