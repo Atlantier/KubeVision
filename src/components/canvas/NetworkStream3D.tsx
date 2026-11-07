@@ -85,12 +85,12 @@ const LANE_COUNT = 3;
 /**
  * 每车道数据包粒子数。
  *
- * 【为何从 18 提到 26】原值 18 在弧长 ~14 世界单位上均匀分布，
- * 间距约 0.78——每颗粒子半径 0.07，视觉上形成一串**等距的珠子**，
- * 这就是图一"佛珠弧线"观感的直接来源。
- * 提到 26 后配合下方的不等距相位偏移与三级粒径，形成"星尘流"而非串珠。
+ * 【为何从 26 提到 32】配合本轮新增的「微螺旋绕流偏移」，粒子不再严格
+ * 共线；密度必须再提高一档，才能在视觉上从"稀疏点阵"变成"连续的星尘带"。
+ * 弧长 ~14 世界单位上均布 32 颗，基准间距约 0.44，叠加绕流偏移后
+ * 前后错落，观感接近被风吹散的发光尘埃而非排队前进。
  */
-const PACKETS_PER_LANE = 26;
+const PACKETS_PER_LANE = 32;
 
 /** 粒子总数（InstancedMesh 固定容量，严禁随数据变化——args 重建灾难同 Pod 渲染器） */
 const PACKET_TOTAL = LANE_COUNT * PACKETS_PER_LANE;
@@ -127,6 +127,46 @@ const PACKET_RADIUS = 0.038;
  * 这是图二那种"星尘"质感的核心技巧之一。
  */
 const PACKET_SIZE_TIERS: readonly number[] = [0.7, 1.0, 1.4];
+
+/* --------------------------------------------------------------------------
+ * 径向微螺旋绕流（让粒子"绕着光缆飞"而不是"串在光缆上"）
+ * -------------------------------------------------------------------------- */
+
+/**
+ * 绕流振幅（世界单位）。
+ *
+ * 【取值推导】光缆是半径约 0.05 的视觉细线，粒子半径 0.038。
+ * 振幅取 0.055 ≈ 1.4 倍粒子半径：足以让粒子在缆线两侧"错开"形成体积感，
+ * 又不会散得太远以至于脱离光缆、看起来像漂浮的噪点。
+ */
+const SWIRL_RADIUS = 0.055;
+
+/** 绕流角速度（rad/s）：约 1.25 秒绕一圈，肉眼可辨的缓慢螺旋 */
+const SWIRL_RATE = 5.0;
+
+/** 相邻粒子的相位步进：让同一车道的粒子各自朝不同方位偏，避免整体同步平移 */
+const SWIRL_PHASE_STEP = 2.1;
+
+/**
+ * 沿缆方向的相位增量（每单位 u）。
+ *
+ * 【为何要乘以 u】若只用时间驱动，同一车道的所有粒子会在任意时刻
+ * 处于相同偏角，视觉上是"整条缆一起左右摆动"，仍是刚体感。
+ * 把 u 引入相位后，粒子沿缆长方向呈现**螺旋**（helix）——
+ * 前端偏右、中段偏上、后端偏左，才是真正的绕流。
+ */
+const SWIRL_UV_RATE = 18.0;
+
+/**
+ * 参与绕流的粒子比例判定。
+ *
+ * 【为何排除每 3 颗中的第 3 颗】若所有粒子都偏心，光缆在视觉上会失去
+ * 一条可信的"中心线"，观感变成一团散点云。
+ * 保留 1/3 粒子严格贴线飞行，缆线走向始终清晰可读，
+ * 其余 2/3 绕流形成体积 —— 这是"有骨架的星尘"而非"无组织的噪声"。
+ */
+const SWIRL_SKIP_MODULO = 3;
+const SWIRL_SKIP_REMAINDER = 2;
 
 /** 推进速度模型：v = BASE + PER_MBPS × 吞吐（周期/秒，u 域） */
 const PACKET_BASE_SPEED = 0.08;
@@ -389,6 +429,31 @@ export default function NetworkStream3D() {
         curve.getPointAt(u, tempVec);
 
         /*
+         * ---- 径向微螺旋绕流（2/3 的粒子参与，1/3 严格贴线）----
+         *
+         * 【核心数学】相位 φ = t·SWIRL_RATE + idx·SWIRL_PHASE_STEP + u·SWIRL_UV_RATE
+         * 把 (cos φ, sin φ) 作为 XY 平面上的偏移方向，再叠加一项频率不同的
+         * sin(φ·0.7) 作用在竖直方向——三轴频率互不同步，粒子轨迹因此是
+         * **非平面的螺旋**，而不是绕一条轴的规则圆环（后者近看仍像"串珠扭转"）。
+         *
+         * 【为何引入 u 项】只用时间驱动时，同一车道所有粒子在同一时刻偏角相同，
+         * 整条缆会像刚体一样左右摆。乘上 u 后，偏角沿缆长线性递增，
+         * 形成真正的 helix：前端偏左、中段偏上、后端偏右，绕流感立刻成立。
+         *
+         * 【为何保留 1/3 贴线】中心线必须始终有一条可信的骨架，
+         * 否则光缆看起来会散成一团噪声云，失去"从 MASTER 流向机架"的方向语义。
+         *
+         * 【零分配】全部为对已有 tempVec 的算术写入，不新建任何向量。
+         */
+        if (j % SWIRL_SKIP_MODULO !== SWIRL_SKIP_REMAINDER) {
+          const swirlPhase = t * SWIRL_RATE + idx * SWIRL_PHASE_STEP + u * SWIRL_UV_RATE;
+          tempVec.x += Math.cos(swirlPhase) * SWIRL_RADIUS;
+          tempVec.z += Math.sin(swirlPhase) * SWIRL_RADIUS;
+          /* 竖直方向用 0.7 倍频，避免与水平两轴同相形成平面圆 */
+          tempVec.y += Math.sin(swirlPhase * 0.7) * SWIRL_RADIUS * 0.55;
+        }
+
+        /*
          * 粒子尺寸：三级基准粒径 × （故障时叠加闪烁）。
          *
          * 【为何要分三级】统一大小的粒子即使打散了间距，仍会呈现"规则感"；
@@ -420,25 +485,69 @@ export default function NetworkStream3D() {
 
   return (
     <group>
-      {/* ---- 三条半透明基底光缆（drei Line：故障标志切换颜色与透明度，
-             低频 React prop 重渲染，与粒子高频通道解耦） ---- */}
-      {LANE_POINTS.map((points, k): ReactNode => (
-        <Line
-          key={k}
-          points={points}
-          color={laneFaults[k] ? '#f43f5e' : '#22d3ee'}
-          transparent
-          opacity={laneFaults[k] ? 0.5 : 0.3}
-          lineWidth={laneFaults[k] ? 1.8 : 1.4}
-        />
-      ))}
+      {/*
+       * ---- 三条双层流光导管（外层柔光护套 + 内层高亮核心）----
+       *
+       * 【为何要两层】单层线无论多宽都是一个"实心笔画"，缺少体积。
+       * 叠一层更宽、更淡、加色混合的护套后，线条中心锐利、外围渗出辉光，
+       * 才接近真实光纤的观感——这与 GlowHalo3D 的假泛光是同一套思路：
+       * 用加色叠加模拟光在介质里向外溢散，而不是给线本身加粗。
+       *
+       * 【层级与参数】
+       * - 外层护套：lineWidth 5.5px、opacity 故障 0.22 / 健康 0.14，
+       *   AdditiveBlending + depthWrite=false（纯增亮、不遮挡其他物体）。
+       * - 内层核心：lineWidth 2.0px、opacity 故障 0.9 / 健康 0.65，
+       *   普通混合保证核心线的色相与亮度稳定可读。
+       *
+       * 【故障态差异被放大】护套透明度 0.14→0.22（×1.57）、核心 0.65→0.9，
+       * 让故障车道在辉光层面也明显"变亮变红"，而不只是颜色变了。
+       *
+       * 渲染顺序：先画护套再画核心（数组顺序 + 同组内按声明序遍历），
+       * 核心线因此压在护套之上，边缘不会被宽线遮糊。
+       */}
+      {LANE_POINTS.map((points, k): ReactNode => {
+        const faulted = laneFaults[k];
+        const laneColor = faulted ? '#f43f5e' : '#22d3ee';
+        return (
+          <group key={k}>
+            {/* 外层：柔光护套（加色、不写深度） */}
+            <Line
+              points={points}
+              color={laneColor}
+              transparent
+              opacity={faulted ? 0.22 : 0.14}
+              lineWidth={5.5}
+              depthWrite={false}
+              blending={THREE.AdditiveBlending}
+            />
+            {/* 内层：高亮核心线 */}
+            <Line
+              points={points}
+              color={laneColor}
+              transparent
+              opacity={faulted ? 0.9 : 0.65}
+              lineWidth={2.0}
+            />
+          </group>
+        );
+      })}
 
       {/* ---- 54 个发光数据包粒子（单 Draw Call InstancedMesh；
              容量恒定，frustumCulled=false 防包围球误剔除——同 Pod 渲染器契约） ---- */}
       <instancedMesh ref={packetsRef} args={[undefined, undefined, PACKET_TOTAL]} frustumCulled={false}>
         <sphereGeometry args={[PACKET_RADIUS, 10, 10]} />
-        {/* 白基色 × 实例色 + toneMapped=false：故障红的过饱语义不被色调映射削弱 */}
-        <meshBasicMaterial color="#ffffff" toneMapped={false} />
+        {/* 白基色 × 实例色 + toneMapped=false：故障红的过饱语义不被色调映射削弱
+            （AGENTS.md 第 7 条：动态实例着色的基础 color 必须 #ffffff）。
+            【加色混合】粒子是"光"不是"物"：AdditiveBlending 让重叠处自然增亮，
+            再配合 depthWrite=false，后方的粒子不会被前方的深度写入剔除，
+            整条光缆才能积累出"璀璨星尘"的密度感，而不是一小把塑料小球。 */}
+        <meshBasicMaterial
+          color="#ffffff"
+          toneMapped={false}
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
       </instancedMesh>
     </group>
   );

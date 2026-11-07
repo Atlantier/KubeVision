@@ -73,9 +73,41 @@ import { POD_BOX_SIZE, POD_SEAT_OFFSET_Y, getPodWorldTransform } from '@/utils/s
  * 这三个值刻意取得更高饱和与更高亮度，使晶块在暗场里"自发光"，
  * 同时保留红/绿/琥珀的语义可辨识度（色相不变，仅提亮）。
  */
-const COLOR_RUNNING = new THREE.Color('#22f59e'); // 翠绿（提亮）：Running 正常态
+const COLOR_RUNNING = new THREE.Color('#10f5a0'); // 科技青翠：Running 正常态
 const COLOR_PENDING = new THREE.Color('#fbbf24'); // 琥珀（提亮）：Pending / Terminating 过渡态
 const COLOR_CRASH = new THREE.Color('#ff3b6b'); // 警示红（提亮）：CrashLoopBackOff / OOMKilled
+
+/* -------------------------------------------------------------------------- */
+/* 自愈充能脉冲（点击自愈 → 3D 腔体瞬间点亮的视觉反馈）                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 自愈高亮色（青白）。
+ *
+ * 【配色推导】它必须比 COLOR_RUNNING 更"白"、更亮，才能在翠绿底色上产生
+ * 「被能量充满」的观感；同时保留绿相（G 通道最高），避免看起来像选中态青色。
+ * #a7f3d0 是 emerald-200，正是"翠绿被白光冲淡"的中间色。
+ */
+const COLOR_HEAL_FLASH = new THREE.Color('#a7f3d0');
+
+/**
+ * 充能脉冲时长（毫秒）——与 healEntity 写入 healedPodIds 的时间戳同一时钟域。
+ *
+ * 【为何是 2500ms】短于用户回看的时间（点击卡片 → 视线移到 3D 视口约 0.8s），
+ * 又长于典型 UI 过渡（300ms），让"点亮→回落"成为一段可被看清的过程而非闪一下。
+ */
+const HEAL_PULSE_DURATION_MS = 2500;
+
+/** 充能脉冲的弹性缩放振幅（±14%，与用户指定的 1 + 0.14·sin 公式一致） */
+const HEAL_SCALE_AMPLITUDE = 0.14;
+
+/**
+ * 充能时颜色向 COLOR_HEAL_FLASH 混合的峰值强度。
+ *
+ * 取 0.82 而非 1.0：保留约 18% 的状态色底子，避免瞬间变成纯白丢失语义
+ * （观众需要能看出"这是绿色的 Pod 被点亮了"，而不是"变成了一个白方块"）。
+ */
+const HEAL_COLOR_STRENGTH = 0.82;
 
 /** 故障态发光增强倍率（契约指定：tempColor.multiplyScalar(1.5)，分量可 >1 产生过曝辉光） */
 const CRASH_GLOW_BOOST = 1.5;
@@ -218,56 +250,87 @@ const POD_PHASES: readonly number[] = (() => {
  * @param shader three 传入的可变 shader 对象（含 vertexShader/fragmentShader）
  */
 function injectCrystalShader(shader: THREE.WebGLProgramParametersWithUniforms): void {
-  /* ---- 顶点着色器：把面 UV 与视图空间法线传给片元 ---- */
+  /* ---- 顶点着色器：把面 UV、视图空间法线与几何局部坐标传给片元 ---- */
   shader.vertexShader = shader.vertexShader
     .replace(
       '#include <common>',
       `#include <common>
        varying vec2 vCrystalUv;
-       varying vec3 vViewNormal;`,
+       varying vec3 vViewNormal;
+       /* 几何局部坐标（未经实例矩阵变换）：用于纵向能量渐变。
+          InstancedMesh 中 position 是盒体本地坐标，y ∈ [-0.28, 0.28]，
+          不随机架自转改变，保证整排刀片的渐变方向一致。 */
+       varying vec3 vLocalPos;`,
     )
     .replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
        vCrystalUv = uv;
-       vViewNormal = normalize(normalMatrix * normal);`,
+       vViewNormal = normalize(normalMatrix * normal);
+       vLocalPos = position;`,
     );
 
-  /* ---- 片元着色器：三段掩码叠加到自发光通道 ---- */
+  /* ---- 片元着色器：四层光学结构叠加到自发光通道 ---- */
   shader.fragmentShader = shader.fragmentShader
     .replace(
       '#include <common>',
       `#include <common>
        varying vec2 vCrystalUv;
-       varying vec3 vViewNormal;`,
+       varying vec3 vViewNormal;
+       varying vec3 vLocalPos;`,
     )
     .replace(
       '#include <emissivemap_fragment>',
       `#include <emissivemap_fragment>
        {
-         /* 1. 棱边掩码：距最近面的边缘的归一化距离，越靠边越亮。
-            阈值从 0.11 收窄到 0.055 —— 收窄后亮边更"细而锐利"，
-            接近图二那种霓虹描边的精致感，而不是整块发白的模糊光晕。 */
+         /* 到最近面边缘的归一化距离（0 = 恰在边上，0.5 = 面心） */
          float edgeDist = min(min(vCrystalUv.x, 1.0 - vCrystalUv.x),
                               min(vCrystalUv.y, 1.0 - vCrystalUv.y));
-         float edgeMask = 1.0 - smoothstep(0.0, 0.055, edgeDist);
 
-         /* 2. 菲涅尔边缘光：视线掠射时增强，勾勒轮廓 */
+         /* ── 1. 最外圈锐利霓虹棱边（0 ~ 0.042）──
+            陡峭的 smoothstep 让亮边只有约 4% 面宽，锐利而不糊。 */
+         float outerRim = 1.0 - smoothstep(0.01, 0.042, edgeDist);
+
+         /* ── 2. 暗色阳极氧化凹槽内框（0.042 ~ 0.115）──
+            左边界 0.038 与 outerRim 的 0.042 刻意重叠 0.004，避免出现黑缝；
+            右边界 0.125 与内芯窗口起点 0.10 衔接，形成
+            「亮边 → 暗槽 → 内芯」的三段层次。 */
+         float bezelMask = smoothstep(0.038, 0.055, edgeDist) *
+                           (1.0 - smoothstep(0.095, 0.125, edgeDist));
+
+         /* ── 3. 内芯纵向能量渐变 + 微米级散热格栅扫描纹 ──
+            vLocalPos.y ∈ [-0.28, 0.28]（盒高 POD_BOX_SIZE[1] = 0.56），
+            归一化后映射到 [0.55, 1.0]：底部 55%、顶部 100% 的
+            「下重上轻」服务器刀片质感。
+            scanline 取 36 个横向周期：0.56 高约每 1.5cm 一道，
+            近看有栅格、远看平均掉不产生摩尔纹。 */
+         float verticalGrad = smoothstep(-0.28, 0.28, vLocalPos.y) * 0.45 + 0.55;
+         float scanline = 0.92 + 0.08 * sin(vCrystalUv.y * 36.0);
+         float innerWindow = smoothstep(0.10, 0.16, edgeDist) * verticalGrad * scanline;
+
+         /* ── 4. 视线掠射菲涅尔高光 ──
+            指数 2.8 比 2.6 更贴身，轮廓光集中在边缘而非整个侧面发亮，
+            与 outerRim 的硬描边形成「硬边 + 柔包裹」的双重轮廓。 */
          vec3 viewDir = normalize(-vViewPosition);
-         float fresnel = pow(1.0 - clamp(dot(normalize(vViewNormal), viewDir), 0.0, 1.0), 2.6);
+         float fresnel = pow(1.0 - clamp(dot(normalize(vViewNormal), viewDir), 0.0, 1.0), 2.8);
 
-         /* 3. 内芯：以面中心为圆心的径向衰减，模拟晶体内部透光 */
-         float coreDist = length(vCrystalUv - vec2(0.5));
-         float coreGlow = 1.0 - smoothstep(0.0, 0.62, coreDist);
+         /* ── 压暗固有漫反射（消除平涂塑料感的关键一步）──
+            外围 ×0.28、凹槽内 ×0.06。明暗不再只由「面朝哪」决定，
+            而由结构化自发光层次接管；这一步必须在光照计算之前生效，
+            故此注入点（emissivemap_fragment）是正确的。 */
+         diffuseColor.rgb *= mix(0.28, 0.06, bezelMask);
 
-         /* 叠加权重重标定：棱边提到 1.85 让描边成为视觉主角，
-            内芯保持低强度托底（0.13）避免整体过曝丢失状态语义色，
-            菲涅尔 0.42 提供柔和的轮廓包裹。 */
-         float crystalBoost = coreGlow * 0.13 + edgeMask * 1.85 + fresnel * 0.42;
+         /* ── 三层自发光叠加 ──
+            rimGlow：状态色与冷白(0.92,1.0,0.98)混合 38% → 霓虹质感且保留语义；
+                     ×1.95 让描边成为视觉主角。
+            windowGlow：内芯按纵向渐变与扫描纹发光，被 bezelMask 衰减 85%
+                    （凹槽内不发光，强化金属包边阴影）。
+            fresnelGlow：柔和轮廓包裹，权重 0.48 不抢锐边。 */
+         vec3 rimGlow = mix(diffuseColor.rgb, vec3(0.92, 1.0, 0.98), 0.38) * outerRim * 1.95;
+         vec3 windowGlow = diffuseColor.rgb * innerWindow * 0.72 * (1.0 - bezelMask * 0.85);
+         vec3 fresnelGlow = diffuseColor.rgb * fresnel * 0.48;
 
-         /* 用漫反射基色（含 instanceColor 调制后的颜色）作为自发光色相，
-            保证红/绿/琥珀的语义纯度不被冲淡。 */
-         totalEmissiveRadiance += diffuseColor.rgb * crystalBoost;
+         totalEmissiveRadiance += rimGlow + windowGlow + fresnelGlow;
        }`,
     );
 }
@@ -543,6 +606,20 @@ export default function PodInstancedMesh() {
     const filter = statusFilterRef.current;
     const cpuArray = telemetryTransientRef.podCpuFloat32;
 
+    /**
+     * 自愈时间戳表与"当前时刻"。
+     *
+     * 【为何在这里读 zustand】（AGENTS.md 第 3 条的边界说明）
+     * 双轨纪律禁止在渲染循环里做**高频遥测订阅**；而 `healedPodIds` 是
+     * 用户点击自愈才写入的低频字典，且 `getState()` 只是一次属性读取、
+     * 不建立订阅、不触发重渲染。整帧只调用一次并复用，开销可忽略。
+     *
+     * 【时钟域必须一致】healEntity 用 `Date.now()` 写入时间戳，
+     * 此处同样用 `Date.now()` 求差值，否则跨时钟源会得到负数/偏差。
+     */
+    const healedPodIds = useClusterStore.getState().healedPodIds;
+    const nowMs = Date.now();
+
     for (let i = 0; i < count; i++) {
       const pod = pods[i];
 
@@ -610,20 +687,49 @@ export default function PodInstancedMesh() {
       scaleY *= currentFilterScale;
       scaleZ *= currentFilterScale;
 
-      /* ---- 4. 矩阵复合提交（TRS → instanceMatrix） ---- */
+      /*
+       * ---- 4. 自愈充能脉冲（点击自愈 → 3D 腔体瞬间点亮）----
+       *
+       * 【核心数学】设 p = 已过时间 / 2500ms ∈ [0,1)，取包络 w = sin(p·π)：
+       *   p=0 → 0（刚写入，与上一帧状态连续，无跳变）
+       *   p=0.5 → 1（约 1.25s 时达到峰值：弹性鼓胀 + 最亮青白）
+       *   p→1 → 0（平滑回落，动画自然收尾而非硬切）
+       * 该包络两端均为 0，因此**开头结尾都不会出现颜色/缩放的阶跃**，
+       * 这是"充能"而非"闪烁"的关键。
+       *
+       * 缩放：三轴同比放 1 + 0.14·w（弹性呼吸，峰值 +14%）。
+       * 颜色：目标色向 #a7f3d0 混合 0.82·w —— 峰值时约 82% 白化，
+       *       既足够"点亮"，又保留 18% 状态色以维持语义可辨识。
+       */
+      const healedAt = healedPodIds[pod.id];
+      if (healedAt !== undefined) {
+        const elapsed = nowMs - healedAt;
+        if (elapsed >= 0 && elapsed < HEAL_PULSE_DURATION_MS) {
+          const progress = elapsed / HEAL_PULSE_DURATION_MS;
+          const wave = Math.sin(progress * Math.PI);
+          const chargePulse = 1 + HEAL_SCALE_AMPLITUDE * wave;
+          scaleX *= chargePulse;
+          scaleY *= chargePulse;
+          scaleZ *= chargePulse;
+          /* 在「状态调制后的目标色」之上叠加白化，颜色阻尼会自然平滑过渡 */
+          tempTargetColor.lerp(COLOR_HEAL_FLASH, HEAL_COLOR_STRENGTH * wave);
+        }
+      }
+
+      /* ---- 5. 矩阵复合提交（TRS → instanceMatrix） ---- */
       tempObject.position.set(posX, posY, posZ);
       tempObject.rotation.set(0, pose.rotationY, 0);
       tempObject.scale.set(scaleX, scaleY, scaleZ);
       tempObject.updateMatrix();
       mesh.setMatrixAt(i, tempObject.matrix);
 
-      /* ---- 5. 颜色平滑渐变（instanceColor 缓冲即当前值持久态） ---- */
+      /* ---- 6. 颜色平滑渐变（instanceColor 缓冲即当前值持久态） ---- */
       mesh.getColorAt(i, tempColor);
       tempColor.lerp(tempTargetColor, colorAlpha);
       mesh.setColorAt(i, tempColor);
     }
 
-    /* ---- 6. GPU 缓冲提交（AGENTS.md 第 7 条强制契约） ---- */
+    /* ---- 7. GPU 缓冲提交（AGENTS.md 第 7 条强制契约） ---- */
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   });
