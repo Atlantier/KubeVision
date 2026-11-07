@@ -721,23 +721,61 @@ export default function MasterNode3D() {
         zIndexRange={[10, 0]}
         className="pointer-events-none"
       >
-        <div className="flex flex-col items-center gap-0.5 whitespace-nowrap px-2.5 py-1 font-mono text-[10px] tracking-[0.2em] text-cyan-200/90">
+        <div className="flex flex-col items-center gap-1 whitespace-nowrap px-3 py-1.5 font-mono">
           {/*
-           * 工业字体排版：英文小标（大字距、低对比）在上，
-           * 中文主标（加粗、发光）在下 —— 这是参考图二的铭牌层级。
-           * 英文行承担"这是什么设备"的仪表标注功能，中文行承担扫读。
+           * ── 上沿：刻度线 + 系统标识 ──
+           * 由"两条短横线"升级为**发光刻度线**：中间密、两侧疏，
+           * 像仪器上的标尺刻度，比单纯的装饰横线更有"仪表"语义。
            */}
-          <span className="flex items-center gap-1 text-[8px] tracking-[0.32em] text-cyan-400/60 uppercase">
-            <span className="h-px w-3 bg-cyan-400/40" aria-hidden />
-            CONTROL PLANE / API-SERVER
-            <span className="h-px w-3 bg-cyan-400/40" aria-hidden />
+          <span className="flex items-center gap-1 text-[8px] uppercase tracking-[0.32em] text-cyan-400/60">
+            {[3, 2, 1, 0, 1, 2, 3].map((tier, index): ReactNode => (
+              <span
+                key={`scale-${index}`}
+                aria-hidden
+                className="block bg-cyan-400/50"
+                style={{ width: '1px', height: tier === 0 ? '6px' : '3px' }}
+              />
+            ))}
+            <span className="ml-1.5 text-cyan-300/70">SYS.CORE // CONTROL PLANE · API-SERVER</span>
           </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_6px_#22d3ee]" />
-            <span className="font-bold text-[11px] text-cyan-100 drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]">
-              控制平面 · API-SERVER
+
+          {/*
+           * ── 主体：两侧光翼括弧 + 发光主标题 ──
+           * 两侧用对称斜切括弧把标题"夹"起来，是 HUD 里表达
+           * "该对象处于系统焦点"的标准手法。
+           */}
+          <span className="flex items-center gap-2">
+            <span
+              aria-hidden
+              className="block h-3 w-[6px] border-l border-t border-cyan-300/70"
+              style={{ borderTopWidth: '1px', transform: 'skewX(-18deg)' }}
+            />
+            <span className="flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_6px_#22d3ee] animate-glow-pulse" />
+              <span className="text-[11px] font-bold tracking-[0.18em] text-cyan-100 drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]">
+                控制平面 · API-SERVER
+              </span>
             </span>
+            <span
+              aria-hidden
+              className="block h-3 w-[6px] border-r border-t border-cyan-300/70"
+              style={{ borderTopWidth: '1px', transform: 'skewX(18deg)' }}
+            />
           </span>
+
+          {/*
+           * ── 底部：缓慢呼吸的能量基线 ──
+           * 一条低透明度青色渐变横线，用 CSS 动画做 2.8s 呼吸，
+           * 让铭牌"活着"又不抢标题。宽度 100% 通过 wrapper 撑开。
+           */}
+          <span
+            aria-hidden
+            className="mt-0.5 block h-px w-full animate-pulse"
+            style={{
+              background:
+                'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.75) 50%, transparent 100%)',
+            }}
+          />
         </div>
       </Html>
     </group>

@@ -60,6 +60,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { HoloCorners, HoloScanlines } from '@/components/canvas/HoloHud';
 import { useClusterStore } from '@/store/useClusterStore';
 import { MASTER_ENTITY_ID } from '@/types/canvas';
 import { dispatchViewPreset } from '@/utils/viewPresetBus';
@@ -133,6 +134,19 @@ const TONE_TEXT_CLASS: Readonly<Record<InspectTone, string>> = {
   healthy: 'text-emerald-400',
   warning: 'text-amber-400',
   critical: 'text-rose-500',
+};
+
+/**
+ * 折角主题色（与 InspectTone 三态一一对应）。
+ *
+ * 【为何单独一张十六进制表】TONE_BG/RING/GLOW 给的是 Tailwind 类名，
+ * 而 HoloCorners 用内联 style 的 color/borderColor 着色（4px 折角用类名反而更绕），
+ * 因此这里保留色值，三者语义同源。
+ */
+const TONE_CORNER_COLOR: Readonly<Record<InspectTone, string>> = {
+  healthy: '#10b981',
+  warning: '#fbbf24',
+  critical: '#f43f5e',
 };
 
 /** 语义色 → Tailwind 背景色类（圆点/状态条） */
@@ -807,11 +821,22 @@ function EntityProbeCard({
   return (
     <div
       className={cn(
-        'kv-panel pointer-events-auto w-[288px] max-w-full overflow-hidden p-3',
+        'kv-panel pointer-events-auto relative w-[288px] max-w-full overflow-hidden p-3',
         TONE_RING_CLASS[view.statusTone],
         TONE_GLOW_CLASS[view.statusTone],
       )}
     >
+      {/*
+       * ---- 与其他铭牌统一的全息 HUD 语言 ----
+       *
+       * 机架贴地铭牌、控制平面铭牌、Pod 悬停探针卡都已采用
+       * 「四角战术折角 + 扫描线底纹」，巡检卡若不跟随就会显得是另一套 UI。
+       * 这里只叠加装饰层（绝对定位、pointer-events-none），
+       * 不改动任何既有布局与交互。
+       */}
+      <HoloScanlines />
+      <HoloCorners color={TONE_CORNER_COLOR[view.statusTone]} />
+
       {/* ============ 第 1 行：状态点 + 名称 + 状态徽标 + 重启徽标 + 关闭 ============ */}
       <div className="flex items-center gap-1.5">
         {/* 状态呼吸点：critical 时叠加 ping 脉冲，稳态只保留静点 */}

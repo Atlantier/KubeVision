@@ -49,6 +49,7 @@ import * as THREE from 'three';
 import { shallow } from 'zustand/shallow';
 
 import { cn } from '@/utils/cn';
+import { HoloFrame, MiniBar } from '@/components/canvas/HoloHud';
 import { useClusterStore } from '@/store/useClusterStore';
 import { MAX_PODS, telemetryTransientRef } from '@/store/useTelemetryRef';
 import type { PodStatus } from '@/types/cluster';
@@ -1144,40 +1145,49 @@ export default function PodInstancedMesh() {
           zIndexRange={[10, 0]}
           className="pointer-events-none"
         >
-          <div className="pointer-events-none flex flex-col gap-1 rounded border border-slate-700/80 bg-slate-950/90 px-2 py-1.5 shadow-panel backdrop-blur-sm">
-            {/* Pod 名称 */}
-            <span className="max-w-[180px] truncate font-mono text-[10px] font-bold tracking-wide text-slate-100">
-              {hoverLabelData.name}
-            </span>
-            {/* 状态徽标：圆点 + 状态文案（crash 态附加脉冲动画） */}
-            <span className="flex items-center gap-1.5">
-              <span
-                className={cn(
-                  'inline-block h-1.5 w-1.5 rounded-full',
-                  POD_STATUS_BADGE[hoverLabelData.status].extraClass,
-                )}
-                style={{ backgroundColor: POD_STATUS_BADGE[hoverLabelData.status].color }}
-              />
-              <span
-                className={cn(
-                  'font-mono text-[10px] uppercase tracking-widest',
-                  POD_STATUS_BADGE[hoverLabelData.status].extraClass,
-                )}
-                style={{ color: POD_STATUS_BADGE[hoverLabelData.status].color }}
-              >
-                {POD_STATUS_BADGE[hoverLabelData.status].label}
+          <div className="pointer-events-none flex flex-col gap-1">
+            {/*
+             * ---- 精密全息探针卡（与机架铭牌同一套 HUD 语言）----
+             *
+             * 升级点：四角战术折角框 + 扫描线底纹 + CPU/MEM 微型实时进度条
+             * + 所属槽位编码 `RACK-n // SLOT-nn`。
+             * 这样悬停任一容器时，弹出的卡片与机架铭牌、控制平面铭牌
+             * 共用同一套视觉语法，整个场景才像一个统一的 HUD 系统。
+             */}
+            <HoloFrame accent={POD_STATUS_BADGE[hoverLabelData.status].color}>
+              <span className="flex items-center gap-1.5">
+                <span
+                  className={cn(
+                    'inline-block h-1.5 w-1.5 rounded-full',
+                    POD_STATUS_BADGE[hoverLabelData.status].extraClass,
+                  )}
+                  style={{ backgroundColor: POD_STATUS_BADGE[hoverLabelData.status].color }}
+                />
+                <span className="max-w-[180px] truncate font-mono text-[10px] font-bold tracking-wide text-slate-100">
+                  {hoverLabelData.name}
+                </span>
+                <span
+                  className={cn(
+                    'ml-1 font-mono text-[8px] uppercase tracking-[0.14em]',
+                    POD_STATUS_BADGE[hoverLabelData.status].extraClass,
+                  )}
+                  style={{ color: POD_STATUS_BADGE[hoverLabelData.status].color }}
+                >
+                  {POD_STATUS_BADGE[hoverLabelData.status].label}
+                </span>
               </span>
-            </span>
-            {/* 实时 CPU / MEM 百分比（响应轨 1Hz 刷新，tabular-nums 防抖动） */}
-            <span className="flex items-center gap-2 font-mono text-[10px] tabular-nums text-slate-400">
-              <span>
-                CPU <span className="text-slate-200">{hoverLabelData.cpuUsage}%</span>
+
+              {/* 槽位编码：与 spatialLayout 的 rackIndex / slotIndex 同源 */}
+              <span className="mt-0.5 block font-mono text-[8px] tracking-[0.16em] text-slate-500">
+                RACK-{hoverLabelData.rackIndex} {'//'} SLOT-{String(hoverLabelData.slotIndex).padStart(2, '0')}
               </span>
-              <span className="text-slate-700">|</span>
-              <span>
-                MEM <span className="text-slate-200">{hoverLabelData.memoryUsage}%</span>
+
+              {/* CPU / MEM 微型实时发光进度条 */}
+              <span className="mt-1 flex items-center gap-2">
+                <MiniBar label="CPU" value={hoverLabelData.cpuUsage} />
+                <MiniBar label="MEM" value={hoverLabelData.memoryUsage} tone="#38bdf8" />
               </span>
-            </span>
+            </HoloFrame>
           </div>
         </Html>
       ) : null}

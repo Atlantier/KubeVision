@@ -52,6 +52,7 @@ import { Edges, Html, RoundedBox, type EdgesRef } from '@react-three/drei';
 import * as THREE from 'three';
 
 import { cn } from '@/utils/cn';
+import { HoloFrame, MiniBar } from '@/components/canvas/HoloHud';
 import { useOptionalGltfModel } from '@/hooks/useOptionalGltfModel';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
@@ -980,6 +981,20 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
 
   const statusColor = STATUS_TEXT_COLOR[node.status];
 
+  /**
+   * 状态徽标文案（HUD 铭牌第一行右侧）。
+   *
+   * 【为什么用短码而非中文】铭牌是"仪表标牌"而非说明文字：
+   * READY / HIGH_LOAD / PART_ERR 是运维界面通用的状态短码，
+   * 等宽字体下宽度稳定、不随语言变化跳动，也更像真实机柜上的铭牌。
+   */
+  const statusBadgeLabel =
+    node.status === 'NetworkPartition'
+      ? 'PART_ERR'
+      : node.status === 'HighLoad'
+        ? 'HIGH_LOAD'
+        : 'READY';
+
   return (
     <group
       position={rackTransform.position}
@@ -1469,40 +1484,50 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       <Html
         position={[0, 0.06, -(RACK_BODY_SIZE[2] / 2 + 0.72)]}
         center
-        distanceFactor={14}
+        distanceFactor={15}
         zIndexRange={[10, 0]}
         className="pointer-events-none"
       >
-        <div
-          className={cn(
-            'flex items-center gap-1.5 whitespace-nowrap rounded border px-2 py-0.5 font-mono text-[10px] tracking-[0.14em] transition-colors',
-            /* 半透明深空毛玻璃底衬：即使压在网格线上也保证文字锐利 */
-            'border-white/[0.08] bg-slate-950/70 backdrop-blur-md',
-            emphasized
-              ? 'text-cyan-100 shadow-[0_0_10px_rgba(34,211,238,0.35)]'
-              : 'text-slate-300/90',
-          )}
-        >
-          {/* 状态呼吸灯点：常态下唯一的色彩信号，自带同色辉光 */}
-          <span
-            className="h-1.5 w-1.5 shrink-0 rounded-full"
-            style={{ backgroundColor: statusColor, boxShadow: `0 0 6px ${statusColor}` }}
-          />
-          <span className="font-bold">{node.name}</span>
-          {/*
-           * 【常驻单行微标】此前 CPU/MEM 只在交互态展开，常态只剩一个名字，
-           * 信息密度不足、也不像"仪表"。改为常驻紧凑单行：
-           * 名字 + 状态点 + `CPU xx% | MEM xx%`，全部等宽对齐。
-           * 位置仍在机柜正前方地面（Y=0.06，低于第一层 Pod 底面 0.09），
-           * 因此绝不会遮挡任何 Pod。
-           */}
-          <span className="text-slate-500">|</span>
-          <span className="tabular-nums" style={{ color: statusColor }}>
-            CPU {Math.round(node.cpuUsage)}%
-          </span>
-          <span className="text-slate-600">·</span>
-          <span className="tabular-nums text-slate-400">MEM {Math.round(node.memUsage)}%</span>
-        </div>
+        {/*
+         * ---- 精密全息战术 HUD 铭牌 ----
+         *
+         * 【升级动机】此前是一个圆角黑底胶囊 + 一行文字，与图五那种
+         * "四角折角框 + 双进度条 + 状态徽标"的军用 HUD 差距很大。
+         * 现在两行结构：第一行是身份（呼吸灯 / 节点名 / 状态徽标 / 容器数），
+         * 第二行是实时指标（CPU / MEM 各一条 44×3 微型发光进度槽）。
+         *
+         * 【distanceFactor 14 → 15】略微缩小屏幕占比，把铭牌压得更"精密"，
+         * 同时与特写机位的距离感更协调。
+         *
+         * 【位置不变】Y=0.06 仍低于第一层刀片底面 0.09，绝不遮挡 Pod。
+         */}
+        <HoloFrame accent={statusColor} glow={emphasized} className="font-mono">
+          {/* 第一行：身份 + 状态徽标 + 容器数 */}
+          <div className="flex items-center gap-1.5 whitespace-nowrap">
+            <span
+              className="h-1.5 w-1.5 shrink-0 rounded-full animate-glow-pulse"
+              style={{ backgroundColor: statusColor, boxShadow: `0 0 6px ${statusColor}` }}
+            />
+            <span className="text-[10px] font-bold tracking-[0.14em] text-slate-100">
+              {node.name}
+            </span>
+            <span
+              className="ml-auto rounded-sm border px-1 text-[8px] font-bold tracking-[0.12em]"
+              style={{ borderColor: `${statusColor}66`, color: statusColor }}
+            >
+              {statusBadgeLabel}
+            </span>
+            <span className="text-[8px] tracking-[0.12em] text-slate-500">
+              {node.podIds.length} PODS
+            </span>
+          </div>
+
+          {/* 第二行：CPU / MEM 微型发光双进度条 */}
+          <div className="mt-1 flex items-center gap-2.5">
+            <MiniBar label="CPU" value={node.cpuUsage} />
+            <MiniBar label="MEM" value={node.memUsage} tone="#38bdf8" />
+          </div>
+        </HoloFrame>
       </Html>
     </group>
   );
