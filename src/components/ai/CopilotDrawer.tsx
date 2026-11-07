@@ -71,6 +71,8 @@ import type {
   SpeechRecognitionWindow,
 } from '@/types/ai';
 import type { RightPanelTab, SelectedEntityType } from '@/types/store';
+import type { PodEntity, WorkerNodeEntity } from '@/types/cluster';
+import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
 
 /* ========================================================================== */
 /* 懒加载：端侧日志审计台                                                        */
@@ -228,10 +230,39 @@ function validatePrompt(text: string): { readonly ok: true; readonly warning?: s
 /* ========================================================================== */
 
 /**
+ * 无效实体 id 的判定正则。
+ *
+ * 【为何需要这层防御】选中态来自 store，而 store 既可能被持久化恢复
+ * （旧版本写入的脏值），也可能收到上游传下来的占位串（'n/a' / 'unknown'）。
+ * 一旦占位串进入 ContextPill，界面就会出现 «POD n/a» 这种自相矛盾的标签——
+ * 既声明了一个类型，又给出一个不存在的名字。这类字样会直接摧毁
+ * 运维界面的可信度，必须在渲染前拦截。
+ */
+const INVALID_ENTITY_ID_PATTERN = /^(n\/?a|unknown|unknown-target|undefined|null|none|-)?$/i;
+
+/** ContextPill 解析后的展示态 */
+interface ResolvedContext {
+  /** 类型短标：POD / NODE / MASTER */
+  readonly typeLabel: string;
+  /** 真实展示名（从快照解析，绝不使用裸 ID 顶替） */
+  readonly displayName: string;
+  /** 类型对应的配色（语义色，用于一眼区分 Pod / 节点 / 控制平面） */
+  readonly colorClass: string;
+  /** 悬浮提示：给出完整 ID，便于排障时核对 */
+  readonly title: string;
+}
+
+/**
  * ContextPill —— 当前绑定的 3D 实体上下文胶囊。
  *
  * 【语义】告诉用户「你现在问的问题会针对哪个实体」。选中态来自 store，
  * 与 3D 画布的高亮完全同步——这是对话与空间视图之间的上下文锚点。
+ *
+ * 【本轮新增的防御契约】只有在**快照中真实存在**的实体才显示为实体胶囊；
+ * 其余一切情况（id 为空、为占位串、或在 pods/nodes 里查无此项）
+ * 统一退化为安静的「全局集群视角」。理由是：
+ * 上下文胶囊的作用是让用户确信"我知道我在问谁"，若显示的名字是假的，
+ * 它就从"消除歧义"变成了"制造歧义"，比不显示更糟。
  */
 function ContextPill({
   entityId,
@@ -240,32 +271,93 @@ function ContextPill({
   readonly entityId: string | null;
   readonly entityType: SelectedEntityType | null;
 }) {
-  if (entityId === null) {
+  /* ---- 快照订阅：只取查询所需字段，避免高频遥测触发重渲染 ---- */
+  const pods = useClusterStore((s): readonly PodEntity[] => s.snapshotSummary.pods);
+  const nodes = useClusterStore((s): readonly WorkerNodeEntity[] => s.snapshotSummary.nodes);
+
+  /**
+   * 把原始 id 解析为可信的展示态。
+   *
+   * 【解析优先级】
+   * 1. id 无效（空 / 'n/a' / 'unknown' 等）→ null（走兜底）
+   * 2. id === MASTER_ENTITY_ID → 控制平面（Master 不在 pods/nodes 列表中）
+   * 3. 在 pods 中按 id 命中 → 用 pod.name
+   * 4. 在 nodes 中按 id 命中 → 用 node.name
+   * 5. 全部未命中 → null（走兜底，**绝不拼出 'POD n/a'**）
+   *
+   * 【为何以查表结果为准，而非信任 entityType】
+   * entityType 与 entityId 来自两个独立字段，理论上可能不同步
+   * （例如旧持久化数据里类型是 'pod' 但 id 已被删除）。
+   * 以"哪个表里能查到"来判定类型，比信任可能过期的类型字段更可靠。
+   */
+  const resolved = useMemo((): ResolvedContext | null => {
+    if (entityId === null) return null;
+
+    const raw = entityId.trim();
+    if (INVALID_ENTITY_ID_PATTERN.test(raw)) return null;
+
+    /* ---- 2. 控制平面：Master 是单例，不在 pods/nodes 列表中 ---- */
+    if (raw === MASTER_ENTITY_ID || entityType === 'master') {
+      return {
+        typeLabel: 'MASTER',
+        displayName: '控制平面',
+        colorClass: 'border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-300',
+        title: raw,
+      };
+    }
+
+    /* ---- 3. Pod ---- */
+    const pod = pods.find((p): boolean => p.id === raw);
+    if (pod !== undefined) {
+      return {
+        typeLabel: 'POD',
+        displayName: pod.name,
+        colorClass: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300',
+        title: `${pod.namespace} / ${pod.name}`,
+      };
+    }
+
+    /* ---- 4. 节点 ---- */
+    const node = nodes.find((n): boolean => n.id === raw);
+    if (node !== undefined) {
+      return {
+        typeLabel: 'NODE',
+        displayName: node.name,
+        colorClass: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
+        title: `rack-${node.rackIndex} / ${node.name}`,
+      };
+    }
+
+    /* ---- 5. 查无此实体 → 兜底，不渲染任何伪造标签 ---- */
+    return null;
+  }, [entityId, entityType, pods, nodes]);
+
+  /*
+   * ---- 兜底态：全局集群视角 ----
+   *
+   * 【视觉刻意安静】不使用任何状态色，只有极低对比的描边与文字。
+   * 因为"没有绑定具体实体"是一个**中性**事实，不是警告也不是错误；
+   * 用彩色强调它反而会把用户的注意力从 3D 视图上拉走。
+   */
+  if (resolved === null) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/60 px-2 py-0.5 font-mono text-[11px] uppercase tracking-wider text-slate-500">
-        未绑定实体
+      <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.06] bg-white/[0.02] px-2 py-0.5 font-mono text-[10px] tracking-wide text-slate-500">
+        <span className="h-1 w-1 shrink-0 rounded-full bg-slate-600" aria-hidden />
+        全局集群视角
       </span>
     );
   }
-
-  const typeLabel = entityType === 'pod' ? 'POD' : entityType === 'node' ? 'NODE' : 'MASTER';
-  const colorClass =
-    entityType === 'pod'
-      ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
-      : entityType === 'node'
-        ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
-        : 'border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-300';
 
   return (
     <span
       className={cn(
         'inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] tracking-wider',
-        colorClass,
+        resolved.colorClass,
       )}
-      title={entityId}
+      title={resolved.title}
     >
-      <span className="shrink-0 font-bold">{typeLabel}</span>
-      <span className="truncate opacity-90">{entityId}</span>
+      <span className="shrink-0 font-bold">{resolved.typeLabel}</span>
+      <span className="truncate opacity-90">{resolved.displayName}</span>
     </span>
   );
 }

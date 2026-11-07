@@ -268,7 +268,7 @@ function AuditCard({
   const canEscalate = ESCALATABLE_LABELS.has(record.result.label);
 
   return (
-    <div className="rounded border border-slate-800 bg-slate-900/50 p-1.5">
+    <div className="rounded border border-white/[0.07] bg-white/[0.02] p-1.5">
       {/* ---- 头部：Pod 名 + 分类徽标 + 耗时 ---- */}
       <div className="flex flex-wrap items-center gap-1">
         <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', meta.dot)} aria-hidden />
@@ -612,8 +612,14 @@ export default function LocalAuditorPanel() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-1.5 p-2">
-      {/* ==================== 端侧引擎状态监控卡 ==================== */}
-      <div className="shrink-0 rounded border border-emerald-500/30 bg-emerald-500/5 p-1.5">
+      {/* ==================== 端侧引擎状态监控卡 ==================== *
+       * 【黑曜石卡片契约】卡片外壳统一为 border-white/[0.07] + bg-white/[0.02]，
+       * 状态语义（就绪 / 加载中）交由内部的徽标、进度条与百分比文字表达，
+       * 而不是让整张卡底色变成一大块 emerald。
+       * 这样"卡片 = 容器"与"颜色 = 状态"两件事各归其位，界面不会因为
+       * 一个 emerald 底色就看起来整卡都在报警或整卡都在庆祝。
+       */}
+      <div className="shrink-0 rounded border border-white/[0.07] bg-white/[0.02] p-1.5">
         <div className="flex items-center gap-1">
           <ShieldCheck className="h-3 w-3 shrink-0 text-emerald-400" aria-hidden />
           <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-emerald-300">
@@ -678,13 +684,13 @@ export default function LocalAuditorPanel() {
 
         {/* 累计脱敏凭证数 + 平均推理延迟 */}
         <div className="mt-1 grid grid-cols-2 gap-1">
-          <div className="rounded border border-slate-700/70 bg-slate-800/40 px-1 py-0.5">
+          <div className="rounded border border-white/[0.06] bg-white/[0.03] px-1 py-0.5">
             <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">累计脱敏项</p>
             <p className="font-mono text-[10px] font-bold tabular-nums text-amber-300">
               {totalMaskedSecrets}
             </p>
           </div>
-          <div className="rounded border border-slate-700/70 bg-slate-800/40 px-1 py-0.5">
+          <div className="rounded border border-white/[0.06] bg-white/[0.03] px-1 py-0.5">
             <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">平均推理耗时</p>
             <p className="font-mono text-[10px] font-bold tabular-nums text-cyan-300">
               {avgLatency !== null ? `${avgLatency.toFixed(2)}ms` : '--'}
@@ -711,7 +717,7 @@ export default function LocalAuditorPanel() {
           className={cn(
             'flex min-w-0 flex-1 items-center justify-center gap-1 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             isFetching || !classifier.isReady
-              ? 'cursor-not-allowed border-slate-700 bg-slate-800/50 text-slate-600'
+              ? 'cursor-not-allowed border-white/[0.05] bg-white/[0.02] text-slate-600'
               : 'border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:border-cyan-400/70 hover:bg-cyan-500/20',
           )}
         >
@@ -733,7 +739,7 @@ export default function LocalAuditorPanel() {
             'flex shrink-0 items-center gap-0.5 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             autoStream
               ? 'border-rose-500/60 bg-rose-500/15 text-rose-300'
-              : 'border-slate-700 bg-slate-800/50 text-slate-500 hover:text-slate-300',
+              : 'border-white/[0.07] bg-white/[0.02] text-slate-500 hover:text-slate-300',
           )}
         >
           {autoStream ? (
