@@ -136,18 +136,6 @@ const TONE_TEXT_CLASS: Readonly<Record<InspectTone, string>> = {
   critical: 'text-rose-500',
 };
 
-/**
- * 折角主题色（与 InspectTone 三态一一对应）。
- *
- * 【为何单独一张十六进制表】TONE_BG/RING/GLOW 给的是 Tailwind 类名，
- * 而 HoloCorners 用内联 style 的 color/borderColor 着色（4px 折角用类名反而更绕），
- * 因此这里保留色值，三者语义同源。
- */
-const TONE_CORNER_COLOR: Readonly<Record<InspectTone, string>> = {
-  healthy: '#10b981',
-  warning: '#fbbf24',
-  critical: '#f43f5e',
-};
 
 /** 语义色 → Tailwind 背景色类（圆点/状态条） */
 const TONE_BG_CLASS: Readonly<Record<InspectTone, string>> = {
@@ -605,6 +593,46 @@ function Sparkline({ series, width = SPARKLINE_WIDTH, height = SPARKLINE_HEIGHT 
           <stop offset="100%" stopColor={series.color} stopOpacity={0} />
         </linearGradient>
       </defs>
+      {/*
+       * ---- 仪器网格刻度线（本轮新增）----
+       *
+       * 【为什么需要】此前趋势图是一块**纯面积填充**：读者只能看出"在涨还是在跌"，
+       * 无法判断"现在到底多高"——没有坐标参考的曲线不是仪表，是装饰。
+       *
+       * 【构造】三条水平参考线（25% / 50% / 75%）+ 四条纵向时间刻度。
+       * 用极低不透明度（0.06 / 0.05）绘制，因此远看只是"有一层精密网格"，
+       * 不会与曲线争夺注意力；近看则能读出当前值落在哪个区间。
+       *
+       * 【为何画在面积之前】SVG 按文档序绘制，网格先画 → 永远位于面积与曲线之下，
+       * 不会被半透明填充盖住而变脏。
+       */}
+      <g aria-hidden stroke={series.color} strokeWidth={0.5} fill="none">
+        {[0.25, 0.5, 0.75].map((ratio): ReactNode => {
+          const gy = SPARKLINE_PAD_Y + (height - SPARKLINE_PAD_Y * 2) * ratio;
+          return <line key={`grid-h-${ratio}`} x1={0} y1={gy} x2={width} y2={gy} opacity={0.06} />;
+        })}
+        {[0.25, 0.5, 0.75].map((ratio): ReactNode => (
+          <line
+            key={`grid-v-${ratio}`}
+            x1={width * ratio}
+            y1={SPARKLINE_PAD_Y}
+            x2={width * ratio}
+            y2={height - SPARKLINE_PAD_Y}
+            opacity={0.05}
+            strokeDasharray="2 3"
+          />
+        ))}
+        {/* 顶/底基线：只在这里给足不透明度，形成"量程边界"的仪器感 */}
+        <line x1={0} y1={SPARKLINE_PAD_Y} x2={width} y2={SPARKLINE_PAD_Y} opacity={0.16} />
+        <line
+          x1={0}
+          y1={height - SPARKLINE_PAD_Y}
+          x2={width}
+          y2={height - SPARKLINE_PAD_Y}
+          opacity={0.16}
+        />
+      </g>
+
       {/* 面积填充（引用渐变，形成由浓到透的体积感） */}
       <path d={geometry.area} fill={`url(#${gradientId})`} stroke="none" />
       {/* 平滑曲线描边（C 指令贝塞尔，节点处切线连续） */}
@@ -659,11 +687,33 @@ function TopologyLegendPanel() {
   return (
     <div
       className={cn(
-        'pointer-events-auto max-w-full overflow-hidden border border-white/[0.08] bg-slate-950/75 backdrop-blur-md',
+        'pointer-events-auto relative max-w-full overflow-hidden border border-white/[0.08] bg-slate-950/75 backdrop-blur-md',
         'transition-[border-radius] duration-200',
         expanded ? 'rounded-2xl' : 'rounded-full',
       )}
     >
+      {/*
+       * ---- 与巡检卡同一套 HUD 语言（图例面板）----
+       *
+       * 图例是"空态"面板，与选中态的探针卡在视觉上必须同族，
+       * 否则用户点击实体时面板会突然"换了个 UI 系统"。
+       * 因此同样叠加扫描线底纹与四角折角；折角固定主题青。
+       *
+       * 【收起态为何保留折角】胶囊态高度只有一行，
+       * 四角折角在两端圆角处会被 overflow-hidden 裁掉一部分——
+       * 这是可接受的：展开后四角完整出现，收起时残留的痕迹
+       * 恰好强化"这是一块被标定的仪表"的印象。
+       */}
+      <HoloScanlines />
+      <HoloCorners color="#22d3ee" />
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 block h-px"
+        style={{
+          background:
+            'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.6) 30%, rgba(165,243,252,0.8) 50%, rgba(34,211,238,0.6) 70%, transparent 100%)',
+        }}
+      />
       {/* ---- 常态：一行紧凑胶囊（点击切换展开） ---- */}
       <button
         type="button"
@@ -835,7 +885,33 @@ function EntityProbeCard({
        * 不改动任何既有布局与交互。
        */}
       <HoloScanlines />
-      <HoloCorners color={TONE_CORNER_COLOR[view.statusTone]} />
+      {/*
+       * ---- 四角战术折角 ----
+       *
+       * 【本轮修正】上一轮折角按 tone 染色（绿/琥珀/红）。但折角是**结构标记**
+       * 而非状态标记——状态已经由左侧呼吸点、状态徽标、外环色三重表达，
+       * 折角再变色就变成"同一个信息说四遍"。
+       * 现固定为主题青（与 3D 视口内铭牌同一套青色 HUD 语言），
+       * 状态语义交还给真正该承担它的元素。
+       */}
+      <HoloCorners color="#22d3ee" />
+
+      {/*
+       * ---- 顶部激光高光边线 ----
+       *
+       * 【设计意图】真实仪表面板顶部常有一道极细的镜面高光（暗示是
+       * 一块有厚度的玻璃/金属面板而非平面贴纸）。用一条 1px 渐变线实现：
+       * 两端透明、中间最亮，因此看起来是"光在一道边上游走"，
+       * 而不是一条均匀的白边。
+       */}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 block h-px"
+        style={{
+          background:
+            'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.75) 22%, rgba(165,243,252,0.95) 50%, rgba(34,211,238,0.75) 78%, transparent 100%)',
+        }}
+      />
 
       {/* ============ 第 1 行：状态点 + 名称 + 状态徽标 + 重启徽标 + 关闭 ============ */}
       <div className="flex items-center gap-1.5">
