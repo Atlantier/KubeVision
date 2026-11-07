@@ -40,7 +40,7 @@
  * CameraRig 对 master 类型执行「全景鸟瞰」飞行。
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Edges, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -67,11 +67,110 @@ const CORE_CRYSTAL_RADIUS = 1.05;
 /** 白炽内核球半径（呼吸峰值 1.12 倍仍远小于晶核，不会被吞没） */
 const NUCLEUS_RADIUS = 0.36;
 
-/** 十字能量轴单根长度（略超出外层半径，形成向外辐射的骨架感） */
-const AXIS_BAR_LENGTH = OCTA_RADIUS * 2.1;
+/**
+ * 三轴陀螺仪全息轨道环的几何参数。
+ *
+ * 【为什么用它替代十字直棍】原来 3 根 boxGeometry 细长条穿过球心，
+ * 近看就是"糖葫芦签子"——刚性直棍既不符合能量场的柔性，也让中心显得死板。
+ * 改用 3 道倾角各异的细环后，中心变成一个**精密陀螺仪**：
+ * 三轴互不共面、各自以不同角速度旋转，视觉上持续产生新的交点与扫掠面，
+ * 这是"仪器在运转"而非"模型在翻滚"的关键。
+ *
+ * 【半径递进 1.15 → 1.32 → 1.48】刻意让三道环比内层晶核（1.05）大、
+ * 又全部包在外层八面体棱线（OCTA_RADIUS ≈ 2.55）之内，
+ * 因此它们既不与晶核穿插，也不越出水晶包络。
+ */
+const GYRO_RINGS: ReadonlyArray<{
+  readonly key: string;
+  readonly radius: number;
+  /** 环的静态倾角（欧拉角），三轴各不相同 */
+  readonly tilt: readonly [number, number, number];
+  /** 各环绕自身法线的自转角速度（rad/s），互不相同形成陀螺仪视差 */
+  readonly spin: number;
+  readonly thickness: number;
+}> = [
+  { key: 'gyro-a', radius: 1.15, tilt: [Math.PI / 3, 0, 0], spin: 0.85, thickness: 0.012 },
+  { key: 'gyro-b', radius: 1.32, tilt: [-Math.PI / 4, 0, Math.PI / 5], spin: -1.24, thickness: 0.010 },
+  { key: 'gyro-c', radius: 1.48, tilt: [Math.PI / 2, Math.PI / 6, 0], spin: 0.62, thickness: 0.008 },
+];
 
-/** 十字能量轴单根粗细 */
-const AXIS_BAR_THICKNESS = 0.025;
+/** 环绕控制平面缓慢上升旋转的微光星火数量 */
+const AMBIENT_SPARK_COUNT = 36;
+
+/** 星火环绕半径（控制平面外围能量场） */
+const AMBIENT_SPARK_RADIUS = 2.2;
+
+/** 星火整体环绕角速度（rad/s，约 47 秒/圈，极缓慢以免抢注意力） */
+const AMBIENT_SPARK_SPIN_RATE = 0.135;
+
+/** 星火静态相位表（黄金角错相，确定性可复现） */
+const AMBIENT_SPARK_PHASES: readonly number[] = Array.from(
+  { length: AMBIENT_SPARK_COUNT },
+  (_, i): number => (i * 2.399963229728653) % (Math.PI * 2),
+);
+
+/**
+ * 等离子星核的顶点着色器。
+ *
+ * 【输出什么】把世界空间法线与"从表面指向相机的视线向量"传给片元。
+ * `vViewPosition = -mvPosition.xyz` 是 three 的惯例：它由顶点指向相机，
+ * 因此 `dot(normal, normalize(vViewPosition))` 即"视线与法线的夹角余弦"——
+ * 面朝相机处 ≈ 1，掠射轮廓处 ≈ 0。这正是径向衰减的物理量纲。
+ */
+const PLASMA_VERTEX_SHADER = `
+varying vec3 vViewNormal;
+varying vec3 vViewPosition;
+
+void main() {
+  vViewNormal = normalize(normalMatrix * normal);
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vViewPosition = -mvPosition.xyz;
+  gl_Position = projectionMatrix * mvPosition;
+}
+`;
+
+/**
+ * 等离子星核的片元着色器 —— 无硬边径向衰减。
+ *
+ * 【核心数学】
+ *   viewDot  = max(0, dot(N, V))   面心 1 → 轮廓 0
+ *   core     = pow(viewDot, 3.2)    高次幂 → 只有正对相机的一小块是白炽
+ *   corona   = pow(viewDot, 1.35)   低次幂 → 宽广的青色电晕
+ *   alpha    = corona · uPulse · smoothstep(0, 0.02, viewDot)
+ *
+ * 【为何这样就消灭了死白硬边】球体的可见轮廓恰好是 `viewDot → 0` 的位置，
+ * 而 alpha 在这里趋于 0，于是轮廓处**自然透明**，没有"圆片剪纸"的边。
+ * 配合加色混合（AdditiveBlending），球体边缘与背景平滑叠加，肉眼看不出边界。
+ *
+ * 【颜色三级过渡】深海青 → 冰青 → 纯白，由 corona/core 两个权重连续插值，
+ * 不存在任何硬分段，因此从任何机位看都是柔和的径向渐变。
+ */
+const PLASMA_FRAGMENT_SHADER = `
+uniform float uPulse;
+uniform vec3 uCoreColor;
+uniform vec3 uCoronaColor;
+uniform vec3 uDeepColor;
+
+varying vec3 vViewNormal;
+varying vec3 vViewPosition;
+
+void main() {
+  vec3 n = normalize(vViewNormal);
+  vec3 v = normalize(vViewPosition);
+  float viewDot = max(0.0, dot(n, v));
+
+  float core = pow(viewDot, 3.2);
+  float corona = pow(viewDot, 1.35);
+
+  vec3 color = mix(uDeepColor, uCoronaColor, corona);
+  color = mix(color, uCoreColor, core);
+
+  float alpha = corona * uPulse;
+  alpha *= smoothstep(0.0, 0.02, viewDot);
+
+  gl_FragColor = vec4(color, alpha);
+}
+`;
 
 /** 外层正向自转角速度（rad/s）：约 25 秒/圈，从容的全局扫描节奏 */
 const OUTER_SPIN_RATE = 0.25;
@@ -164,24 +263,6 @@ const GLOW_ICE = '#a5f3fc';
 const GLOW_PALE = '#67e8f9';
 
 /**
- * 三维十字能量轴的三组朝向。
- *
- * 【数学推导】基准几何为「长轴沿局部 Y」的细长盒（高度 = AXIS_BAR_LENGTH）。
- * - Y 轴柱：无需旋转；
- * - X 轴柱：绕 Z 轴旋转 +90°，原 Y 轴映射到世界 X 轴；
- * - Z 轴柱：绕 X 轴旋转 +90°，原 Y 轴映射到世界 Z 轴。
- * 三根柱共同穿过原点，构成互相垂直的全息骨架。
- */
-const AXIS_BARS: ReadonlyArray<{
-  readonly key: string;
-  readonly rotation: readonly [number, number, number];
-}> = [
-  { key: 'axis-y', rotation: [0, 0, 0] },
-  { key: 'axis-x', rotation: [0, 0, Math.PI / 2] },
-  { key: 'axis-z', rotation: [Math.PI / 2, 0, 0] },
-];
-
-/**
  * 刻度齿预计算表（渲染期一次性求值：24 根齿的平面位置与朝向）。
  * 齿为径向小方块，绕圆环均布；角度 θ_i = 2πi/24，
  * 位置 (R·sinθ, 0, R·cosθ)、朝向 rotationY = θ（长轴指向圆心）。
@@ -241,8 +322,54 @@ export default function MasterNode3D() {
   /* ---- 动画通道 ref（useFrame 内原地突变） ---- */
   const outerRef = useRef<THREE.Mesh>(null);
   const coreRef = useRef<THREE.Mesh>(null);
-  const nucleusMaterialRef = useRef<THREE.MeshStandardMaterial>(null);
   const ringGroupRef = useRef<THREE.Group>(null);
+
+  /**
+   * 等离子星核的 uniforms（useMemo 预分配，useFrame 内只写 .value）。
+   *
+   * 【为何用 useMemo 而非 useRef】shaderMaterial 的 uniforms 对象必须**稳定**：
+   * 若每次渲染新建对象，R3F 会在 props diff 时重建整个 shader program，
+   * 每帧都要重新编译 GLSL——那是几十毫秒级的开销。
+   */
+  const plasmaUniforms = useMemo(
+    (): Record<string, THREE.IUniform> => ({
+      uPulse: { value: 1 },
+      uCoreColor: { value: new THREE.Color('#ffffff') },
+      uCoronaColor: { value: new THREE.Color('#67e8f9') },
+      uDeepColor: { value: new THREE.Color('#06b6d4') },
+    }),
+    [],
+  );
+
+  /** 三道陀螺仪环的 group ref 表（按 GYRO_RINGS 下标对齐） */
+  const gyroRefs = useRef<Array<THREE.Mesh | null>>([]);
+  gyroRefs.current.length = GYRO_RINGS.length;
+
+  /** 环绕星火 Points ref */
+  const sparkRef = useRef<THREE.Points>(null);
+
+  /**
+   * 环绕星火的静态几何（半径 R 的球壳上按黄金角均匀分布）。
+   *
+   * 【零分配契约】位置属性在 useMemo 内一次算好，
+   * useFrame 只旋转整个 Points 对象（改 rotation.y），
+   * 不触碰任何顶点缓冲，因此每帧成本仅一次矩阵更新。
+   */
+  const sparkGeometry = useMemo((): THREE.BufferGeometry => {
+    const positions = new Float32Array(AMBIENT_SPARK_COUNT * 3);
+    for (let i = 0; i < AMBIENT_SPARK_COUNT; i++) {
+      const phase = AMBIENT_SPARK_PHASES[i];
+      /* 黄金角分布：极角 φ 由序号线性推进，方位角用黄金角错相 → 球壳均匀 */
+      const phi = Math.acos(1 - (2 * (i + 0.5)) / AMBIENT_SPARK_COUNT);
+      const radius = AMBIENT_SPARK_RADIUS * (0.75 + 0.25 * Math.sin(phase));
+      positions[i * 3] = radius * Math.sin(phi) * Math.cos(phase);
+      positions[i * 3 + 1] = radius * Math.cos(phi) * 0.55;
+      positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(phase);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    return geometry;
+  }, []);
   /**
    * 外层晶格罩（Octahedron Cage）ref。
    *
@@ -287,10 +414,11 @@ export default function MasterNode3D() {
       const breath = 1 + BREATH_AMPLITUDE * Math.sin(t * BREATH_RATE);
       coreRef.current.scale.setScalar(breath);
     }
-    /* 白炽内核自发光强度同频脉动（心跳隐喻） */
-    if (nucleusMaterialRef.current !== null) {
-      nucleusMaterialRef.current.emissiveIntensity = 2.6 + 0.7 * Math.sin(t * BREATH_RATE + Math.PI / 4);
-    }
+    /* 等离子星核脉动：uPulse ∈ [0.82, 1.18]，驱动整个径向衰减包络呼吸。
+       必须原地写 .value —— 若赋新对象字面量，就是每帧一次堆分配，
+       违反 AGENTS.md 第 3 条的 useFrame 零分配契约。 */
+    plasmaUniforms.uPulse.value = 1 + 0.18 * Math.sin(t * BREATH_RATE + Math.PI / 4);
+
     /* 底部全息圆环：缓慢自转（刻度扫过 = 控制面巡检隐喻） */
     if (ringGroupRef.current !== null) {
       ringGroupRef.current.rotation.y = t * RING_SPIN_RATE;
@@ -299,6 +427,25 @@ export default function MasterNode3D() {
     if (cageRef.current !== null) {
       cageRef.current.rotation.y = -t * CAGE_SPIN_RATE;
       cageRef.current.rotation.z = Math.sin(t * 0.55) * 0.12;
+    }
+    /*
+     * 三轴陀螺仪环：各自绕自身法线匀速自转，互不同步。
+     * 这里只写 rotation.z（环的局部法线轴），静态倾角由 JSX 的 tilt 承担，
+     * 两者相乘才形成"倾斜的环在自转"——若把角速度也写进 tilt 会边转边歪。
+     */
+    const gyros = gyroRefs.current;
+    for (let i = 0; i < GYRO_RINGS.length; i++) {
+      const ring = gyros[i];
+      if (ring !== null && ring !== undefined) {
+        ring.rotation.z = t * GYRO_RINGS[i].spin;
+      }
+    }
+
+    /* 环绕星火：整体缓慢上旋 + 轻微呼吸缩放（只动对象变换，不动顶点） */
+    if (sparkRef.current !== null) {
+      sparkRef.current.rotation.y = t * AMBIENT_SPARK_SPIN_RATE;
+      const sparkBreath = 1 + 0.06 * Math.sin(t * 1.7);
+      sparkRef.current.scale.setScalar(sparkBreath);
     }
   });
 
@@ -388,39 +535,89 @@ export default function MasterNode3D() {
       </mesh>
 
       {/*
-       * ═══ 第 3 层：三维十字能量轴 ═══
-       * 三根互相垂直、穿过中心的纤细发光柱，提供「精密仪器骨架」的观感。
-       * 使用 meshBasicMaterial（不吃光照）保证任何机位下亮度恒定的全息感。
-       * 不随外层自转——反应堆骨架是静止的测量基准，
-       * 「外面转、里面稳」才形成仪表在扫描而非整块东西翻滚的观感。
+       * ═══ 第 3 层：三轴陀螺仪全息轨道环 ═══
+       *
+       * 【替代了什么】原来的三根 boxGeometry 十字直棍直接穿过球心，
+       * 视觉上是"糖葫芦签子"——刚性、共面、且把中心切成了碎片。
+       *
+       * 【为什么环更像仪器】三道环倾角各异（π/3、−π/4+π/5、π/2+π/6），
+       * 半径 1.15 / 1.32 / 1.48 递进，各自以不同角速度自转：
+       * 任意时刻三环的交点都在移动，扫掠面持续变化，
+       * 这正是陀螺仪"在工作"的视觉签名，而不是一个静态骨架。
+       *
+       * 【渲染参数】torusGeometry 的管径取得极细（0.008~0.012），
+       * 配合加色混合，在深空背景上像一圈悬浮的激光轨道。
        */}
-      <group>
-        {AXIS_BARS.map((bar): ReactNode => (
-          <mesh key={bar.key} rotation={[bar.rotation[0], bar.rotation[1], bar.rotation[2]]}>
-            <boxGeometry args={[AXIS_BAR_THICKNESS, AXIS_BAR_LENGTH, AXIS_BAR_THICKNESS]} />
-            <meshBasicMaterial color={GLOW_ICE} transparent opacity={0.65} toneMapped={false} />
-          </mesh>
-        ))}
-      </group>
+      {GYRO_RINGS.map((gyro): ReactNode => (
+        <mesh
+          key={gyro.key}
+          ref={(node): void => {
+            gyroRefs.current[GYRO_RINGS.indexOf(gyro)] = node;
+          }}
+          rotation={[gyro.tilt[0], gyro.tilt[1], gyro.tilt[2]]}
+          raycast={(): void => undefined}
+        >
+          <torusGeometry args={[gyro.radius, gyro.thickness, 8, 128]} />
+          <meshBasicMaterial
+            color={GLOW_PALE}
+            transparent
+            opacity={0.55}
+            toneMapped={false}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+          />
+        </mesh>
+      ))}
 
       {/*
-       * ═══ 第 4 层：白炽内核 ═══
-       * 呼吸缩放的白亮小球，是整块晶体的能量中心。
-       * 半径 0.36 远小于晶核 1.05，确保被包裹而不外露；
-       * 配合下方两层 GlowHalo3D，形成「实心核 + 屏幕空间白热晕」的双重白炽。
+       * ═══ 第 4 层：等离子星核（自定义 GLSL 径向衰减）═══
+       *
+       * 【为什么必须自写 shader】标准材质靠 emissiveIntensity 提亮，
+       * RGB 三个通道全部超过 1 被截断成纯白 —— 视觉上就是一个死白的硬边圆片，
+       * 轮廓像剪纸。真实能量核的特征恰恰相反：**中心极亮、边缘完全透明**。
+       *
+       * 【实现】片元着色器用视线-法线夹角余弦做径向衰减：
+       *   球体可见轮廓处 viewDot → 0，alpha → 0（自然透明，无缝融入背景）
+       *   正对相机处 viewDot → 1，core = 1（白炽）
+       * 配合 AdditiveBlending + depthWrite=false，多层能量自然叠加发光。
+       *
+       * 【uPulse】由 useFrame 每帧写 .value 做心跳脉动（零分配）。
        */}
-      <mesh>
-        <sphereGeometry args={[NUCLEUS_RADIUS, 24, 24]} />
-        <meshStandardMaterial
-          ref={nucleusMaterialRef}
-          color="#ffffff"
-          emissive={GLOW_ICE}
-          emissiveIntensity={2.6}
-          metalness={0.1}
-          roughness={0.2}
+      <mesh raycast={(): void => undefined}>
+        <sphereGeometry args={[NUCLEUS_RADIUS, 48, 48]} />
+        <shaderMaterial
+          uniforms={plasmaUniforms}
+          vertexShader={PLASMA_VERTEX_SHADER}
+          fragmentShader={PLASMA_FRAGMENT_SHADER}
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
           toneMapped={false}
         />
       </mesh>
+
+      {/*
+       * ═══ 第 4b 层：环绕微光星火（36 颗缓慢上升旋转的微粒）═══
+       *
+       * 【解决什么】控制平面此前只有几条刚性结构线，缺少"数字生命力"。
+       * 36 颗星火按球壳黄金角分布包围在半径 2.2 内，整体缓慢自转 + 呼吸缩放，
+       * 让中心在静止机位下也持续有微小的光点在游走。
+       *
+       * 【性能】单个 Points 对象 = 1 次 Draw Call；顶点缓冲在 useMemo 内
+       * 一次性生成，useFrame 只改对象变换（rotation.y / scale），不触碰缓冲。
+       */}
+      <points ref={sparkRef} geometry={sparkGeometry} raycast={(): void => undefined}>
+        <pointsMaterial
+          size={0.055}
+          color={GLOW_ICE}
+          transparent
+          opacity={0.75}
+          sizeAttenuation
+          toneMapped={false}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </points>
 
       {/*
        * ═══ 第 5 层：地面投射光束（悬浮水晶的能量脐带）═══

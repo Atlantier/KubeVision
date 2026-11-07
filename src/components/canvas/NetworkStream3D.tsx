@@ -90,7 +90,7 @@ const LANE_COUNT = 3;
  * 弧长 ~14 世界单位上均布 32 颗，基准间距约 0.44，叠加绕流偏移后
  * 前后错落，观感接近被风吹散的发光尘埃而非排队前进。
  */
-const PACKETS_PER_LANE = 32;
+const PACKETS_PER_LANE = 42;
 
 /** 粒子总数（InstancedMesh 固定容量，严禁随数据变化——args 重建灾难同 Pod 渲染器） */
 const PACKET_TOTAL = LANE_COUNT * PACKETS_PER_LANE;
@@ -109,6 +109,32 @@ const RACK_TOP_Y = RACK_BODY_SIZE[1] + 0.21;
 
 /** 拱形抬升量（世界单位）：MASTER 侧陡升、机架侧缓落 */
 const ARCH_LIFT = 3.4;
+
+/**
+ * 能量束起点沿"控制平面 → 机架"方向的外移距离（世界单位）。
+ *
+ * 【取值依据】星核半径 0.36、内层晶核 1.05。外移 0.65 使起点落在
+ * 星核之外、晶核之内的空档，光束从水晶包络边缘升起而不穿过任何实体。
+ */
+const ARC_START_OFFSET = 0.65;
+
+/** 能量束内芯管道半径（高亮冰白青细芯） */
+const RIBBON_CORE_RADIUS = 0.018;
+
+/** 能量束外鞘管道半径（柔光护套，包裹内芯） */
+const RIBBON_SHEATH_RADIUS = 0.048;
+
+/** 彗星光梭的横向缩放（X/Y 收窄，形成流线） */
+const COMET_SCALE_XZ = 0.55;
+
+/** 彗星光梭沿运动切线方向的拉伸倍数（相对 PACKET_RADIUS） */
+const COMET_SCALE_LENGTH = 3.6;
+
+/** 火花粒子的螺旋包络半径（拱顶最散、两端最收） */
+const SPARK_SPIRAL_RADIUS = 0.42;
+
+/** 火花螺旋散开的角速度（rad/s） */
+const SPARK_SPIRAL_RATE = 6.5;
 
 /**
  * 粒子基准半径（发光数据包颗粒感）。
@@ -246,20 +272,84 @@ const LANE_CURVES: readonly THREE.CubicBezierCurve3[] = (() => {
   for (let k = 0; k < LANE_COUNT; k++) {
     const rack = getRackTransform(k);
     const end = new THREE.Vector3(rack.position[0], RACK_TOP_Y, rack.position[2]);
+
+    /*
+     * ---- 起点外移：从"能量包络边缘"涌出，而不是硬插球心 ----
+     *
+     * 【缺陷】旧起点就是 master 坐标 (0, 2.5, 0)，也就是星核正中心：
+     * 光束像是从白球内部被"捅出来"的，接头处必然突兀，
+     * 而且与球体的加色辉光叠成一坨死白。
+     *
+     * 【修复】沿"控制平面 → 机架"的水平方向外移 0.65 世界单位。
+     * 0.65 略大于星核半径（0.36）与内层晶核（1.05）之间的空档，
+     * 视觉上光束从水晶包络的外缘柔和升起，不再穿过任何实体几何。
+     */
+    const dir = new THREE.Vector3(end.x - master.x, 0, end.z - master.z).normalize();
+    const start = master.clone().addScaledVector(dir, ARC_START_OFFSET);
+
     // 非对称控制点：30% 行程处全抬升（枢纽侧陡拱），70% 行程处 55% 抬升（机架侧缓落）
-    const c1 = master.clone().lerp(end, 0.3);
+    const c1 = start.clone().lerp(end, 0.3);
     c1.y += ARCH_LIFT;
-    const c2 = master.clone().lerp(end, 0.7);
+    const c2 = start.clone().lerp(end, 0.7);
     c2.y += ARCH_LIFT * 0.55;
-    curves.push(new THREE.CubicBezierCurve3(master.clone(), c1, c2, end));
+    curves.push(new THREE.CubicBezierCurve3(start, c1, c2, end));
   }
   return curves;
 })();
 
-/** 基底光缆折线采样（drei <Line> 的 points prop，64 段足够平滑，一次求值） */
-const LANE_POINTS: readonly (readonly THREE.Vector3[])[] = LANE_CURVES.map(
-  (curve): THREE.Vector3[] => curve.getPoints(64),
-);
+/* ========================================================================== */
+/* 能量束着色器（沿管道的首尾渐隐 + 高频行波脉冲）                                */
+/* ========================================================================== */
+
+/**
+ * 能量束顶点着色器：把管道 UV 与视图空间法线传给片元。
+ *
+ * 【为什么用 vUv.x】TubeGeometry 沿管道纵向生成 u ∈ [0,1]（首 → 尾），
+ * 这个参数正是"沿程位置"，用它做首尾渐隐与行波相位，天然贴合曲线弧长方向。
+ */
+const RIBBON_VERTEX_SHADER = `
+varying vec2 vUv;
+varying vec3 vViewNormal;
+
+void main() {
+  vUv = uv;
+  vViewNormal = normalize(normalMatrix * normal);
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+}
+`;
+
+/**
+ * 能量束片元着色器。
+ *
+ * 【首尾渐隐】edgeFade 在两端各做一次 smoothstep：
+ *   起点（离开控制平面）与终点（进入机架顶冠端口）都平滑衰减到 0，
+ *   因此光束"从无到有、从有到无"，彻底消除线段接头的硬边。
+ *
+ * 【高频行波】wave = 0.6 + 0.4·sin(28·vUv.x − 9·uTime)：
+ *   沿管道方向 28 个波长、每秒推进 9 rad，形成肉眼可辨的"能量在流动"。
+ *   行波只调制亮度，不改变渐隐包络，所以端点依旧是 0。
+ *
+ * 【边缘柔化】用 |vViewNormal.z| 做掠射衰减，让管壁边缘比正面略暗，
+ * 圆柱体看起来像"发光的气体管"而不是"涂了颜色的塑料棒"。
+ */
+const RIBBON_FRAGMENT_SHADER = `
+uniform float uTime;
+uniform vec3 uColor;
+uniform float uIntensity;
+
+varying vec2 vUv;
+varying vec3 vViewNormal;
+
+void main() {
+  float edgeFade = smoothstep(0.0, 0.12, vUv.x) * (1.0 - smoothstep(0.88, 1.0, vUv.x));
+  float wave = 0.6 + 0.4 * sin(vUv.x * 28.0 - uTime * 9.0);
+  float rim = 0.55 + 0.45 * abs(normalize(vViewNormal).z);
+
+  float alpha = edgeFade * wave * rim * uIntensity;
+  gl_FragColor = vec4(uColor, alpha);
+}
+`;
 
 /* ========================================================================== */
 /* NetworkStream3D 主体                                                        */
@@ -333,7 +423,49 @@ export default function NetworkStream3D() {
    */
   const tempObject = useMemo((): THREE.Object3D => new THREE.Object3D(), []);
   const tempVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
+  /** 曲线切线（getTangentAt 输出载体；预分配保证 useFrame 零 GC） */
+  const tempTangent = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
   const tempColor = useMemo((): THREE.Color => new THREE.Color(), []);
+
+  /**
+   * 能量束的双层管道几何与 uniform（每车道一内芯 + 一外鞘）。
+   *
+   * 【为什么不复用 drei <Line>】Line 是屏幕空间恒定宽度的折线，
+   * 没有管道体积、也没有纵向 UV，无法做沿程渐隐与行波。
+   * TubeGeometry 自带 u ∈ [0,1] 的沿程参数，正好承载着色器所需的一切。
+   *
+   * 【双层结构】内芯 0.018（高亮冰白青）+ 外鞘 0.048（柔光），
+   * 同着色器不同 uIntensity，叠加后形成"中心锐利、外围渗出"的光纤质感。
+   */
+  const ribbonCore = useMemo((): ReadonlyArray<{
+    readonly geometry: THREE.TubeGeometry;
+    readonly uniforms: Record<string, THREE.IUniform>;
+    readonly baseIntensity: number;
+  }> =>
+    LANE_CURVES.map((curve): { geometry: THREE.TubeGeometry; uniforms: Record<string, THREE.IUniform>; baseIntensity: number } => ({
+      geometry: new THREE.TubeGeometry(curve, 96, RIBBON_CORE_RADIUS, 8, false),
+      uniforms: {
+        uTime: { value: 0 },
+        uColor: { value: new THREE.Color('#a5f3fc') },
+        uIntensity: { value: 0.95 },
+      },
+      baseIntensity: 0.95,
+    })), []);
+
+  const ribbonSheath = useMemo((): ReadonlyArray<{
+    readonly geometry: THREE.TubeGeometry;
+    readonly uniforms: Record<string, THREE.IUniform>;
+    readonly baseIntensity: number;
+  }> =>
+    LANE_CURVES.map((curve): { geometry: THREE.TubeGeometry; uniforms: Record<string, THREE.IUniform>; baseIntensity: number } => ({
+      geometry: new THREE.TubeGeometry(curve, 96, RIBBON_SHEATH_RADIUS, 8, false),
+      uniforms: {
+        uTime: { value: 0 },
+        uColor: { value: new THREE.Color('#22d3ee') },
+        uIntensity: { value: 0.42 },
+      },
+      baseIntensity: 0.42,
+    })), []);
   /**
    * 车道级颜色持久态（3 个 Color，预分配复用）。
    *
@@ -488,6 +620,27 @@ export default function NetworkStream3D() {
       const laneColor = laneColors[k];
       laneColor.lerp(targetColor, colorAlpha);
 
+      /*
+       * 能量束着色器 uniform 更新（原地写，零分配）：
+       * - uTime 驱动沿管道推进的行波；
+       * - uColor 跟随车道三态色（青 / 橙 / 红），与粒子同步；
+       * - uIntensity 在故障/高负载时抬高，让光河本身也"变亮变急"。
+       */
+      const coreLayer = ribbonCore[k];
+      const sheathLayer = ribbonSheath[k];
+      if (coreLayer !== undefined) {
+        coreLayer.uniforms.uTime.value = t;
+        (coreLayer.uniforms.uColor.value as THREE.Color).copy(laneColor);
+        coreLayer.uniforms.uIntensity.value =
+          fault ? 1.35 : severity === SEVERITY_HOT ? 1.15 : 0.95;
+      }
+      if (sheathLayer !== undefined) {
+        sheathLayer.uniforms.uTime.value = t;
+        (sheathLayer.uniforms.uColor.value as THREE.Color).copy(laneColor);
+        sheathLayer.uniforms.uIntensity.value =
+          fault ? 0.72 : severity === SEVERITY_HOT ? 0.58 : 0.42;
+      }
+
       for (let j = 0; j < PACKETS_PER_LANE; j++) {
         const idx = k * PACKETS_PER_LANE + j;
 
@@ -561,8 +714,48 @@ export default function NetworkStream3D() {
               FAULT_FLICKER_GAIN * Math.abs(Math.sin(t * FAULT_FLICKER_RATE + j)))
           : baseScale;
 
+        /*
+         * ---- 火花额外螺旋包络（仅尾迹粒子）----
+         *
+         * 【为什么尾迹要更散】主包是"数据本体"，必须严格贴线以保持方向语义；
+         * 尾迹是"被甩出的火花"，越靠近拱顶（u ≈ 0.5）甩得越开，
+         * 用 sin(sampleU·π) 作包络：两端（离开控制平面 / 进入机架）收拢，
+         * 中段最散。这正是参考图里能量弧线周围飞溅星尘的形态。
+         */
+        if (!isMain) {
+          const sparkEnvelope = Math.sin(sampleU * Math.PI);
+          const sparkPhase = t * SPARK_SPIRAL_RATE + idx * SWIRL_PHASE_STEP;
+          tempVec.x += Math.cos(sparkPhase) * SPARK_SPIRAL_RADIUS * sparkEnvelope;
+          tempVec.z += Math.sin(sparkPhase) * SPARK_SPIRAL_RADIUS * sparkEnvelope;
+          tempVec.y += Math.sin(sparkPhase * 0.8) * SPARK_SPIRAL_RADIUS * 0.6 * sparkEnvelope;
+        }
+
+        /*
+         * ---- 主包 = 沿切线拉伸的彗星光梭 ----
+         *
+         * 【核心数学】先用 getTangentAt(sampleU) 取该点的曲线切向量，
+         * 再让粒子 lookAt(位置 + 切线)，使局部 +Z 轴对准运动方向；
+         * 然后 scale.set(0.55, 0.55, 3.6)：
+         *   · X/Y 收到 0.55 → 横向变细
+         *   · Z 拉伸到 3.6 → 沿运动方向拉长（相对横向约 6.5 倍）
+         * 于是球体被"拉成子弹形"，配合加色混合形成彗星流光。
+         *
+         * 【尾迹】保持近似等比的微小火花，只做轻微各向异性，不参与拉伸，
+         * 否则整条弧线会变成一串尖刺。
+         */
         tempObject.position.copy(tempVec);
-        tempObject.scale.setScalar(scale);
+        if (isMain) {
+          curve.getTangentAt(sampleU, tempTangent);
+          tempObject.lookAt(
+            tempVec.x + tempTangent.x,
+            tempVec.y + tempTangent.y,
+            tempVec.z + tempTangent.z,
+          );
+          tempObject.scale.set(COMET_SCALE_XZ, COMET_SCALE_XZ, COMET_SCALE_LENGTH);
+        } else {
+          tempObject.rotation.set(0, 0, 0);
+          tempObject.scale.set(scale, scale, scale * 1.35);
+        }
         tempObject.updateMatrix();
         mesh.setMatrixAt(idx, tempObject.matrix);
 
@@ -598,34 +791,33 @@ export default function NetworkStream3D() {
        * 渲染顺序：先画护套再画核心（数组顺序 + 同组内按声明序遍历），
        * 核心线因此压在护套之上，边缘不会被宽线遮糊。
        */}
-      {LANE_POINTS.map((points, k): ReactNode => {
-        const severity = laneSeverity[k] ?? SEVERITY_HEALTHY;
-        const faulted = severity >= SEVERITY_FAULT;
-        const hot = severity === SEVERITY_HOT;
-        const laneColor = faulted ? '#f43f5e' : hot ? '#f97316' : '#22d3ee';
-        return (
-          <group key={k}>
-            {/* 外层：柔光护套（加色、不写深度）——故障/高负载时整体增亮 */}
-            <Line
-              points={points}
-              color={laneColor}
-              transparent
-              opacity={faulted ? 0.26 : hot ? 0.2 : 0.14}
-              lineWidth={faulted ? 7 : hot ? 6.4 : 5.5}
-              depthWrite={false}
-              blending={THREE.AdditiveBlending}
-            />
-            {/* 内层：高亮核心线——对比度提升（更细更亮，压在外层护套上） */}
-            <Line
-              points={points}
-              color={laneColor}
-              transparent
-              opacity={faulted ? 0.98 : hot ? 0.9 : 0.78}
-              lineWidth={faulted ? 3.0 : hot ? 2.8 : 2.4}
-            />
-          </group>
-        );
-      })}
+      {ribbonSheath.map((layer, k): ReactNode => (
+        <mesh key={`sheath-${k}`} geometry={layer.geometry} raycast={(): void => undefined}>
+          <shaderMaterial
+            uniforms={layer.uniforms}
+            vertexShader={RIBBON_VERTEX_SHADER}
+            fragmentShader={RIBBON_FRAGMENT_SHADER}
+            transparent
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            toneMapped={false}
+          />
+        </mesh>
+      ))}
+
+      {ribbonCore.map((layer, k): ReactNode => (
+        <mesh key={`core-${k}`} geometry={layer.geometry} raycast={(): void => undefined}>
+          <shaderMaterial
+            uniforms={layer.uniforms}
+            vertexShader={RIBBON_VERTEX_SHADER}
+            fragmentShader={RIBBON_FRAGMENT_SHADER}
+            transparent
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            toneMapped={false}
+          />
+        </mesh>
+      ))}
 
       {/* ---- 54 个发光数据包粒子（单 Draw Call InstancedMesh；
              容量恒定，frustumCulled=false 防包围球误剔除——同 Pod 渲染器契约） ---- */}
