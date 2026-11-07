@@ -69,11 +69,13 @@ const INNER_RING_RADIUS = 3.1;
 const INNER_THICKNESS = 0.035;
 
 /** 径向总线的宽度与长度 */
-const RADIAL_WIDTH = 0.075;
+const RADIAL_WIDTH = 0.045;
 /** 主干道两侧细护线的宽度与横向偏移 */
-const RADIAL_GUARD_WIDTH = 0.022;
-const RADIAL_GUARD_OFFSET = 0.105;
-const RADIAL_LENGTH = RACK_RADIUS - INNER_RING_RADIUS;
+const RADIAL_GUARD_WIDTH = 0.17;
+const RADIAL_GUARD_OFFSET = 0;
+/** 总线起点：向内贯穿到雷达核心环（r=1.55），终点接机架轨道 */
+const RADIAL_START_RADIUS = 1.55;
+const RADIAL_LENGTH = RACK_RADIUS - RADIAL_START_RADIUS;
 
 /** 地面光脉冲的尺寸与推进速度（周期/秒） */
 const LANE_PULSE_LENGTH = 0.85;
@@ -85,11 +87,11 @@ const LANE_PULSE_SPEED = 0.22;
 /** 最外层：8 段断开的战术锁定括弧环 */
 const PEDESTAL_BRACKET_RADIUS = 2.45;
 const PEDESTAL_BRACKET_THICKNESS = 0.06;
-const PEDESTAL_BRACKET_COUNT = 8;
+const PEDESTAL_BRACKET_COUNT = 4;
 const PEDESTAL_BRACKET_DUTY = 0.62;
 
 /** 第二层：高亮主发光环 */
-const PEDESTAL_MAIN_RADIUS = 2.18;
+const PEDESTAL_MAIN_RADIUS = 2.25;
 const PEDESTAL_MAIN_THICKNESS = 0.07;
 
 /** 第二层的 36 枚径向刻度齿 */
@@ -98,9 +100,15 @@ const PEDESTAL_TEETH_RADIUS = 2.30;
 const PEDESTAL_TEETH_WIDTH = 0.05;
 const PEDESTAL_TEETH_LENGTH = 0.20;
 
-/** 第三层：能量底盘的三个递减环（用三层模拟径向渐变） */
-const PEDESTAL_DISK_RADII: readonly number[] = [1.82, 1.46, 1.10];
-const PEDESTAL_DISK_OPACITIES: readonly number[] = [0.15, 0.11, 0.08];
+/**
+ * 第三层：三层同心底座光环（r = 1.85 / 2.25 / 2.68，由内向外递减高度与亮度）。
+ *
+ * 【为何是三层环而不是三层实心圆盘】参考图里机架脚下是**多道细环叠加**的
+ * 精密底座，实心圆盘会糊成一块发光圆饼，反而丢失"仪器刻度"的层次。
+ */
+const PEDESTAL_DISK_RADII: readonly number[] = [1.85, 2.25, 2.68];
+const PEDESTAL_DISK_WIDTHS: readonly number[] = [0.030, 0.045, 0.024];
+const PEDESTAL_DISK_OPACITIES: readonly number[] = [0.52, 0.68, 0.42];
 
 /** 第四层：前方两侧导流短轨 */
 const GUIDE_RAIL_WIDTH = 0.06;
@@ -248,6 +256,500 @@ interface RackFooting {
 /* 组件主体                                                                    */
 /* ========================================================================== */
 
+/* ========================================================================== */
+/* 中央 6 级全息雷达底座 + 地面数据星城（合并批次，严格控制 Draw Call）              */
+/* ========================================================================== */
+
+/**
+ * SoupBuffers —— 顶点色「三角汤」累加器。
+ *
+ * 【为什么不用 BufferGeometryUtils】合并现成几何要处理 index / normal / uv
+ * 的对齐，代码量大且易错；而雷达环带本质是**极坐标参数面**，
+ * 直接在构建期按 `(半径, 角度)` 算三角形顶点，输出两组平行的
+ * position / color 数组即可。没有 index、没有 uv、没有法线
+ * （材质用 Basic + 加色混合，不参与光照），构建完一次性上传 GPU。
+ *
+ * 【加色混合下的"透明"】加色混合中黑色 == 不可见，
+ * 因此径向淡出只需把顶点色乘系数趋近 0，无需逐顶点 alpha。
+ */
+interface SoupBuffers {
+  readonly positions: number[];
+  readonly colors: number[];
+}
+
+/** 新建空累加器 */
+function createSoup(): SoupBuffers {
+  return { positions: [], colors: [] };
+}
+
+/**
+ * hexToRgb01 —— 十六进制色串 → 归一化 RGB（构建期一次求值）。
+ *
+ * @param hex 形如 '#38bdf8'
+ * @returns [r, g, b]，各分量 ∈ [0, 1]
+ */
+function hexToRgb01(hex: string): readonly [number, number, number] {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return [((value >> 16) & 0xff) / 255, ((value >> 8) & 0xff) / 255, (value & 0xff) / 255];
+}
+
+/**
+ * pushAnnulus —— 把一段极坐标环带压入三角汤。
+ *
+ * 【几何】对每个角度步进生成一个四边形（两个三角形），
+ * 内/外半径各一圈顶点。`fadeOutward` 为真时，顶点色按半径线性衰减到 0，
+ * 在加色混合下形成「向外羽化消失」的辉光带——这正是雷达底盘的柔光边缘。
+ */
+function pushAnnulus(
+  soup: SoupBuffers,
+  rInner: number,
+  rOuter: number,
+  thetaStart: number,
+  thetaLength: number,
+  segments: number,
+  colorHex: string,
+  fadeOutward: boolean,
+): void {
+  const rgb = hexToRgb01(colorHex);
+  for (let i = 0; i < segments; i++) {
+    const a0 = thetaStart + (thetaLength * i) / segments;
+    const a1 = thetaStart + (thetaLength * (i + 1)) / segments;
+    const cos0 = Math.cos(a0);
+    const sin0 = Math.sin(a0);
+    const cos1 = Math.cos(a1);
+    const sin1 = Math.sin(a1);
+
+    const innerScale = fadeOutward ? 1 : 1;
+    const outerScale = fadeOutward ? 0.18 : 1;
+
+    /* 两个三角形：(内0, 外0, 外1) 与 (内0, 外1, 内1) */
+    soup.positions.push(
+      rInner * cos0, 0, rInner * sin0,
+      rOuter * cos0, 0, rOuter * sin0,
+      rOuter * cos1, 0, rOuter * sin1,
+      rInner * cos0, 0, rInner * sin0,
+      rOuter * cos1, 0, rOuter * sin1,
+      rInner * cos1, 0, rInner * sin1,
+    );
+    const pushColor = (scale: number): void => {
+      soup.colors.push(rgb[0] * scale, rgb[1] * scale, rgb[2] * scale);
+    };
+    pushColor(innerScale);
+    pushColor(outerScale);
+    pushColor(outerScale);
+    pushColor(innerScale);
+    pushColor(outerScale);
+    pushColor(innerScale);
+  }
+}
+
+/**
+ * pushTick —— 把一枚径向刻度齿（极细长条）压入三角汤。
+ *
+ * @param radius 齿中心的轨道半径
+ * @param theta 齿所在角度
+ * @param angularWidth 角宽度（弧度，极小时呈细线）
+ * @param radialLength 径向长度
+ */
+function pushTick(
+  soup: SoupBuffers,
+  radius: number,
+  theta: number,
+  angularWidth: number,
+  radialLength: number,
+  colorHex: string,
+): void {
+  const rgb = hexToRgb01(colorHex);
+  const rIn = radius - radialLength / 2;
+  const rOut = radius + radialLength / 2;
+  const a0 = theta - angularWidth / 2;
+  const a1 = theta + angularWidth / 2;
+  soup.positions.push(
+    rIn * Math.cos(a0), 0, rIn * Math.sin(a0),
+    rOut * Math.cos(a0), 0, rOut * Math.sin(a0),
+    rOut * Math.cos(a1), 0, rOut * Math.sin(a1),
+    rIn * Math.cos(a0), 0, rIn * Math.sin(a0),
+    rOut * Math.cos(a1), 0, rOut * Math.sin(a1),
+    rIn * Math.cos(a1), 0, rIn * Math.sin(a1),
+  );
+  for (let k = 0; k < 6; k++) soup.colors.push(rgb[0], rgb[1], rgb[2]);
+}
+
+/** 把三角汤装成 BufferGeometry（position + color 两组属性） */
+function soupToGeometry(soup: SoupBuffers): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(soup.positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(soup.colors, 3));
+  return geometry;
+}
+
+/* ---- 6 级雷达底座的半径规格 ---- */
+
+/** 核心亮环带（双道高亮青） */
+const RADAR_CORE_RINGS: ReadonlyArray<{ r: number; w: number; hex: string }> = [
+  { r: 1.55, w: 0.055, hex: '#38bdf8' },
+  { r: 2.25, w: 0.042, hex: '#38bdf8' },
+];
+
+/** 外扩能量围栏（双轨细线 + 24 枚锚点） */
+const RADAR_FENCE_RINGS: ReadonlyArray<{ r: number; w: number; hex: string }> = [
+  { r: 4.15, w: 0.020, hex: '#22d3ee' },
+  { r: 4.95, w: 0.016, hex: '#22d3ee' },
+];
+
+/** 阶梯断续扇形装甲弧的两道半径 */
+const RADAR_ARC_RADII: readonly number[] = [2.65, 3.35];
+
+/** 每道装甲弧的段数（12 段不对称弧）与雷达刻度数（72 道） */
+const RADAR_ARC_SEGMENTS = 12;
+const RADAR_TICK_COUNT = 72;
+
+/**
+ * pushBand —— 把一条沿坐标轴的直线光带压入三角汤（用于十字基准激光）。
+ *
+ * 【为何并入雷达静态几何】若单独做 mesh，十字激光要多 2 次 Draw Call；
+ * 它与雷达环带用的是**同一套材质**（顶点色 + 加色混合），
+ * 直接写进同一份三角汤即可零额外开销。
+ *
+ * @param alongX true 沿 X 轴铺开，false 沿 Z 轴铺开
+ * @param fade 端点是否淡出（加色下淡出即颜色趋 0）
+ */
+function pushBand(
+  soup: SoupBuffers,
+  length: number,
+  width: number,
+  alongX: boolean,
+  colorHex: string,
+  fade: boolean,
+): void {
+  const rgb = hexToRgb01(colorHex);
+  const halfL = length / 2;
+  const halfW = width / 2;
+  const steps = 48;
+
+  for (let i = 0; i < steps; i++) {
+    const t0 = -halfL + (length * i) / steps;
+    const t1 = -halfL + (length * (i + 1)) / steps;
+    /* 端点淡出系数：中心 1、两端 0 */
+    const fadeAt = (value: number): number =>
+      fade ? Math.max(0, 1 - Math.abs(value) / halfL) : 1;
+
+    const s0 = fadeAt(t0);
+    const s1 = fadeAt(t1);
+
+    const quad: ReadonlyArray<readonly [number, number]> = alongX
+      ? [
+          [t0, -halfW],
+          [t1, -halfW],
+          [t1, halfW],
+          [t0, -halfW],
+          [t1, halfW],
+          [t0, halfW],
+        ]
+      : [
+          [-halfW, t0],
+          [-halfW, t1],
+          [halfW, t1],
+          [-halfW, t0],
+          [halfW, t1],
+          [halfW, t0],
+        ];
+    const scales: ReadonlyArray<number> = alongX
+      ? [s0, s1, s1, s0, s1, s0]
+      : [s0, s1, s1, s0, s1, s0];
+
+    for (let k = 0; k < quad.length; k++) {
+      soup.positions.push(quad[k][0], 0, quad[k][1]);
+      soup.colors.push(rgb[0] * scales[k], rgb[1] * scales[k], rgb[2] * scales[k]);
+    }
+  }
+}
+
+/** 围栏锚点数量 */
+const RADAR_ANCHOR_COUNT = 24;
+
+/** 雷达装甲弧批次的自转角速度（rad/s，约 21 秒一圈，从容的巡检节奏） */
+const RADAR_ARC_SPIN_RATE = 0.30;
+
+/**
+ * 雷达底座「静态部分」几何（构建期一次）：羽化底盘 + 4 道环 + 24 锚点。
+ *
+ * 羽化底盘用 fadeOutward 环带实现：内缘亮、外缘衰减到黑，
+ * 加色混合下自然形成柔和径向辉光，无需额外贴图。
+ */
+const RADAR_STATIC_GEOMETRY: THREE.BufferGeometry = (() => {
+  const soup = createSoup();
+
+  /* 羽化辉光底盘：从 r=0.85 铺到 r=1.55，向外淡出 */
+  pushAnnulus(soup, 0.85, 1.55, 0, Math.PI * 2, 96, '#0ea5e9', true);
+
+  /* 核心双环 */
+  for (const ring of RADAR_CORE_RINGS) {
+    pushAnnulus(soup, ring.r - ring.w, ring.r, 0, Math.PI * 2, 160, ring.hex, false);
+  }
+  /* 围栏双轨 */
+  for (const ring of RADAR_FENCE_RINGS) {
+    pushAnnulus(soup, ring.r - ring.w, ring.r, 0, Math.PI * 2, 160, ring.hex, false);
+  }
+  /* 24 枚环上亮锚点（极短弧段，视觉上是亮钉） */
+  for (let i = 0; i < RADAR_ANCHOR_COUNT; i++) {
+    const theta = (Math.PI * 2 * i) / RADAR_ANCHOR_COUNT;
+    pushTick(soup, 4.55, theta, 0.030, 0.16, '#e0f2fe');
+  }
+
+  /*
+   * 十字基准激光：横贯左右 / 前后视野的两条细光带，端点淡出。
+   * 它对应参考图里那条极有张力的横向青色激光束——
+   * 单独一条环环相扣的同心环是"静态仪表"，加上十字轴线才有"扫描场"的空间感。
+   */
+  pushBand(soup, 26, 0.055, true, '#38bdf8', true);
+  pushBand(soup, 26, 0.055, false, '#0ea5e9', true);
+
+  return soupToGeometry(soup);
+})();
+
+/**
+ * 雷达底座「旋转部分」几何：12 段不对称装甲弧 × 2 道 + 72 道刻度。
+ *
+ * 单独成批是为了让它在 useFrame 里整体自转（静态部分不动），
+ * 且仍然只占 1 次 Draw Call。
+ */
+const RADAR_ARC_GEOMETRY: THREE.BufferGeometry = (() => {
+  const soup = createSoup();
+  for (let ri = 0; ri < RADAR_ARC_RADII.length; ri++) {
+    const radius = RADAR_ARC_RADII[ri];
+    const sector = (Math.PI * 2) / RADAR_ARC_SEGMENTS;
+    for (let i = 0; i < RADAR_ARC_SEGMENTS; i++) {
+      /* 不对称：奇数段长 0.62 扇区、偶数段长 0.34 扇区，形成阶梯节奏 */
+      const duty = i % 2 === 0 ? 0.62 : 0.34;
+      const start = i * sector + (ri === 1 ? sector * 0.5 : 0);
+      pushAnnulus(soup, radius, radius + 0.05, start, sector * duty, 10, ri === 0 ? '#38bdf8' : '#22d3ee', false);
+    }
+  }
+  for (let i = 0; i < RADAR_TICK_COUNT; i++) {
+    const theta = (Math.PI * 2 * i) / RADAR_TICK_COUNT;
+    pushTick(soup, 3.78, theta, 0.008, 0.30, '#67e8f9');
+  }
+  return soupToGeometry(soup);
+})();
+
+/* -------------------------------------------------------------------------- */
+/* 地面数据星城（1,400 颗粒子 + 极坐标电路连线）                                  */
+/* -------------------------------------------------------------------------- */
+
+/** 数据星城节点总数 */
+const DATA_CITY_COUNT = 1400;
+
+/** 同心数据环轨数量与半径范围 */
+const DATA_CITY_TRACKS = 18;
+const DATA_CITY_R_MIN = 3.4;
+const DATA_CITY_R_MAX = 12.4;
+
+/** 通往三台机架的径向主干道走廊角宽（走廊内不放节点，保持通道干净） */
+const CORRIDOR_HALF_WIDTH = 0.11;
+
+/**
+ * 数据星城节点数据（构建期一次求值）。
+ *
+ * 【排布算法：同心轨道簇 + 径向扇区走廊】
+ * 1. 把 r ∈ [3.4, 12.4] 均分为 18 条隐式同心环轨；
+ * 2. 每条轨道上按角度推进，成簇投放 5~12 颗紧密排列的节点
+ *    （模拟主板芯片电容群/机房微单元，而不是均匀撒点）；
+ * 3. 若簇中心落在三条机架走廊内则整簇跳过——留出通往 Worker 的干净主干道。
+ *
+ * 【确定性】用固定种子 LCG，保证每次挂载/热更新得到同一张星图。
+ */
+const DATA_CITY_DATA: {
+  readonly positions: Float32Array;
+  readonly colors: Float32Array;
+  readonly sizes: Float32Array;
+  readonly phases: Float32Array;
+  readonly count: number;
+} = (() => {
+  let seed = 20260817;
+  const nextRandom = (): number => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const sizes: number[] = [];
+  const phases: number[] = [];
+
+  /* 三条走廊的中心角：与 getRackTransform 的机架角一致（0 / 2π/3 / 4π/3） */
+  const corridorAngles: readonly number[] = [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3];
+  const inCorridor = (theta: number): boolean => {
+    for (const center of corridorAngles) {
+      let delta = Math.abs(theta - center);
+      while (delta > Math.PI) delta = Math.abs(delta - Math.PI * 2);
+      if (delta < CORRIDOR_HALF_WIDTH) return true;
+    }
+    return false;
+  };
+
+  let placed = 0;
+  while (placed < DATA_CITY_COUNT) {
+    /* 随机挑一条轨道 */
+    const trackIndex = Math.floor(nextRandom() * DATA_CITY_TRACKS);
+    const radius =
+      DATA_CITY_R_MIN +
+      ((DATA_CITY_R_MAX - DATA_CITY_R_MIN) * trackIndex) / (DATA_CITY_TRACKS - 1);
+
+    /* 簇中心角 + 簇内 5~12 颗紧密排列 */
+    const clusterCenter = nextRandom() * Math.PI * 2;
+    if (inCorridor(clusterCenter)) continue;
+
+    const clusterSize = 5 + Math.floor(nextRandom() * 8);
+    const step = 0.012 + nextRandom() * 0.01;
+    for (let k = 0; k < clusterSize && placed < DATA_CITY_COUNT; k++) {
+      const theta = clusterCenter + (k - clusterSize / 2) * step;
+      const jitter = (nextRandom() - 0.5) * 0.06;
+      const r = radius + jitter;
+      positions.push(r * Math.cos(theta), 0, r * Math.sin(theta));
+
+      /* 色彩分布：70% 冰青 / 20% 翠绿 / 10% 星白或暖金 */
+      const roll = nextRandom();
+      let hex = '#38bdf8';
+      if (roll < 0.55) hex = '#38bdf8';
+      else if (roll < 0.7) hex = '#0ea5e9';
+      else if (roll < 0.9) hex = '#10b981';
+      else hex = nextRandom() < 0.5 ? '#e0f2fe' : '#fbbf24';
+      const rgb = hexToRgb01(hex);
+      colors.push(rgb[0], rgb[1], rgb[2]);
+
+      sizes.push(0.9 + nextRandom() * 0.9);
+      phases.push(nextRandom() * Math.PI * 2);
+      placed++;
+    }
+  }
+
+  return {
+    positions: new Float32Array(positions),
+    colors: new Float32Array(colors),
+    sizes: new Float32Array(sizes),
+    phases: new Float32Array(phases),
+    count: DATA_CITY_COUNT,
+  };
+})();
+
+/** 数据星城 Points 几何 */
+const DATA_CITY_GEOMETRY: THREE.BufferGeometry = (() => {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(DATA_CITY_DATA.positions, 3));
+  geometry.setAttribute('aColor', new THREE.BufferAttribute(DATA_CITY_DATA.colors, 3));
+  geometry.setAttribute('aSize', new THREE.BufferAttribute(DATA_CITY_DATA.sizes, 1));
+  geometry.setAttribute('aPhase', new THREE.BufferAttribute(DATA_CITY_DATA.phases, 1));
+  return geometry;
+})();
+
+/**
+ * 数据星城的顶点着色器。
+ *
+ * 【径向数据波】`wave = 0.5 + 0.5·sin(uTime·1.6 − radius·0.9 + aPhase)`
+ * 相位随**半径**递减（负号）意味着同一波峰出现在更大的半径上需要更晚时刻，
+ * 于是整片地面呈现"数据波从中心 API-Server 向外圈扩散"的动势。
+ * aPhase 让每颗点再错开一点，避免形成过于机械的同心环波纹。
+ */
+const DATA_CITY_VERTEX_SHADER = `
+attribute vec3 aColor;
+attribute float aSize;
+attribute float aPhase;
+
+uniform float uTime;
+uniform float uScale;
+
+varying vec3 vColor;
+varying float vGlow;
+
+void main() {
+  vColor = aColor;
+
+  float radius = length(position.xz);
+  float wave = 0.5 + 0.5 * sin(uTime * 1.6 - radius * 0.9 + aPhase);
+  vGlow = 0.35 + 0.75 * wave;
+
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  /*
+   * 【点尺寸】gl_PointSize = aSize · 波动 · uScale · (90 / −mv.z)
+   * 90 是经验缩放常数：主相机距原点约 22 单位时得到 ~4px 的点，
+   * 既能看清「中心亮核 + 柔光」，又不会糊成一片光斑。
+   * 若取 26（最初的取值），该距离下只有 1.2px，星城几乎不可见。
+   */
+  gl_PointSize = aSize * (0.85 + 0.35 * wave) * uScale * (90.0 / max(0.001, -mvPosition.z));
+}
+`;
+
+/**
+ * 数据星城的片元着色器 —— 「中心锐利亮核 + 外圈柔和光晕」。
+ *
+ * 【为何不用默认 PointsMaterial】默认点是方形像素块，且无逐点色相。
+ * 这里用 gl_PointCoord 求到中心距离 d：
+ *   core = 1 − smoothstep(0, 0.18, d)   → 极小的锐利亮核
+ *   halo = 1 − smoothstep(0.15, 1, d)   → 宽广柔光
+ * alpha = (core·0.95 + halo·0.35)·vGlow，并在 d→1 前归零，边界完全消失。
+ * 颜色在亮核处向白色靠拢 80%，因此无论底色是青是绿是金，中心都"过曝发亮"。
+ */
+const DATA_CITY_FRAGMENT_SHADER = `
+varying vec3 vColor;
+varying float vGlow;
+
+void main() {
+  vec2 centered = gl_PointCoord - vec2(0.5);
+  float d = length(centered) * 2.0;
+  if (d > 1.0) discard;
+
+  float core = 1.0 - smoothstep(0.0, 0.18, d);
+  float halo = 1.0 - smoothstep(0.15, 1.0, d);
+
+  vec3 color = mix(vColor, vec3(1.0), core * 0.8);
+  float alpha = (core * 0.95 + halo * 0.35) * vGlow;
+
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+
+/** 电路连线数量（160 段短弧 + 径向跳线） */
+const TRACE_SEGMENT_COUNT = 160;
+
+/**
+ * 地面极坐标微电路连线几何（单 LineSegments，1 次 Draw Call）。
+ *
+ * 【设计意图】1,400 颗孤立亮点只是"撒了一把光尘"；沿环轨画出断续短弧后，
+ * 它们才连成一张**发光的数字母板**。因此短弧的半径与数据星城的轨道一致，
+ * 视觉上像"点被电路串起来"，而不是两套无关的装饰。
+ */
+const TRACE_GEOMETRY: THREE.BufferGeometry = (() => {
+  let seed = 20260818;
+  const nextRandom = (): number => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+
+  const vertices: number[] = [];
+  const arcSteps = 4;
+  for (let i = 0; i < TRACE_SEGMENT_COUNT; i++) {
+    const trackIndex = Math.floor(nextRandom() * DATA_CITY_TRACKS);
+    const radius =
+      DATA_CITY_R_MIN +
+      ((DATA_CITY_R_MAX - DATA_CITY_R_MIN) * trackIndex) / (DATA_CITY_TRACKS - 1);
+    const startAngle = nextRandom() * Math.PI * 2;
+    const span = 0.05 + nextRandom() * 0.16;
+
+    for (let s = 0; s < arcSteps; s++) {
+      const a0 = startAngle + (span * s) / arcSteps;
+      const a1 = startAngle + (span * (s + 1)) / arcSteps;
+      vertices.push(radius * Math.cos(a0), 0, radius * Math.sin(a0));
+      vertices.push(radius * Math.cos(a1), 0, radius * Math.sin(a1));
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  return geometry;
+})();
+
 /**
  * ClusterTopologyFloor3D —— 多层动态数码光圈 + 刻度扫描环 + 脉冲流动电路。
  *
@@ -287,6 +789,27 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
   const lanePulseRefs = useRef<Array<THREE.Mesh | null>>([]);
   /** 主轨道 64 段虚线刻度的单实例网格（1 次 Draw Call） */
   const orbitTicksRef = useRef<THREE.InstancedMesh>(null);
+
+  /**
+   * 中央雷达「旋转批次」(12 段装甲弧 × 2 道 + 72 道刻度)ref。
+   *
+   * 静态部分(羽化底盘 + 4 道环 + 24 锚点)不需要 ref;
+   * 只有这一批需要在 useFrame 里整体自转,因此单独成 mesh。
+   */
+  const radarArcRef = useRef<THREE.Mesh>(null);
+
+  /**
+   * 数据星城的 uniforms(useMemo 预分配,useFrame 内只写 .value)。
+   *
+   * uTime 驱动径向数据波;uScale 是点尺寸整体缩放(相机距离兜底调节)。
+   */
+  const dataCityUniforms = useMemo(
+    (): Record<string, THREE.IUniform> => ({
+      uTime: { value: 0 },
+      uScale: { value: 1 },
+    }),
+    [],
+  );
 
   teethRefs.current.length = racks.length;
   lanePulseRefs.current.length = racks.length;
@@ -359,6 +882,12 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
   useFrame((state): void => {
     const t = state.clock.getElapsedTime();
 
+    /* 0) 数据星城推进径向数据波 + 雷达装甲弧批次自转（原地写，零分配） */
+    dataCityUniforms.uTime.value = t;
+    if (radarArcRef.current !== null) {
+      radarArcRef.current.rotation.y = t * RADAR_ARC_SPIN_RATE;
+    }
+
     /* 1) 主轨道脉冲流光弧：缓慢绕环扫过 */
     if (orbitPulseRef.current !== null) {
       orbitPulseRef.current.rotation.z = t * ORBIT_PULSE_SPIN_RATE;
@@ -380,7 +909,7 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
       if (pulse !== null && pulse !== undefined) {
         /* 相位错开：三个机架的脉冲不同步，避免整体齐步像机械 */
         const cycle = (t * LANE_PULSE_SPEED + i * 0.33) % 1;
-        pulse.position.z = INNER_RING_RADIUS + cycle * RADIAL_LENGTH;
+        pulse.position.z = RADIAL_START_RADIUS + cycle * RADIAL_LENGTH;
         /* 两端淡入淡出：靠近控制平面与到达机架时不硬切 */
         const fade = Math.sin(cycle * Math.PI);
         const material = pulse.material;
@@ -393,6 +922,91 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
 
   return (
     <group position={[0, FLOOR_Y, 0]}>
+      {/*
+       * ═══ 第 0 重：地面数据星城（1,400 颗微节点，单 Draw Call）═══
+       *
+       * 【解决什么】此前 r∈[3.1, 9.5] 之间是一大片空旷死黑：
+       * 只有几道细环，中间什么都没有，地面读起来像"黑纸上的几个圈"。
+       * 铺满 1,400 颗按轨道成簇分布的数据节点后，整片地面变成
+       * 一张发光的数字母板。
+       *
+       * 【单 Draw Call】全部节点在一个 Points 里，逐点颜色/粒径/相位
+       * 由 aColor / aSize / aPhase 三个属性承载，着色器渲染成
+       * 「中心锐利亮核 + 外圈柔光」，并随 uTime 传播径向数据波。
+       */}
+      <points
+        geometry={DATA_CITY_GEOMETRY}
+        position={[0, 0.004, 0]}
+        raycast={(): void => undefined}
+      >
+        <shaderMaterial
+          uniforms={dataCityUniforms}
+          vertexShader={DATA_CITY_VERTEX_SHADER}
+          fragmentShader={DATA_CITY_FRAGMENT_SHADER}
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+        />
+      </points>
+
+      {/*
+       * ═══ 第 0b 重：地面极坐标微电路连线（160 段短弧，单 Draw Call）═══
+       *
+       * 【设计意图】1,400 颗孤立亮点只是"撒了一把光尘"；
+       * 沿环轨画出断续短弧后，它们才连成一张发光的数字母板。
+       * 短弧半径与数据星城的轨道同源，视觉上像"点被电路串起来"，
+       * 而不是两套互不相关的装饰。
+       */}
+      <lineSegments geometry={TRACE_GEOMETRY} position={[0, 0.002, 0]} raycast={(): void => undefined}>
+        <lineBasicMaterial
+          color="#0284c7"
+          transparent
+          opacity={0.36}
+          toneMapped={false}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+        />
+      </lineSegments>
+
+      {/*
+       * ═══ 第 0c 重：中央 6 级全息雷达底座 ═══
+       *
+       * 静态批次（羽化底盘 + 双核心环 + 双围栏环 + 24 锚点 + 十字基准激光）
+       * 与旋转批次（12 段不对称装甲弧 × 2 道 + 72 道刻度）各占 1 次 Draw Call。
+       *
+       * 【为何用顶点色三角汤而非多个 ringGeometry】原实现为每道环、
+       * 每枚锚点各建一个 mesh，单是底座就吃掉几十次 Draw Call；
+       * 合并成一份 position+color 缓冲后，整个 6 级底座只剩 2 次。
+       * 加色混合下顶点色趋黑即等于透明，因此径向羽化无需 alpha 通道。
+       */}
+      <mesh geometry={RADAR_STATIC_GEOMETRY} position={[0, 0.001, 0]} raycast={(): void => undefined}>
+        <meshBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.92}
+          toneMapped={false}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      <mesh
+        ref={radarArcRef}
+        geometry={RADAR_ARC_GEOMETRY}
+        position={[0, 0.003, 0]}
+        raycast={(): void => undefined}
+      >
+        <meshBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.85}
+          toneMapped={false}
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
       {/*
        * ═══ 第一重：主发光轨（机架站立的闭合圆环）═══
        * ringGeometry 默认在 XY 平面，绕 X 轴 −90° 后平铺于世界 XZ 平面。
@@ -546,17 +1160,17 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
        * （fract 而非 sin，避免来回折返），并在两端淡入淡出。
        */}
       {racks.map((rack, index): React.ReactElement => {
-        const midOffset = (INNER_RING_RADIUS + RACK_RADIUS) / 2;
+        const midOffset = (RADIAL_START_RADIUS + RACK_RADIUS) / 2;
         const laneColor = rack.faulted ? COLOR_FAULT : COLOR_INNER;
         return (
           <group key={`radial-${rack.key}`} rotation={[0, rack.angle, 0]}>
-            {/* 主干道 */}
+            {/* 主干道：中心炽白激光芯线（最亮、最细，从雷达核心环贯通到机架） */}
             <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, midOffset]} raycast={(): void => undefined}>
               <planeGeometry args={[RADIAL_WIDTH, RADIAL_LENGTH]} />
               <meshBasicMaterial
-                color={laneColor}
+                color={rack.faulted ? '#ffe4e6' : '#f0f9ff'}
                 transparent
-                opacity={rack.faulted ? 0.75 : 0.32}
+                opacity={rack.faulted ? 0.95 : 0.85}
                 side={THREE.DoubleSide}
                 toneMapped={false}
                 depthWrite={false}
@@ -564,26 +1178,23 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
               />
             </mesh>
 
-            {/* 两侧细护线 */}
-            {[-RADIAL_GUARD_OFFSET, RADIAL_GUARD_OFFSET].map((offsetX): React.ReactElement => (
-              <mesh
-                key={`guard-${offsetX > 0 ? 'right' : 'left'}`}
-                rotation={[-Math.PI / 2, 0, 0]}
-                position={[offsetX, 0, midOffset]}
-                raycast={(): void => undefined}
-              >
-                <planeGeometry args={[RADIAL_GUARD_WIDTH, RADIAL_LENGTH]} />
-                <meshBasicMaterial
-                  color={laneColor}
-                  transparent
-                  opacity={rack.faulted ? 0.55 : 0.18}
-                  side={THREE.DoubleSide}
-                  toneMapped={false}
-                  depthWrite={false}
-                  blending={THREE.AdditiveBlending}
-                />
-              </mesh>
-            ))}
+            {/*
+             * 宽幅青辉光带：与芯线同轴、宽 0.17（约 3.8 倍芯线宽）、
+             * 低透明度叠在下方，形成"激光束周围一圈柔光"的体积感。
+             * 加色混合下它顺带把芯线边缘晕开，无需额外模糊 pass。
+             */}
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.001, midOffset]} raycast={(): void => undefined}>
+              <planeGeometry args={[RADIAL_GUARD_WIDTH, RADIAL_LENGTH]} />
+              <meshBasicMaterial
+                color={laneColor}
+                transparent
+                opacity={rack.faulted ? 0.5 : 0.2}
+                side={THREE.DoubleSide}
+                toneMapped={false}
+                depthWrite={false}
+                blending={THREE.AdditiveBlending}
+              />
+            </mesh>
 
             {/* 沿总线输送的地面光脉冲（useFrame 推进 position.z） */}
             <mesh
@@ -703,7 +1314,7 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
                 rotation={[-Math.PI / 2, 0, 0]}
                 raycast={(): void => undefined}
               >
-                <circleGeometry args={[radius, RING_SEGMENTS]} />
+                <ringGeometry args={[radius - PEDESTAL_DISK_WIDTHS[diskIndex], radius, RING_SEGMENTS]} />
                 <meshBasicMaterial
                   color={ringColor}
                   transparent
