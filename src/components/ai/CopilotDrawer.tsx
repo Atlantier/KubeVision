@@ -50,6 +50,7 @@ import {
   ShieldCheck,
   Sparkles,
   Square,
+  Crosshair,
   Terminal,
   Volume2,
   VolumeX,
@@ -789,6 +790,32 @@ export default function CopilotDrawer() {
   const selectedEntityType = useClusterStore((s): SelectedEntityType | null => s.selectedEntityType);
   const capturedViewportDataUrl = useClusterStore((s): string | null => s.capturedViewportDataUrl);
   const setCapturedViewport = useClusterStore((s): ((dataUrl: string | null) => void) => s.setCapturedViewport);
+
+  /**
+   * selectedContextLabel —— 当前选中实体的可读上下文标签。
+   *
+   * 【为什么要做这一层】用户的提问常常是"它为什么挂了"——一个"它"字
+   * 承载了全部语义。若模型不知道当前选中的是哪个对象，任何诊断都只能泛泛而谈。
+   * 这枚标签把**隐性上下文显性化**：用户能确认模型将看到什么，
+   * 也能一眼发现自己是不是选错了对象。
+   *
+   * 【为何用 getState() 而非再订阅 nodes/pods】
+   * 这两个数组是大对象，订阅它们会让抽屉在每次 1Hz 快照时重渲染。
+   * 这里只在**选中态变化**时读一次最新快照，成本一次性且极低。
+   */
+  const selectedContextLabel = useMemo((): string | null => {
+    if (selectedEntityId === null || selectedEntityType === null) return null;
+    const snapshot = useClusterStore.getState().snapshotSummary;
+    if (selectedEntityType === 'pod') {
+      const pod = snapshot.pods.find((p): boolean => p.id === selectedEntityId);
+      return pod !== undefined ? `${pod.name} · ${pod.namespace}` : selectedEntityId;
+    }
+    if (selectedEntityType === 'node') {
+      const node = snapshot.nodes.find((n): boolean => n.id === selectedEntityId);
+      return node !== undefined ? `${node.name} · rack-${node.rackIndex}` : selectedEntityId;
+    }
+    return 'MASTER 控制平面 · API-Server';
+  }, [selectedEntityId, selectedEntityType]);
   const quickPromptTrigger = useClusterStore((s): string | null => s.quickPromptTrigger);
   const clearQuickPrompt = useClusterStore((s): (() => void) => s.clearQuickPrompt);
   /* 主动嗅探数据源：异常 Pod 列表 + 混沌场景（细粒度订阅，仅这两项变化时重渲染） */
@@ -1847,7 +1874,38 @@ export default function CopilotDrawer() {
            */}
           <div className="shrink-0 px-2 pb-2 pt-1.5">
             <div className="rounded-xl border border-white/[0.09] bg-slate-950/80 p-2 shadow-inner transition-colors focus-within:border-cyan-400/50">
-              {/* ---- 顶部：视口快照缩略图预览条 ---- */}
+              {/* ---- 顶部：选中上下文胶囊 + 视口快照缩略图 ---- */}
+              <AnimatePresence>
+                {selectedContextLabel !== null ? (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mb-1.5 overflow-hidden"
+                  >
+                    {/*
+                     * 【为何要自动附带上下文】用户的提问常常是"它为什么挂了"——
+                     * 一个"它"字承载了全部语义。若模型不知道当前选中的是哪个
+                     * 节点/容器，任何诊断都只能是泛泛而谈。这枚胶囊把"隐性上下文"
+                     * 显性化为可见标签：用户能确认模型将看到什么，也能一眼看出
+                     * 自己是否选错了对象。
+                     */}
+                    <div className="flex items-center gap-1.5 rounded-md border border-cyan-400/25 bg-cyan-400/[0.07] px-2 py-1">
+                      <Crosshair className="h-2.5 w-2.5 shrink-0 text-cyan-300/90" aria-hidden />
+                      <span className="font-mono text-[9px] tracking-wider text-cyan-400/70">
+                        上下文
+                      </span>
+                      <span className="min-w-0 flex-1 truncate font-mono text-[10px] font-semibold tracking-wide text-cyan-100">
+                        {selectedContextLabel}
+                      </span>
+                      <span className="shrink-0 font-mono text-[8px] uppercase tracking-wider text-cyan-400/50">
+                        auto
+                      </span>
+                    </div>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+
               <AnimatePresence>
                 {capturedViewportDataUrl !== null ? (
                   <motion.div
@@ -1856,15 +1914,47 @@ export default function CopilotDrawer() {
                     exit={{ opacity: 0, height: 0 }}
                     className="mb-2 overflow-hidden"
                   >
-                    <div className="flex items-center gap-2 rounded-lg border border-white/[0.07] bg-white/[0.03] p-1">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={capturedViewportDataUrl}
-                        alt="待发送的 3D 视口快照"
-                        className="h-9 w-14 shrink-0 rounded border border-white/[0.06] object-cover"
-                      />
-                      <p className="min-w-0 flex-1 truncate font-mono text-[10px] tracking-wide text-cyan-300/80">
+                    <div className="flex items-center gap-2 rounded-lg border border-cyan-400/25 bg-cyan-400/[0.05] p-1">
+                      {/*
+                       * 【缩略图卡】带青色扫描边框 + 悬停放大。
+                       *
+                       * - 扫描边框：外框青色描边 + 内部一条 animate-scan-line
+                       *   的细光带循环掠过，暗示"这是一份正在被解读的影像"；
+                       * - 悬停放大：group-hover 时浮出一张 3 倍大的预览（绝对定位、
+                       *   不改变布局），让用户确认自己截到的画面是否正确——
+                       *   h-9 w-14 的缩略图根本看不清拓扑细节。
+                       */}
+                      <div className="group/thumb relative shrink-0">
+                        <div className="relative overflow-hidden rounded border border-cyan-400/40">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={capturedViewportDataUrl}
+                            alt="待发送的 3D 视口快照"
+                            className="h-9 w-14 object-cover"
+                          />
+                          {/* 扫描光带：内部 1px 高光自上而下循环 */}
+                          <span
+                            aria-hidden
+                            className="pointer-events-none absolute inset-x-0 top-0 block h-[2px] animate-scan-line"
+                            style={{
+                              background:
+                                'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.9) 50%, transparent 100%)',
+                            }}
+                          />
+                        </div>
+                        {/* 悬停放大预览：绝对定位，向上浮出，不挤动任何布局 */}
+                        <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden w-72 overflow-hidden rounded-lg border border-cyan-400/45 bg-slate-950/95 p-1 shadow-[0_12px_36px_rgba(2,6,23,0.9)] group-hover/thumb:block">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={capturedViewportDataUrl}
+                            alt="3D 视口快照放大预览"
+                            className="h-auto w-full rounded object-contain"
+                          />
+                        </div>
+                      </div>
+                      <p className="min-w-0 flex-1 font-mono text-[10px] leading-tight tracking-wide text-cyan-300/80">
                         3D 视口快照就绪
+                        <span className="ml-1 text-slate-500">· 随消息发送</span>
                       </p>
                       <button
                         type="button"

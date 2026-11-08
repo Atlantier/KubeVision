@@ -75,6 +75,15 @@ const KEYBOARD_STEP_PCT = 2;
 /** 键盘 Shift+方向键的粗调步长（百分比） */
 const KEYBOARD_COARSE_STEP_PCT = 6;
 
+/**
+ * 双击复位的目标像素宽度。
+ *
+ * 【契约值】420px：刚好容纳一张 GenUI 指标卡 + 双侧内边距，
+ * 是"读得清但不喧宾夺主"的右栏宽度。复位按像素而非百分比换算，
+ * 保证不同分辨率下回到的是同一条实际宽度（详见 handleDoubleClick 注释）。
+ */
+const RESET_WIDTH_PX = 420;
+
 /* ========================================================================== */
 /* Props                                                                      */
 /* ========================================================================== */
@@ -261,10 +270,24 @@ export default function SplitPaneResizer({
 
   /**
    * 双击复位到默认宽度。
+   *
+   * 【为何按 420px 而不是按百分比】需求契约是"回到 420px"——
+   * 这是一个**像素意图**：用户希望右栏刚好够读一张卡片。
+   * 若按 34% 复位，在 2560 宽屏上会变成 870px（过宽），
+   * 在 1280 屏上只有 435px，观感随分辨率漂移。
+   * 因此这里把 420px 换算成当前容器的百分比并夹逼，
+   * 保证任何分辨率下都落在同一条像素线上。
    */
   const handleDoubleClick = useCallback((): void => {
-    onWidthChangeRef.current(RESIZE_CONFIG.defaultPct);
-  }, []);
+    const container = containerRef.current;
+    const containerWidth = container !== null ? container.getBoundingClientRect().width : 0;
+    if (containerWidth <= 0) {
+      onWidthChangeRef.current(RESIZE_CONFIG.defaultPct);
+      return;
+    }
+    const pct = (RESET_WIDTH_PX / containerWidth) * 100;
+    onWidthChangeRef.current(clampPct(pct, containerWidth));
+  }, [containerRef]);
 
   /**
    * 键盘微调（无障碍支持）。
@@ -319,8 +342,12 @@ export default function SplitPaneResizer({
       )}
     >
       {/*
-       * 导轨线：常态几乎不可见（white/6%），悬停/拖拽时转为青色发光。
-       * 用 absolute inset-y-0 让它贯穿容器全高，形成清晰的分栏轴线。
+       * 导轨线：常态几乎不可见（white/6%），悬停/拖拽时转为青色激光。
+       *
+       * 【激光流光】单纯的"变亮"只是状态切换，缺少"能量在流动"的暗示。
+       * 悬停/拖拽时在导轨上叠一条自下而上扫过的渐变亮带
+       * （animate-laser-scan，见 tailwind 配置），
+       * 视觉上像一道电流在分栏线上游走——用户立刻知道"这里可以拖"。
        */}
       <span
         aria-hidden
@@ -331,28 +358,46 @@ export default function SplitPaneResizer({
           dragging && 'bg-cyan-400/80',
         )}
       />
+      {/* 激光流光层：仅在悬停或拖拽时出现，1px 宽，覆在导轨之上 */}
+      <span
+        aria-hidden
+        className={cn(
+          'pointer-events-none absolute inset-y-0 left-1/2 w-[1px] -translate-x-1/2 overflow-hidden transition-opacity duration-200',
+          dragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+        )}
+      >
+        <span
+          className="absolute inset-x-0 block h-1/3 animate-laser-scan"
+          style={{
+            background:
+              'linear-gradient(180deg, transparent 0%, rgba(34,211,238,0.15) 30%, rgba(165,243,252,0.95) 50%, rgba(34,211,238,0.15) 70%, transparent 100%)',
+          }}
+        />
+      </span>
 
       {/*
-       * 居中的胶囊抓手：3 颗微光点。
-       * 常态半透明低调，悬停/拖拽时整枚高亮为青色并发光——
-       * 这是"可拖拽"这一事实的唯一视觉暗示，必须能一眼看见。
+       * 居中的胶囊抓手：**双竖线**（抓手的通用符号）。
+       *
+       * 【为何从 3 颗点改成双竖线】圆点在 HUD 语境里是"状态指示灯"，
+       * 而竖线才是"可拖拽分隔符"的国际通用符号（VS Code / Figma 同款）。
+       * 用错误的符号会让用户把它误读成"这里有个运行状态"，而不是"这里能拖"。
        */}
       <span
         aria-hidden
         className={cn(
-          'pointer-events-none relative z-10 flex h-8 w-[7px] flex-col items-center justify-center gap-[3px] rounded-full',
+          'pointer-events-none relative z-10 flex h-8 w-[9px] items-center justify-center gap-[3px] rounded-full',
           'border transition-all duration-150',
           dragging
             ? 'border-cyan-400 bg-cyan-400 shadow-glow-cyan'
             : 'border-white/15 bg-slate-800/90 group-hover:border-cyan-400/80 group-hover:bg-cyan-400 group-hover:shadow-glow-cyan',
         )}
       >
-        {[0, 1, 2].map((dot): React.ReactElement => (
+        {[0, 1].map((bar): React.ReactElement => (
           <span
-            key={dot}
+            key={bar}
             className={cn(
-              'h-[3px] w-[3px] rounded-full transition-colors duration-150',
-              dragging ? 'bg-slate-950' : 'bg-white/40 group-hover:bg-slate-950',
+              'block h-[10px] w-[1.5px] rounded-full transition-colors duration-150',
+              dragging ? 'bg-slate-950' : 'bg-white/45 group-hover:bg-slate-950',
             )}
           />
         ))}

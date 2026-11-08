@@ -76,11 +76,26 @@ const config: Config = {
           '0%': { transform: 'translateY(-100%)' },
           '100%': { transform: 'translateY(100%)' },
         },
+        /*
+         * laser-scan —— 分栏手柄的"激光流光"。
+         *
+         * 【为何不是 scan-line 的复用】scan-line 的位移是 -100% → 100%
+         * （按其自身高度的百分比），用在 1/3 高度的亮带上会扫出容器之外；
+         * 这里用 translateY(-33%) → translateY(300%) 让亮带**在 1px 宽的
+         * 导轨内**完整走完一轮，且首尾都不溢出。
+         */
+        'laser-scan': {
+          '0%': { transform: 'translateY(-120%)', opacity: '0' },
+          '15%': { opacity: '1' },
+          '85%': { opacity: '1' },
+          '100%': { transform: 'translateY(320%)', opacity: '0' },
+        },
       },
       animation: {
         'glow-pulse': 'glow-pulse 2.4s ease-in-out infinite',
         'grid-pan': 'grid-pan 8s linear infinite',
         'scan-line': 'scan-line 4s linear infinite',
+        'laser-scan': 'laser-scan 2.6s ease-in-out infinite',
       },
     },
   },
