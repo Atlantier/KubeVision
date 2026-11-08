@@ -426,6 +426,72 @@ function ContextPill({
 }
 
 /* ========================================================================== */
+/* 纯函数：把已渲染的 GenUI 卡片压缩成供服务端理解的历史摘要                        */
+/* ========================================================================== */
+
+/**
+ * summarizeToolCardsForHistory —— 把一条 assistant 消息的卡片压缩成文本附注。
+ *
+ * 【解决什么问题：多轮对话丢失卡片上下文】
+ * 前端把卡片作为**独立数据结构** `toolCards` 渲染，而发送给 `/api/chat` 的
+ * `history` 只带 `m.text`。于是第二轮用户追问
+ * 「刚刚那张卡片里的根因怎么修复？」时，服务端与模型**从没见过那张卡片**——
+ * 它的正文早就流式结束了，不在 `text` 里，也不在任何消息里。
+ * 模型只能反问"您指的是哪张卡片？"，多轮记忆在这里断掉。
+ *
+ * 【为何不直接塞 JSON】把整个 `args` 序列化会引入两类问题：
+ * 1. 载荷膨胀：`RootCauseAlertProps` 含 `evidenceChain`、`ragReferences`
+ *    全量文档（每篇含完整 SOP 与根因机理），一张卡就上千 token；
+ * 2. 提示词污染：大段结构化 JSON 会挤占模型的推理预算，反而降低回答质量。
+ * 因此只抽取**决策相关的关键字段**（谁、多严重、引用了哪几篇手册、
+ * 动作是什么、是否已执行），压成一行自然语言附注。
+ *
+ * 【不污染 UI】这个函数只在组装请求载荷时调用，`m.text` 与 `toolCards`
+ * 两个渲染源都保持原样——用户看到的界面与摘要无关。
+ *
+ * @param cards 该条 assistant 消息携带的卡片列表
+ * @returns 可直接拼接在正文末尾的摘要文本；无卡片时返回空串
+ */
+function summarizeToolCardsForHistory(cards: readonly CopilotToolCard[]): string {
+  if (cards.length === 0) return '';
+
+  const lines: string[] = [];
+  for (const card of cards) {
+    /* 骨架/失败态没有可用载荷，只记工具名，避免编造内容 */
+    if (card.state !== 'ready' || card.args === undefined) {
+      lines.push(`[已生成卡片: ${card.toolName}（载荷未就绪）]`);
+      continue;
+    }
+
+    if (card.toolName === 'renderPodMetrics') {
+      const args = card.args as PodMetricsCardProps;
+      lines.push(
+        `[已生成指标卡: Pod=${args.podName}, 命名空间=${args.namespace}, ` +
+          `CPU=${args.cpuUsage}%, 内存=${args.memoryUsage}%, 重启=${args.restarts}次]`,
+      );
+    } else if (card.toolName === 'renderRootCauseAnalysis') {
+      const args = card.args as RootCauseAlertProps;
+      const citationIds = args.ragReferences.map((doc): string => doc.id).join(', ');
+      lines.push(
+        `[已生成根因卡片: 严重度=${args.severity}, 标题=${args.title}, ` +
+          `置信度=${(args.confidence * 100).toFixed(0)}%, ` +
+          `引用知识库=${citationIds.length > 0 ? citationIds : '无'}]`,
+      );
+    } else if (card.toolName === 'renderActionCard') {
+      const args = card.args as ActionConfirmProps;
+      lines.push(
+        `[已生成自愈审批卡: 动作=${args.actionType}, 目标=${args.targetName}, ` +
+          `工具=${args.mcpEndpoint}, 高危=${args.isHighRisk ? '是' : '否'}]`,
+      );
+    } else {
+      lines.push(`[已生成卡片: ${card.toolName}]`);
+    }
+  }
+
+  return `\n\n（本轮已生成的界面卡片，供你延续上下文）\n${lines.join('\n')}`;
+}
+
+/* ========================================================================== */
 /* 子组件：单条工具卡片槽位                                                     */
 /* ========================================================================== */
 
@@ -1109,7 +1175,10 @@ export default function CopilotDrawer() {
         .slice(-8)
         .map((m): { role: 'user' | 'assistant'; content: string } => ({
           role: m.role,
-          content: m.text,
+          content:
+            m.role === 'assistant'
+              ? `${m.text}${summarizeToolCardsForHistory(m.toolCards)}`
+              : m.text,
         }));
 
       setMessages((prev) => [...prev, userMessage, assistantMessage]);
