@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — MASTER 控制平面程序化 3D 模型（MasterNode3D）
@@ -220,6 +220,59 @@ const PILLAR_BOTTOM_Y = -2.48;
 const PILLAR_TOP_Y = 3.72;
 const PILLAR_HEIGHT = PILLAR_TOP_Y - PILLAR_BOTTOM_Y;
 const PILLAR_CENTER_Y = (PILLAR_TOP_Y + PILLAR_BOTTOM_Y) / 2;
+
+/**
+ * 垂直光柱的合批几何：两片正交纵向平面，**合并为一次 Draw Call**。
+ *
+ * 【为什么合并】光柱原本是 2 个独立 mesh（XY 面 + ZY 面）。
+ * 二者共用同一套着色器与材质、且永远以同一角度一起旋转，
+ * 没有任何理由拆成两次提交——合并后整根光柱只占 1 次 Draw Call，
+ * 这是本轮把新增 Draw Call 压进预算的直接手段。
+ *
+ * 【UV 契约】每片平面独立拥有 0~1 的 uv 区间（片元着色器按 uv.x 做横向衰减、
+ * uv.y 做纵向 sin 包络）。因此合并时必须**为每片重新写一份完整 uv**，
+ * 不能直接复用首片的坐标，否则第二片会整块落在衰减边缘而熄灭。
+ */
+const PILLAR_GEOMETRY: THREE.BufferGeometry = (() => {
+  const halfW = PILLAR_WIDTH / 2;
+  const halfH = PILLAR_HEIGHT / 2;
+
+  /* 两片平面：XY 面（朝阳）与 ZY 面（朝侧），交叉成十字 */
+  const quads: ReadonlyArray<ReadonlyArray<readonly [number, number, number]>> = [
+    [
+      [-halfW, -halfH, 0],
+      [halfW, -halfH, 0],
+      [halfW, halfH, 0],
+      [-halfW, halfH, 0],
+    ],
+    [
+      [0, -halfH, -halfW],
+      [0, -halfH, halfW],
+      [0, halfH, halfW],
+      [0, halfH, -halfW],
+    ],
+  ];
+
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  quads.forEach((quad, quadIndex): void => {
+    for (const point of quad) {
+      positions.push(point[0], point[1], point[2]);
+    }
+    /* 每片独立完整 uv，保证着色器的横向/纵向衰减对两片都成立 */
+    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    const base = quadIndex * 4;
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  });
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  return geometry;
+})();
 
 /**
  * 垂直光柱的着色器（顶点）。
@@ -577,8 +630,8 @@ export default function MasterNode3D() {
   const constellationRef = useRef<THREE.Points>(null);
   /** 内部神经晶格连线 ref */
   const neuralRef = useRef<THREE.LineSegments>(null);
-  /** 垂直贯穿能量光柱（两片正交平面的父 group）ref */
-  const pillarRef = useRef<THREE.Group>(null);
+  /** 垂直贯穿能量光柱（两片正交平面合并后的单个 mesh）ref */
+  const pillarRef = useRef<THREE.Mesh>(null);
 
   /** 环绕星火 Points ref */
   const sparkRef = useRef<THREE.Points>(null);
@@ -1245,36 +1298,36 @@ export default function MasterNode3D() {
       </lineSegments>
 
       {/*
-       * ═══ 第 2d 层：垂直贯穿能量光柱 ═══
+       * ═══ 第 2d 层：垂直贯穿能量光柱（合批为单次 Draw Call）═══
        *
-       * 【形态】两片正交纵向平面（交叉成十字），宽 0.26、高 6.2，
+       * 【形态】两片正交纵向平面交叉成十字，宽 0.26、高 6.2，
        * 从地面雷达中心 y=−2.48 一路向上穿透晶核直达高空 y=+3.72。
        *
        * 【为何交叉平面而非圆柱】圆柱从侧面看是一条实心柱；
        * 交叉平面在任意机位都能看到"光在平面上铺开"，
        * 且着色器可按 UV 做横向指数衰减——圆柱做不到"中心亮、两侧透明"。
+       *
+       * 【本轮：2 次提交 → 1 次】两片平面共用同一材质、永远同步旋转，
+       * 没有拆开的理由。几何已在模块加载期合并进 PILLAR_GEOMETRY（见其注释），
+       * 此处只剩一个 mesh。这也是把新增 Draw Call 压进预算的关键一步。
        */}
-      <group ref={pillarRef} position={[0, PILLAR_CENTER_Y, 0]}>
-        {[0, 1].map((planeIndex): ReactNode => (
-          <mesh
-            key={`pillar-plane-${planeIndex}`}
-            rotation={[0, (planeIndex * Math.PI) / 2, 0]}
-            raycast={(): void => undefined}
-          >
-            <planeGeometry args={[PILLAR_WIDTH, PILLAR_HEIGHT]} />
-            <shaderMaterial
-              uniforms={pillarUniforms}
-              vertexShader={PILLAR_VERTEX_SHADER}
-              fragmentShader={PILLAR_FRAGMENT_SHADER}
-              transparent
-              depthWrite={false}
-              side={THREE.DoubleSide}
-              blending={THREE.AdditiveBlending}
-              toneMapped={false}
-            />
-          </mesh>
-        ))}
-      </group>
+      <mesh
+        ref={pillarRef}
+        geometry={PILLAR_GEOMETRY}
+        position={[0, PILLAR_CENTER_Y, 0]}
+        raycast={(): void => undefined}
+      >
+        <shaderMaterial
+          uniforms={pillarUniforms}
+          vertexShader={PILLAR_VERTEX_SHADER}
+          fragmentShader={PILLAR_FRAGMENT_SHADER}
+          transparent
+          depthWrite={false}
+          side={THREE.DoubleSide}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+        />
+      </mesh>
 
       {/*
        * ═══ 程序化星核辉光（本轮收敛）═══
