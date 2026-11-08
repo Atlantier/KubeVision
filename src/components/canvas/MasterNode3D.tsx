@@ -1640,8 +1640,23 @@ export default function MasterNode3D() {
      * 避免高 QPS 时光晕亮到过曝。
      */
     if (flareRef.current !== null) {
-      /* 复制相机四元数：始终正对镜头 */
-      flareRef.current.quaternion.copy(state.camera.quaternion);
+      /*
+       * 【billboard 朝向不在这里做 —— 见 mesh 的 onBeforeRender】
+       *
+       * 最初实现是在这里 `quaternion.copy(state.camera.quaternion)`，
+       * 但那是错的：R3F 按**挂载顺序**执行 useFrame，而
+       * <MasterNode3D /> 在 ClusterCanvas 里排在 <CameraRig /> 之前，
+       * 所以本回调先跑、CameraRig 后跑。结果是光晕复制的是
+       * **上一帧**的相机朝向，相机随后又被移动——一帧滞后。
+       *
+       * 60FPS 匀速时滞后不可见，但相机飞行期间（CameraRig 用 lerp
+       * 逼近目标机位）单帧转角可能很大，实测在软件渲染的低帧率下
+       * 偏差达到 75°，表现为光晕与场景明显"剪切"错位。
+       *
+       * 因此朝向改为在 onBeforeRender 里设置：three.js 在所有
+       * useFrame 回调之后、计算 modelViewMatrix 之前调用它，
+       * 拿到的一定是**本帧最终**的相机朝向，零滞后。
+       */
 
       /*
        * 【QPS 驱动的微幅脉动】
@@ -2295,14 +2310,44 @@ export default function MasterNode3D() {
        * 本身的物理尺寸无关——一颗小灯泡也能拉出贯穿整个画面的长条。
        * 因此宽度 6.6 远大于晶体直径 3.36 是正确的物理再现，不是夸张。
        *
-       * 【朝向】plane 初始是竖直的 XY 平面；useFrame 每帧把它的
-       * quaternion 复制为相机四元数，实现"始终正对镜头"的 billboard。
-       * 这样无论相机绕行到哪个角度，光晕都保持水平拉伸不变形。
+       * 【朝向：必须用 onBeforeRender，不能用 useFrame】
+       *
+       * billboard 要求平面法线始终指向相机。但"在 useFrame 里复制
+       * 相机四元数"有两个致命前提，本项目都不满足：
+       *
+       * 1. **执行顺序**：R3F 按挂载顺序跑 useFrame。<MasterNode3D />
+       *    在 ClusterCanvas 中排在 <CameraRig /> 之前，因此本组件的
+       *    useFrame 先执行、CameraRig 后执行——光晕复制到的是
+       *    上一帧的相机朝向，随后相机又被移动。实测在软件渲染的低帧率
+       *    下（相机飞行期间单帧转角很大），朝向偏差达到 75°，
+       *    表现为光晕与场景明显剪切错位。
+       *
+       * 2. **矩阵更新时机**：即便顺序正确，useFrame 里改完 quaternion
+       *    还要等下一次 scene.updateMatrixWorld 才生效，同样是一帧。
+       *
+       * onBeforeRender 由 three.js 在**所有 useFrame 之后、
+       * 计算该对象 modelViewMatrix 之前**调用，因此：
+       *   - 拿到的 camera 一定是本帧最终相机；
+       *   - 紧接着 computeMatrix 用的是我们刚写入的 matrixWorld；
+       * 零滞后。手动 updateMatrixWorld(true) 是必需的：
+       * 此时 scene 的整体矩阵更新已经跑过，不强制刷新就用不到新朝向。
        *
        * 【renderOrder = 3】必须最后绘制：它是叠加在最上层的镜头效果，
        * 绘制顺序错会让它在半透明体积光之前渲染，被后者的深度测试挡掉。
        */}
-      <mesh ref={flareRef} raycast={(): void => undefined} renderOrder={3}>
+      <mesh
+        ref={flareRef}
+        raycast={(): void => undefined}
+        renderOrder={3}
+        onBeforeRender={(_gl, _scene, camera): void => {
+          const mesh = flareRef.current;
+          if (mesh === null) return;
+          /* 原地 copy，零分配（AGENTS.md 第 3 条：渲染热路径不允许 new） */
+          mesh.quaternion.copy(camera.quaternion);
+          /* 强制刷新本对象的世界矩阵，使新朝向作用于本次绘制 */
+          mesh.updateMatrixWorld(true);
+        }}
+      >
         <planeGeometry args={[FLARE_WIDTH, FLARE_HEIGHT]} />
         <shaderMaterial
           uniforms={flareUniforms}
