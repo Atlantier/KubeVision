@@ -33,7 +33,7 @@ import {
 
 import { cn } from '@/utils/cn';
 import { InlineMarkdown } from '@/components/ai/MarkdownLite';
-import { formatScore, formatSharePercent, type RagSignalBreakdown } from '@/utils/ragSignals';
+import { formatScore, formatSharePercent } from '@/utils/ragSignals';
 import type { AgentReasoningPhase, AgentThoughtChainProps } from '@/types/ai';
 
 /* ========================================================================== */

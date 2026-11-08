@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — 计算节点机架程序化 3D 模型（WorkerRack3D）
@@ -52,6 +52,7 @@ import { Edges, Html, RoundedBox, type EdgesRef } from '@react-three/drei';
 import * as THREE from 'three';
 
 import { HoloFrame, MiniBar } from '@/components/canvas/HoloHud';
+import { getBrushedMetalTextures } from '@/components/canvas/ProceduralPbrEnvironment';
 import { useOptionalGltfModel } from '@/hooks/useOptionalGltfModel';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
@@ -117,9 +118,10 @@ const EDGE_IDLE_OPACITY = 0.4;
 /** 棱线 hover 透明度（未选中但指针悬停时的中间态） */
 const EDGE_HOVER_OPACITY = 0.72;
 
-/** 装甲体 hover/选中时的不透明度（磨砂玻璃增亮，与棱线同步强调） */
-const ARMOR_OPACITY_IDLE = 0.16;
-const ARMOR_OPACITY_EMPHASIZED = 0.3;
+/* 说明：原 ARMOR_OPACITY_IDLE（0.16）/ ARMOR_OPACITY_EMPHASIZED（0.3）
+   两个常量已随「半透明磨砂装甲外框」一同移除——那层外框正是机架
+   "暗色塑料感 / 雾蒙蒙"的直接来源（它把内部金属细节全部散射掉了）。
+   轮廓与强调职责现由 OPTIC_RAIL_* 光学导轨承担。 */
 
 /**
  * 选中态呼吸描边参数（青色高亮 + 正弦脉动）。
@@ -201,6 +203,159 @@ const HARDWARE_ENV_MAP_INTENSITY = 0.65;
 const HARDWARE_EMISSIVE = '#0e7490';
 const HARDWARE_EMISSIVE_INTENSITY = 0.22;
 const HARDWARE_EDGE_COLOR = '#1e3a5f';
+
+/* ========================================================================== */
+/* 重工业拉丝钛合金材质参数                                                      */
+/* ========================================================================== */
+
+/**
+ * 机柜金属基材的 PBR 参数（本轮全面升级）。
+ *
+ * 【从"暗色塑料感"到"拉丝钛合金"的关键三项】
+ * 1. **metalness 0.88**：接近纯金属。前几轮为了防"吞光"把它压到 0.35~0.72，
+ *    但那是**没有环境贴图时的权宜之计**——高 metalness 无环境可反射只会变黑。
+ *    本轮 ProcedurePbrEnvironment 已提供带工业灯带的 PMREM 环境，
+ *    可以放心把金属度拉到 0.88，让机架真正"借"环境形状表现金属。
+ * 2. **roughness 0.24**：配合 roughnessMap 使用。基础粗糙度给 0.24，
+ *    贴图在其上下起伏（0.16~0.34），产生**沿拉丝方向的各向异性高光**。
+ * 3. **envMapIntensity 2.2**：这是让倒角"亮"起来的直接杠杆。
+ *    材质级 envMapIntensity 会与 scene.environmentIntensity 相乘，
+ *    2.2 × 0.78 ≈ 1.7 的净强度，足以在细窄的倒角面上聚出可见亮线。
+ */
+const TI_METALNESS = 0.88;
+const TI_ROUGHNESS = 0.24;
+const TI_ENV_INTENSITY = 2.2;
+
+/**
+ * 拉丝凹凸强度。
+ *
+ * 【为何是 0.015 这样的小值】bumpScale 是"法线扰动相对于几何尺寸的比例"。
+ * 机柜立柱宽仅 0.1 单位，0.05 以上的扰动会让棱边看起来像被锉刀刮花；
+ * 0.015 恰好让丝纹在近景可见、远景自然消失，且不破坏机柜的直线轮廓。
+ */
+const BRUSH_BUMP_SCALE = 0.015;
+
+/**
+ * 倒角高光棱边的材质参数。
+ *
+ * 【为何比主体更亮更光】倒角（chamfer）在真实金属件上是**机加工的最后一道工序**
+ * ——切削刀走过留下的窄斜面，其表面比主体更平整，因此反射更锐利。
+ * metalness 0.96 + roughness 0.12 让它几乎像小镜子，
+ * 在工业灯带环境下必然反射出银青色细亮线，从而消除生硬的直角暗边。
+ */
+const CHAMFER_METALNESS = 0.96;
+const CHAMFER_ROUGHNESS = 0.12;
+const CHAMFER_ENV_INTENSITY = 3.0;
+const CHAMFER_COLOR = '#c8e8f5';
+const CHAMFER_EMISSIVE = '#164e63';
+const CHAMFER_EMISSIVE_INTENSITY = 0.35;
+
+/**
+ * 倒角亮边的几何尺寸。
+ *
+ * 【为何是 0.012】机柜立柱截面 0.1 单位，倒角占其 12%——
+ * 视觉上是一条"细亮线"而非"另一块面板"。再粗会让机柜看起来有塑料包边。
+ */
+const CHAMFER_SIZE = 0.012;
+
+/**
+ * 接缝接触式 AO 暗部的颜色与强度。
+ *
+ * 【为何用纯黑半透明而非 emissive 负值】three 的标准材质没有"负发光"，
+ * AO 只能靠压暗实现：一层极薄的黑色半透明面片贴在接缝处，
+ * 模拟"光线进不去缝隙"的效果。比真正的 SSAO 便宜几个数量级
+ * （零后处理、零额外 Draw Call 之外的几何）。
+ */
+const CREVICE_AO_COLOR = '#000000';
+const CREVICE_AO_OPACITY = 0.55;
+
+/** 铆钉/卡扣的重型机械件参数 */
+const RIVET_COLOR = '#334155';
+const RIVET_METALNESS = 0.92;
+const RIVET_ROUGHNESS = 0.28;
+const RIVET_ENV_INTENSITY = 1.8;
+/** 铆钉半径与高度（扁圆柱，像压在钢板上的实心铆接件） */
+const RIVET_RADIUS = 0.018;
+const RIVET_HEIGHT = 0.014;
+
+/* ========================================================================== */
+/* 光学导轨（替换原半透明装甲外框）                                              */
+/* ========================================================================== */
+
+/**
+ * 光学导轨截面边长。
+ *
+ * 【为何是 0.022】原装甲外框是一个 2.0×2.4×1.6 的实体盒子，视觉上"包裹"整机；
+ * 导轨只用来描出体积轮廓，必须细到**看起来是一条光边**而不是一块面板。
+ * 0.022 约为机架宽度的 1.5%，在正常视距下呈 1~2 像素的亮线——
+ * 既足以构成线框，又完全不遮挡内部的刀片与层板细节。
+ */
+const OPTIC_RAIL_SIZE = 0.022;
+
+/**
+ * 光学导轨的基色。
+ *
+ * 【为何用浅钛灰而非深色】原外框用 #1e293b（近黑），在深空背景里
+ * 本身就是一团暗色。导轨改用浅钛灰后，它在拉丝金属质感上呈现为
+ * "被抛光过的导光条"，与内部深色层板形成明暗层次，
+ * 机架轮廓从"一坨黑"变成"一圈亮线"。
+ */
+const OPTIC_RAIL_COLOR = '#a8c4d4';
+
+/**
+ * 光学导轨的自发光色与强度。
+ *
+ * 【作用】导轨是机柜的轮廓线，必须在暗场中**始终可辨**——
+ * 否则侧光不足时整座机架会重新糊成剪影。
+ * 用青调自发光（与主题 cyan 呼应）给一条恒定的微光，
+ * 强度随选中/强调态提升（0.28 → 0.5 → 0.85），
+ * 使"选中"在视觉上表现为**轮廓整圈亮起**，比换一个半透明色块更清晰。
+ */
+const OPTIC_RAIL_EMISSIVE = '#0e7490';
+
+/* ========================================================================== */
+/* 顶冠激光蚀刻散热百叶窗                                                        */
+/* ========================================================================== */
+
+/** 百叶窗叶片数量（9：见渲染处注释中的取值依据） */
+const LOUVER_COUNT = 9;
+
+/** 单片叶片的厚度 */
+const LOUVER_THICKNESS = 0.008;
+
+/**
+ * 叶片材质参数。
+ *
+ * 【为何用偏亮的金属而非暗色】叶片的作用是"在凹槽里制造明暗条纹"，
+ * 若本身是暗色，缝隙与叶片都会是黑的，条纹消失。
+ * 用浅灰金属（metalness 0.9 / roughness 0.3）后，叶片顶面会反射天顶灯带，
+ * 缝隙保持暗——条纹对比度正是这样产生的。
+ */
+const LOUVER_COLOR = '#7d93a6';
+const LOUVER_METALNESS = 0.9;
+const LOUVER_ROUGHNESS = 0.3;
+const LOUVER_ENV_INTENSITY = 2.4;
+
+/* ========================================================================== */
+/* 实例化装饰件的容量上限                                                        */
+/* ========================================================================== */
+
+/**
+ * 三类装饰件的 InstancedMesh 容量。
+ *
+ * 【为何要显式给上限】InstancedMesh 的实例缓冲区在创建时按 args[2] 分配，
+ * 容量固定。给足上限后，即便未来微调布局（多一层层板、多加一圈倒角）
+ * 也不需要重建缓冲区——只需改写入循环并在 count 里体现。
+ *
+ * 【容量核算】
+ * - CHAMFER：立柱 4 柱 × 4 棱 = 16，层板 4 层 × 2 = 8，
+ *   底座 2，顶冠 2 圈 × 4 = 8 → 共 34。留到 40 作为余量。
+ * - CREVICE_AO：层板 4 层 × 4 角 = 16，立柱根部 4 → 共 20。留到 24。
+ * - RIVET：底座 4 角 + 立柱根部 4 → 共 8。留到 12。
+ */
+const CHAMFER_INSTANCE_MAX = 40;
+const CREVICE_AO_INSTANCE_MAX = 24;
+const RIVET_INSTANCE_MAX = 12;
 
 /* ========================================================================== */
 /* 四角承重立柱                                                                 */
@@ -785,6 +940,20 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   /* ---- 交互态（低频 UI 事件，允许 useState） ---- */
   const [hovered, setHovered] = useState<boolean>(false);
 
+  /**
+   * 程序化拉丝金属纹理（模块级单例，三座机架共享同一份 GPU 纹理）。
+   *
+   * 【为何用 useMemo 而非 useState/useEffect】纹理生成是**同步一次的纯计算**
+   * （256×256×2 约 1~3ms），不需要副作用，也不该触发额外渲染。
+   * useMemo 保证：首次渲染前拿到纹理（首帧就有拉丝效果，不会闪一下素模），
+   * 且后续重渲染直接复用缓存引用。
+   *
+   * 【SSR 安全性】getBrushedMetalTextures 在 window 未定义时返回 null，
+   * 因此服务端渲染阶段这里就是 null，材质以无贴图方式降级；
+   * 客户端首次渲染才生成真实纹理。这与项目的 SSR 契约一致。
+   */
+  const brushedMetal = useMemo(() => getBrushedMetalTextures(), []);
+
   /* ---- 动画通道 ref ---- */
   const leftGuideMat = useRef<THREE.MeshBasicMaterial>(null);
   const rightGuideMat = useRef<THREE.MeshBasicMaterial>(null);
@@ -847,6 +1016,39 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   );
   /** 插槽幽灵框实例网格：矩阵在挂载 effect 一次性写入，此后只读 */
   const slotGhostsRef = useRef<THREE.InstancedMesh>(null);
+
+  /**
+   * 倒角亮边实例网格（InstancedMesh 合并）。
+   *
+   * 【为何必须实例化】本轮为消除"生硬直角暗边"而加入的倒角棱边共有：
+   * 立柱 16 + 层板 8 + 顶冠 8 + 底座 2 = 每机架 34 条。
+   * 若每条一个 mesh，三座机架就是 102 次 draw call——足以让整场景
+   * 的 draw call 从 307 飙到 600+，违背 60FPS 红线。
+   *
+   * 这些棱边**材质完全相同**（都是 CHAMFER_* 参数），
+   * 只是位置与尺寸不同，正是 InstancedMesh 的典型适用场景：
+   * 34 个实例 → 1 次 draw call（每机架），三座共 3 次。
+   *
+   * 【尺寸差异如何处理】立柱棱、层板棱、顶冠棱的**长度不同**，
+   * 靠 instanceMatrix 的缩放分量表达（基础几何取单位立方体）。
+   * 因此几何用 BoxGeometry(1,1,1)，每个实例缩放成目标尺寸。
+   */
+  const chamferInstancesRef = useRef<THREE.InstancedMesh>(null);
+
+  /**
+   * 接缝 AO 暗环实例网格。
+   *
+   * 【为何实例化】层板 4 角 × 4 层 + 立柱根部 4 处 = 每机架 20 个 AO 环。
+   * 它们共享同一个圆环几何与半透明黑材质，实例化后每机架仅 1 次 draw call。
+   */
+  const creviceAoInstancesRef = useRef<THREE.InstancedMesh>(null);
+
+  /**
+   * 铆钉实例网格（底座 4 角 + 立柱根部 4 处 = 每机架 8 枚）。
+   * 同样是"相同材质、不同位置"的批量场景。
+   */
+  const rivetInstancesRef = useRef<THREE.InstancedMesh>(null);
+
   /** 装甲棱线（drei Edges，官方 EdgesRef 类型）ref：useFrame 驱动选中态呼吸描边 */
   const armorEdgesRef = useRef<EdgesRef | null>(null);
   /** 最新 node 快照引用：useFrame 读取，避免把 node 塞进渲染循环依赖 */
@@ -930,6 +1132,149 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
     }
     mesh.count = SLOT_GHOSTS.length;
     mesh.instanceMatrix.needsUpdate = true;
+  }, [ghostTempObject]);
+
+  /**
+   * 倒角棱边 / AO 暗环 / 铆钉 的实例矩阵批量写入。
+   *
+   * 【一次 effect 写满三类实例网格】它们的矩阵全部是**静态常量**
+   * （位置由机架几何尺寸推导，不随状态变化），因此在挂载时写一次即可，
+   * useFrame 完全不触碰——这既是性能要求（60FPS 红线），
+   * 也是正确性要求（静态装饰件不该每帧重算矩阵）。
+   *
+   * 【零 GC】所有临时计算复用同一个 module-scope 的 Object3D，
+   * 循环内只做 set/updateMatrix，不分配任何新对象。
+   */
+  useEffect((): void => {
+    /* ---- 1. 倒角亮边实例 ---- */
+    const chamfers = chamferInstancesRef.current;
+    if (chamfers !== null) {
+      let instanceIndex = 0;
+
+      /** 写入单个实例：位置 + 缩放（几何是单位立方体，尺寸全靠 scale） */
+      const pushChamfer = (x: number, y: number, z: number, sx: number, sy: number, sz: number): void => {
+        ghostTempObject.position.set(x, y, z);
+        ghostTempObject.rotation.set(0, 0, 0);
+        ghostTempObject.scale.set(sx, sy, sz);
+        ghostTempObject.updateMatrix();
+        chamfers.setMatrixAt(instanceIndex, ghostTempObject.matrix);
+        instanceIndex += 1;
+      };
+
+      /* 立柱四条竖直棱（每根立柱 4 条，共 16） */
+      for (const pillar of PILLAR_POSITIONS) {
+        const halfPillar = PILLAR_SIZE / 2;
+        /* 沿 X 面与 Z 面各自的棱线：细长条，长度取机架高 */
+        pushChamfer(pillar.x + halfPillar, RACK_BODY_CENTER_Y, pillar.z, CHAMFER_SIZE, RACK_BODY_SIZE[1] * 0.995, PILLAR_SIZE * 0.55);
+        pushChamfer(pillar.x - halfPillar, RACK_BODY_CENTER_Y, pillar.z, CHAMFER_SIZE, RACK_BODY_SIZE[1] * 0.995, PILLAR_SIZE * 0.55);
+        pushChamfer(pillar.x, RACK_BODY_CENTER_Y, pillar.z + halfPillar, PILLAR_SIZE * 0.55, RACK_BODY_SIZE[1] * 0.995, CHAMFER_SIZE);
+        pushChamfer(pillar.x, RACK_BODY_CENTER_Y, pillar.z - halfPillar, PILLAR_SIZE * 0.55, RACK_BODY_SIZE[1] * 0.995, CHAMFER_SIZE);
+      }
+
+      /* 层板前后沿（4 层 × 2 条 = 8） */
+      for (const tierY of TIER_DIVIDER_YS) {
+        for (const zSign of [1, -1]) {
+          pushChamfer(
+            0,
+            tierY,
+            (zSign * (RACK_BODY_SIZE[2] - 0.14)) / 2,
+            RACK_BODY_SIZE[0] - 0.16,
+            CHAMFER_SIZE,
+            CHAMFER_SIZE,
+          );
+        }
+      }
+
+      /* 底座前后沿（2 条） */
+      for (const zSign of [1, -1]) {
+        pushChamfer(
+          0,
+          BASE_PLATE_CENTER_Y + BASE_PLATE_HEIGHT / 2,
+          (zSign * (RACK_BODY_SIZE[2] + 0.16)) / 2,
+          RACK_BODY_SIZE[0] + 0.16,
+          CHAMFER_SIZE,
+          CHAMFER_SIZE,
+        );
+      }
+
+      /* 顶冠上下四周（2 层 × 4 边 = 8） */
+      for (const ySign of [1, -1]) {
+        const chamferY = CROWN_Y + (ySign * CROWN_HEIGHT) / 2;
+        for (const zSign of [1, -1]) {
+          pushChamfer(0, chamferY, (zSign * CROWN_DEPTH) / 2, CROWN_WIDTH, CHAMFER_SIZE, CHAMFER_SIZE);
+        }
+        for (const xSign of [1, -1]) {
+          pushChamfer((xSign * CROWN_WIDTH) / 2, chamferY, 0, CHAMFER_SIZE, CHAMFER_SIZE, CROWN_DEPTH);
+        }
+      }
+
+      chamfers.count = instanceIndex;
+      chamfers.instanceMatrix.needsUpdate = true;
+    }
+
+    /* ---- 2. 接缝 AO 暗环实例 ---- */
+    const aoRings = creviceAoInstancesRef.current;
+    if (aoRings !== null) {
+      let aoIndex = 0;
+
+      const pushAo = (x: number, y: number, z: number, scale: number): void => {
+        ghostTempObject.position.set(x, y, z);
+        /* 圆环默认在 XY 平面，需绕 X 转 90° 才能贴在水平面上 */
+        ghostTempObject.rotation.set(-Math.PI / 2, 0, 0);
+        ghostTempObject.scale.set(scale, scale, 1);
+        ghostTempObject.updateMatrix();
+        aoRings.setMatrixAt(aoIndex, ghostTempObject.matrix);
+        aoIndex += 1;
+      };
+
+      /* 层板与立柱交界（4 角 × 4 层） */
+      for (const tierY of TIER_DIVIDER_YS) {
+        for (const pillar of PILLAR_POSITIONS) {
+          pushAo(pillar.x, tierY + 0.030, pillar.z, 1);
+        }
+      }
+
+      /* 立柱根部与底座交界（4 处） */
+      for (const pillar of PILLAR_POSITIONS) {
+        pushAo(pillar.x, -RACK_BODY_SIZE[1] / 2 + 0.002, pillar.z, 1);
+      }
+
+      aoRings.count = aoIndex;
+      aoRings.instanceMatrix.needsUpdate = true;
+    }
+
+    /* ---- 3. 铆钉实例 ---- */
+    const rivets = rivetInstancesRef.current;
+    if (rivets !== null) {
+      let rivetIndex = 0;
+
+      const pushRivet = (x: number, y: number, z: number, scale: number): void => {
+        ghostTempObject.position.set(x, y, z);
+        ghostTempObject.rotation.set(0, 0, 0);
+        ghostTempObject.scale.set(scale, scale, scale);
+        ghostTempObject.updateMatrix();
+        rivets.setMatrixAt(rivetIndex, ghostTempObject.matrix);
+        rivetIndex += 1;
+      };
+
+      /* 底座四角地脚螺栓 */
+      for (const corner of PILLAR_POSITIONS) {
+        pushRivet(
+          corner.x,
+          BASE_PLATE_CENTER_Y + BASE_PLATE_HEIGHT / 2 + RIVET_HEIGHT / 2,
+          corner.z,
+          1.2,
+        );
+      }
+
+      /* 立柱根部卡扣（与立柱同 XZ，贴在柱底） */
+      for (const pillar of PILLAR_POSITIONS) {
+        pushRivet(pillar.x, -RACK_BODY_SIZE[1] / 2 + RIVET_HEIGHT / 2 + 0.006, pillar.z, 1);
+      }
+
+      rivets.count = rivetIndex;
+      rivets.instanceMatrix.needsUpdate = true;
+    }
   }, [ghostTempObject]);
 
   /**
@@ -1084,30 +1429,114 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           模型已由钩子统一开启 castShadow/receiveShadow，因此与场景布光一致。 */}
       {gltfRack !== null ? <primitive object={gltfRack} /> : null}
 
-      {/* ---- 半透明磨砂装甲外框（+ 棱线勾勒机柜轮廓；显式点击选中）。
+      {/* ---- 通透光学导轨框架（替换原半透明磨砂装甲外框）。
+         【本轮为何替换】原外框是一个 opacity 0.16、roughness 0.72 的暗色大盒子，
+         包裹整个机架。它的副作用是**把内部所有金属细节都蒙上了一层雾**：
+         立柱的倒角高光、层板的拉丝纹理、顶冠的锐利反射全部被这层
+         "塑料薄膜"散射掉，这正是"暗色塑料感"最直接的来源。
+         移除后内部结构若直接裸露，机架又会失去整体轮廓——
+         因此改为**只保留边框的窄幅光学导轨**：
+         - 四条竖直导轨（贴四角内侧，极细，宽 0.022）；
+         - 上下各一圈水平导轨（贴顶/底内缘）；
+         用它们围出机架体积，但不遮挡任何内部细节。
+         【点击选中职责】原外框是 handleSelect 的主要落点。现在改由
+         四条竖直导轨承担（每条都有 onClick + 足够长的可点区域），
+         底座与顶盖也保留 onClick，选中路径完全不减少。
          【Edges 控制权契约】color/opacity/linewidth 三个动画属性的初始值仅作
          首帧种子，此后由 useFrame 独占驱动；React prop 保持恒定字面量，
          1Hz 重渲染经 R3F props diff 不会重放，动画值零跳变。 ---- */}
-      <mesh position={[0, RACK_BODY_CENTER_Y, 0]} onClick={handleSelect} visible={!isGltfRackAvailable}>
-        <boxGeometry args={[RACK_BODY_SIZE[0], RACK_BODY_SIZE[1], RACK_BODY_SIZE[2]]} />
-        <meshStandardMaterial
-          color={HARDWARE_COLOR}
-          metalness={0.35}
-          roughness={0.72}
-          transparent
-          opacity={emphasized ? ARMOR_OPACITY_EMPHASIZED : ARMOR_OPACITY_IDLE}
-          emissive={isSelected ? '#22d3ee' : '#0e7490'}
-          emissiveIntensity={isSelected ? 0.22 : emphasized ? 0.12 : 0.05}
-        />
-        <Edges
-          ref={armorEdgesRef}
-          threshold={15}
-          color={HARDWARE_EDGE_COLOR}
-          transparent
-          opacity={EDGE_IDLE_OPACITY}
-          linewidth={EDGE_IDLE_WIDTH}
-        />
-      </mesh>
+
+      {/* ---- 四根竖直光学导轨（承担点击选中 + 勾勒机架纵向轮廓）---- */}
+      {PILLAR_POSITIONS.map((corner, cornerIndex): ReactNode => (
+        <mesh
+          key={`optic-rail-v-${cornerIndex}`}
+          position={[corner.x, RACK_BODY_CENTER_Y, corner.z]}
+          onClick={handleSelect}
+          visible={!isGltfRackAvailable}
+        >
+          {/*
+           * 导轨截面 0.022×0.022 —— 极细，视觉上是一条"光边"而非一块面板。
+           * 长度取满机架高度，确保纵向轮廓连续。
+           */}
+          <boxGeometry args={[OPTIC_RAIL_SIZE, RACK_BODY_SIZE[1], OPTIC_RAIL_SIZE]} />
+          <meshStandardMaterial
+            color={OPTIC_RAIL_COLOR}
+            metalness={0.92}
+            roughness={0.16}
+            envMapIntensity={3.2}
+            emissive={OPTIC_RAIL_EMISSIVE}
+            emissiveIntensity={isSelected ? 0.85 : emphasized ? 0.5 : 0.28}
+            transparent
+            opacity={0.92}
+          />
+          <Edges
+            ref={cornerIndex === 0 ? armorEdgesRef : undefined}
+            threshold={15}
+            color={isSelected ? '#22d3ee' : HARDWARE_EDGE_COLOR}
+            transparent
+            opacity={EDGE_IDLE_OPACITY}
+            linewidth={EDGE_IDLE_WIDTH}
+          />
+        </mesh>
+      ))}
+
+      {/*
+       * ---- 上下水平光学导轨（各一圈：前/后/左/右四条细棱）----
+       *
+       * 与竖直导轨拼合成一个完整的"线框体"，机架的体积感来自这个框，
+       * 而不是来自一面遮住内部的半透明板。
+       */}
+      {[0, 1].map((levelIndex): ReactNode => {
+        /* 下层贴机架底部、上层贴机架顶部（各内缩半个导轨宽避免与外框重叠） */
+        const y =
+          levelIndex === 0
+            ? OPTIC_RAIL_SIZE / 2 + 0.01
+            : RACK_BODY_SIZE[1] - OPTIC_RAIL_SIZE / 2 - 0.01;
+        return (
+          <group key={`optic-rail-h-${levelIndex}`}>
+            {[1, -1].map((zSign): ReactNode => (
+              <mesh
+                key={`optic-h-z-${zSign}`}
+                position={[0, y, zSign * (RACK_BODY_SIZE[2] / 2 - OPTIC_RAIL_SIZE / 2)]}
+                onClick={handleSelect}
+                visible={!isGltfRackAvailable}
+              >
+                <boxGeometry args={[RACK_BODY_SIZE[0], OPTIC_RAIL_SIZE, OPTIC_RAIL_SIZE]} />
+                <meshStandardMaterial
+                  color={OPTIC_RAIL_COLOR}
+                  metalness={0.92}
+                  roughness={0.16}
+                  envMapIntensity={3.2}
+                  emissive={OPTIC_RAIL_EMISSIVE}
+                  emissiveIntensity={isSelected ? 0.85 : emphasized ? 0.5 : 0.28}
+                  transparent
+                  opacity={0.92}
+                />
+              </mesh>
+            ))}
+            {[1, -1].map((xSign): ReactNode => (
+              <mesh
+                key={`optic-h-x-${xSign}`}
+                position={[xSign * (RACK_BODY_SIZE[0] / 2 - OPTIC_RAIL_SIZE / 2), y, 0]}
+                onClick={handleSelect}
+                visible={!isGltfRackAvailable}
+              >
+                <boxGeometry args={[OPTIC_RAIL_SIZE, OPTIC_RAIL_SIZE, RACK_BODY_SIZE[2]]} />
+                <meshStandardMaterial
+                  color={OPTIC_RAIL_COLOR}
+                  metalness={0.92}
+                  roughness={0.16}
+                  envMapIntensity={3.2}
+                  emissive={OPTIC_RAIL_EMISSIVE}
+                  emissiveIntensity={isSelected ? 0.85 : emphasized ? 0.5 : 0.28}
+                  transparent
+                  opacity={0.92}
+                />
+              </mesh>
+            ))}
+          </group>
+        );
+      })}
 
       {/*
        * ---- 四根重工承重角柱 ----
@@ -1123,29 +1552,110 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        * 且避免柱体在命中列表里多插一层、干扰让位判定。
        */}
       {PILLAR_POSITIONS.map((pillar, index): ReactNode => (
-        <mesh
-          key={`pillar-${index}`}
-          position={[pillar.x, RACK_BODY_CENTER_Y, pillar.z]}
-          raycast={noRaycast}
-          visible={!isGltfRackAvailable}
-        >
-          <boxGeometry args={[PILLAR_SIZE, RACK_BODY_SIZE[1], PILLAR_SIZE]} />
-          <meshStandardMaterial
-            color={PILLAR_COLOR}
-            metalness={HARDWARE_METALNESS}
-            roughness={HARDWARE_ROUGHNESS}
-            envMapIntensity={HARDWARE_ENV_MAP_INTENSITY}
-            emissive={PILLAR_EMISSIVE}
-            emissiveIntensity={PILLAR_EMISSIVE_INTENSITY}
-          />
+        <group key={`pillar-${index}`} position={[pillar.x, RACK_BODY_CENTER_Y, pillar.z]}>
+          {/* ---- 立柱主体：拉丝钛合金 ---- */}
+          <mesh raycast={noRaycast} visible={!isGltfRackAvailable}>
+            <boxGeometry args={[PILLAR_SIZE, RACK_BODY_SIZE[1], PILLAR_SIZE]} />
+            <meshStandardMaterial
+              color={PILLAR_COLOR}
+              metalness={TI_METALNESS}
+              roughness={TI_ROUGHNESS}
+              /*
+               * 【拉丝金属贴图】roughnessMap 让粗糙度沿纵向丝纹起伏
+               * （各向异性高光），bumpMap 让高光沿丝纹断裂成细碎亮点。
+               * 两者缺一都会退化成"均匀磨砂塑料"。
+               * 服务端渲染阶段 brushedMetal 为 null，此时这两个 prop 为
+               * undefined，three 会按无贴图的纯参数渲染——自然降级。
+               */
+              roughnessMap={brushedMetal?.roughnessMap ?? null}
+              bumpMap={brushedMetal?.bumpMap ?? null}
+              bumpScale={BRUSH_BUMP_SCALE}
+              envMapIntensity={TI_ENV_INTENSITY}
+              emissive={PILLAR_EMISSIVE}
+              emissiveIntensity={PILLAR_EMISSIVE_INTENSITY}
+            />
+            <Edges threshold={15} color="#334155" />
+          </mesh>
+
           {/*
-           * 【枪灰高光倒棱】四根角柱是机柜的外骨骼：只靠深色实体在暗场里会
-           * 糊成黑柱，看不出体积。沿真正的棱边描一道 #334155 高光，
-           * 柱体立刻有"实心金属铸件"的硬朗转折，与内部的翠绿侧板形成冷暖对比。
+           * 【倒角棱边 / 铆钉 / AO 环已改为实例化渲染】
+           * 它们原本是每根立柱 4 条棱 + 1 铆钉 + 1 AO 环的独立 mesh，
+           * 三座机架合计超 100 次 draw call。现统一由文件末尾的三个
+           * InstancedMesh 承载（倒角 34 实例 / AO 20 实例 / 铆钉 8 实例，
+           * 各自仅 1 次 draw call）。矩阵在挂载 effect 中一次性写入。
            */}
-          <Edges threshold={15} color="#334155" />
-        </mesh>
+        </group>
       ))}
+
+      {/*
+       * ============ 实例化渲染：倒角亮边 / 接缝 AO / 铆钉 ============
+       *
+       * 【为何集中到一处而非散落在各构件旁】三者都是"相同材质、不同位置"
+       * 的静态装饰件，只有用 InstancedMesh 批量提交才能把 draw call
+       * 从 100+ 压到 3。集中到一个 group 里也让"这批几何是性能敏感区"
+       * 这件事在代码结构上可见，后人新增装饰件时会知道要往这里加实例。
+       *
+       * 【为何几何用单位立方体/单位圆环 + scale】
+       * 倒角棱的长度差异很大（立柱棱 2.4 米、层板棱 1.8 米、顶冠棱 1.4 米），
+       * 若为每种长度建独立几何就失去实例化意义。统一用 1×1×1 基础几何，
+       * 由 instanceMatrix 的缩放分量表达实际尺寸——这是 InstancedMesh 的
+       * 标准用法，且矩阵写入只发生在挂载时，运行期零开销。
+       *
+       * 【raycast 关闭】全部是纯装饰，不参与拾取（与项目既有装饰件一致）。
+       */}
+      <group visible={!isGltfRackAvailable}>
+        {/* ---- 倒角亮边（34 实例）---- */}
+        <instancedMesh
+          ref={chamferInstancesRef}
+          args={[undefined, undefined, CHAMFER_INSTANCE_MAX]}
+          raycast={noRaycast}
+          frustumCulled={false}
+        >
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial
+            color={CHAMFER_COLOR}
+            metalness={CHAMFER_METALNESS}
+            roughness={CHAMFER_ROUGHNESS}
+            envMapIntensity={CHAMFER_ENV_INTENSITY}
+            emissive={CHAMFER_EMISSIVE}
+            emissiveIntensity={CHAMFER_EMISSIVE_INTENSITY}
+          />
+        </instancedMesh>
+
+        {/* ---- 接缝接触式 AO 暗环（20 实例）---- */}
+        <instancedMesh
+          ref={creviceAoInstancesRef}
+          args={[undefined, undefined, CREVICE_AO_INSTANCE_MAX]}
+          raycast={noRaycast}
+          frustumCulled={false}
+        >
+          {/* 单位圆环（外半径 1），实际大小由矩阵缩放控制 */}
+          <ringGeometry args={[PILLAR_SIZE * 0.45, PILLAR_SIZE * 0.95, 4]} />
+          <meshBasicMaterial
+            color={CREVICE_AO_COLOR}
+            transparent
+            opacity={CREVICE_AO_OPACITY * 0.8}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        </instancedMesh>
+
+        {/* ---- 重型机械铆钉（8 实例）---- */}
+        <instancedMesh
+          ref={rivetInstancesRef}
+          args={[undefined, undefined, RIVET_INSTANCE_MAX]}
+          raycast={noRaycast}
+          frustumCulled={false}
+        >
+          <cylinderGeometry args={[RIVET_RADIUS, RIVET_RADIUS * 1.35, RIVET_HEIGHT, 8]} />
+          <meshStandardMaterial
+            color={RIVET_COLOR}
+            metalness={RIVET_METALNESS}
+            roughness={RIVET_ROUGHNESS}
+            envMapIntensity={RIVET_ENV_INTENSITY}
+          />
+        </instancedMesh>
+      </group>
 
       {/* ---- 底座底板（薄承板：顶面 0.03 恰在 tier-0 隔板底面 0.035 之下，零穿插；
          显式点击选中——底座是用户点选机架的高频落点）。
@@ -1163,33 +1673,52 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       >
         <meshStandardMaterial
           color={HARDWARE_COLOR}
-          metalness={HARDWARE_METALNESS}
-          roughness={HARDWARE_ROUGHNESS}
-          envMapIntensity={HARDWARE_ENV_MAP_INTENSITY}
+          metalness={TI_METALNESS}
+          roughness={TI_ROUGHNESS}
+          roughnessMap={brushedMetal?.roughnessMap ?? null}
+          bumpMap={brushedMetal?.bumpMap ?? null}
+          bumpScale={BRUSH_BUMP_SCALE}
+          envMapIntensity={TI_ENV_INTENSITY}
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
         <Edges threshold={15} color="#38bdf8" />
       </RoundedBox>
 
+      {/*
+       * 说明：底座倒角与四角铆钉已改为实例化渲染，
+       * 见下方 chamferInstancesRef / rivetInstancesRef。
+       */}
+
+
       {/* ---- 4 层水平服务器托盘隔板（Y 坐标与 Pod 槽位层位同源，推导见常量 JSDoc）。
-         metalness 0.55 → 0.2：让腔体点光能以漫反射真实照亮层板，
-         否则金属度过高会把光全部转成环境反射而再次吞光。
-         【raycast 关闭】层板横贯整个腔体，是「挡住 Pod 拾取」风险最高的部件：
-         斜视时射线常先命中 Pod 下方的隔板边缘。关闭后 Pod 直接被拾取，
-         不必再依赖让位协议从命中列表里"翻"出 Pod。 ---- */}
+          【本轮升级】层板改为拉丝钛合金 + 前沿倒角亮边 + 与立柱交界处接缝 AO。
+          隔板从"暗色薄片"变为"承重金属托架"，是机架内部结构感的主要来源。
+          【raycast 关闭】层板横贯整个腔体，是「挡住 Pod 拾取」风险最高的部件：
+          斜视时射线常先命中 Pod 下方的隔板边缘。关闭后 Pod 直接被拾取，
+          不必再依赖让位协议从命中列表里"翻"出 Pod。 ---- */}
       {TIER_DIVIDER_YS.map((tierY, index): ReactNode => (
         <group key={`divider-${index}`}>
           <mesh position={[0, tierY, 0]} receiveShadow raycast={noRaycast}>
             <boxGeometry args={[RACK_BODY_SIZE[0] - 0.16, 0.055, RACK_BODY_SIZE[2] - 0.14]} />
             <meshStandardMaterial
               color="#1e293b"
-              metalness={0.2}
-              roughness={0.5}
+              metalness={TI_METALNESS}
+              roughness={TI_ROUGHNESS}
+              roughnessMap={brushedMetal?.roughnessMap ?? null}
+              bumpMap={brushedMetal?.bumpMap ?? null}
+              bumpScale={BRUSH_BUMP_SCALE}
+              envMapIntensity={TI_ENV_INTENSITY}
               emissive="#0e7490"
               emissiveIntensity={0.06}
             />
           </mesh>
+
+          {/*
+           * 说明：层板前沿倒角与层板-立柱接缝 AO 已改为实例化渲染，
+           * 见文件下方的 chamferInstancesRef / creviceAoInstancesRef。
+           */}
+
           {/*
            * ---- 层板正面发光灯眉（4 层科技抽屉的视觉分界线，**前后双面各一条**）----
            *
@@ -1270,9 +1799,12 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       >
         <meshStandardMaterial
           color={HARDWARE_COLOR}
-          metalness={HARDWARE_METALNESS}
-          roughness={HARDWARE_ROUGHNESS}
-          envMapIntensity={HARDWARE_ENV_MAP_INTENSITY}
+          metalness={TI_METALNESS}
+          roughness={TI_ROUGHNESS}
+          roughnessMap={brushedMetal?.roughnessMap ?? null}
+          bumpMap={brushedMetal?.bumpMap ?? null}
+          bumpScale={BRUSH_BUMP_SCALE}
+          envMapIntensity={TI_ENV_INTENSITY}
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
@@ -1302,9 +1834,12 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       >
         <meshStandardMaterial
           color={HARDWARE_COLOR}
-          metalness={HARDWARE_METALNESS}
-          roughness={HARDWARE_ROUGHNESS}
-          envMapIntensity={HARDWARE_ENV_MAP_INTENSITY}
+          metalness={TI_METALNESS}
+          roughness={TI_ROUGHNESS}
+          roughnessMap={brushedMetal?.roughnessMap ?? null}
+          bumpMap={brushedMetal?.bumpMap ?? null}
+          bumpScale={BRUSH_BUMP_SCALE}
+          envMapIntensity={TI_ENV_INTENSITY}
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
@@ -1334,6 +1869,50 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           emissiveIntensity={0.06}
         />
       </mesh>
+
+      {/*
+       * ---- 顶冠激光蚀刻散热百叶窗（替代原来的"整块发光板"）----
+       *
+       * 【解决什么】顶冠凹槽此前是一整块暗色平面，俯瞰时看起来像"贴了一块黑胶布"，
+       * 既没有工业感也读不出"这是散热口"。
+       *
+       * 【做法】用 9 条等距细长薄片（百叶窗叶片）铺在凹槽内，
+       * 每条都有独立的高光棱边——斜视时叶片与缝隙形成交替的明暗条纹，
+       * 这正是真实机柜散热格栅在光照下的样子。
+       * 数量取 9：小于 7 会显得稀疏像栅栏，大于 11 在远视距会糊成一片灰。
+       *
+       * 【为何不用纹理贴图】这 9 条叶片是**真实几何**，能真正接收环境反射
+       * 与阴影；贴图在俯瞰近距离下会被看穿是平的。9 个 box = 9 次 draw call，
+       * 对当前场景预算完全可接受。
+       */}
+      {Array.from({ length: LOUVER_COUNT }, (_, louverIndex): ReactNode => {
+        const louverWidth = CROWN_WIDTH - 0.5;
+        const louverDepth = (CROWN_DEPTH - 0.5) / LOUVER_COUNT;
+        /* 居中排布：让整组叶片对称占据凹槽宽度 */
+        const offsetZ = (louverIndex - (LOUVER_COUNT - 1) / 2) * louverDepth;
+        return (
+          <mesh
+            key={`crown-louver-${louverIndex}`}
+            position={[0, CROWN_Y + CROWN_HEIGHT / 2 + 0.026, offsetZ]}
+            raycast={noRaycast}
+            visible={!isGltfRackAvailable}
+          >
+            <boxGeometry args={[louverWidth, LOUVER_THICKNESS, louverDepth * 0.62]} />
+            <meshStandardMaterial
+              color={LOUVER_COLOR}
+              metalness={LOUVER_METALNESS}
+              roughness={LOUVER_ROUGHNESS}
+              envMapIntensity={LOUVER_ENV_INTENSITY}
+            />
+          </mesh>
+        );
+      })}
+
+      {/*
+       * 说明：顶冠上下四周边框倒角已改为实例化渲染，
+       * 见下方 chamferInstancesRef。
+       */}
+
 
       {/*
        * ---- 半透明蜂窝散热网侧板（左右各一片）----
