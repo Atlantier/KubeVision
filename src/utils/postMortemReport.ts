@@ -982,7 +982,7 @@ function buildSummarySection(input: PostMortemInput, model: SessionModel): strin
     symptomParts.push('快照中不存在异常 Pod（clusterContext.faultyPods 为空）');
   }
   if (context.activeChaos !== 'NONE') {
-    symptomParts.push(`混沌演练场景 ${chaosLabel(context.activeChaos)} 处于激活状态`);
+    symptomParts.push(`混沌演练场景 ${chaosLabel(context.activeChaos)}处于激活状态`);
   }
   if (primary !== undefined) {
     symptomParts.push(
@@ -1042,18 +1042,19 @@ function buildImpactSection(input: PostMortemInput, model: SessionModel): string
 
   if (model.rootCauses.length === 0) {
     lines.push('本次会话未产出根因分析卡片，因此没有可引用的 impactScope 描述。');
+    lines.push('');
   } else {
     lines.push('**Agent 给出的影响范围（来自 RootCauseAlertProps.impactScope）**');
     lines.push('');
     model.rootCauses.forEach((card, index): void => {
       lines.push(
-        `- 卡片 ${index + 1}（${severityLabel(card.props.severity)}）：${normalizeInline(
+        `- 卡片 ${index + 1} · 严重度 ${card.props.severity}：${normalizeInline(
           card.props.impactScope,
         )}`,
       );
     });
+    lines.push('');
   }
-  lines.push('');
 
   /* ---- 2.1 异常 Pod 明细 ---- */
   lines.push('### 2.1 异常 Pod 明细（来自 clusterContext.faultyPods）');
@@ -1390,15 +1391,18 @@ function buildLessonItems(input: PostMortemInput, model: SessionModel): string[]
   const memoryRef = refs.find((doc): boolean => doc.category === 'memory');
   if (worstPod !== undefined && (worstPod.memoryUsage >= 80 || memoryRef !== undefined)) {
     const peak = maxValue(worstPod.memHistory, worstPod.memoryUsage);
-    const suggestedLimit = Math.min(100, Math.ceil((peak * 1.3) / 5) * 5);
+    /* 峰值上浮 30% 后向上取整到 5 的倍数（水位单位是百分比，故以 100 为上限封顶） */
+    const rawLimit = Math.ceil((peak * 1.3) / 5) * 5;
+    const limitAdvice =
+      rawLimit >= 100
+        ? '100%（已顶到水位刻度上限，实际应直接按 MiB 重新核算 limit）'
+        : `${formatPercent(rawLimit)}（水位百分比口径，落地时须换算为 MiB）`;
     candidates.push(
       `- [ ] 为 ${worstPod.name}（命名空间 ${worstPod.namespace}）按 cgroup v2 memory.max 口径补全内存配额：当前水位 ${formatPercent(
         worstPod.memoryUsage,
       )}，近 ${worstPod.memHistory.length} 个采样点峰值为 ${formatPercent(
         peak,
-      )}，建议把 limit 提到 ${formatPercent(
-        suggestedLimit,
-      )}（峰值上浮 30% 后向上取整到 5 的倍数），requests 设为 limit 的 70%，使 QoS 从 Burstable 升为 Guaranteed，避免节点内存压力下 OOM Killer 依据 oom_score_adj 优先选中本容器。`,
+      )}，按「峰值上浮 30% 后向上取整到 5 的倍数」推算的 limit 参考值为 ${limitAdvice}；requests 取 limit 的 70%，使 QoS 从 Burstable 升为 Guaranteed，避免节点内存压力下 OOM Killer 依据 oom_score_adj 优先选中本容器。`,
     );
   }
 
@@ -1449,19 +1453,17 @@ function buildLessonItems(input: PostMortemInput, model: SessionModel): string[]
     candidates.push(
       `- [ ] 为已执行的自愈动作补审批留痕：本次在 ${formatRelative(
         executedRecord.offsetMs,
-      )} 经 ${executedRecord.endpoint} 对 ${executedRecord.targetLabel} 执行了 ${actionLabel(
+      )} 经 ${executedRecord.endpoint} 对 ${executedRecord.targetLabel} 执行了「${actionLabel(
         executedRecord.actionType,
-      )}，需在变更系统补录工单号，并核对 healedPodIds 免疫窗口是否会把同 Pod 的重复告警吞掉——免疫窗口是去重机制，不是故障已消除的证明。`,
+      )}」，需在变更系统补录工单号，并核对 healedPodIds 免疫窗口是否会把同 Pod 的重复告警吞掉——免疫窗口是去重机制，不是故障已消除的证明。`,
     );
   } else if (model.actions.length > 0) {
     candidates.push(
       `- [ ] ${model.actions.length} 张自愈审批卡仍处于待审批状态（首张目标 ${
         model.actions[0].props.targetName
-      }）：明确责任人与执行窗口，高危动作为 ${
-        model.actions[0].props.isHighRisk ? '是' : '否'
-      }（${actionLabel(
+      }）：明确责任人与执行窗口，首张卡片标注的动作「${actionLabel(
         model.actions[0].props.actionType,
-      )}），未执行的卡片不得在下一轮复盘中记为已处置。`,
+      )}」高危属性为${model.actions[0].props.isHighRisk ? '是（必须两人复核）' : '否'}，未执行的卡片不得在下一轮复盘中记为已处置。`,
     );
   }
 
@@ -1574,25 +1576,34 @@ function buildDisclaimerSection(): string[] {
  */
 export function buildPostMortemMarkdown(input: PostMortemInput): string {
   const model = buildSessionModel(input.messages);
-  const lines: string[] = [
-    ...buildHeaderLines(input),
-    '',
-    ...buildSummarySection(input, model),
-    '',
-    ...buildImpactSection(input, model),
-    '',
-    ...buildTimelineSection(model),
-    '',
-    ...buildRootCauseSection(model),
-    '',
-    ...buildKnowledgeSection(model),
-    '',
-    ...buildRemediationSection(model),
-    '',
-    ...buildLessonSection(input, model),
-    '',
-    ...buildDisclaimerSection(),
+  const sections: string[][] = [
+    buildHeaderLines(input),
+    buildSummarySection(input, model),
+    buildImpactSection(input, model),
+    buildTimelineSection(model),
+    buildRootCauseSection(model),
+    buildKnowledgeSection(model),
+    buildRemediationSection(model),
+    buildLessonSection(input, model),
+    buildDisclaimerSection(),
   ];
+
+  /**
+   * 【空行归一化】每个章节构建器都可能在末尾留下一个空行占位（便于单独复用），
+   * 拼接时就可能产生连续两行空白。统一压成「章节间恰好一个空行」：
+   * Markdown 用一个空行分块即可，多余空行只会让源码变脏、行数虚增。
+   */
+  const lines: string[] = [];
+  for (const section of sections) {
+    /* 去掉本节首尾的空行，块内空行原样保留 */
+    const trimmed = [...section];
+    while (trimmed.length > 0 && trimmed[0] === '') trimmed.shift();
+    while (trimmed.length > 0 && trimmed[trimmed.length - 1] === '') trimmed.pop();
+    if (trimmed.length === 0) continue;
+    if (lines.length > 0) lines.push('');
+    lines.push(...trimmed);
+  }
+
   return `${lines.join('\n')}\n`;
 }
 
