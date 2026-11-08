@@ -214,7 +214,18 @@ function renderInline(segments: readonly InlineSegment[], keyPrefix: string): Re
       return (
         <code
           key={key}
-          className="rounded border border-slate-700/60 bg-slate-800/90 px-1 py-0.5 font-mono text-[0.92em] text-cyan-300"
+          /*
+           * 【为何需要 break-all】行内代码胶囊此前只设了等宽字体与底色，
+           * 没有断行规则。像 `oom_score_adj` 这类短标识符没问题，但遇到
+           * 长 base64、长 URL、完整文件路径（`/var/lib/kubelet/pods/...`）
+           * 时，这个 code 元素会以**最小内容宽度**撑开父容器，
+           * 在窄屏上直接把对话气泡顶出边界——页面级 scrollWidth 不会超，
+           * 但气泡内部会出现一条横向滚动条或文字被裁掉。
+           * break-all 允许在任意字符处断行，代价是极短标识符偶尔会从中间折行；
+           * 两个坏处相权，溢出比中间折行严重得多。
+           * 配合 break-words 兜底（长英文单词场景），保证任何输入都不溢出。
+           */
+          className="break-all rounded border border-slate-700/60 bg-slate-800/90 px-1 py-0.5 font-mono text-[0.92em] text-cyan-300"
         >
           {seg.text}
         </code>
@@ -818,13 +829,32 @@ export default function MarkdownLite({
            */
           case 'table':
             return (
-              <div key={key} className="my-1.5 overflow-x-auto rounded border border-slate-800 bg-slate-950/60">
-                <table className="w-full border-collapse text-left">
+              <div
+                key={key}
+                /*
+                 * 【窄屏策略】外层保持 overflow-x-auto：表格天然可能比容器宽，
+                 * 强行压窄会把每一列都挤成竖排单字。宁可让用户横向滚动，
+                 * 也不要把表格压到不可读。
+                 *
+                 * 同时给 table 一个 min-w-full 而不是 w-full：
+                 * `w-full` 在内容更宽时会被内容顶开（浏览器对 table 的
+                 * 自动布局特性），导致容器虽然设了 overflow-x-auto 却
+                 * 看不到滚动条——因为容器自己也被撑宽了。
+                 * `min-w-full + w-auto` 才能让"容器窄于内容时出现滚动"生效。
+                 */
+                className="my-1.5 overflow-x-auto rounded border border-slate-800 bg-slate-950/60"
+              >
+                <table className="min-w-full border-collapse text-left">
                   <thead>
                     <tr className="bg-slate-900/90">
                       {(block.headers ?? []).map((header, i): ReactNode => (
                         <th
                           key={`${key}-th-${i}`}
+                          /*
+                           * 表头保留 whitespace-nowrap：表头是短标签
+                           * （"编号" / "标题" / "匹配度"），换行会让表头变成
+                           * 两行高、破坏对齐。数据单元格则允许换行。
+                           */
                           className="whitespace-nowrap border-b border-slate-800 px-2 py-1 font-mono text-[11px] font-bold text-slate-300"
                         >
                           {renderInline(parseInline(header), `${key}-th-${i}`)}
