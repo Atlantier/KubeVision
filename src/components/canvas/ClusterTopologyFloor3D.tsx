@@ -72,7 +72,6 @@ const INNER_THICKNESS = 0.035;
 const RADIAL_WIDTH = 0.045;
 /** 主干道两侧细护线的宽度与横向偏移 */
 const RADIAL_GUARD_WIDTH = 0.17;
-const RADIAL_GUARD_OFFSET = 0;
 /** 总线起点：向内贯穿到雷达核心环（r=1.55），终点接机架轨道 */
 const RADIAL_START_RADIUS = 1.55;
 const RADIAL_LENGTH = RACK_RADIUS - RADIAL_START_RADIUS;

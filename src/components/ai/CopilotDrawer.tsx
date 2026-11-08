@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — 右侧智能运维副驾驶主面板（CopilotDrawer）
@@ -44,7 +44,6 @@ import {
   Eraser,
   Flame,
   Info,
-  Loader2,
   Mic,
   Network,
   RotateCw,
@@ -942,7 +941,6 @@ export default function CopilotDrawer() {
   /** 用户是否已关闭主动异常横幅（关闭后本轮会话不再打扰） */
   const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
   /** 最近一次失败请求的上下文（用于"一键重试"） */
-  const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null);
   /** 输入安全校验的即时错误提示 */
   const [inputGuardError, setInputGuardError] = useState<string | null>(null);
   /** 提示注入等"放行但警告"的提示（区别于阻断性错误） */
@@ -1373,7 +1371,6 @@ export default function CopilotDrawer() {
 
         /* 流正常结束 */
         patchMessage(assistantId, (m): CopilotMessage => ({ ...m, isStreaming: false }));
-        setLastFailedPrompt(null);
       } catch (error) {
         const aborted = error instanceof Error && error.name === 'AbortError';
         if (!aborted) {
@@ -1395,7 +1392,6 @@ export default function CopilotDrawer() {
             failed: true,
             failedPrompt: text,
           }));
-          setLastFailedPrompt(text);
         }
       } finally {
         setIsStreaming(false);
@@ -1414,7 +1410,6 @@ export default function CopilotDrawer() {
   const retryLastRequest = useCallback(
     (failedMessageId: string, prompt: string): void => {
       setMessages((prev) => prev.filter((m): boolean => m.id !== failedMessageId));
-      setLastFailedPrompt(null);
       /* 下一帧再发，确保上一条已从数组移除（sendMessage 读的是闭包里的 messages） */
       window.setTimeout((): void => {
         void sendMessage(prompt);

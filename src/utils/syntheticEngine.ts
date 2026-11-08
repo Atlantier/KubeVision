@@ -1,4 +1,4 @@
-/**
+﻿/**
  * KubeVision AI — 合成遥测引擎（Synthetic Telemetry Engine）
  *
  * 【设计意图】为「demo 模式」提供一台**可确定性复现**的集群状态演算机：
@@ -169,16 +169,6 @@ function appendHistory(history: readonly number[], value: number): number[] {
   while (next.length < 5) next.unshift(value);
   next.push(value);
   return next;
-}
-
-/**
- * meanOf —— 算术均值（空集合返回 0，避免 NaN 污染快照）。
- */
-function meanOf(values: readonly number[]): number {
-  if (values.length === 0) return 0;
-  let sum = 0;
-  for (const value of values) sum += value;
-  return sum / values.length;
 }
 
 /* ========================================================================== */
@@ -739,27 +729,6 @@ export function createEngineState(initial: TelemetrySnapshot): TelemetrySnapshot
 /* 容器实时日志流生成器（端侧脱敏引擎的实战数据源）                                */
 /* ========================================================================== */
 
-/**
- * 日志模板中的敏感信息样本（真实格式，仅供 rawText 使用）。
- *
- * 【安全声明】这些值全部是**公开文档中的示例凭据**，不对应任何真实账户：
- * - AWS 官方文档示例 AccessKey `AKIAIOSFODNN7EXAMPLE`（AWS 文档首页长期使用
- *   的标准示例串，官方明确标注为不可用的假凭据）；
- * - JWT 为手工构造的合法结构（header.payload 两段可 base64 解码，
- *   但 payload 仅 `{"sub":"admin"}` 无签名、无过期、不对应任何签发方）；
- * - IPv4 为 K8s 标准 Pod CIDR 段（10.244.0.0/16 是 flannel 默认网段）。
- * 它们的作用是让端侧脱敏引擎有**格式正确**的样本可处理——正则要匹配的是
- * 模式（`AKIA[0-9A-Z]{16}` / `eyJ...` 三段式 / `10.244.x.x:port`），
- * 用乱码假串会让脱敏引擎"看起来跑通但实际匹配不到"，失去实战意义。
- */
-const SENSITIVE_SAMPLES: readonly string[] = [
-  '10.244.2.18:6379',
-  '10.244.1.31:9092',
-  '10.244.0.11:5432',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiJ9',
-  'AKIAIOSFODNN7EXAMPLE',
-  'admin@kubevision.internal',
-];
 
 /**
  * 脱敏正则表 —— 把 rawText 中的敏感模式替换为 [REDACTED]。
@@ -902,7 +871,7 @@ const ABNORMAL_LOG_TEMPLATES: readonly LogTemplate[] = [
   },
   {
     severity: 'ERROR',
-    build: (pod): string =>
+    build: (): string =>
       `dial tcp 10.244.2.18:6379: connect: connection refused (kafka broker unreachable, retry 3/5 backoff=2s)`,
   },
   {
@@ -912,7 +881,7 @@ const ABNORMAL_LOG_TEMPLATES: readonly LogTemplate[] = [
   },
   {
     severity: 'ERROR',
-    build: (pod): string =>
+    build: (): string =>
       `S3 upload failed: InvalidAccessKeyId - key=AKIAIOSFODNN7EXAMPLE region=ap-east-1 endpoint=10.244.2.18:6379`,
   },
   {

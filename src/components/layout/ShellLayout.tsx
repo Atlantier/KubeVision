@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — 运维中控台响应式全屏布局外壳（ShellLayout）
@@ -33,7 +33,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Bot, Layers, ShieldCheck, TerminalSquare } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
@@ -53,12 +53,6 @@ import SplitPaneResizer, { useDrawerWidth } from '@/components/layout/SplitPaneR
 /* ========================================================================== */
 /* 模块级常量                                                                  */
 /* ========================================================================== */
-
-/** 性能 HUD 采样频率（Hz）：4Hz 对人眼足够流畅，且远低于渲染帧率 */
-const PERF_HUD_SAMPLE_HZ = 4;
-
-/** 性能 HUD 采样间隔（毫秒，由频率换算） */
-const PERF_HUD_SAMPLE_INTERVAL_MS = Math.round(1000 / PERF_HUD_SAMPLE_HZ);
 
 /* 说明：原 CHAOS_SCENARIO_OPTIONS 常量已随内联模态框一同迁出——
    演练场景卡片的完整数据表现由独立的 ChaosControlModal 组件持有

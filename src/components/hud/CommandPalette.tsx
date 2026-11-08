@@ -22,18 +22,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
   ArrowRight,
   Boxes,
   Command,
-  Cpu,
-  Gauge,
-  Radio,
   Search,
   Server,
-  ShieldCheck,
-  Square,
   X,
   Zap,
 } from 'lucide-react';

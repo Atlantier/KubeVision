@@ -63,7 +63,6 @@
 
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { shallow } from 'zustand/shallow';
 

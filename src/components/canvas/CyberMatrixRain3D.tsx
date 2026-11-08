@@ -25,7 +25,7 @@
 
 import { useFrame } from '@react-three/fiber';
 import { useClusterStore } from '@/store/useClusterStore';
-import { useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import * as THREE from 'three';
 
 /* ========================================================================== */

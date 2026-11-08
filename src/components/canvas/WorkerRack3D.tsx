@@ -51,13 +51,11 @@ import { useFrame, type ThreeEvent } from '@react-three/fiber';
 import { Edges, Html, RoundedBox, type EdgesRef } from '@react-three/drei';
 import * as THREE from 'three';
 
-import { cn } from '@/utils/cn';
 import { HoloFrame, MiniBar } from '@/components/canvas/HoloHud';
 import { useOptionalGltfModel } from '@/hooks/useOptionalGltfModel';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import {
-  COL_SPACING,
   POD_BOX_SIZE,
   RACK_BODY_CENTER_Y,
   RACK_BODY_SIZE,
@@ -65,7 +63,6 @@ import {
   RACK_TIER_BASE_Y,
   RACK_TIER_COUNT,
   RACK_TIER_HEIGHT,
-  ROW_DEPTH,
   SLOTS_PER_TIER,
   getRackSlotLocalPose,
   getRackTransform,
@@ -333,8 +330,6 @@ void main() {
 const SLOT_GHOST_LIFT = 0.032;
 
 /** 幽灵框几何：极薄的正方形细环（半径 0.24~0.28） */
-const SLOT_GHOST_INNER = 0.24;
-const SLOT_GHOST_OUTER = 0.28;
 
 /**
  * 正方形环的径向分段数。
@@ -343,7 +338,6 @@ const SLOT_GHOST_OUTER = 0.28;
  * **菱形**（对角朝 ±X / ±Z）。要让它看起来是与机架轴向对齐的正方形，
  * 需再绕环自身法线旋转 π/4——详见下方矩阵构建处的推导。
  */
-const SLOT_GHOST_SEGMENTS = 4;
 
 /** 承托底座厚度（极薄发光导轨：视觉上是一圈精密边框，不占体积） */
 const SLOT_PAD_HEIGHT = 0.016;

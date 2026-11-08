@@ -31,7 +31,6 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 
 import type {
   AlertEvent,
-  ChaosScenario,
   PodEntity,
   PodStatus,
   TelemetrySnapshot,

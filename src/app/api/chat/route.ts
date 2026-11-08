@@ -1,4 +1,4 @@
-/**
+﻿/**
  * KubeVision AI — Copilot 双擎流式对话路由（/api/chat）
  *
  * 【职责】把「Agent 自主规划 + RAG 检索增强 + 多模态快照感知 + MCP 工具调用」
@@ -1011,7 +1011,7 @@ async function streamWithLLM(params: {
   readonly emit: (event: ChatStreamEvent) => void;
   readonly signal: AbortSignal;
 }): Promise<boolean> {
-  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, intent, allowedTools, onFirstToolCall, emit, signal } = params;
+  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, allowedTools, onFirstToolCall, emit, signal } = params;
 
   try {
     const provider = createOpenAI({ apiKey, baseURL });
