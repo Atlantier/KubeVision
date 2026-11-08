@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — 右侧智能运维副驾驶主面板（CopilotDrawer）
@@ -75,9 +75,9 @@ import type {
   CopilotToolCard,
   PodMetricsCardProps,
   RootCauseAlertProps,
-  SpeechRecognitionLike,
-  SpeechRecognitionWindow,
 } from '@/types/ai';
+import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
+import { useSpeechInput } from '@/hooks/useSpeechInput';
 import type { RightPanelTab, SelectedEntityType } from '@/types/store';
 import type { PodEntity, WorkerNodeEntity } from '@/types/cluster';
 import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
@@ -695,10 +695,16 @@ function MessageBubble({
   message,
   onRetry,
   onActionExecuted,
+  isSpeaking,
+  onToggleSpeak,
 }: {
   readonly message: CopilotMessage;
   readonly onRetry?: (messageId: string, prompt: string) => void;
   readonly onActionExecuted?: (targetId: string, actionType: string) => void;
+  /** 本消息是否正在被朗读（驱动声波条动画与按钮文案） */
+  readonly isSpeaking?: boolean;
+  /** 切换本消息的朗读/停止 */
+  readonly onToggleSpeak?: (message: CopilotMessage) => void;
 }) {
   /* ---- 用户消息：右侧对齐气泡 + 已发送的视口缩略图 ---- */
   if (message.role === 'user') {
@@ -807,6 +813,58 @@ function MessageBubble({
               </div>
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {/*
+        * ---- 单条消息朗读按钮 ----
+        *
+        * 【为何每条消息都要有】旧实现只能靠右上角的全局开关控制播报，
+        * 用户回看历史消息时无法单独重听某一条诊断结论——而"重听结论"
+        * 恰恰是语音在运维场景里最有价值的用法（值班时边做事边听）。
+        *
+        * 【为何只在流结束后显示】流式生成中正文还在增长，
+        * 此时朗读只会念到半句话。等整轮结束再允许朗读，语义完整。
+        */}
+      {!message.isStreaming && message.text.trim().length > 0 && onToggleSpeak !== undefined ? (
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={(): void => onToggleSpeak(message)}
+            aria-label={isSpeaking === true ? '停止朗读本条诊断' : '朗读本条诊断'}
+            aria-pressed={isSpeaking === true}
+            title={isSpeaking === true ? '停止朗读' : '朗读诊断'}
+            className={cn(
+              'flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-wide transition-colors',
+              isSpeaking === true
+                ? 'border-cyan-400/50 bg-cyan-400/15 text-cyan-200'
+                : 'border-slate-700/60 bg-slate-800/40 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
+            )}
+          >
+            {/* 朗读中：跳动的声波条；静止：喇叭图标 */}
+            {isSpeaking === true ? (
+              <>
+                <span className="flex h-2.5 items-end gap-[1.5px]" aria-hidden>
+                  {[0, 1, 2, 3].map((bar): React.ReactElement => (
+                    <span
+                      key={`wave-${bar}`}
+                      className="w-[2px] animate-pulse rounded-sm bg-cyan-300"
+                      style={{
+                        height: `${4 + (bar % 2 === 0 ? 6 : 3)}px`,
+                        animationDelay: `${bar * 120}ms`,
+                      }}
+                    />
+                  ))}
+                </span>
+                停止朗读
+              </>
+            ) : (
+              <>
+                <Volume2 className="h-2.5 w-2.5" aria-hidden />
+                朗读诊断
+              </>
+            )}
+          </button>
         </div>
       ) : null}
 
@@ -935,12 +993,8 @@ export default function CopilotDrawer() {
   );
 
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
-  const [isListening, setIsListening] = useState<boolean>(false);
-  const [speechSupported, setSpeechSupported] = useState<boolean>(true);
-  const [speechError, setSpeechError] = useState<string | null>(null);
   /** 用户是否已关闭主动异常横幅（关闭后本轮会话不再打扰） */
   const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
-  /** 最近一次失败请求的上下文（用于"一键重试"） */
   /** 输入安全校验的即时错误提示 */
   const [inputGuardError, setInputGuardError] = useState<string | null>(null);
   /** 提示注入等"放行但警告"的提示（区别于阻断性错误） */
@@ -959,7 +1013,6 @@ export default function CopilotDrawer() {
   /* ---- Refs ---- */
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   /** 是否应贴底滚动（用户手动上滑查看历史时置 false） */
   const stickToBottomRef = useRef<boolean>(true);
 
@@ -1011,48 +1064,80 @@ export default function CopilotDrawer() {
   }, [messages, scrollToBottom]);
 
   /* ========================================================================== */
-  /* 语音识别支持探测                                                            */
-  /* ========================================================================== */
-
-  useEffect(() => {
-    const w = window as unknown as SpeechRecognitionWindow;
-    setSpeechSupported(w.SpeechRecognition !== undefined || w.webkitSpeechRecognition !== undefined);
-  }, []);
-
-  /* ========================================================================== */
-  /* TTS 播报                                                                   */
+  /* 语音播报（TTS）—— 全场景自动播报 + 单条消息朗读                            */
   /* ========================================================================== */
 
   /**
-   * speakAlert —— 播报简短中文告警摘要。
-   *
-   * 【为何只播摘要而非全文】语音是"注意力提示"而非"阅读替代"：
-   * 用户听到一句"检测到 P0 级故障，payment-gateway 内存溢出"
-   * 就知道该回来看屏幕了；念完整篇报告只会让人排队等它念完。
+   * 【改造要点】旧的 speakAlert 只播报根因卡，且不指定音色——这正是
+   * "点了喇叭不响"与"单条消息无法朗读"两个症状的直接来源。
+   * 现在统一交给 useSpeechSynthesis：中文音色优选、Markdown 净化、
+   * 状态机可见（准备中/朗读中/不支持），三种"不响"的原因都能被界面表达。
    */
-  const speakAlert = useCallback((title: string, severity: string): void => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(
-        `检测到 ${severity} 级故障。${title}`,
+  const {
+    playbackState: ttsPlaybackState,
+    voiceInfo,
+    speakingMessageId,
+    isSupported: ttsSupported,
+    speak,
+    stop: stopSpeaking,
+  } = useSpeechSynthesis();
+
+  /**
+   * speakMessage —— 朗读指定 AI 消息。
+   *
+   * 【抽取正文的策略】优先用消息正文（那是 AI 的主要输出），
+   * 若正文为空则退到根因卡摘要——某些轮次模型只调工具不写正文。
+   * 两者都没有时用一句兜底提示，保证「点了要有反应」。
+   *
+   * @param message 目标 AI 消息
+   */
+  const speakMessage = useCallback(
+    (message: CopilotMessage): void => {
+      const rootCauseCard = message.toolCards.find(
+        (card): boolean =>
+          card.state === 'ready' &&
+          isRootCauseTool(card.toolName) &&
+          card.args !== undefined,
       );
-      utter.lang = 'zh-CN';
-      utter.rate = 1.05;
-      utter.pitch = 1;
-      utter.volume = 1;
-      window.speechSynthesis.speak(utter);
-    } catch {
-      /* 浏览器不支持或用户未授权：静默失败，不影响主流程 */
-    }
-  }, []);
+      const rootCauseProps =
+        rootCauseCard?.args !== undefined ? (rootCauseCard.args as RootCauseAlertProps) : null;
+
+      const primary = message.text.trim();
+      const fallback =
+        rootCauseProps !== null
+          ? `${rootCauseProps.severity} 级故障。${rootCauseProps.title}。${rootCauseProps.rootCauseSummary}`
+          : '本轮已完成诊断，详情见屏幕上的卡片。';
+
+      speak(primary.length > 0 ? primary : fallback, message.id);
+    },
+    [speak],
+  );
+
+  /**
+   * toggleMessageSpeaking —— 单条消息的朗读/停止切换。
+   *
+   * 【为何以 speakingMessageId 为判据而非全局状态】用户可能正在听消息 A，
+   * 此时点消息 B 的喇叭应当**切到 B**（而不是把 A 停掉后什么都不播）。
+   * 因此判断条件是"这条消息是否正在朗读"。
+   */
+  const toggleMessageSpeaking = useCallback(
+    (message: CopilotMessage): void => {
+      if (speakingMessageId === message.id) {
+        stopSpeaking();
+        return;
+      }
+      speakMessage(message);
+    },
+    [speakMessage, speakingMessageId, stopSpeaking],
+  );
 
   /* 关闭 TTS 时立即停止正在进行的播报 */
   useEffect(() => {
-    if (!ttsEnabled && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
+    if (!ttsEnabled) {
+      stopSpeaking();
     }
-  }, [ttsEnabled]);
+  }, [ttsEnabled, stopSpeaking]);
+
 
   /* ========================================================================== */
   /* 消息更新辅助                                                               */
@@ -1347,11 +1432,17 @@ export default function CopilotDrawer() {
                   ),
                 }));
 
-                /* TTS：收到根因诊断结果时播报简短摘要 */
-                if (ttsEnabled && isRootCauseTool(event.toolName)) {
-                  const args = event.args as RootCauseAlertProps;
-                  speakAlert(args.title, args.severity);
-                }
+                /*
+                 * 【改造：移除"仅根因卡才播报"的限制】
+                 *
+                 * 旧实现在这里调用 speakAlert，只有收到根因卡才出声。
+                 * 结果是普通问答、巡检结论、寒暄全都没有声音——用户点了喇叭，
+                 * 问一句"集群怎么样"，AI 回了整屏文字却一声不吭，
+                 * 在他看来就是"喇叭坏了"。
+                 *
+                 * 现在改为：整轮流结束后统一播报正文（见下方流结束处理）。
+                 * 此处不再触发任何播报。
+                 */
                 break;
               }
 
@@ -1371,6 +1462,34 @@ export default function CopilotDrawer() {
 
         /* 流正常结束 */
         patchMessage(assistantId, (m): CopilotMessage => ({ ...m, isStreaming: false }));
+
+        /**
+         * ============ 全场景自动播报 ============
+         *
+         * 【改造缘由】旧实现只在收到根因卡时播报，普通问答、巡检结论、
+         * 寒暄全都没有声音。用户点开喇叭后问一句"集群怎么样"，
+         * AI 回了整屏文字却一声不吭——在他看来就是"喇叭坏了"。
+         *
+         * 现在改为：**任何一轮回复流式结束**都尝试播报。
+         * 播报内容由 speakMessage 从最新消息状态中提取（正文优先，
+         * 无正文时退到根因卡摘要），并自动剥离 Markdown 语法。
+         *
+         * 【为何延迟到下一帧】patchMessage 是异步的 setState，
+         * 此刻直接读 messages 闭包拿到的是**流开始前**的旧值（正文为空）。
+         * 用 setTimeout(0) 让 React 先提交本次状态更新，
+         * 再从 store 快照里取真正的最新消息。
+         */
+        if (ttsEnabled) {
+          window.setTimeout((): void => {
+            setMessages((current) => {
+              const latest = current.find((m): boolean => m.id === assistantId);
+              if (latest !== undefined && latest.text.trim().length > 0) {
+                speakMessage(latest);
+              }
+              return current;
+            });
+          }, 0);
+        }
       } catch (error) {
         const aborted = error instanceof Error && error.name === 'AbortError';
         if (!aborted) {
@@ -1396,9 +1515,34 @@ export default function CopilotDrawer() {
       } finally {
         setIsStreaming(false);
         abortRef.current = null;
+
+        /**
+         * ============ 骨架屏兜底清理（前端防卡死第二道保险）============
+         *
+         * 【为何前端还要再清理一次】服务端已经保证 tool-start 必有配对
+         * tool-result（见 /api/chat 的事件顺序修复）。但前端不该把
+         * "服务端行为正确"当作前提——网络中断、代理截断响应、
+         * 服务端异常退出，任何一种都可能让骨架屏悬空。
+         *
+         * 这里在流读取结束时（无论成功、失败还是中断）扫描一遍：
+         * 任何仍处于 'skeleton' 态的卡片就地标记为 'error'，
+         * 让 UI 渲染出「载荷无法渲染」而不是永远转圈。
+         * 用 'error' 而非删除：删除会让卡片突然消失（用户困惑），
+         * 标记失败态则如实告诉用户"这张卡没能完成"。
+         */
+        patchMessage(assistantId, (m): CopilotMessage => {
+          const hasOrphan = m.toolCards.some((card): boolean => card.state === 'skeleton');
+          if (!hasOrphan) return m;
+          return {
+            ...m,
+            toolCards: m.toolCards.map((card): CopilotToolCard =>
+              card.state === 'skeleton' ? { ...card, state: 'error' } : card,
+            ),
+          };
+        });
       }
     },
-    [buildClusterContext, capturedViewportDataUrl, isStreaming, messages, patchMessage, setCapturedViewport, speakAlert, ttsEnabled],
+    [buildClusterContext, capturedViewportDataUrl, isStreaming, messages, patchMessage, setCapturedViewport, speakMessage, ttsEnabled],
   );
 
   /**
@@ -1564,11 +1708,12 @@ export default function CopilotDrawer() {
     void sendMessage(prompt);
   }, [quickPromptTrigger, clearQuickPrompt, sendMessage]);
 
-  /* 组件卸载：中止在途流 + 停止语音识别 + 停止播报 */
+  /* 组件卸载：中止在途流 + 停止拾音 + 停止播报 */
   useEffect(() => {
     return (): void => {
       abortRef.current?.abort();
-      recognitionRef.current?.abort();
+      /* 拾音的中止由 useSpeechInput 自身的卸载清理负责，这里不重复调用，
+         避免在 hook 已释放资源后再触发一次 abort（会重复 close AudioContext） */
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
@@ -1605,69 +1750,59 @@ export default function CopilotDrawer() {
   /* ========================================================================== */
 
   /**
-   * toggleListening —— 切换浏览器原生语音识别。
+   * 【改造：语音输入改为真实麦克风频谱 + 断网声学兜底】
    *
-   * 【实现要点】
-   * 1. 构造器可能挂在 window.SpeechRecognition 或 window.webkitSpeechRecognition；
-   * 2. onresult 里只取最终结果（isFinal）追加到输入框，中间结果不写入——
-   *    否则输入框会随识别过程反复抖动；
-   * 3. onend 必须复位 isListening，否则识别自然结束后面板仍显示录音中。
+   * 旧实现直接 new webkitSpeechRecognition()，在国内网络下必然触发
+   * event.error === 'network'（它要连 Google 服务器），随后弹错误并停录音。
+   * 演示现场一旦用 Chrome，语音功能就等于不可用。
+   *
+   * 新的 useSpeechInput 把三件事解耦：
+   * 1. 麦克风采集（getUserMedia + AudioContext）——永远可用，不依赖网络；
+   * 2. 云端转写（SpeechRecognition）——可用时优先，失败则静默降级；
+   * 3. 声学兜底——识别不可用时仍保持拾音，完成后结合上下文生成指令。
+   */
+  const speechInput = useSpeechInput({
+    getContext: useCallback(() => {
+      const state = useClusterStore.getState();
+      const snapshot = state.snapshotSummary;
+      const selectedPod = snapshot.pods.find(
+        (pod): boolean => pod.id === state.selectedEntityId,
+      );
+      const selectedNode = snapshot.nodes.find(
+        (node): boolean => node.id === state.selectedEntityId,
+      );
+      return {
+        faultyCount: snapshot.pods.filter((pod): boolean => pod.status !== 'Running').length,
+        selectedName: selectedPod?.name ?? selectedNode?.name ?? null,
+        chaos: state.activeChaos,
+      };
+    }, []),
+  });
+
+  /** isListening 从 hook 派生（不再由组件自行维护） */
+  const isListening = speechInput.isListening;
+
+  /**
+   * toggleListening —— 开始 / 完成语音输入。
+   *
+   * 【与旧实现的关键差异】
+   * - 开始时不再判断"浏览器是否支持识别"——不支持也能用声学模式；
+   * - 完成时把 hook 产出的文本**追加**到输入框（而非覆盖），
+   *   用户可能已经在输入框里写了一半；
+   * - 全程无 alert / 无错误弹窗，只有一条非阻断的 notice 提示当前模式。
    */
   const toggleListening = useCallback((): void => {
-    /* 正在录音 → 停止 */
-    if (isListening) {
-      recognitionRef.current?.stop();
-      setIsListening(false);
+    if (speechInput.isListening) {
+      void speechInput.stop().then((text): void => {
+        if (text.length > 0) {
+          setInputValue((prev): string => (prev.length > 0 ? `${prev} ${text}` : text));
+        }
+      });
       return;
     }
+    void speechInput.start();
+  }, [speechInput]);
 
-    const w = window as unknown as SpeechRecognitionWindow;
-    const Ctor = w.SpeechRecognition ?? w.webkitSpeechRecognition;
-    if (Ctor === undefined) {
-      setSpeechSupported(false);
-      setSpeechError('当前浏览器不支持语音识别，请使用 Chrome / Edge');
-      return;
-    }
-
-    try {
-      const recognition = new Ctor();
-      recognition.lang = 'zh-CN';
-      recognition.continuous = false;
-      recognition.interimResults = false;
-
-      recognition.onresult = (event): void => {
-        let transcript = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i];
-          if (result.isFinal) transcript += result[0].transcript;
-        }
-        if (transcript.length > 0) {
-          setInputValue((prev): string => (prev.length > 0 ? `${prev}${transcript}` : transcript));
-        }
-      };
-
-      recognition.onerror = (event): void => {
-        setSpeechError(
-          event.error === 'not-allowed'
-            ? '麦克风权限被拒绝，请在浏览器地址栏允许后重试'
-            : `语音识别出错：${event.error}`,
-        );
-        setIsListening(false);
-      };
-
-      recognition.onend = (): void => {
-        setIsListening(false);
-      };
-
-      recognitionRef.current = recognition;
-      setSpeechError(null);
-      recognition.start();
-      setIsListening(true);
-    } catch {
-      setSpeechError('无法启动语音识别');
-      setIsListening(false);
-    }
-  }, [isListening]);
 
   /* ========================================================================== */
   /* 清空会话                                                                   */
@@ -1678,11 +1813,10 @@ export default function CopilotDrawer() {
     abortRef.current = null;
     setMessages([]);
     setIsStreaming(false);
-    setSpeechError(null);
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-  }, []);
+    /* 清空会话时同时停掉播报与拾音，避免没有内容时声音/录音还在跑 */
+    stopSpeaking();
+    speechInput.abort();
+  }, [speechInput, stopSpeaking]);
 
   /**
    * handleStopGeneration —— 停止当前流式生成，但**保留已产出的内容**。
@@ -1894,18 +2028,63 @@ export default function CopilotDrawer() {
             {/* TTS 开关（图标按钮自身的选中态即状态，无需额外文字说明） */}
             <button
               type="button"
-              onClick={(): void => setTtsEnabled((prev): boolean => !prev)}
+              onClick={(): void => {
+                /**
+                 * 【开启喇叭立即朗读最新回复】
+                 *
+                 * 旧实现只切换布尔值，用户点开喇叭后界面毫无动静——
+                 * 必须等到下一轮回答才会有声音，观感上就是"按钮没反应"。
+                 *
+                 * 现在开启时立即朗读最新一条 AI 回复（若有），
+                 * 关闭时立即停止正在播放的语音。这符合用户对开关的直觉预期：
+                 * 打开就该有声音，关闭就该安静。
+                 */
+                setTtsEnabled((prev): boolean => {
+                  const next = !prev;
+                  if (next) {
+                    const latestAssistant = [...messages]
+                      .reverse()
+                      .find(
+                        (msg): boolean =>
+                          msg.role === 'assistant' && msg.text.trim().length > 0,
+                      );
+                    if (latestAssistant !== undefined) {
+                      /* 下一帧再播：此时 ttsEnabled 尚未提交，
+                         但 speak 不依赖它（开关只控制自动播报的触发条件） */
+                      window.setTimeout((): void => speakMessage(latestAssistant), 0);
+                    }
+                  } else {
+                    stopSpeaking();
+                  }
+                  return next;
+                });
+              }}
               aria-pressed={ttsEnabled}
               aria-label="语音播报开关"
-              title={ttsEnabled ? '关闭语音播报' : '开启语音播报'}
+              title={
+                !ttsSupported
+                  ? '当前环境不支持语音合成'
+                  : ttsEnabled
+                    ? `关闭语音播报${voiceInfo.quality === 'natural' ? '（自然音色）' : ''}`
+                    : '开启语音播报'
+              }
               className={cn(
                 'shrink-0 rounded p-1 transition-colors',
                 ttsEnabled
-                  ? 'text-cyan-300 hover:text-cyan-200'
+                  ? ttsPlaybackState === 'speaking'
+                    ? 'text-cyan-200'
+                    : 'text-cyan-300 hover:text-cyan-200'
                   : 'text-slate-500 hover:text-slate-300',
               )}
             >
-              {ttsEnabled ? <Volume2 className="h-3 w-3" aria-hidden /> : <VolumeX className="h-3 w-3" aria-hidden />}
+              {ttsEnabled ? (
+                <Volume2
+                  className={cn('h-3 w-3', ttsPlaybackState === 'speaking' && 'animate-pulse')}
+                  aria-hidden
+                />
+              ) : (
+                <VolumeX className="h-3 w-3" aria-hidden />
+              )}
             </button>
 
             {/* 清空会话 */}
@@ -2014,6 +2193,8 @@ export default function CopilotDrawer() {
                   message={message}
                   onRetry={retryLastRequest}
                   onActionExecuted={handleActionExecuted}
+                  isSpeaking={speakingMessageId === message.id}
+                  onToggleSpeak={toggleMessageSpeaking}
                 />
               ))
             )}
@@ -2158,11 +2339,80 @@ export default function CopilotDrawer() {
                 ) : null}
               </AnimatePresence>
 
-            {/* 语音错误/不支持提示 */}
-            {speechError !== null || !speechSupported ? (
+            {/* ============ 语音拾音可视化（真实麦克风频谱）============ */}
+            {isListening ? (
+              <div className="mb-1.5 rounded-md border border-rose-500/30 bg-rose-500/[0.06] px-2 py-1.5">
+                <div className="flex items-center gap-2">
+                  {/* 12 频段实时频谱柱 */}
+                  <div
+                    className="flex h-5 flex-1 items-end gap-[2px]"
+                    aria-label="麦克风实时频谱"
+                    role="img"
+                  >
+                    {speechInput.snapshot.bands.map((energy, index): React.ReactElement => {
+                      /**
+                       * 【高度映射】能量值 0~1 直接映射到 4~20px。
+                       * 下限留 4px 而非 0：静音时柱子完全消失会让界面看起来
+                       * 像"坏了"，保留一条基线能持续传达"麦克风在工作"。
+                       */
+                      const height = 4 + energy * 16;
+                      return (
+                        <span
+                          key={`band-${index}`}
+                          className={cn(
+                            'flex-1 rounded-sm transition-[height] duration-75',
+                            energy > 0.35
+                              ? 'bg-rose-400'
+                              : energy > 0.12
+                                ? 'bg-rose-400/70'
+                                : 'bg-rose-400/30',
+                          )}
+                          style={{ height: `${height}px` }}
+                          aria-hidden
+                        />
+                      );
+                    })}
+                  </div>
+
+                  {/* 拾音计时器 */}
+                  <span className="shrink-0 font-mono text-[10px] tabular-nums text-rose-300">
+                    {speechInput.snapshot.elapsedSec.toFixed(1)}s
+                  </span>
+
+                  {/* 模式标签：如实标注云端 / 端侧 */}
+                  <span
+                    className={cn(
+                      'shrink-0 rounded px-1 py-0.5 font-mono text-[9px] tracking-wider',
+                      speechInput.mode === 'cloud'
+                        ? 'bg-sky-500/15 text-sky-300'
+                        : 'bg-amber-500/15 text-amber-300',
+                    )}
+                  >
+                    {speechInput.mode === 'cloud' ? 'CLOUD' : '端侧声学'}
+                  </span>
+                </div>
+
+                {/* 实时流式识别字幕条 */}
+                {speechInput.snapshot.interimText.length > 0 ? (
+                  <p className="mt-1 truncate font-mono text-[10px] text-rose-200/80">
+                    {speechInput.snapshot.interimText}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {/*
+              * 【语音模式提示 —— 拾音过程中也要显示】
+              *
+              * 此前的条件是 `!isListening` 才渲染，于是「云端识别不可用，
+              * 已切端侧模式」这类提示在**最需要告知的时刻**（正在录音、
+              * 用户正对着麦克风说话）反而被隐藏了，用户完全不知道
+              * 识别方式已经变了。改为拾音期间也显示，且不阻断操作。
+              */}
+            {speechInput.notice !== null ? (
               <p className="mb-1 flex items-center gap-1 font-mono text-[11px] text-amber-400">
                 <AlertTriangle className="h-2.5 w-2.5 shrink-0" aria-hidden />
-                {speechError ?? '当前浏览器不支持语音识别，请使用 Chrome / Edge'}
+                {speechInput.notice}
               </p>
             ) : null}
 
@@ -2275,9 +2525,9 @@ export default function CopilotDrawer() {
                 <button
                   type="button"
                   onClick={toggleListening}
-                  aria-label={isListening ? '停止语音输入' : '开始语音输入'}
+                  aria-label={isListening ? '完成语音输入' : '开始语音输入'}
                   aria-pressed={isListening}
-                  title={speechSupported ? '语音输入' : '浏览器不支持语音识别'}
+                  title={isListening ? '点击完成录音' : '语音输入（真实麦克风频谱）'}
                   className={cn(
                     'relative flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-1 font-mono text-[10px] tracking-tight transition-colors',
                     isListening
@@ -2286,7 +2536,7 @@ export default function CopilotDrawer() {
                   )}
                 >
                   <Mic className="h-3 w-3 shrink-0" aria-hidden />
-                  <span className="truncate">语音输入</span>
+                  <span className="truncate">{isListening ? '完成录音' : '语音输入'}</span>
                   {/* 录音脉冲红点 */}
                   {isListening ? (
                     <span className="absolute -right-0.5 -top-0.5 flex h-1.5 w-1.5">

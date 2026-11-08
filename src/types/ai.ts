@@ -656,6 +656,90 @@ export interface SpeechRecognitionWindow {
 }
 
 /* ========================================================================== */
+/* 语音模块契约（TTS 播报 / STT 拾音）                                           */
+/* ========================================================================== */
+
+/**
+ * TtsPlaybackState —— 语音播报的运行态。
+ *
+ * 【为何需要显式状态机而非单个布尔】"点了喇叭不响"这个用户抱怨背后有三类
+ * 完全不同的原因，若用一个 `isSpeaking` 布尔表达，界面无法区分，
+ * 用户和开发者都只能盲猜：
+ * - 'preparing'  : 已受理，浏览器正在等待音频通道（Chrome 有约 200ms 起步延迟）
+ * - 'speaking'   : 正在出声
+ * - 'unsupported': 当前环境没有 speechSynthesis（或语音列表为空）
+ * - 'blocked'    : 浏览器自动播放策略拦截了首次发音（需用户手势）
+ * 把这三类分开表达，才能给出准确的界面提示而不是笼统的"没反应"。
+ */
+export type TtsPlaybackState = 'idle' | 'preparing' | 'speaking' | 'unsupported' | 'blocked';
+
+/**
+ * VoiceSelectResult —— 中文音色优选结果。
+ *
+ * 【字段说明】
+ * - voice    : 选中的音色对象（null 表示系统未安装任何中文音色）
+ * - quality  : 音质档位，用于界面诚实标注（natural 为神经网络自然音色，
+ *              standard 为传统拼接音色，none 为无可用音色）
+ * - source   : 说明本次选择命中了哪条规则，便于排障时解释"为什么是这把声音"
+ */
+export interface VoiceSelectResult {
+  readonly voice: SpeechSynthesisVoice | null;
+  readonly quality: 'natural' | 'standard' | 'none';
+  readonly source: string;
+}
+
+/**
+ * AsrFallbackMode —— 语音输入的运行模式。
+ *
+ * 【为何要区分两种模式】国内网络下 Chrome 的 webkitSpeechRecognition 依赖
+ * Google 服务器，几乎必然触发 `network` 错误。若此时弹出报错框，
+ * 演示会当场失败。改为回落"声学包络模式"后，麦克风仍在真实拾音、
+ * 频谱仍在跳动，用户说完依然能得到一条指令——体验是连贯的，
+ * 只是识别手段从"云端转写"降级为"端侧声学特征推断"。
+ * 界面必须如实标注当前处于哪种模式，不能让用户误以为语音被真正识别了。
+ */
+export type AsrFallbackMode = 'cloud' | 'acoustic';
+
+/**
+ * SpeechInputSnapshot —— 语音输入的实时可视化数据（每帧更新）。
+ *
+ * 【为何按帧更新而不用 React state】频谱柱需要 ~30-60Hz 刷新，
+ * 走 React state 会让整个抽屉每秒重渲染数十次，直接违背 60FPS 红线。
+ * 该快照由 hook 内部用 rAF 写入，组件通过受控的节流回调消费
+ * （仅保留 12 个频段值 + 计时 + 字幕，均为小对象，拷贝成本可忽略）。
+ */
+export interface SpeechInputSnapshot {
+  /** 12 个频段的归一化能量（0~1），驱动频谱柱高度 */
+  readonly bands: readonly number[];
+  /** 已拾音时长（秒） */
+  readonly elapsedSec: number;
+  /** 实时识别字幕（cloud 模式为中间结果，acoustic 模式为进度提示） */
+  readonly interimText: string;
+  /** 累计有效发声帧数（用于判定用户是否真的说过话） */
+  readonly activeVoiceFrames: number;
+  /** 当前运行模式 */
+  readonly mode: AsrFallbackMode;
+}
+
+/** 语音输入 hook 的对外接口 */
+export interface SpeechInputController {
+  /** 是否正在拾音 */
+  readonly isListening: boolean;
+  /** 实时可视化快照 */
+  readonly snapshot: SpeechInputSnapshot;
+  /** 当前模式 */
+  readonly mode: AsrFallbackMode;
+  /** 面向用户的非阻断提示（如"云端识别不可用，已切换端侧模式"） */
+  readonly notice: string | null;
+  /** 开始拾音 */
+  readonly start: () => Promise<void>;
+  /** 停止拾音并返回最终文本 */
+  readonly stop: () => Promise<string>;
+  /** 立即中止（不产出文本，用于组件卸载） */
+  readonly abort: () => void;
+}
+
+/* ========================================================================== */
 /* 端侧 Worker 消息协议（主线程 ↔ logClassifier.worker）                         */
 /* ========================================================================== */
 
