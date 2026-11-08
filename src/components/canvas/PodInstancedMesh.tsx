@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — 高性能 Pod 容器实例渲染器（PodInstancedMesh）
@@ -211,13 +211,13 @@ const FILTER_DIM_SCALE = 0.22;
 const FILTER_MATCH_SCALE = 1.12;
 
 /**
- * **零匹配**时的"幽灵巡检尺寸" —— 全部实例保持 0.68。
+ * **零匹配**时的"幽灵巡检尺寸" —— 全部实例保持 1.0（体积完全不缩水）。
  *
  * 【为何不做成 0】0 匹配不代表"这个维度不存在"，而是"当前没有容器处于该状态"。
- * 保持 0.68 的半透明体积感，机架依旧是完整的三个机柜，
+ * 保持 1.0 的原始体积、仅靠颜色向冷灰蓝收敛表达"幽灵态"，机架依旧是完整的三个机柜，
  * 用户一眼能看出"容器都在，只是当前筛选无命中"，而不是"容器消失了"。
  */
-const FILTER_NO_MATCH_SCALE = 0.68;
+const FILTER_NO_MATCH_SCALE = 1.0;
 
 /** 零匹配时颜色向冷灰蓝收敛的目标色（表达"当前过滤条件下无匹配"） */
 const COLOR_FILTER_GHOST = new THREE.Color('#334155');
@@ -971,7 +971,7 @@ export default function PodInstancedMesh() {
        * 【三态设计】
        * a) filter === 'ALL'                     → 全部 1.0（常态）
        * b) filter ≠ ALL 且 matchedCount > 0     → 匹配 1.12 高亮、其余 0.22 退让
-       * c) filter ≠ ALL 且 matchedCount === 0   → **全部 0.68** 幽灵巡检尺寸，
+       * c) filter ≠ ALL 且 matchedCount === 0   → **全部 1.0** 幽灵参考态（体积不缩水，仅颜色收敛灰蓝），
        *    颜色向冷灰蓝收敛 50%，表达"当前过滤条件下无匹配项"。
        *    这是修复"点异常状态后整排容器消失"的关键分支：
        *    没有匹配 ≠ 容器不存在，机架必须保持完整体积感。

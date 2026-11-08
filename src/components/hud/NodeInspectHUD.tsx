@@ -1230,8 +1230,17 @@ function FilterStatusBanner() {
       />
 
       {isEmpty ? (
+        /*
+         * 【零命中说明（本轮强化）】用户点了一个计数为 0 的筛选器时，
+         * 画面里 24 台刀片全部转为冷灰蓝幽灵态——整体变灰、却没有任何高亮，
+         * 极易被误读为"点击无效"或"画面坏了"。
+         * 因此文案必须同时回答两件事：
+         *   1. 集群里确实没有该状态的容器（不是按钮失效）；
+         *   2. 那些变灰的方块**仍然存在**，是刻意的幽灵透视参考态。
+         * 只写"无处于该状态的容器"仍不够——用户会追问"那我的容器去哪了"。
+         */
         <span className="font-mono text-[11px] leading-tight text-amber-300">
-          当前集群无处于「{meta.label} ({meta.raw})」状态的容器 ({matched} / {total})
+          当前集群无「{meta.label} ({meta.raw})」容器 · {total} 个实例均处于幽灵透视参考态
         </span>
       ) : (
         <span className="font-mono text-[11px] leading-tight text-cyan-300">

@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — 运维中控台响应式全屏布局外壳（ShellLayout）
