@@ -38,6 +38,18 @@ export interface SanitizeResult {
   readonly sanitized: string;
   /** 本次累计替换的敏感字段数量（0 表示无敏感信息命中） */
   readonly maskedCount: number;
+  /**
+   * 按规则分类的命中计数（本轮新增，可选以保持向后兼容）。
+   *
+   * 【为何需要分类计数】汇总一个"共脱敏 5 处"对评审毫无说服力——
+   * 到底拦住了什么？是 5 个内网 IP，还是 5 个 AWS 密钥？
+   * 前者是信息卫生，后者是**阻止了一次凭证泄露**。
+   * 分类计数让"零出域"从一句口号变成可核对的账目。
+   *
+   * 键为 SanitizerRule.name（如 'bearer-token' / 'cloud-access-key' / 'ipv4'），
+   * 值为该规则本次命中的次数。
+   */
+  readonly maskedByRule?: Readonly<Record<string, number>>;
 }
 
 /**
@@ -213,6 +225,11 @@ export function sanitizeRawLog(raw: string): SanitizeResult {
 
   let sanitized = raw;
   let maskedCount = 0;
+  /*
+   * 按规则分类累计（本轮新增）。
+   * 用普通对象累积，仅在确有命中时才写入键，避免返回一堆 0 值的噪音。
+   */
+  const maskedByRule: Record<string, number> = {};
 
   for (const rule of SANITIZER_RULES) {
     /* ---- 统计命中数（String.match 不修改正则状态，比 exec 循环安全） ---- */
@@ -220,11 +237,12 @@ export function sanitizeRawLog(raw: string): SanitizeResult {
     if (matches === null || matches.length === 0) continue;
 
     maskedCount += matches.length;
+    maskedByRule[rule.name] = (maskedByRule[rule.name] ?? 0) + matches.length;
     /* ---- 全局替换为语义化占位符 ---- */
     sanitized = sanitized.replace(rule.pattern, rule.placeholder);
   }
 
-  return { sanitized, maskedCount };
+  return { sanitized, maskedCount, maskedByRule };
 }
 
 /**

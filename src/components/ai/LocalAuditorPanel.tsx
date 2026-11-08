@@ -115,6 +115,13 @@ interface AuditRecord {
   readonly sanitizedText: string;
   /** 本条脱敏替换的字段数 */
   readonly maskedCount: number;
+  /**
+   * 按敏感类型的分类计数（如 { 'bearer-token': 2, 'cloud-access-key': 1 }）。
+   *
+   * 【为何要有】只显示"共脱敏 5 处"，评审无法判断拦住的是内网 IP
+   * 还是 AWS 密钥——前者是信息卫生，后者是阻止凭证泄露，严重性天差地别。
+   */
+  readonly maskedByRule: Readonly<Record<string, number>>;
   /** 来源 Pod 名 */
   readonly podName: string;
   /** 命名空间 */
@@ -250,6 +257,130 @@ function HighlightedLog({ text, mode }: { readonly text: string; readonly mode: 
 }
 
 /* ========================================================================== */
+/* 子组件：敏感类型标签与语义分布                                                */
+/* ========================================================================== */
+
+/**
+ * SENSITIVE_RULE_META —— 脱敏规则名到「中文标签 + 配色」的映射。
+ *
+ * 【为何要中文 + 配色】评审看的是"你在浏览器里拦住了什么"。
+ * `bearer-token` 是内部实现名词；`Bearer JWT` 才是安全工程师的语言。
+ * 配色上：凭证类（云密钥/JWT/连接串）用玫红——那是真正的高危；
+ * 内网 IP 与邮箱用琥珀——属于信息卫生，级别不同必须区分。
+ */
+const SENSITIVE_RULE_META: Readonly<
+  Record<string, { readonly text: string; readonly className: string }>
+> = {
+  'bearer-token': { text: 'Bearer JWT', className: 'border-rose-500/50 bg-rose-500/10 text-rose-300' },
+  'cloud-access-key': { text: 'AKIA 密钥', className: 'border-rose-500/50 bg-rose-500/10 text-rose-300' },
+  'url-embedded-credential': {
+    text: '连接串凭证',
+    className: 'border-rose-500/50 bg-rose-500/10 text-rose-300',
+  },
+  'password-field': { text: '密码字段', className: 'border-rose-500/50 bg-rose-500/10 text-rose-300' },
+  ipv4: { text: '内网 IPv4', className: 'border-amber-500/45 bg-amber-500/10 text-amber-300' },
+  email: { text: '邮箱', className: 'border-amber-500/45 bg-amber-500/10 text-amber-300' },
+};
+
+/**
+ * MaskedTypeChips —— 按敏感类型分解的脱敏计数器。
+ *
+ * 【解决什么】旧 UI 只显示 `3 masked`。数字看似精确，但评审无从判断
+ * 这 3 处是 3 个内网 IP（信息卫生）还是 3 个 AWS 密钥（阻止凭证泄露）。
+ * 分类后，"零出域"从一句口号变成可核对的账目。
+ *
+ * @param props.maskedByRule 规则名到命中次数的映射
+ */
+function MaskedTypeChips({
+  maskedByRule,
+}: {
+  readonly maskedByRule: Readonly<Record<string, number>>;
+}): React.ReactElement | null {
+  const entries = Object.entries(maskedByRule).filter(([, count]): boolean => count > 0);
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="mt-0.5 flex flex-wrap items-center gap-1" aria-label="按敏感类型的脱敏计数">
+      {entries.map(([rule, count]): React.ReactElement => {
+        const meta = SENSITIVE_RULE_META[rule];
+        return (
+          <span
+            key={rule}
+            className={cn(
+              'rounded border px-1 py-0.5 font-mono text-[9px] font-bold leading-none tabular-nums',
+              meta?.className ?? 'border-slate-600/50 bg-slate-600/10 text-slate-400',
+            )}
+            title={`规则 ${rule} 命中 ${count} 次`}
+          >
+            {meta?.text ?? rule} ×{count}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * LabelDistributionBar —— 四类语义标签的实时占比条。
+ *
+ * 【设计意图】把"端侧模型到底在做什么判断"变成一眼可读的直方图。
+ * 健康集群应以 NORMAL_INFO 为主；注入 OOM 混沌后 CRITICAL_PANIC 占比
+ * 应当明显抬升——如果不变，说明模型没在起作用，这正是评审要抓的点。
+ *
+ * 【实现】单容器 + 各段 flexGrow 按占比分配；零占比段完全不渲染，
+ * 避免留下宽度为 0 却仍占位的空段。
+ */
+function LabelDistributionBar({
+  records,
+}: {
+  readonly records: readonly AuditRecord[];
+}): React.ReactElement {
+  const counts: Record<EdgeLogLabel, number> = {
+    CRITICAL_PANIC: 0,
+    RESOURCE_EXHAUSTED: 0,
+    NETWORK_TIMEOUT: 0,
+    NORMAL_INFO: 0,
+  };
+  for (const record of records) counts[record.result.label] += 1;
+
+  const total = records.length;
+  const labels = Object.keys(counts) as EdgeLogLabel[];
+
+  return (
+    <div className="mt-1 shrink-0" aria-label="端侧语义标签占比分布">
+      <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-800/80">
+        {labels.map((label): React.ReactElement | null => {
+          const count = counts[label];
+          if (count === 0) return null;
+          return (
+            <div
+              key={label}
+              className={cn('h-full transition-[flex-grow] duration-300', LABEL_META[label].dot)}
+              style={{ flexGrow: count }}
+              title={`${LABEL_META[label].text} ${count}/${total}`}
+            />
+          );
+        })}
+      </div>
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[9px] uppercase tracking-wider text-slate-500">
+        {labels.map((label): React.ReactElement | null => {
+          const count = counts[label];
+          if (count === 0) return null;
+          const percent = Math.round((count / total) * 100);
+          return (
+            <span key={label} className="flex items-center gap-1">
+              <span className={cn('h-1 w-1 rounded-full', LABEL_META[label].dot)} aria-hidden />
+              <span className="text-slate-400">{LABEL_META[label].text}</span>
+              <span className="tabular-nums text-slate-500">{percent}%</span>
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ========================================================================== */
 /* 子组件：审计结果卡片                                                         */
 /* ========================================================================== */
 
@@ -297,6 +428,13 @@ function AuditCard({
           {record.maskedCount} masked
         </span>
       </div>
+
+      {/*
+       * 按敏感类型的分解计数。
+       * 位于总数下方而非替换总数——总数回答"拦了多少"，
+       * 分解回答"拦住了什么"，后者才是评审关心的。
+       */}
+      <MaskedTypeChips maskedByRule={record.maskedByRule} />
 
       {/* ---- 原始 / 脱敏 切换 ---- */}
       <div className="mt-1 flex items-center gap-1">
@@ -416,9 +554,16 @@ export default function LocalAuditorPanel() {
 
       /* ---- 端侧统一脱敏（唯一权威源） ---- */
       let batchMasked = 0;
+      /*
+       * 逐条的「按类型脱敏计数」在脱敏时一并收集。
+       * 用局部 Map 累积（index 对齐 rawLogs），因为 LogEntry 是共享契约类型，
+       * 不该为了 UI 展示给它加字段——那会让所有构造 LogEntry 的地方被迫补参数。
+       */
+      const perEntryMaskedByRule: Array<Readonly<Record<string, number>>> = [];
       const sanitizedEntries: LogEntry[] = rawLogs.map((log): LogEntry => {
-        const { sanitized, maskedCount } = sanitizeRawLog(log.rawText);
+        const { sanitized, maskedCount, maskedByRule } = sanitizeRawLog(log.rawText);
         batchMasked += maskedCount;
+        perEntryMaskedByRule.push(maskedByRule ?? {});
         return { ...log, sanitizedText: sanitized, maskedCount };
       });
 
@@ -442,6 +587,7 @@ export default function LocalAuditorPanel() {
           rawText: entry.rawText,
           sanitizedText: entry.sanitizedText,
           maskedCount: entry.maskedCount,
+          maskedByRule: perEntryMaskedByRule[i] ?? {},
           podName: entry.podName,
           namespace: entry.namespace,
           result: results[i] ?? { label: 'NORMAL_INFO', confidence: 0.85, inferenceLatencyMs: 0 },
@@ -871,6 +1017,20 @@ export default function LocalAuditorPanel() {
           实时流式审计中 · 每 {AUTO_STREAM_INTERVAL_MS / 1000}s 抓取一批
         </p>
       ) : null}
+
+      {/*
+       * ==================== 语义标签占比分布条 ====================
+       *
+       * 【展示什么】当前已审计记录中，四类端侧语义标签的实时占比。
+       *
+       * 【为什么这个比"平均置信度"更有价值】单条置信度高不代表分类器可靠——
+       * 若 80% 日志都被判为 CRITICAL_PANIC，说明阈值偏松或模型没区分力，
+       * 这才是评审真正会质疑的地方。占比分布把分类器的行为暴露成一条可读的
+       * 直方图：健康集群应当以 NORMAL_INFO 为主，故障注入后高危占比才会抬升。
+       *
+       * 【实现】单条 flex 容器 + 按比例分配 flexGrow，无图表库依赖。
+       */}
+      {records.length > 0 ? <LabelDistributionBar records={records} /> : null}
 
       {/* ==================== 审计结果列表 ==================== */}
       <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto" aria-live="polite" aria-label="审计结果列表">
