@@ -35,6 +35,7 @@ import {
   AlertTriangle,
   ArrowUpRight,
   BookOpen,
+  FileText,
   Bot,
   Camera,
   CheckCircle2,
@@ -82,6 +83,8 @@ import type { RightPanelTab, SelectedEntityType } from '@/types/store';
 import type { PodEntity, WorkerNodeEntity } from '@/types/cluster';
 import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
 import RagKnowledgeModal from '@/components/ai/RagKnowledgeModal';
+import PostMortemModal from '@/components/ai/PostMortemModal';
+import { buildPostMortemFilename, buildPostMortemMarkdown } from '@/utils/postMortemReport';
 import { getCustomRunbooks } from '@/utils/sreRagEngine';
 
 /* ========================================================================== */
@@ -903,6 +906,35 @@ export default function CopilotDrawer() {
   /** RAG 知识库弹窗开关（低频 UI 态，允许 useState） */
   const [ragModalOpen, setRagModalOpen] = useState<boolean>(false);
 
+  /* ---- 复盘报告：弹窗开关 + 已生成的 Markdown 与文件名 ---- */
+  const [postMortemOpen, setPostMortemOpen] = useState<boolean>(false);
+  const [postMortemMarkdown, setPostMortemMarkdown] = useState<string>('');
+  const [postMortemFilename, setPostMortemFilename] = useState<string>('');
+
+  /**
+   * 会话起点时刻。
+   *
+   * 【为何用 ref 存而非 state】它只在首次挂载时确定一次、之后永不变化，
+   * 放进 state 会引入无意义的渲染依赖。用 ref 惰性初始化，
+   * 保证复盘时间线的基准点稳定。
+   */
+  const sessionStartedAtRef = useRef<number>(Date.now());
+
+  /**
+   * 是否有可复盘的内容。
+   *
+   * 【判定口径】至少产出一张 ready 态卡片才算。仅有聊天文字不构成
+   * 可复盘的事故——没有指标、根因或动作，导出的报告只剩空章节，
+   * 与其让用户下载一份无内容的文件，不如在源头上就不提供入口。
+   */
+  const hasReplayableContent = useMemo(
+    (): boolean =>
+      messages.some((message): boolean =>
+        message.toolCards.some((card): boolean => card.state === 'ready'),
+      ),
+    [messages],
+  );
+
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [speechSupported, setSpeechSupported] = useState<boolean>(true);
@@ -1096,6 +1128,29 @@ export default function CopilotDrawer() {
       })),
     };
   }, []);
+
+  /**
+   * handleExportPostMortem —— 生成复盘报告并打开预览弹窗。
+   *
+   * 【为何先生成再打开】用户点击后应立刻看到成品，而不是先看一个空白弹窗
+   * 再等内容填充。生成是纯同步字符串拼接（毫秒级），无需 loading 态。
+   *
+   * 【时间基准】sessionStartedAtRef 在挂载时确定，保证同一次会话内
+   * 反复导出时时间线的相对时刻保持一致，不会每点一次就往后漂一段。
+   */
+  const handleExportPostMortem = useCallback((): void => {
+    const nowMs = Date.now();
+    setPostMortemMarkdown(
+      buildPostMortemMarkdown({
+        messages,
+        clusterContext: buildClusterContext(),
+        startedAtMs: sessionStartedAtRef.current,
+        nowMs,
+      }),
+    );
+    setPostMortemFilename(buildPostMortemFilename(nowMs));
+    setPostMortemOpen(true);
+  }, [buildClusterContext, messages]);
 
   /* ========================================================================== */
   /* 核心：发送消息并消费 NDJSON 流                                                */
@@ -1817,6 +1872,30 @@ export default function CopilotDrawer() {
               </span>
             </button>
 
+            {/*
+             * ---- 导出 SRE 复盘报告 ----
+             *
+             * 【为何在这里而不是每条消息下】复盘是**会话级**产物：
+             * 它要汇总整条时间线、所有推理步骤、全部卡片与知识库引用。
+             * 挂在单条消息下会让用户误以为只导出那一轮的内容。
+             *
+             * 【为何要有卡片才显示】没有任何卡片说明这一轮没产生可复盘的
+             * 排障证据，导出的报告只有空章节——与其让用户下载一份无内容
+             * 的文件，不如在源头上就不提供入口。
+             */}
+            {hasReplayableContent ? (
+              <button
+                type="button"
+                onClick={handleExportPostMortem}
+                aria-label="导出 SRE 故障复盘报告"
+                title="基于本次会话的时间线、推理链、RAG 引用与自愈动作生成复盘报告"
+                className="flex shrink-0 items-center gap-1 rounded border border-emerald-400/25 bg-emerald-400/[0.07] px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wide text-emerald-300 transition-colors hover:border-emerald-300/60 hover:bg-emerald-400/15"
+              >
+                <FileText className="h-2.5 w-2.5" aria-hidden />
+                复盘报告
+              </button>
+            ) : null}
+
             {/* TTS 开关（图标按钮自身的选中态即状态，无需额外文字说明） */}
             <button
               type="button"
@@ -2309,6 +2388,19 @@ export default function CopilotDrawer() {
        * （drei <Html> 恒为 [10,0]，绝不会盖住它）。
        */}
       <RagKnowledgeModal open={ragModalOpen} onClose={(): void => setRagModalOpen(false)} />
+
+      {/*
+       * ---- SRE 故障复盘报告预览与导出 ----
+       *
+       * 与知识库弹窗同级挂载，同样经 createPortal 渲染到 body，
+       * 因此 z-50 的全屏覆盖不会受抽屉容器的 transform 影响。
+       */}
+      <PostMortemModal
+        open={postMortemOpen}
+        onClose={(): void => setPostMortemOpen(false)}
+        markdown={postMortemMarkdown}
+        filename={postMortemFilename}
+      />
     </div>
   );
 }
