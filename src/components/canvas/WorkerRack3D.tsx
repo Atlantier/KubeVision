@@ -189,7 +189,7 @@ const PILLAR_X = RACK_BODY_SIZE[0] / 2 - PILLAR_INSET;
 const PILLAR_Z = RACK_BODY_SIZE[2] / 2 - PILLAR_INSET;
 
 /** 立柱材质（暗钢蓝 + 极弱青色自发光，属于「结构」而非「发光体」） */
-const PILLAR_COLOR = '#1e293b';
+const PILLAR_COLOR = '#0f172a';
 const PILLAR_EMISSIVE = '#0e7490';
 const PILLAR_EMISSIVE_INTENSITY = 0.18;
 
@@ -245,7 +245,7 @@ const FIBER_RING_SEGMENTS = 32;
  * 中心亮斑覆盖整个接口环，边缘在环外 0.5 处完全衰减为 0，
  * 从任何机位看都是"一团从环心向外散开的光"，而不是一片方形贴纸。
  */
-const BEAM_BLOOM_SIZE = 1.9;
+const BEAM_BLOOM_SIZE = 0.85;
 
 /** 落束光斑的脉动角速度（rad/s，约 1.6 秒一次，与导光柱呼吸同一节奏档位） */
 const BEAM_BLOOM_PULSE_RATE = 3.9;
@@ -428,13 +428,60 @@ uniform float uOpacity;
 
 varying vec2 vUv;
 
-void main() {
-  float cell = sin(vUv.x * 110.0) * sin(vUv.y * 220.0);
-  float bone = smoothstep(-0.18, 0.18, cell);
-  float edgeGlow = smoothstep(0.0, 0.06, vUv.x) * (1.0 - smoothstep(0.94, 1.0, vUv.x));
+/*
+ * ---- 六边形蜂窝孔距场 ----
+ *
+ * 【核心数学】经典 hex tiling：把平面按六边形错行铺开，再取到最近六边形中心的
+ * 归一化距离 d。蜂窝网格的关键是**相邻行横向错开半格**，所以用
+ *   y 方向按 cell 高度分行，奇数行 x 偏移 0.5 格
+ * 若不这样做，直接 sin(x)·sin(y) 只能得到方格/菱形，成不了"蜂窝"。
+ *
+ * 返回值：0 = 落在孔洞中心，1 = 落在六边形网骨上。
+ */
+float hexField(vec2 p) {
+  /* 六边形纵横比：高度 = 宽度的 0.866 倍（正六边形的几何常数） */
+  const vec2 cellSize = vec2(0.14, 0.14 * 0.866);
 
-  vec3 color = mix(uColor * 0.55, uColor, bone);
-  float alpha = mix(0.08, uOpacity, bone) * edgeGlow;
+  vec2 q = p / cellSize;
+  /* 错行：把 y 取整后判断奇偶，奇数行整体右移半格 */
+  float row = floor(q.y);
+  q.x += mod(row, 2.0) * 0.5;
+
+  /* 六边形到中心的距离：用折叠坐标的 L∞ 组合近似（视觉上足够精确） */
+  vec2 local = fract(q) - 0.5;
+  float d = max(abs(local.x), abs(local.y) * 0.866 + abs(local.x) * 0.5);
+
+  /* d 小 → 孔洞；d 大 → 网骨。用两次 smoothstep 得到锐利孔壁 */
+  return smoothstep(0.24, 0.40, d);
+}
+
+void main() {
+  /*
+   * 【孔阵密度】vUv 是 0~1 的面片参数，实际世界尺寸约 1.62 × 3.96；
+   * 乘 (12, 28) 后单块面板上约有 12 列 × 28 行六边形，
+   * 远看是密集冲孔网，近看能数清孔洞，与参考图的比例一致。
+   */
+  vec2 hexUv = vec2(vUv.x * 12.0, vUv.y * 28.0);
+  float bone = hexField(hexUv);
+
+  /*
+   * 【纵向边缘辉光】两侧内壁的孔洞在靠近立柱的位置被柱体遮挡形成暗角，
+   * 而中央区域被内部刀片照亮最亮；用一段 smoothstep 做出"中间透光、两边收暗"
+   * 的渐变，侧板因此有纵向的层次，而不是一块均匀亮度的网。
+   */
+  float verticalFade = smoothstep(0.0, 0.22, vUv.y) * (1.0 - smoothstep(0.78, 1.0, vUv.y));
+
+  /*
+   * 【冷暖对比】网骨本身是深灰金属（uColor × 0.35），
+   * 孔洞里透出的是内部刀片的翠绿光（uColor 原色 × 1.15 提亮）。
+   * 这正是"深灰外框 + 翠绿内透"的冷暖层次来源。
+   */
+  vec3 boneColor = uColor * 0.35;
+  vec3 holeColor = uColor * 1.15;
+  vec3 color = mix(holeColor, boneColor, bone);
+
+  /* 孔洞通透（0.10）、网骨半透明（uOpacity）——网格既挡住杂乱又不遮死内部 */
+  float alpha = mix(0.10, uOpacity, bone) * verticalFade;
 
   gl_FragColor = vec4(color, alpha);
 }
@@ -1062,11 +1109,17 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           <boxGeometry args={[PILLAR_SIZE, RACK_BODY_SIZE[1], PILLAR_SIZE]} />
           <meshStandardMaterial
             color={PILLAR_COLOR}
-            metalness={0.3}
-            roughness={0.5}
+            metalness={0.45}
+            roughness={0.42}
             emissive={PILLAR_EMISSIVE}
             emissiveIntensity={PILLAR_EMISSIVE_INTENSITY}
           />
+          {/*
+           * 【枪灰高光倒棱】四根角柱是机柜的外骨骼：只靠深色实体在暗场里会
+           * 糊成黑柱，看不出体积。沿真正的棱边描一道 #334155 高光，
+           * 柱体立刻有"实心金属铸件"的硬朗转折，与内部的翠绿侧板形成冷暖对比。
+           */}
+          <Edges threshold={15} color="#334155" />
         </mesh>
       ))}
 
@@ -1232,17 +1285,26 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       </RoundedBox>
 
       {/*
-       * ---- 顶冠内嵌青色散热格栅芯 ----
+       * ---- 顶冠内嵌散热格栅（本轮由"青色发光板"改为"暗金灰凹槽"）----
        *
-       * 【为什么加这一块】参考图二的机柜顶部不是一块死板金属，
-       * 而是一条**内凹的发光格栅**——它承担了"这个柜子在散热/在运转"的叙事，
-       * 也是整个机柜唯一向上的发光面，让俯瞰机位有东西可看。
-       * 用极薄的发光薄片（0.02 高）嵌进顶冠上表面，不做几何雕刻，
-       * 成本仅一次 draw call，却让它从"黑色塑料盖"变成"散热模组"。
+       * 【修复什么】此前这里是一块 opacity 0.5 的 #22d3ee 发光板，
+       * 经 Bloom 放大后成了一整片刺眼的亮青色"游泳池"——顶盖完全过曝，
+       * 机柜看起来像顶着一块塑料板。
+       *
+       * 【改为】深邃重工暗金灰凹槽顶盖：基本不发光，只靠金属度与粗糙度
+       * 在场景光下形成沉稳哑光面；该有的高光交给顶冠中心的光纤接口细环
+       * 与收敛后的落束光斑（BEAM_BLOOM_SIZE 1.9 → 0.85）。
+       * 顶盖因此读起来是"厚重的金属散热模组"，而不是"一块发光贴片"。
        */}
       <mesh position={[0, CROWN_Y + CROWN_HEIGHT / 2 + 0.012, 0]} raycast={noRaycast} visible={!isGltfRackAvailable}>
         <boxGeometry args={[CROWN_WIDTH - 0.42, 0.02, CROWN_DEPTH - 0.42]} />
-        <meshBasicMaterial color="#22d3ee" toneMapped={false} transparent opacity={0.5} />
+        <meshStandardMaterial
+          color="#091326"
+          metalness={0.55}
+          roughness={0.38}
+          emissive="#0e7490"
+          emissiveIntensity={0.06}
+        />
       </mesh>
 
       {/*

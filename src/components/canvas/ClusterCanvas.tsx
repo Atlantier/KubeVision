@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — 3D 集群拓扑根画布（ClusterCanvas）
@@ -25,6 +25,7 @@ import { ContactShadows, Grid, MeshReflectorMaterial, PerformanceMonitor, Sparkl
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing';
 
 import { useClusterStore } from '@/store/useClusterStore';
+import CyberMatrixRain3D from '@/components/canvas/CyberMatrixRain3D';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { useInViewPause } from '@/hooks/useInViewPause';
 import { dispatchViewPreset, subscribeViewPreset } from '@/utils/viewPresetBus';
@@ -539,6 +540,21 @@ export default function ClusterCanvas() {
           两层尺度/速度/颜色都不同，才有"近亮远淡"的景深层次。 */}
         <Sparkles count={140} scale={[24, 2.5, 24]} size={1.6} speed={0.35} color="#38bdf8" position={[0, 1.2, 0]} opacity={0.75} />
         <Sparkles count={90} scale={[22, 10, 22]} size={1.1} speed={0.2} color="#10b981" position={[0, 5.0, 0]} opacity={0.45} />
+
+        {/*
+         * ---- 远景深空数字矩阵雨光幕 ----
+         *
+         * 半径 28 的背向圆柱内壁，完全包裹整个场景的远景天际线。
+         * 它填补的是"上半部死黑"：在没有它之前，机柜与晶核之上什么都没有，
+         * 画面纵深被硬生生截断；有了这层若隐若现的垂直光滴，
+         * 背景才读得出"机器背后是一整套数据洪流"。
+         *
+         * 【层级】挂载在场景根、所有前景物体外侧，且 depthWrite=false
+         * + 加色混合，因此它只往天空加光，绝不遮挡任何主体。
+         * 【不透明度】着色器末端统一乘 uOpacity（0.16 封顶），
+         * 保证它永远是氛围层而不是与主体争视觉权重的第二主角。
+         */}
+        <CyberMatrixRain3D />
 
         {/* ---- MASTER 控制平面全息模型（锚定 [0,2.5,0]，可点击选中 → 鸟瞰复位） ---- */}
         <MasterNode3D />

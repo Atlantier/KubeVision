@@ -425,50 +425,75 @@ function injectCrystalShader(shader: THREE.WebGLProgramParametersWithUniforms): 
          float edgeDist = min(min(vCrystalUv.x, 1.0 - vCrystalUv.x),
                               min(vCrystalUv.y, 1.0 - vCrystalUv.y));
 
+         /*
+          * ---- 状态色基准 ----
+          * stateColor 是「白基色 × 实例色」后的原始状态色（漫反射 albedo）。
+          * 注意：这一步还没被压暗，后续所有"亮度"都从它派生。
+          */
          vec3 stateColor = diffuseColor.rgb;
-         /* 状态色与冷白的 25% 混合：保留语义又不刺眼（旧实现是死白粗框） */
-         vec3 panelEdge = mix(stateColor, vec3(0.85, 1.0, 0.96), 0.25);
 
-         /* ================= 分支 A：顶 / 底面（暗钛金属机箱盖）================= */
-         float capRim   = 1.0 - smoothstep(0.0, 0.018, edgeDist);
-         float brush    = 0.5 + 0.5 * sin(vCrystalUv.x * 240.0);
-         float duct     = 0.5 + 0.5 * sin(vCrystalUv.y * 26.0);
-         float railMask = smoothstep(0.30, 0.32, abs(vCrystalUv.x - 0.5)) *
-                          (1.0 - smoothstep(0.34, 0.36, abs(vCrystalUv.x - 0.5)));
-         vec3 capGlow = panelEdge * capRim * 1.35
-                      + vec3(0.10, 0.22, 0.26) * duct * 0.30
-                      + panelEdge * railMask * 0.50;
+         /* 高亮档：状态色 × 1.35，只给棱线/灯槽/LED 用，绝不铺满整面 */
+         vec3 brightState = stateColor * 1.35;
+         /* 机身装甲底色：状态色 × 0.28 —— 深翡冷翠 / 玄武灰 */
+         vec3 armorBase = stateColor * 0.28;
 
-         /* ================= 分支 B：前后面板 / 侧面（精密刀片面板）================= */
+         /* ============ 分支 A：顶 / 底面（暗钛金属机箱盖，几乎不发光）============ */
+         float capEdge = 1.0 - smoothstep(0.0, 0.016, edgeDist);
+         float brush   = 0.5 + 0.5 * sin(vCrystalUv.x * 240.0);
+         vec3 capGlow = stateColor * capEdge * 0.55;
+
+         /* ============ 分支 B：前后面板 / 侧面（精密刀片）============ */
+
+         /* 1) 三道水平硬盘抽屉分舱凹槽：位于每个分舱的上下边界 */
          float bayLocal = fract(vCrystalUv.y * 3.0);
-         float bayMask  = smoothstep(0.04, 0.10, bayLocal) *
-                          (1.0 - smoothstep(0.78, 0.92, bayLocal));
-         float grille   = 0.55 + 0.45 * sin(vCrystalUv.x * 80.0);
-         float ledBand  = smoothstep(0.78, 0.80, vCrystalUv.x);
-         float ledDots  = step(0.55, fract(vCrystalUv.y * 44.0));
-         float panelRim = 1.0 - smoothstep(0.0, 0.030, edgeDist);
-         float bezel    = smoothstep(0.028, 0.072, edgeDist) *
-                          (1.0 - smoothstep(0.074, 0.094, edgeDist));
-         float inner    = smoothstep(0.092, 0.142, edgeDist);
+         float groove = smoothstep(0.0, 0.045, bayLocal) *
+                        (1.0 - smoothstep(0.955, 1.0, bayLocal));
+         /* groove = 0 处是凹槽（极暗），= 1 处是分舱主体 */
 
-         vec3 panelGlow = panelEdge * panelRim * 1.70
-                        + panelEdge * bezel * 0.22
-                        + stateColor * bayMask * inner * (0.40 + 0.28 * grille)
-                        + vec3(1.0, 1.0, 0.95) * ledBand * ledDots * bayMask * inner * 2.10;
+         /* 2) 三条水平发光导光槽：每个分舱中心一道细亮线 */
+         float slotDist = abs(bayLocal - 0.5);
+         float lightSlot = 1.0 - smoothstep(0.055, 0.085, slotDist);
 
-         /* ================= 合成 ================= */
+         /* 3) 正面边框倒角细线：仅最外 3% 面宽 */
+         float chamfer = 1.0 - smoothstep(0.0, 0.030, edgeDist);
+
+         /* 4) 右侧 4 颗针尖级 LED：仅 u > 0.86 的窄带，且纵向 4 段等分 */
+         float ledBand = smoothstep(0.86, 0.88, vCrystalUv.x) *
+                         (1.0 - smoothstep(0.96, 0.98, vCrystalUv.x));
+         float ledCell = floor(vCrystalUv.y * 4.0);
+         float ledLocal = fract(vCrystalUv.y * 4.0);
+         float ledDot = smoothstep(0.30, 0.40, ledLocal) *
+                        (1.0 - smoothstep(0.60, 0.70, ledLocal));
+         /* 四颗 LED 用不同亮度，像真实的链路指示灯阵列 */
+         float ledTier = 0.65 + 0.35 * fract(ledCell * 0.618 + 0.21);
+         float ledMask = ledBand * ledDot * ledTier;
+
+         /*
+          * ---- 组装自发光 ----
+          * 只有三类东西发光：棱线、导光槽、LED。
+          * 机身与分舱主体一律不发光——这正是"告别泛白浅绿"的关键：
+          * 旧版把 0.40 + 0.28·grille 的内芯也加进 emissive，
+          * 整块刀片因此被 Bloom 抬成一团浅绿。
+          */
+         vec3 panelGlow = brightState * chamfer * 0.95
+                        + brightState * lightSlot * groove * 0.85
+                        + vec3(1.0, 1.0, 0.96) * ledMask * 1.6;
+
+         /* ============ 合成 ============ */
          vec3 faceGlow = mix(panelGlow, capGlow, isCap);
-         /* 压暗固有漫反射：面板 0.30、顶面 0.16（金属更暗） */
-         diffuseColor.rgb *= mix(0.30, 0.16, isCap);
-         /* 顶面叠加拉丝纹理调制，进一步强化金属感 */
-         diffuseColor.rgb = mix(diffuseColor.rgb,
-                                vec3(0.06, 0.09, 0.10) * brush,
-                                isCap * 0.50);
+
+         /*
+          * 压暗固有漫反射：
+          *   面板 → 装甲底色（stateColor × 0.28），凹槽处再乘 0.35 做出真正的阴影感
+          *   顶面 → 更暗的玄武灰
+          */
+         vec3 panelArmor = armorBase * mix(0.35, 1.0, groove);
+         diffuseColor.rgb = mix(panelArmor, vec3(0.045, 0.055, 0.065) * (0.7 + 0.3 * brush), isCap);
 
          vec3 viewDir = normalize(-vViewPosition);
          float fresnel = pow(1.0 - clamp(dot(normalize(vViewNormal), viewDir), 0.0, 1.0), 2.8);
 
-         totalEmissiveRadiance += faceGlow + diffuseColor.rgb * fresnel * 0.35;
+         totalEmissiveRadiance += faceGlow + diffuseColor.rgb * fresnel * 0.22;
        }`,
     );
 }
