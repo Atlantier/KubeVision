@@ -37,6 +37,15 @@ export interface OptionalGltfModelResult {
   readonly scene: Group | null;
   /** 该路径下是否检测到真实可加载的 .glb */
   readonly isAvailable: boolean;
+  /**
+   * 探测是否已有结论。
+   *
+   * 【为何需要这个字段】调用方常需要区分"还在探测"与"确定没有模型"：
+   * 前者不该急着回退到程序化几何（会闪一下），后者应立刻回退。
+   * 在环境变量门控关闭时，探测**从一开始就已有结论**（不启用），
+   * 因此 isProbed 直接为 true，调用方不会卡在"等待中"的状态。
+   */
+  readonly isProbed: boolean;
 }
 
 /**
@@ -131,19 +140,56 @@ function loadModel(url: string): Promise<Group | null> {
 /**
  * useOptionalGltfModel —— 可选的 Blender 模型加载钩子。
  *
+ * 【环境变量门控：默认完全不发请求】
+ * 模型文件是**可选的增强项**——项目在不带 `.glb` 时用程序化几何体完整渲染。
+ * 但探测逻辑会在页面加载时向 `/models/*.glb` 发 HEAD 请求，
+ * 而这些文件通常并不存在于仓库中，于是每条请求都在 Network 面板留下
+ * 一条 **404**。三条 404 对开发调试是纯噪音，也会让评审误以为资源缺失。
+ *
+ * 因此默认**直接短路**：不发任何请求，返回 `{ scene: null, isAvailable: false, isProbed: true }`，
+ * 程序化几何体照常渲染，功能零损失、控制台零报错。
+ *
+ * 只有在显式设置 `NEXT_PUBLIC_ENABLE_GLTF_MODELS=true` 时（即真的往
+ * `public/models/` 放了模型并希望启用），才会执行真实探测。
+ *
  * @param url `.glb` 的公开路径，如 '/models/worker-rack.glb'
- * @returns { scene, isAvailable }；不可用时 scene 恒为 null
+ * @returns { scene, isAvailable, isProbed }；不可用或未启用时 scene 恒为 null
  */
 export function useOptionalGltfModel(url: string): OptionalGltfModelResult {
+  /**
+   * 是否启用真实模型探测。
+   *
+   * 【为何用 NEXT_PUBLIC_ 前缀】这个判断发生在**浏览器端**（useEffect 内），
+   * 非 NEXT_PUBLIC_ 前缀的环境变量在客户端构建时会被替换成 undefined，
+   * 导致门控永远不生效。
+   */
+  const gltfEnabled = process.env.NEXT_PUBLIC_ENABLE_GLTF_MODELS === 'true';
+
   const [scene, setScene] = useState<Group | null>(null);
   const [isAvailable, setIsAvailable] = useState<boolean>(false);
+  /**
+   * 探测是否已有结论。
+   *
+   * 【初值取反 gltfEnabled】未启用时，探测**从一开始就已完成**
+   * （结论是"不启用"），因此初值直接为 true；启用时才从 false 起步，
+   * 等 loadModel 落定后置 true。这样调用方永远不会卡在"等待中"。
+   */
+  const [isProbed, setIsProbed] = useState<boolean>(!gltfEnabled);
 
   useEffect((): void | (() => void) => {
+    /*
+     * 【门控短路】未启用时直接返回，连 HEAD 探测都不发。
+     * 这是消除控制台 3 条 `/models/*.glb` 404 的关键：
+     * 请求根本不发出，Network 面板自然干净。
+     */
+    if (!gltfEnabled) return undefined;
+
     /* 卸载标记：模型加载是异步的，组件可能在加载途中被卸载 */
     let cancelled = false;
 
     void loadModel(url).then((template): void => {
       if (cancelled) return;
+      setIsProbed(true);
       if (template === null) {
         /* 无模型：保持 fallback，不触发任何状态噪音 */
         setIsAvailable(false);
@@ -157,7 +203,7 @@ export function useOptionalGltfModel(url: string): OptionalGltfModelResult {
     return (): void => {
       cancelled = true;
     };
-  }, [url]);
+  }, [url, gltfEnabled]);
 
-  return { scene, isAvailable };
+  return { scene, isAvailable, isProbed };
 }

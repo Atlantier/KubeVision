@@ -1,4 +1,4 @@
-﻿/**
+/**
  * KubeVision AI — Copilot 双擎流式对话路由（/api/chat）
  *
  * 【职责】把「Agent 自主规划 + RAG 检索增强 + 多模态快照感知 + MCP 工具调用」
@@ -374,15 +374,62 @@ const rootCauseSchema = z.object({
   impactScope: z.string().describe('影响范围'),
 });
 
-/** proposeRemediationAction 工具的 Zod Schema —— 与 ActionConfirmProps 的核心字段同构 */
+/**
+ * normalizeActionType —— 把模型给出的自由文本动作类型归一化到 MCP 白名单。
+ *
+ * 【为何不能让 Schema 用 enum 强约束】`remediationSchema` 原先用
+ * `z.enum(['restart_pod', 'scale_deployment', 'drain_node'])`。
+ * 模型实际会输出 `"restart"`、`"drain"`、`"scale replicas"`、
+ * `"kubectl delete pod"` 这类近似值——enum 一拒，`safeParse` 失败，
+ * 上层 `validateToolArgs` 返回 null，进而触发
+ * **骨架屏永久悬空** 的 P0 缺陷（tool-start 已发、tool-result 永不发）。
+ *
+ * 动作类型的语义是确定的（只有这三种），模型只是措辞不准。
+ * 与其让整张卡片消失，不如把措辞映射回标准值——这正是路由层该承担的工作。
+ *
+ * @param raw 模型给出的原始动作描述
+ * @returns 白名单内的标准动作类型
+ */
+function normalizeActionType(raw: string): RemediationActionType {
+  const text = raw.toLowerCase();
+
+  /* 先判 scale：`scale_deployment` 里也含 deploy，但 drain/node 不会误伤 */
+  if (
+    text.includes('scale') ||
+    text.includes('replica') ||
+    text.includes('扩容') ||
+    text.includes('缩容')
+  ) {
+    return 'scale_deployment';
+  }
+  if (
+    text.includes('drain') ||
+    text.includes('node') ||
+    text.includes('cordon') ||
+    text.includes('驱逐')
+  ) {
+    return 'drain_node';
+  }
+  /* restart 及一切无法识别的措辞 → 最保守的 restart_pod */
+  return 'restart_pod';
+}
+
+/**
+ * proposeRemediationAction 的工具入参 Schema。
+ *
+ * 【容错策略】关键字段放宽为可选并给默认值：
+ * - `isHighRisk` 本就不该由模型决定——高危分级是服务端的确定事实
+ *   （见 validateToolArgs 中按 actionType 强制派生），模型给不给都不影响结果；
+ * - `paramDescription` 缺失时用空串，前端会显示通用动作说明，比整张卡消失好；
+ * - `actionType` 接受任意字符串，再由 normalizeActionType 映射到白名单；
+ * - `targetId` / `targetName` 可为空串，由 resolveEntityId 或稳态兜底目标补齐。
+ */
 const remediationSchema = z.object({
-  actionType: z
-    .enum(['restart_pod', 'scale_deployment', 'drain_node'])
-    .describe('MCP 工具白名单动作类型'),
-  targetId: z.string().describe('目标实体 ID'),
-  targetName: z.string().describe('目标实体展示名'),
-  paramDescription: z.string().describe('人类可读的参数说明'),
-  isHighRisk: z.boolean().describe('是否高危（true 需二次确认）'),
+  actionType: z.string().describe('动作类型（可为近似措辞，服务端会归一化）'),
+  targetId: z.string().optional().default('').describe('目标实体 ID'),
+  targetName: z.string().optional().default('').describe('目标实体展示名'),
+  paramDescription: z.string().optional().default('').describe('人类可读的参数说明'),
+  isHighRisk: z.boolean().optional().default(false).describe('是否高危（服务端会重新判定）'),
 });
 
 /* ========================================================================== */
@@ -1176,35 +1223,72 @@ async function streamWithLLM(params: {
          */
         onFirstToolCall(toolName);
 
-        /* 步骤 1：tool-start（前端立即渲染骨架屏） */
-        emit({ type: 'tool-start', toolCallId, toolName, mcpUri });
-
         /**
-         * 【在 tool-start 处即登记，而非 tool-result 之后】
-         * 若模型调用了工具但参数校验失败（下方 validated === null），
-         * 前端会留下一个永久骨架屏。此时若补全逻辑再补同一张卡，
-         * 用户会看到「一个卡住的骨架 + 一张补全卡」两块重复 UI。
-         * 在 start 处登记可让补全逻辑跳过该工具，保持"一张卡位对应一张卡"。
+         * ================= 事件顺序：先校验，再发 tool-start =================
+         *
+         * 【修复的 P0 缺陷】旧实现先发 `tool-start` 让前端挂骨架屏，
+         * 再校验参数；一旦校验返回 null 就 `continue` 跳过 `tool-result`。
+         * 结果是前端那个骨架屏**永久悬空**，同时 `emittedToolNames` 已在
+         * tool-start 处登记过该工具，流尾的 emitMissingCards 认为"已产出"
+         * 也不再补齐——用户看到一张永远转圈的卡片，且没有任何补救机制。
+         *
+         * 【正确顺序】必须先算出**确定的载荷**，确认非空后才发 tool-start。
+         * 这样每个 tool-start 100% 有配对的 tool-result，事件流不可能断链。
+         *
+         * 【载荷从哪来】三级兜底，保证第三张卡（动作卡）永不缺席：
+         *   1. validateToolArgs 正常校验通过 → 用模型给的参数；
+         *   2. 校验失败 → 用服务端构造器（buildMetricsArgs / buildRootCauseArgs /
+         *      buildActionArgs）按真实集群数据生成等价载荷；
+         *   3. 连构造器都拿不到目标（clusterContext 完全为空）→ 才跳过，
+         *      但**此时不发 tool-start**，因此不会留下悬空骨架。
          */
-        emittedToolNames.add(toolName);
+        const validated = validateToolArgs(
+          toolName,
+          part.args,
+          runbooks,
+          knownEntities,
+          clusterContext,
+        );
 
-        /* 步骤 2：延迟 300ms —— 让骨架屏有可见的存在感 */
-        await sleep(TOOL_RESULT_DELAY_MS_A, signal);
+        let finalPayload: PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps | null = validated;
 
-        /* 步骤 3：校验 args 后推 tool-result（前端据此水合卡片） */
-        const validated = validateToolArgs(toolName, part.args, runbooks, knownEntities);
-        if (validated === null) {
+        if (finalPayload === null) {
+          /* 服务端兜底：用真实集群数据构造等价载荷 */
+          const fallbackTarget = resolveSimulatorTarget(clusterContext, true);
+          const chaos = normalizeChaos(clusterContext.activeChaos);
+          if (toolName === 'renderPodMetrics') {
+            finalPayload = fallbackTarget.pod !== null ? buildMetricsArgs(fallbackTarget.pod) : null;
+          } else if (toolName === 'renderRootCauseAnalysis') {
+            finalPayload = buildRootCauseArgs(clusterContext, runbooks, fallbackTarget);
+          } else if (toolName === 'proposeRemediationAction') {
+            finalPayload = buildActionArgs(fallbackTarget, chaos);
+          }
+        }
+
+        /*
+         * 【无载荷 ⇒ 不发 tool-start】宁可少一张卡，也绝不留悬空骨架。
+         * 未登记到 emittedToolNames，因此流尾的补全会再尝试补齐，
+         * 两条路径互斥不会重复。
+         */
+        if (finalPayload === null) {
           emit({
             type: 'text',
-            content: `\n\n> [ SCHEMA-GUARD ] 工具 \`${toolName}\` 返回的参数未通过校验，已跳过渲染以保护界面。\n\n`,
+            content: `\n\n> [ SCHEMA-GUARD ] 工具 \`${toolName}\` 缺少可用的真实数据，本轮不渲染该卡片。\n\n`,
           });
           continue;
         }
+
+        /* 载荷就绪 → 依次发 start 与 result，中间保留骨架可见延迟 */
+        emit({ type: 'tool-start', toolCallId, toolName, mcpUri });
+        emittedToolNames.add(toolName);
+
+        await sleep(TOOL_RESULT_DELAY_MS_A, signal);
+
         emit({
           type: 'tool-result',
           toolCallId,
           toolName,
-          args: validated,
+          args: finalPayload,
         });
         continue;
       }
@@ -1431,11 +1515,57 @@ const STEADY_STATE_SEED_ENTITIES: readonly KnownEntity[] = [
  * @param knownEntities   本次请求上下文中的真实实体（用于校正模型幻觉的 ID）
  * @returns 通过校验的卡片载荷；校验失败返回 null
  */
+/**
+ * defaultParamDescription —— 按动作类型生成默认的参数说明。
+ *
+ * 【用途】当模型没有给出有意义的人话说明（缺失、过短、或含 n/a 占位串）时，
+ * 用它补一条**如实描述该动作会做什么**的说明。
+ * 这不是编造理由，而是把系统已知的行为写成用户能读的句子——
+ * 动作卡上没有说明比有一句准确的通用说明更让人不安。
+ *
+ * @param actionType 已归一化的动作类型
+ * @param target     目标实体（可能为空，说明目标解析失败时的兜底表述）
+ * @returns 面向用户的一行说明
+ */
+function defaultParamDescription(
+  actionType: RemediationActionType,
+  target: KnownEntity | null,
+): string {
+  const targetLabel = target !== null ? target.name : '目标实体';
+  if (actionType === 'drain_node') {
+    return `驱逐节点 ${targetLabel} 上的全部工作负载并标记为不可调度，需人工二次确认`;
+  }
+  if (actionType === 'scale_deployment') {
+    return `调整 ${targetLabel} 的副本数至期望水位，缓解当前负载压力`;
+  }
+  return `重启 ${targetLabel} 以清除异常状态，服务将在重启期间短暂不可用`;
+}
+
+/**
+ * validateToolArgs —— 按工具名校验模型生成的参数。
+ *
+ * 【ragReferences 注入】模型无法凭空知道本次检索命中了哪些手册——
+ * 它只看到 System Prompt 里的文本描述。因此 RAG 引用必须由**路由层**
+ * 用真实的检索结果填充，而不是让模型自己编。此前这里硬编码空数组，
+ * 导致引擎 A 产出的根因卡永远缺失溯源区（实测发现）。
+ *
+ * 【绝不返回 null 的工具】`proposeRemediationAction` 分支已改造为
+ * 恒定产出有效载荷——因为上游 streamWithLLM 在发送 tool-start 之后
+ * 若拿不到 result，前端骨架屏会永久悬空。详见该分支内的注释。
+ *
+ * @param toolName        工具名
+ * @param rawArgs         模型生成的原始参数（不可信）
+ * @param runbooks        本次请求实际检索到的 Runbook（用于注入 ragReferences）
+ * @param knownEntities   本次请求上下文中的真实实体（用于校正模型幻觉的 ID）
+ * @param clusterContext  集群上下文（用于动作卡目标解析的稳态兜底）
+ * @returns 通过校验的卡片载荷；校验失败返回 null
+ */
 function validateToolArgs(
   toolName: string,
   rawArgs: unknown,
   runbooks: readonly RagRunbookDoc[],
   knownEntities: readonly KnownEntity[],
+  clusterContext: ClusterContext,
 ): PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps | null {
   if (toolName === 'renderPodMetrics') {
     const parsed = podMetricsSchema.safeParse(rawArgs);
@@ -1507,7 +1637,24 @@ function validateToolArgs(
   }
   if (toolName === 'proposeRemediationAction') {
     const parsed = remediationSchema.safeParse(rawArgs);
-    if (!parsed.success) return null;
+    /*
+     * 【最后一道容错】Schema 已放宽到只要求 actionType 为字符串。
+     * 若连这条都失败（模型给了 null / 数字 / 完全缺字段），仍不能返回 null——
+     * 返回 null 会让上层 tool-start 已发、tool-result 不发，骨架屏永久悬空。
+     * 这里用最小合法载荷兜底：动作退回最保守的 restart_pod，目标交给下方统一解析。
+     */
+    const data = parsed.success
+      ? parsed.data
+      : {
+          actionType: 'restart_pod',
+          targetId: '',
+          targetName: '',
+          paramDescription: '',
+          isHighRisk: false,
+        };
+
+    /* 动作类型归一化（enum 强约束已移除，见 normalizeActionType 注释） */
+    const actionType = normalizeActionType(data.actionType);
 
     /**
      * 【此前遗漏的目标校正 —— `Target n/a healed` 的根因】
@@ -1517,55 +1664,73 @@ function validateToolArgs(
      * 前端会渲染一张「对 n/a 执行 restart_pod」的动作卡，
      * 用户点击后 healEntity('n/a') 打印出 `Target n/a healed` 的假回执。
      *
-     * 动作卡比指标卡更危险：它会让用户**真的按下执行按钮**。
-     * 因此这里采用比指标卡更严格的口径——**解析不出真实实体就整张拒绝**，
-     * 不存在"保留模型原值"这条路径。
+     * 动作卡比指标卡更危险：它会让用户**真的按下执行按钮**，
+     * 因此目标必须解析到真实实体，绝不下发占位串。
      */
-    const resolvedTargetId = resolveEntityId(
-      parsed.data.targetId,
-      parsed.data.targetName,
-      knownEntities,
-    );
+    const resolvedTargetId = resolveEntityId(data.targetId, data.targetName, knownEntities);
 
-    /* ---- 情形 A：映射回真实实体 ---- */
-    if (resolvedTargetId !== null) {
-      const matched = knownEntities.find((e): boolean => e.id === resolvedTargetId);
-      return {
-        ...parsed.data,
-        targetId: resolvedTargetId,
-        targetName: matched?.name ?? parsed.data.targetName,
-        /**
-         * 【安全分级由服务端派生，不信任模型】
-         *
-         * 实测模型会把 `restart_pod` 也标成 `isHighRisk: true`，
-         * 导致用户被要求勾选"已知晓高危风险"才能重启一个普通 Pod——
-         * 这是把安全护栏变成噪音，长期会让用户养成无脑勾选的习惯。
-         * 反过来更危险：模型也可能把 `drain_node` 标成低危，从而跳过确认。
-         *
-         * 风险等级是**关于本系统行为的确定事实**（代码里写死了每个动作做了什么），
-         * 属于服务端职责。这里按动作类型强制派生：
-         * 只有 drain_node（会迁移整个节点的工作负载）是高危。
-         */
-        isHighRisk: parsed.data.actionType === 'drain_node',
-        mcpEndpoint: `mcp://k8s-cluster/tools/${parsed.data.actionType}`,
-      } as ActionConfirmProps;
-    }
+    /**
+     * 【统一目标解析链 —— 杜绝"解析不到就整张拒绝"的死路】
+     *
+     * 旧实现在情形 C 直接 `return null`。这正是骨架屏悬空的根因之一：
+     * 集群无故障 Pod、或 LLM 传入 `"deployment/payment-gateway"` 这类
+     * 无法匹配的名称时，整张动作卡被拒绝，而 tool-start 已经发出去了。
+     *
+     * 新策略是**一路兜底到必有目标**：
+     *   1. knownEntities 精确/模糊命中 → 用它；
+     *   2. 否则取稳态采样对象（resolveSimulatorTarget 的 steadyFallback 分支，
+     *      返回 api-gateway 等真实种子实体）；
+     *   3. 再不行取 knownEntities[0]；
+     *   4. 极端情况下用 buildActionArgs 内部的目标构造，保证非空。
+     * 目标永远是**系统里真实存在的实体**，不会出现 n/a。
+     */
+    const matched =
+      resolvedTargetId !== null
+        ? knownEntities.find((e): boolean => e.id === resolvedTargetId)
+        : undefined;
 
-    /* ---- 情形 B：占位串 → 回退到首个真实实体；一个都没有则拒绝 ---- */
-    if (isInvalidPlaceholderId(parsed.data.targetId)) {
-      const fallback = knownEntities[0];
-      if (fallback === undefined) return null;
-      return {
-        ...parsed.data,
-        targetId: fallback.id,
-        targetName: fallback.name,
-        isHighRisk: parsed.data.actionType === 'drain_node',
-        mcpEndpoint: `mcp://k8s-cluster/tools/${parsed.data.actionType}`,
-      } as ActionConfirmProps;
-    }
+    const steadyFallback = resolveSimulatorTarget(clusterContext, true).pod;
 
-    /* ---- 情形 C：非占位但无法确认存在 → 拒绝（动作卡必须是确定目标） ---- */
-    return null;
+    const fallbackTarget: KnownEntity | null =
+      matched ??
+      (steadyFallback !== null
+        ? { id: steadyFallback.id, name: steadyFallback.name }
+        : (knownEntities[0] ?? null));
+
+    /*
+     * paramDescription 保留策略：LLM 给了有意义的人话就用它的，
+     * 否则用按动作类型生成的通用说明。长度 < 6 或含未知占位符视为无效。
+     */
+    const llmDescription = data.paramDescription.trim();
+    const isMeaningfulDescription =
+      llmDescription.length >= 6 && !isInvalidPlaceholderId(llmDescription);
+
+    const paramDescription = isMeaningfulDescription
+      ? llmDescription
+      : defaultParamDescription(actionType, fallbackTarget);
+
+    const targetId = fallbackTarget !== null ? fallbackTarget.id : steadyFallback?.id ?? 'pod-unknown-target';
+    const targetName = fallbackTarget !== null ? fallbackTarget.name : steadyFallback?.name ?? '集群节点';
+
+    return {
+      actionType,
+      targetId,
+      targetName,
+      paramDescription,
+      /**
+       * 【安全分级由服务端派生，不信任模型】
+       *
+       * 实测模型会把 `restart_pod` 也标成 `isHighRisk: true`，
+       * 导致用户被要求勾选"已知晓高危风险"才能重启一个普通 Pod——
+       * 这是把安全护栏变成噪音，长期会让用户养成无脑勾选的习惯。
+       * 反过来更危险：模型也可能把 `drain_node` 标成低危，从而跳过确认。
+       *
+       * 风险等级是**关于本系统行为的确定事实**（代码里写死了每个动作做了什么），
+       * 属于服务端职责。只有 drain_node（会迁移整个节点的工作负载）是高危。
+       */
+      isHighRisk: actionType === 'drain_node',
+      mcpEndpoint: `mcp://k8s-cluster/tools/${actionType}`,
+    } satisfies ActionConfirmProps;
   }
   return null;
 }

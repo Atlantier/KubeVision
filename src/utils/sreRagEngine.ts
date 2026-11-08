@@ -1,4 +1,4 @@
-/**
+﻿/**
  * KubeVision AI — 云原生 SRE RAG 检索引擎（Hybrid Retrieval Engine）
  *
  * 【设计意图】为 SRE Copilot 提供「有据可依」的知识底座：当用户询问某个
@@ -39,6 +39,8 @@
  *    RRF 只看名次不看分值，零分文档一样能拿到第 1 名（rrf=1.0），
  *    这曾让「你好」也拿到 63% 置信度。
  */
+
+import { z } from 'zod';
 
 import type { RagRunbookDoc } from '@/types/ai';
 import type { ChaosScenario } from '@/types/cluster';
@@ -448,30 +450,64 @@ export const SRE_RUNBOOK_CORPUS: readonly RagRunbookDoc[] = [
 const CUSTOM_RUNBOOK_STORAGE_KEY = 'kubevision-custom-runbooks-v1';
 
 /**
+ * RagRunbookDocSchema —— 自定义 Runbook 的形状契约（Zod 定义）。
+ *
+ * 【为何用 Zod 而非手写 typeof 链】手写检查有两个问题：
+ * 1. **维护成本**：`RagRunbookDoc` 新增字段时，类型改了但校验逻辑不会跟着改，
+ *    两者逐渐漂移，最终出现"类型说该有、校验说没有"的分裂；
+ * 2. **错误信息**：手写链只能回答"合不合格"，答不了"哪一项不合格"——
+ *    排查 localStorage 里的脏数据时这个差别很大。
+ *
+ * Zod Schema 是**类型的运行时镜像**：字段定义与 `RagRunbookDoc` 一一对应，
+ * `z.infer` 还能反向验证两者同构，漂移会在 tsc 阶段暴露。
+ *
+ * 【为何用 .passthrough()】自定义语料由客户端上送，可能携带未来版本新增的
+ * 可选字段（如 `scoreBreakdown`）。严格模式下未知键会被剥离，
+ * 这会静默丢失数据；passthrough 保留原样，向后兼容更友好。
+ */
+export const RagRunbookDocSchema = z
+  .object({
+    id: z.string().min(1),
+    title: z.string().min(1),
+    category: z.string(),
+    tags: z.array(z.string()),
+    symptom: z.string(),
+    remediationSteps: z.array(z.string()),
+    featureVocabulary: z.array(z.string()),
+    rootCauseMechanism: z.string(),
+    relatedChaos: z.array(z.string()).optional(),
+    similarityScore: z.number().min(0).max(1).optional(),
+    matchedTerms: z.array(z.string()).optional(),
+    scoreBreakdown: z
+      .object({
+        vectorScore: z.number(),
+        bm25Score: z.number(),
+        contextBoost: z.number(),
+        rrfScore: z.number(),
+      })
+      .optional(),
+    isCustom: z.boolean().optional(),
+    customCreatedAt: z.string().optional(),
+  })
+  .passthrough();
+
+/**
  * 自定义 Runbook 存储的运行时校验。
  *
  * 【为何必须校验】localStorage 是**用户可编辑的外部输入**：
  * 可能被手动改坏、被旧版本写入不兼容结构、或被其他脚本污染。
  * 直接 `JSON.parse` 后当成 RagRunbookDoc 使用，会让缺少字段的残缺对象
  * 一路流进检索器（tokenize 收到 undefined 就抛异常）。
- * 这里逐字段类型检查，任何不合规条目**静默丢弃**而不是整批失败。
+ * 任何不合规条目**静默丢弃**而不是整批失败。
+ *
+ * 【实现】委托给 RagRunbookDocSchema.safeParse，类型守卫由 Zod 的
+ * 类型推导保证——不需要手写 typeof 链，也不会有类型断言。
  *
  * @param value 待校验的 unknown 值
  * @returns 是否为形状合规的 RagRunbookDoc
  */
 function isRunbookDoc(value: unknown): value is RagRunbookDoc {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    typeof candidate.id === 'string' &&
-    typeof candidate.title === 'string' &&
-    typeof candidate.category === 'string' &&
-    typeof candidate.symptom === 'string' &&
-    typeof candidate.rootCauseMechanism === 'string' &&
-    Array.isArray(candidate.tags) &&
-    Array.isArray(candidate.remediationSteps) &&
-    Array.isArray(candidate.featureVocabulary)
-  );
+  return RagRunbookDocSchema.safeParse(value).success;
 }
 
 /**
@@ -546,8 +582,6 @@ export function removeCustomRunbook(id: string): RagRunbookDoc[] {
  *
  * @returns 完整语料数组（内置在前，自定义在后）
  */
-export function __debugStats(term: string): number { return idfOf(term); }
-
 export function getAllRunbookCorpus(): RagRunbookDoc[] {
   return [...SRE_RUNBOOK_CORPUS, ...getCustomRunbooks()];
 }
