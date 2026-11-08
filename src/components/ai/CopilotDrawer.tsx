@@ -85,6 +85,7 @@ import RagKnowledgeModal from '@/components/ai/RagKnowledgeModal';
 import PostMortemModal from '@/components/ai/PostMortemModal';
 import { buildPostMortemFilename, buildPostMortemMarkdown } from '@/utils/postMortemReport';
 import { getCustomRunbooks } from '@/utils/sreRagEngine';
+import { buildRagSignalBreakdown, type RagSignalBreakdown } from '@/utils/ragSignals';
 
 /* ========================================================================== */
 /* 懒加载：端侧日志审计台                                                        */
@@ -706,6 +707,31 @@ function MessageBubble({
   /** 切换本消息的朗读/停止 */
   readonly onToggleSpeak?: (message: CopilotMessage) => void;
 }) {
+  /**
+   * 从本消息的根因卡推导 RAG 信号拆解，供思考链的检索步骤内联展示。
+   *
+   * 【必须放在所有 return 之前】本组件对 user / verification / assistant
+   * 三类消息有各自的分支 return。若把 useMemo 写在中间某个 return 之后，
+   * 后两类消息就会跳过这次 Hook 调用，导致同一次渲染中 Hook 数量不一致——
+   * React 会直接抛 "Rendered more hooks than during the previous render"。
+   * 抽到顶部是唯一正确的做法（ESLint react-hooks/rules-of-hooks 会检查这条）。
+   *
+   * 【非 assistant 消息的处理】user / verification 消息没有 toolCards，
+   * find 自然返回 undefined，这里返回 null，不产生任何额外开销。
+   */
+  const reasoningRagBreakdown = useMemo((): RagSignalBreakdown | null => {
+    const rootCard = message.toolCards.find(
+      (card): boolean =>
+        card.state === 'ready' &&
+        card.toolName === 'renderRootCauseAnalysis' &&
+        card.args !== undefined,
+    );
+    if (rootCard?.args === undefined) return null;
+    const props = rootCard.args as RootCauseAlertProps;
+    const breakdown = buildRagSignalBreakdown(props.ragReferences);
+    return breakdown.available ? breakdown : null;
+  }, [message.toolCards]);
+
   /* ---- 用户消息：右侧对齐气泡 + 已发送的视口缩略图 ---- */
   if (message.role === 'user') {
     return (
@@ -750,7 +776,11 @@ function MessageBubble({
     <div className="flex flex-col gap-1.5">
       {/* 思考链（流式过程中实时追加，默认折叠） */}
       {message.reasoningSteps.length > 0 ? (
-        <AgentThoughtChain steps={message.reasoningSteps} isStreaming={message.isStreaming && message.text.length === 0} />
+        <AgentThoughtChain
+          steps={message.reasoningSteps}
+          isStreaming={message.isStreaming && message.text.length === 0}
+          ragBreakdown={reasoningRagBreakdown}
+        />
       ) : null}
 
       {/* 正文：经 MarkdownLite 渲染（此前直接输出纯文本，会裸露 ## / ** 等语法） */}

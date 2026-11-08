@@ -15,6 +15,8 @@
 /* RAG 知识库                                                                  */
 /* ========================================================================== */
 
+import type { RagSignalBreakdown } from '@/utils/ragSignals';
+
 /**
  * RagRunbookDoc —— SRE Runbook 知识库检索切片。
  *
@@ -390,6 +392,20 @@ export interface AgentThoughtChainProps {
   readonly defaultExpanded?: boolean;
   /** 附加容器类名 */
   readonly className?: string;
+  /**
+   * RAG 混合检索信号拆解（用于在 RAG_RETRIEVAL 步骤下渲染微型融合指示条）。
+   *
+   * 【为何由父级传入而非组件自算】该数据来自根因卡的 ragReferences，
+   * 而思考链本身只持有 `AgentReasoningStep[]`——它没有检索结果。
+   * 父级（CopilotDrawer）同时持有思考链与工具卡片，由它计算并下传，
+   * 可避免思考链反向依赖 store 或工具卡，保持组件纯粹。
+   *
+   * 【undefined 与 null 的区别】
+   * - undefined：尚无检索结果（流式早期），**不渲染**该指示条；
+   * - null：已确认无可用拆解（无命中手册），同样不渲染。
+   * 二者都表示"没有可展示的数据"，不渲染假进度条是唯一诚实的处理。
+   */
+  readonly ragBreakdown?: RagSignalBreakdown | null;
 }
 
 /**

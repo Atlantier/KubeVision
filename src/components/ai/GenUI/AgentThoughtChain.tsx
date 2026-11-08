@@ -33,6 +33,7 @@ import {
 
 import { cn } from '@/utils/cn';
 import { InlineMarkdown } from '@/components/ai/MarkdownLite';
+import { formatScore, formatSharePercent, type RagSignalBreakdown } from '@/utils/ragSignals';
 import type { AgentReasoningPhase, AgentThoughtChainProps } from '@/types/ai';
 
 /* ========================================================================== */
@@ -123,6 +124,7 @@ export default function AgentThoughtChain({
   isStreaming = false,
   defaultExpanded = false,
   className,
+  ragBreakdown = null,
 }: AgentThoughtChainProps) {
   const [expanded, setExpanded] = useState<boolean>(defaultExpanded);
   /** 用户是否手动干预过展开态——干预后不再自动接管（尊重用户意图） */
@@ -326,6 +328,71 @@ export default function AgentThoughtChain({
                     <p className="mt-0.5 whitespace-pre-wrap break-words text-[10.5px] leading-relaxed text-slate-500">
                       <InlineMarkdown text={step.detail} highlightRunbookIds />
                     </p>
+
+                    {/*
+                     * ---- RAG 融合检索命中率指示条（仅检索阶段） ----
+                     *
+                     * 【为何内联在步骤里而非卡片底部】思考链是"推理过程"，
+                     * 检索是其中一步。把融合结果挂在这一步下方，推理链与
+                     * 下方 GenUI 根因卡形成**数据呼应**：用户看到链条里
+                     * 显示"BM25 主导 46%"，往下滚就能在根因卡上看到
+                     * 同一条三色条与同样的份额——两处讲的是同一件事。
+                     *
+                     * 【为何用微型条而非完整图例】思考链是折叠区内的紧凑视图，
+                     * 完整图例已在根因卡上。此处只需传递"三路各占多少"，
+                     * 因此采用单行细条 + 三个微型百分比，不重复长文案。
+                     */}
+                    {step.phase === 'RAG_RETRIEVAL' && ragBreakdown?.available === true ? (
+                      <div
+                        className="mt-1 rounded border border-emerald-500/20 bg-emerald-500/[0.04] px-1.5 py-1"
+                        aria-label="RAG 融合检索信号构成"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span className="shrink-0 font-mono text-[9px] uppercase tracking-wider text-emerald-400/70">
+                            融合检索
+                          </span>
+                          {/* 三色微型条 */}
+                          <div className="flex h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-800">
+                            {ragBreakdown.signals.map((signal) =>
+                              signal.share > 0 ? (
+                                <div
+                                  key={`badge-${signal.key}`}
+                                  className={cn('h-full', signal.barClass)}
+                                  style={{ width: `${signal.share * 100}%` }}
+                                  title={`${signal.label} 得分 ${formatScore(signal.score)}`}
+                                />
+                              ) : null,
+                            )}
+                          </div>
+                          <span
+                            className="shrink-0 font-mono text-[9px] font-bold tabular-nums text-emerald-300"
+                            title="校准后的置信度"
+                          >
+                            {formatSharePercent(ragBreakdown.calibratedScore)}
+                          </span>
+                        </div>
+                        {/* 三路微型百分比 */}
+                        <div className="mt-0.5 flex items-center gap-2">
+                          {ragBreakdown.signals.map((signal) => (
+                            <span
+                              key={`legend-${signal.key}`}
+                              className="flex items-center gap-0.5 font-mono text-[9px] tabular-nums text-slate-500"
+                              title={signal.description}
+                            >
+                              <span
+                                className={cn('h-1 w-1 shrink-0 rounded-full', signal.dotClass)}
+                                aria-hidden
+                              />
+                              <span className={signal.textClass}>{signal.term}</span>
+                              {formatSharePercent(signal.share)}
+                            </span>
+                          ))}
+                          <span className="ml-auto shrink-0 font-mono text-[9px] tabular-nums text-slate-600">
+                            RRF {formatScore(ragBreakdown.fusedScore)}
+                          </span>
+                        </div>
+                      </div>
+                    ) : null}
 
                     {/* MCP 协议 URI 高亮标签（仅工具调用阶段存在） */}
                     {step.mcpUri !== undefined ? (
