@@ -367,8 +367,143 @@ void main() {
 /* NetworkStream3D 主体                                                        */
 /* ========================================================================== */
 
+/* ========================================================================== */
+/* 弧线伴飞星尘（Particle Comet Arcs）                                          */
+/* ========================================================================== */
+
+/** 每条弧线周围的伴飞星尘数量（45 颗 × 3 条 = 135，单 Draw Call） */
+const SPARKLE_PER_LANE = 45;
+
 /**
- * NetworkStream3D —— 三条 MASTER→机架拱形光缆与 54 个流动数据包。
+ * 伴飞星尘的顶点着色器。
+ *
+ * 【职责】把「沿弧线缓流 + 微颤 + 闪烁」三件事全放在 GPU：
+ * 1. **沿切向缓流**：`position + aTangent · sin(uTime·0.6 + aPhase) · 0.35`
+ *    粒子在自己的切线方向上来回漂移，因此整串星尘看起来在弧线上"流动"，
+ *    而不是钉死在固定位置的一排点；
+ * 2. **径向微颤**：沿三个互不同步的正弦轴偏移 aOffset 的距离，
+ *    制造"星尘在光束周围飘散"的体积感——单靠切向缓流仍会显得是一条线；
+ * 3. **闪烁**：`0.72 + 0.28·sin(uTime·2.6 + aPhase)`，每颗相位不同。
+ *
+ * 【零 CPU 成本】所有动画都在顶点着色器内完成，`useFrame` 只写 1 个标量。
+ */
+const SPARKLE_VERTEX_SHADER = `
+attribute vec3 aTangent;
+attribute float aOffset;
+attribute float aPhase;
+attribute float aSize;
+
+uniform float uTime;
+uniform float uScale;
+
+varying float vTwinkle;
+
+void main() {
+  /* 1) 沿切线缓流 */
+  float flow = sin(uTime * 0.6 + aPhase) * 0.35;
+  vec3 p = position + aTangent * flow;
+
+  /* 2) 三轴微颤（频率互不同步，避免形成规则螺旋） */
+  p.x += sin(uTime * 1.7 + aPhase) * aOffset;
+  p.y += cos(uTime * 1.9 + aPhase * 1.3) * aOffset;
+  p.z += sin(uTime * 1.1 + aPhase * 0.7) * aOffset;
+
+  /* 3) 闪烁包络 */
+  float twinkle = 0.72 + 0.28 * sin(uTime * 2.6 + aPhase);
+  vTwinkle = twinkle;
+
+  vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  gl_PointSize = aSize * twinkle * uScale * (110.0 / max(0.001, -mvPosition.z));
+}
+`;
+
+/**
+ * 伴飞星尘的片元着色器 —— 圆形柔光点。
+ *
+ * 【为何手写】默认 PointsMaterial 渲染方形像素块，放大即露馅。
+ * 用 gl_PointCoord 求中心距 d，做出「白核 + 青晕」的双层径向衰减，
+ * 并在 d→1 前归零，点的边界完全消失，只剩中心那点亮光。
+ */
+const SPARKLE_FRAGMENT_SHADER = `
+uniform vec3 uColor;
+
+varying float vTwinkle;
+
+void main() {
+  vec2 centered = gl_PointCoord - vec2(0.5);
+  float d = length(centered) * 2.0;
+  if (d > 1.0) discard;
+
+  float core = 1.0 - smoothstep(0.0, 0.22, d);
+  float halo = 1.0 - smoothstep(0.18, 1.0, d);
+
+  vec3 color = mix(uColor, vec3(1.0, 1.0, 1.0), core * 0.85);
+  float alpha = (core * 0.9 + halo * 0.32) * vTwinkle;
+
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+
+/**
+ * 伴飞星尘的几何（模块加载期一次构建，135 颗）。
+ *
+ * 【采样策略】每条弧线上按 `(i + 0.5) / SPARKLE_PER_LANE` 均匀取 t，
+ * 再叠加黄金角错相的小抖动，避免 45 颗排成等距的"珠子"。
+ * 切线由 `curve.getTangentAt` 直接取自同一条贝塞尔曲线，
+ * 因此星尘天然沿着弧线的真实走向漂移。
+ */
+const SPARKLE_GEOMETRY: THREE.BufferGeometry = (() => {
+  const total = LANE_COUNT * SPARKLE_PER_LANE;
+  const positions = new Float32Array(total * 3);
+  const tangents = new Float32Array(total * 3);
+  const offsets = new Float32Array(total);
+  const phases = new Float32Array(total);
+  const sizes = new Float32Array(total);
+
+  const point = new THREE.Vector3();
+  const tangent = new THREE.Vector3();
+  const GOLDEN = 2.399963229728653;
+
+  for (let lane = 0; lane < LANE_COUNT; lane++) {
+    const curve = LANE_CURVES[lane];
+    for (let i = 0; i < SPARKLE_PER_LANE; i++) {
+      const idx = lane * SPARKLE_PER_LANE + i;
+      const phase = (i * GOLDEN) % (Math.PI * 2);
+      /* 基础参数：均匀分布 + 轻微抖动（抖动幅度 < 半个间隔） */
+      const baseT = (i + 0.5) / SPARKLE_PER_LANE;
+      const jitter = Math.sin(phase * 1.7) * 0.008;
+      const t = Math.min(0.999, Math.max(0.001, baseT + jitter));
+
+      curve.getPointAt(t, point);
+      curve.getTangentAt(t, tangent);
+
+      positions[idx * 3] = point.x;
+      positions[idx * 3 + 1] = point.y;
+      positions[idx * 3 + 2] = point.z;
+
+      tangents[idx * 3] = tangent.x;
+      tangents[idx * 3 + 1] = tangent.y;
+      tangents[idx * 3 + 2] = tangent.z;
+
+      /* 偏移量在 0.05~0.22 之间：贴着光束但不埋进管体里 */
+      offsets[idx] = 0.05 + (0.5 + 0.5 * Math.sin(phase * 2.1)) * 0.17;
+      phases[idx] = phase;
+      sizes[idx] = 0.55 + 0.45 * (0.5 + 0.5 * Math.cos(phase * 1.3));
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('aTangent', new THREE.BufferAttribute(tangents, 3));
+  geometry.setAttribute('aOffset', new THREE.BufferAttribute(offsets, 1));
+  geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+  geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+  return geometry;
+})();
+
+/**
+ * NetworkStream3D —— 三条 MASTER→机架拱形光缆与流动数据包。
  *
  * 【渲染树】3 × drei <Line>（半透明基底光缆，颜色随故障标志切换）
  *          + 1 × InstancedMesh（54 粒子，单次 Draw Call）。
@@ -495,6 +630,21 @@ export default function NetworkStream3D() {
     }
     return colors;
   }, []);
+
+  /**
+   * 伴飞星尘的 uniforms（useMemo 预分配，useFrame 内只写 .value）。
+   *
+   * uTime 驱动「沿切向缓流 + 微颤 + 闪烁」三件事（全在顶点着色器内完成）；
+   * uColor 是星尘基色，比光束更偏冷白，才能在亮管周围"跳"出来。
+   */
+  const sparkleUniforms = useMemo(
+    (): Record<string, THREE.IUniform> => ({
+      uTime: { value: 0 },
+      uScale: { value: 1 },
+      uColor: { value: new THREE.Color('#a5f3fc') },
+    }),
+    [],
+  );
   /**
    * 粒子曲线参数初值（决定"串珠"还是"星尘"）。
    *
@@ -591,6 +741,8 @@ export default function NetworkStream3D() {
    */
   useFrame((state, delta): void => {
     const mesh = packetsRef.current;
+    /* 伴飞星尘的时间推进（即使 packets mesh 未就绪也要推进，保持相位连续） */
+    sparkleUniforms.uTime.value = state.clock.getElapsedTime();
     if (mesh === null) return;
 
     /* instanceColor 兜底（正常由挂载 effect 创建） */
@@ -848,6 +1000,33 @@ export default function NetworkStream3D() {
           blending={THREE.AdditiveBlending}
         />
       </instancedMesh>
+
+      {/*
+       * ---- 弧线伴飞星尘（135 颗，单 Draw Call）----
+       *
+       * 【解决什么】此前的能量弧线是"一根亮管 + 一串珠子"：
+       * 管体清晰但周围空无一物，读起来就是根塑料管。
+       * 参考图里每条弧线周围都萦绕着一层向外飞散的细碎星尘，
+       * 正是这层星尘让光束看起来"在释放能量"而不是"在发光"。
+       *
+       * 【实现】135 颗（45 × 3 条）星尘全部预生成在弧线上，
+       * 沿切向缓流 + 三轴微颤 + 独立闪烁**全在顶点着色器内完成**，
+       * 每帧 CPU 只写一个 uTime 标量。
+       *
+       * 【配色】基色取冰青 #a5f3fc（比光束更冷白一档）：
+       * 星尘贴着亮管时不会被管体吞掉，反而在管缘形成细密的"光晕毛边"。
+       */}
+      <points geometry={SPARKLE_GEOMETRY} raycast={(): void => undefined}>
+        <shaderMaterial
+          uniforms={sparkleUniforms}
+          vertexShader={SPARKLE_VERTEX_SHADER}
+          fragmentShader={SPARKLE_FRAGMENT_SHADER}
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+        />
+      </points>
     </group>
   );
 }

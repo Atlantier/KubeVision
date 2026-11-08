@@ -1544,48 +1544,57 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        * 永不遮挡右侧 Copilot 抽屉与顶层 Modal（AGENTS.md 第 6 条）。
        */}
       <Html
-        position={[0, 0.06, -(RACK_BODY_SIZE[2] / 2 + 0.72)]}
+        /*
+         * 【位置：机柜侧前方暗区】x 偏到机架右侧（局部 +X 1.18），Z 略向前。
+         *
+         * 旧的 [0, 0.06, -(深度/2 + 0.72)] 正压在机柜中轴正前方：
+         * 铭牌与机柜正面的刀片槽位在同一视觉轴线上，互相抢视线，
+         * 且三台机架绕环分布时，正前方铭牌会朝不同方向、构图很乱。
+         * 移到侧前方后：它落在机柜与环外之间的"暗区"里，
+         * 既不遮挡刀片，也不会与相邻机架的铭牌在屏幕上重叠。
+         *
+         * Y = 0.06 仍低于第一层刀片底面（0.09），绝不遮挡任何 Pod。
+         */
+        position={[1.18, 0.06, -(RACK_BODY_SIZE[2] / 2 + 0.58)]}
         center
-        distanceFactor={15}
+        distanceFactor={17}
         zIndexRange={[10, 0]}
         className="pointer-events-none"
       >
         {/*
-         * ---- 精密全息战术 HUD 铭牌 ----
+         * ---- 紧凑深色半透明 HUD 标牌（对齐参考图左下/右下角样式）----
          *
-         * 【升级动机】此前是一个圆角黑底胶囊 + 一行文字，与图五那种
-         * "四角折角框 + 双进度条 + 状态徽标"的军用 HUD 差距很大。
-         * 现在两行结构：第一行是身份（呼吸灯 / 节点名 / 状态徽标 / 容器数），
-         * 第二行是实时指标（CPU / MEM 各一条 44×3 微型发光进度槽）。
+         * 【本轮微调】distanceFactor 15 → 17：铭牌在屏幕上再缩小约 12%，
+         * 与参考图中"信息密度高但体积克制"的角标一致；
+         * 字号 10px → 9px、徽标 8px → 7px、间距同步收紧，
+         * 整体从"一块面板"收敛为"一枚标牌"。
          *
-         * 【distanceFactor 14 → 15】略微缩小屏幕占比，把铭牌压得更"精密"，
-         * 同时与特写机位的距离感更协调。
-         *
-         * 【位置不变】Y=0.06 仍低于第一层刀片底面 0.09，绝不遮挡 Pod。
+         * 结构保持不变：第一行身份（呼吸灯 / 节点名 / 状态徽标 / 容器数），
+         * 第二行 CPU / MEM 双微型发光进度条。
          */}
         <HoloFrame accent={statusColor} glow={emphasized} className="font-mono">
           {/* 第一行：身份 + 状态徽标 + 容器数 */}
-          <div className="flex items-center gap-1.5 whitespace-nowrap">
+          <div className="flex items-center gap-1 whitespace-nowrap">
             <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full animate-glow-pulse"
-              style={{ backgroundColor: statusColor, boxShadow: `0 0 6px ${statusColor}` }}
+              className="h-1 w-1 shrink-0 rounded-full animate-glow-pulse"
+              style={{ backgroundColor: statusColor, boxShadow: `0 0 5px ${statusColor}` }}
             />
-            <span className="text-[10px] font-bold tracking-[0.14em] text-slate-100">
+            <span className="text-[9px] font-bold tracking-[0.12em] text-slate-100">
               {node.name}
             </span>
             <span
-              className="ml-auto rounded-sm border px-1 text-[8px] font-bold tracking-[0.12em]"
+              className="ml-auto rounded-sm border px-1 text-[7px] font-bold tracking-[0.10em]"
               style={{ borderColor: `${statusColor}66`, color: statusColor }}
             >
               {statusBadgeLabel}
             </span>
-            <span className="text-[8px] tracking-[0.12em] text-slate-500">
+            <span className="text-[7px] tracking-[0.10em] text-slate-500">
               {node.podIds.length} PODS
             </span>
           </div>
 
           {/* 第二行：CPU / MEM 微型发光双进度条 */}
-          <div className="mt-1 flex items-center gap-2.5">
+          <div className="mt-0.5 flex items-center gap-2">
             <MiniBar label="CPU" value={node.cpuUsage} />
             <MiniBar label="MEM" value={node.memUsage} tone="#38bdf8" />
           </div>
