@@ -125,6 +125,82 @@ export interface RemediationRecord {
 }
 
 /**
+ * RemediationDiff —— 自愈动作的「修复前后」指标对比快照。
+ *
+ * 【为什么需要它】自愈目前对用户来说是一个「黑盒按钮」：点下去，3D 场景里
+ * 某个盒子从红变绿，终端打一行回执。用户无从判断这次修复**到底改善了多少**——
+ * CPU 是从 96% 降到 41%，还是从 92% 降到 88%？没有量化，自愈就只是个动画。
+ *
+ * 本结构在 healEntity 执行时同时取修复前快照与修复后快照的对应字段，
+ * 让卡片可以渲染「96.0% → 41.0%」这样的对比，把一次点击变成一次可验证的改善。
+ *
+ * 【口径说明】
+ * - before* 取自**本次修复动作执行前**的 clusterSummary；
+ * - after* 取自 deriveHealedSnapshot 产出的新快照中**同一目标**的对应值；
+ * - Node 粒度自愈时，指标取该节点自身的 cpuUsage / memUsage，
+ *   status 取节点状态（source 语义在 Node 上是 Ready/NotReady）。
+ * 两个时刻的数据同源同口径，差值才有意义。
+ */
+export interface RemediationDiff {
+  /** 目标实体 ID（Pod ID 或 Node ID） */
+  readonly targetId: string;
+  /** 目标实体展示名（用于卡片标题，避免显示裸 ID） */
+  readonly targetName: string;
+  /** 本次动作类型（restart_pod / scale_deployment / drain_node 等） */
+  readonly actionType: string;
+  /** 修复前 CPU 使用率（百分比 0~100） */
+  readonly beforeCpu: number;
+  /** 修复后 CPU 使用率（百分比 0~100） */
+  readonly afterCpu: number;
+  /** 修复前内存使用率（百分比 0~100） */
+  readonly beforeMem: number;
+  /** 修复后内存使用率（百分比 0~100） */
+  readonly afterMem: number;
+  /** 修复前集群健康分（0~100） */
+  readonly beforeHealth: number;
+  /** 修复后集群健康分（0~100） */
+  readonly afterHealth: number;
+  /** 修复前实体状态（Pod 为 PodStatus，Node 为 Ready/NotReady） */
+  readonly beforeStatus: string;
+  /** 修复后实体状态 */
+  readonly afterStatus: string;
+  /** 记录时刻，ISO 8601 字符串（与 RemediationRecord.timestamp 同口径） */
+  readonly timestamp: string;
+}
+
+/**
+ * PendingRemediation —— 等待指数退避后重试的自愈任务。
+ *
+ * 【解决什么】原有的 30s 免疫窗口采用「直接拒绝」策略：窗口内重复触发
+ * 只打一行 BLOCKED 日志就丢弃。问题在于——
+ * 用户在故障未消除时往往会**连续点击**几次（这是很自然的反应），
+ * 这些点击全部被静默丢弃，用户看到的是「点了没反应」。
+ *
+ * 退避队列把「拒绝」变成「排队」：记录这次请求、给出明确的退避秒数、
+ * 让界面能显示「已排队，N 秒后自动重试」。这既保留了防抖动的初衷
+ * （不会立刻重复执行），又不让用户的意图凭空消失。
+ *
+ * 【延迟公式】backoffSec = min(30, 2^(retryCount + 1))
+ * 即 2s → 4s → 8s → 16s → 30s（封顶），指数退避让连续点击迅速降频。
+ */
+export interface PendingRemediation {
+  /** 队列条目唯一标识 */
+  readonly id: string;
+  /** 目标实体 ID */
+  readonly targetId: string;
+  /** 目标实体展示名 */
+  readonly targetName: string;
+  /** 动作类型 */
+  readonly actionType: string;
+  /** 该目标在当前免疫窗口内的第几次重试（0 起） */
+  readonly retryCount: number;
+  /** 本次计算出的退避秒数（已按 30s 封顶） */
+  readonly backoffSec: number;
+  /** 入队时刻，ISO 8601 字符串 */
+  readonly scheduledAt: string;
+}
+
+/**
  * Cluster 响应式状态切片 —— 仅低频 UI 状态，严禁写入高频遥测数值。
  *
  * 【SSR 契约】所有初始值必须为确定性字面量（快照引用 INITIAL_CLUSTER_SNAPSHOT、
@@ -166,6 +242,22 @@ export interface ClusterState {
   readonly capturedViewportDataUrl: string | null;
   /** 自愈免疫时间戳字典：targetId → 最近自愈 epoch 毫秒（免疫窗口去重依据） */
   readonly healedPodIds: Record<string, number>;
+  /**
+   * 等待退避后重试的自愈队列（非持久化）。
+   *
+   * 【为何不持久化】退避窗口最长 30s，跨会话留存一个早已过期的重试任务是
+   * 有害的——刷新页面后突然自动执行一个几分钟前排队的重启，属于事故。
+   * 队列只活在当前会话的内存里。
+   */
+  readonly pendingRemediations: readonly PendingRemediation[];
+  /**
+   * 最近一次自愈的前后指标对比（非持久化，仅用于卡片展示）。
+   *
+   * 【为何不持久化】对比的语义是「刚刚这次修复改善了多少」。
+   * 刷新页面后展示上一次会话的修复对比没有意义，反而会让用户误以为
+   * 那是刚刚发生的。卡片执行后由 healEntity 写入，卡片重渲染读取。
+   */
+  readonly lastRemediationDiff: RemediationDiff | null;
   /** 累计端侧脱敏凭证数（持久化字段，隐私审计角标） */
   readonly totalMaskedSecrets: number;
   /** 历史自愈记录（持久化字段，全量跨会话留存） */
@@ -184,11 +276,25 @@ export interface ClusterActions {
   /** 触发/解除混沌工程场景 */
   setActiveChaos: (scenario: ChaosScenario) => void;
   /**
-   * 执行自愈动作回写：登记免疫时间戳 + 追加历史记录 + 终端审计日志。
+   * 执行自愈动作回写：登记免疫时间戳 + 追加历史记录 + 计算前后对比 + 终端审计日志。
+   *
+   * 【免疫窗口行为变更】窗口内重复触发**不再直接丢弃**，而是入队
+   * `pendingRemediations` 并计算指数退避秒数，让用户看到"已排队"而非"没反应"。
+   *
    * @param targetId 目标实体 ID
    * @param actionType 动作类型（通常为 RemediationActionType 取值）
    */
   healEntity: (targetId: string, actionType: string) => void;
+  /**
+   * 清空退避队列（用户可手动取消除已排队但尚未到期的重试）。
+   *
+   * @param targetId 只清除该目标；省略则清除全部
+   */
+  clearPendingRemediations: (targetId?: string) => void;
+  /**
+   * 清除最近一次自愈对比（卡片重置/换会话时调用，避免旧对比挂在新卡片上）。
+   */
+  clearLastRemediationDiff: () => void;
   /** 设置/清除 3D 视口多模态截图（dataUrl=null 即清除） */
   setCapturedViewport: (dataUrl: string | null) => void;
   /** 累加端侧脱敏计数（负数/小数防御：截断为非负整数） */

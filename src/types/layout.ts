@@ -127,7 +127,7 @@ export interface ModeToggleProps {
 /* ========================================================================== */
 
 /**
- * TerminalLogTone —— 极客事件流日志的语义色调七分类。
+ * TerminalLogTone —— 极客事件流日志的语义色调八分类。
  *
  * 【配色契约】（与深空赛博美学状态色体系对齐）
  * - err        → rose-400    错误/崩溃
@@ -136,7 +136,13 @@ export interface ModeToggleProps {
  * - controller → cyan-300    K8s 控制器动作（主题流光色，自愈闭环的权威来源）
  * - edge       → emerald-300 端侧 WASM/WebGPU 推理（健康态绿）
  * - router     → sky-300     MCP 工具路由
+ * - security   → violet-300  安全审计：被拒绝的非法实体 ID / 越权请求
  * - info       → slate-400   常规信息（默认兜底）
+ *
+ * 【为何 security 单独成色而非复用 warn】审计拒绝与告警是两种事件：
+ * 告警说「系统状态变差了」，审计说「有人送来了不该送的输入」。
+ * 前者需要处置，后者需要追责线索。混用会让值班者在排查注入类问题时
+ * 无法从终端里一眼捞出安全事件。violet 与既有七色均不冲突。
  */
 export type TerminalLogTone =
   | 'err'
@@ -145,6 +151,7 @@ export type TerminalLogTone =
   | 'controller'
   | 'edge'
   | 'router'
+  | 'security'
   | 'info';
 
 /**

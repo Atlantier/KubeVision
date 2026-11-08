@@ -1,4 +1,4 @@
-﻿/**
+/**
  * KubeVision AI — 合成遥测引擎（Synthetic Telemetry Engine）
  *
  * 【设计意图】为「demo 模式」提供一台**可确定性复现**的集群状态演算机：
@@ -695,6 +695,135 @@ export function stepTelemetrySimulation(
   const activeAlerts = buildAlerts(activeChaos, intermediate);
 
   /* ---- 8. 健康分重算（统一权重表） ---- */
+  const clusterHealthScore = computeClusterHealthScore(nextNodes, nextPods, activeAlerts);
+
+  return {
+    ...intermediate,
+    clusterHealthScore,
+    activeAlerts,
+  };
+}
+
+/* ========================================================================== */
+/* 实时（live）模式的故障演练叠加层                                               */
+/* ========================================================================== */
+
+/**
+ * applyLiveChaosOverlay —— 在**真实集群快照**之上叠加混沌演练效果。
+ *
+ * 【解决什么缺陷】
+ * 「实时 (Live)」模式每秒用 collectLiveTelemetrySnapshot 采集真实宿主机/K8s 数据，
+ * 这条链路完全不知道 ChaosScenario 的存在——SSE 路由在 live 分支里
+ * 根本没有读 chaos 参数。于是用户在 live 模式下点击「故障演练」时：
+ * 3D 场景毫无变化、指标纹丝不动、告警不出现。
+ * 从用户视角看就是「按钮坏了」。演示现场一旦切到实时模式再点演练，
+ * 整个核心卖点当场失效。
+ *
+ * 【为何不能简单复用 stepTelemetrySimulation】
+ * 那个函数是**完整演进器**：它会让每个 Pod 走向均值回归、让 QPS 正弦起伏、
+ * 让节点按合成规则变化。用在 live 模式上会把真实的宿主机数据覆盖成
+ * 合成数据——那就不是"实时"了。用户之所以切到 live，正是想看到真实数据。
+ *
+ * 【本函数的定位：只叠加、不替换】
+ * 输入是真实快照，输出是「真实底盘 + 混沌效果」：
+ * - Pod：只有落在混沌目标机架上的 Pod 被施加故障特征（OOM 漂白内存、
+ *   CPU 飙高、网络分区），其余 Pod 原样保留真实值；
+ * - 节点：同样只改目标机架对应的节点；
+ * - QPS：按场景系数下挫（请求失败/超时导致的真实业务后果）；
+ * - 告警与健康分：用与合成引擎完全相同的 buildAlerts / computeClusterHealthScore
+ *   重算，保证两种模式下"故障长什么样"是一致的。
+ *
+ * 【确定性】内部使用的 tick 由快照时间戳派生，evolve* 系列均为纯函数，
+ * 不含 Math.random()。同一输入必然得到同一输出。
+ *
+ * @param snapshot 采集到的真实快照（作为叠加底盘）
+ * @param activeChaos 当前演练场景（'NONE' 时原样返回，零开销）
+ * @returns 叠加故障特征后的新快照（原快照不被修改）
+ */
+export function applyLiveChaosOverlay(
+  snapshot: TelemetrySnapshot,
+  activeChaos: ChaosScenario,
+): TelemetrySnapshot {
+  /* 稳态：不叠加任何内容，直接返回原引用（调用方无需判空，零分配） */
+  if (activeChaos === 'NONE') return snapshot;
+
+  /* tick 由真实时间戳派生：确保 evolve 函数的振荡相位随墙钟推进而自然变化 */
+  const tick = Math.floor(snapshot.timestamp / TICK_INTERVAL_MS);
+
+  /* ---- 1. 选出受影响的 Pod 集合（按场景对应的机架归属） ---- */
+  const affectedRack =
+    activeChaos === 'POD_OOM_SWARM'
+      ? OOM_RACK_INDEX
+      : activeChaos === 'NODE_CPU_SPIKE'
+        ? SPIKE_RACK_INDEX
+        : PARTITION_RACK_INDEX;
+
+  /**
+   * 【真实集群没有 rackIndex 概念怎么办】
+   * live 快照的 Pod 由 K8s 真实数据映射而来，rackIndex 可能是引擎广播的默认值。
+   * 若受影响机架上恰好没有任何 Pod（真实集群只有少数几个 Pod 时很常见），
+   * 退化为"按索引选取前 N 个"，保证演练效果一定可见——
+   * 否则用户点了演练、屏幕上却什么都没变，等于又回到原来的缺陷。
+   */
+  const rackPods = snapshot.pods.filter((pod): boolean => pod.rackIndex === affectedRack);
+  const victimIds = new Set<string>();
+  if (rackPods.length > 0) {
+    const limit =
+      activeChaos === 'POD_OOM_SWARM' ? Math.min(OOM_VICTIM_COUNT, rackPods.length) : rackPods.length;
+    for (let i = 0; i < limit; i += 1) victimIds.add(rackPods[i].id);
+  } else {
+    const limit = Math.min(OOM_VICTIM_COUNT, snapshot.pods.length);
+    for (let i = 0; i < limit; i += 1) victimIds.add(snapshot.pods[i].id);
+  }
+
+  /* OOM 受害者的排名（影响故障强度递增曲线，与合成引擎口径一致） */
+  const victimRank = new Map<string, number>();
+  let rankCounter = 0;
+  for (const pod of snapshot.pods) {
+    if (victimIds.has(pod.id)) {
+      victimRank.set(pod.id, rankCounter);
+      rankCounter += 1;
+    }
+  }
+
+  /* ---- 2. Pod 叠加：只改受害者，其余保留真实值 ---- */
+  const nextPods: PodEntity[] = snapshot.pods.map((pod, index): PodEntity => {
+    if (activeChaos === 'POD_OOM_SWARM' && victimIds.has(pod.id)) {
+      return evolvePodOomSwarm(pod, tick, victimRank.get(pod.id) ?? 0);
+    }
+    if (activeChaos === 'NODE_CPU_SPIKE' && victimIds.has(pod.id)) {
+      return evolvePodCpuSpike(pod, tick, index);
+    }
+    if (activeChaos === 'NET_PACKET_LOSS' && victimIds.has(pod.id)) {
+      return evolvePodPartition(pod, tick, index);
+    }
+    /* 非受害者：保持实时采集到的真实值，不做任何合成演进 */
+    return pod;
+  });
+
+  /* ---- 3. 节点叠加：只改故障机架对应的节点 ---- */
+  const nextNodes: WorkerNodeEntity[] = snapshot.nodes.map(
+    (node, index): WorkerNodeEntity =>
+      node.rackIndex === affectedRack ? evolveNode(node, activeChaos, tick, index) : node,
+  );
+
+  /* ---- 4. QPS 下挫：故障导致请求失败/超时，这是业务层真实后果 ---- */
+  const chaosQpsPenalty =
+    activeChaos === 'POD_OOM_SWARM' ? 0.82 : activeChaos === 'NODE_CPU_SPIKE' ? 0.9 : 0.72;
+  const totalQps = Math.max(0, Math.round(snapshot.totalQps * chaosQpsPenalty));
+
+  /* ---- 5. 组装中间快照 → 告警 → 健康分（与合成引擎完全同源） ---- */
+  const intermediate: TelemetrySnapshot = {
+    /* 时间戳沿用真实快照：live 模式的时间基准不可被改写 */
+    timestamp: snapshot.timestamp,
+    clusterHealthScore: HEALTH_SCORE_MAX,
+    totalQps,
+    nodes: nextNodes,
+    pods: nextPods,
+    activeAlerts: [],
+  };
+
+  const activeAlerts = buildAlerts(activeChaos, intermediate);
   const clusterHealthScore = computeClusterHealthScore(nextNodes, nextPods, activeAlerts);
 
   return {

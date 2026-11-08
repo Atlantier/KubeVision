@@ -37,13 +37,82 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { CheckCircle2, Loader2, ShieldAlert, Terminal, Wrench } from 'lucide-react';
+import { CheckCircle2, CircleAlert, Loader2, ShieldAlert, Terminal, Wrench } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import MarkdownLite from '@/components/ai/MarkdownLite';
 import type { ActionConfirmProps, RemediationActionType } from '@/types/ai';
-import type { SelectedEntityType } from '@/types/store';
+import type { RemediationDiff, SelectedEntityType } from '@/types/store';
+
+/* ========================================================================== */
+/* 类型                                                                       */
+/* ========================================================================== */
+
+/**
+ * McpExecuteReceipt —— 与服务端 /api/mcp/execute 返回的 result 结构一致。
+ *
+ * 【为何在前端重新声明而不从 route 导入】Next.js App Router 的 route.ts
+ * 只应导出 HTTP 方法与段配置（导出别的成员会让 .next/types 的生成式校验报错，
+ * 这一点在本项目 chat 路由的注释里已有记录）。因此契约在两侧各声明一份，
+ * 字段名保持严格一致；若服务端改了结构，前端这里的读取会立刻显示异常，
+ * 属于可接受的显式耦合。
+ */
+interface McpExecuteReceipt {
+  readonly executionId: string;
+  readonly timestamp: string;
+  readonly toolUri: string;
+  readonly actionType: string;
+  readonly targetId: string;
+  readonly targetName: string;
+  readonly kubectlCommand: string;
+  readonly latencyMs: number;
+  readonly auditDigest: string;
+  readonly mode: 'real' | 'simulated';
+  readonly note: string;
+}
+
+/** JSON-RPC 2.0 成功响应 */
+interface McpRpcSuccess {
+  readonly jsonrpc: '2.0';
+  readonly id: string;
+  readonly result: McpExecuteReceipt;
+}
+
+/** JSON-RPC 2.0 失败响应 */
+interface McpRpcFailure {
+  readonly jsonrpc: '2.0';
+  readonly id: string;
+  readonly error: { readonly code: number; readonly message: string; readonly data?: string };
+}
+
+/**
+ * isRpcSuccess —— 运行期守卫：区分成功回执与错误包。
+ *
+ * 【为何不用类型断言】响应来自网络，形状不可信。断言 `as McpRpcSuccess`
+ * 会把错误包也当成成功读取，随后 `result.executionId` 得到 undefined，
+ * 界面显示一个空白的执行 ID——比直接报错更难排查。
+ *
+ * @param value 待判定的响应体
+ * @returns 是否为成功包
+ */
+function isRpcSuccess(value: unknown): value is McpRpcSuccess {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as { result?: unknown };
+  return typeof candidate.result === 'object' && candidate.result !== null;
+}
+
+/**
+ * isRpcFailure —— 运行期守卫：识别 JSON-RPC 错误包。
+ *
+ * @param value 待判定的响应体
+ * @returns 是否为错误包
+ */
+function isRpcFailure(value: unknown): value is McpRpcFailure {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as { error?: unknown };
+  return typeof candidate.error === 'object' && candidate.error !== null;
+}
 
 /* ========================================================================== */
 /* 常量                                                                       */
@@ -67,10 +136,22 @@ const ACTION_LABEL: Readonly<Record<RemediationActionType, string>> = {
  * ExecutionPhase —— 卡片执行状态机。
  *
  * - 'idle'      → 待用户确认
- * - 'executing' → 600ms 流光动画进行中（按钮禁用，防重复触发）
- * - 'done'      → 已执行完毕（展示成功态，可再次执行的入口不提供）
+ * - 'executing' → 请求 MCP 执行端点 + 流光动画进行中（按钮禁用，防重复触发）
+ * - 'done'      → 已执行完毕（展示成功态与服务端回执）
+ * - 'failed'    → 服务端明确拒绝/失败（展示错误原因，允许重试）
+ *
+ * 【为何新增 failed 态】引入真实 MCP 调用后，"失败"成为一种必须表达的状态：
+ * 真实集群可能因权限不足、资源不存在、网络不通而拒绝执行。
+ * 若沿用旧的二元态，失败会被显示成"已执行"——那是在生产环境里
+ * 告诉用户自愈成功了，而实际什么都没做。这个假象比不提供功能更危险。
  */
-type ExecutionPhase = 'idle' | 'executing' | 'done';
+type ExecutionPhase = 'idle' | 'executing' | 'done' | 'failed';
+
+/** MCP 执行端点路径 */
+const MCP_EXECUTE_ENDPOINT = '/api/mcp/execute';
+
+/** 执行请求超时（毫秒）：略大于服务端 8s 的 K8s 请求超时，留出传输余量 */
+const MCP_REQUEST_TIMEOUT_MS = 12_000;
 
 /* ========================================================================== */
 /* 组件主体                                                                    */
@@ -96,22 +177,45 @@ export default function ActionConfirm({
     (s): ((entityId: string | null, entityType?: SelectedEntityType | null) => void) => s.selectEntity,
   );
 
+  /**
+   * 【细粒度订阅自愈对比】只订阅 lastRemediationDiff 这一个字段，
+   * 避免整个 store 变更都触发卡片重渲染。
+   *
+   * 【为何要校验 targetId 匹配】多个动作卡可能同时存在于对话流中。
+   * 如果 A 卡片执行后写入的 diff 被 B 卡片读到并展示，就会出现
+   * 「B 卡片显示了 A 的修复数据」——张冠李戴的对比比没有对比更糟。
+   * 因此只在 diff.targetId 与本卡目标一致时才展示。
+   */
+  const lastDiff = useClusterStore((s): RemediationDiff | null => s.lastRemediationDiff);
+  const diff = lastDiff !== null && lastDiff.targetId === targetId ? lastDiff : null;
+
   /** 高危确认勾选态（非高危动作恒为 true，无需勾选） */
   const [acknowledged, setAcknowledged] = useState<boolean>(!isHighRisk);
 
   /** 执行阶段状态机 */
   const [phase, setPhase] = useState<ExecutionPhase>('idle');
 
-  /** 600ms 定时器句柄（卸载时必须清理，否则会对已卸载组件 setState） */
+  /** 服务端执行回执（拿到后才允许进入 done 态） */
+  const [receipt, setReceipt] = useState<McpExecuteReceipt | null>(null);
+
+  /** 失败原因（failed 态展示） */
+  const [failureReason, setFailureReason] = useState<string>('');
+
+  /** 执行动画定时器句柄（卸载时必须清理，否则会对已卸载组件 setState） */
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** 卸载清理：杜绝定时器泄漏与「对已卸载组件 setState」警告 */
+  /** 在途请求中止器（卸载时取消，避免泄漏与幽灵回调） */
+  const abortRef = useRef<AbortController | null>(null);
+
+  /** 卸载清理：杜绝定时器/请求泄漏与「对已卸载组件 setState」警告 */
   useEffect(() => {
     return (): void => {
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
       }
+      abortRef.current?.abort();
+      abortRef.current = null;
     };
   }, []);
 
@@ -140,81 +244,169 @@ export default function ActionConfirm({
    * 之后调用，确保父级收到回调时 store 与终端已是最新状态，避免「回调读到旧值」。
    */
   const handleExecute = useCallback((): void => {
-    if (phase !== 'idle') return;
+    if (phase !== 'idle' && phase !== 'failed') return;
     if (isHighRisk && !acknowledged) return;
 
     setPhase('executing');
+    setFailureReason('');
 
-    timerRef.current = setTimeout((): void => {
-      timerRef.current = null;
+    /**
+     * 【执行前解析真实目标】卡片是流式渲染期创建的，targetId 可能已失效：
+     * 1. 旧版本持久化的会话历史（里面可能存着 'n/a'）；
+     * 2. 集群状态在卡片生成后发生变化（目标 Pod 已被删除）。
+     * 这两种情况下 healEntity / selectEntity 拿到不存在的 ID 会产生
+     * "修复空气"的假动作：3D 无变化、相机找不到目标、终端却打印成功回执。
+     *
+     * 回退策略：优先用卡片自身目标；不存在则回退到快照中第一个真实 Pod；
+     * 若集群连一个实体都没有，中止本次执行，不做无效的"成功"表演。
+     */
+    const snapshot = useClusterStore.getState().snapshotSummary;
+    const targetExists =
+      snapshot.pods.some((pod): boolean => pod.id === targetId) ||
+      snapshot.nodes.some((node): boolean => node.id === targetId);
 
-      /**
-       * ---- 步骤 2.5：执行前解析真实目标（防幽灵 ID 穿透到 3D 场景）----
-       *
-       * 【为什么必须在点击时再做一次校验】卡片是流式渲染期创建的，
-       * 它携带的 targetId 可能来自：
-       * 1. 旧版本持久化的会话历史（里面可能存着 'n/a'）；
-       * 2. 集群状态在这张卡片生成后发生了变化（目标 Pod 已被删除）。
-       * 这两种情况下 targetId 都已失效，而 healEntity 与 selectEntity
-       * 若拿到不存在的 ID，会产生"修复空气"的假动作：
-       * 3D 场景毫无变化、相机找不到聚焦目标、终端却打印成功回执。
-       *
-       * 【回退策略】优先使用卡片自身的目标；若它在当前快照中不存在，
-       * 回退到快照中第一个真实 Pod，保证**点击按钮永远作用于一个
-       * 真实存在的 3D 容器实例**。若集群连一个 Pod 都没有，则中止本次执行，
-       * 并把状态置回 idle——不做无效的"成功"表演。
-       */
-      const snapshot = useClusterStore.getState().snapshotSummary;
-      const targetExists =
-        snapshot.pods.some((pod): boolean => pod.id === targetId) ||
-        snapshot.nodes.some((node): boolean => node.id === targetId);
+    const effectiveTargetId: string | null = targetExists
+      ? targetId
+      : snapshot.pods[0]?.id ?? snapshot.nodes[0]?.id ?? null;
 
-      const effectiveTargetId: string | null = targetExists
-        ? targetId
-        : snapshot.pods[0]?.id ?? snapshot.nodes[0]?.id ?? null;
-
-      if (effectiveTargetId === null) {
-        /* 集群里没有任何可作用于的实体 → 安全中止，不写任何"成功"记录 */
-        appendTerminalLog(
-          `[MCP-ROUTER] ABORTED ${actionType} -> no valid target in current cluster snapshot`,
-        );
-        setPhase('idle');
-        return;
-      }
-
-      /* 实体类型按**实际目标**重新推导，而非沿用动作卡的原始假设 */
-      const effectiveEntityType: SelectedEntityType =
-        snapshot.nodes.some((node): boolean => node.id === effectiveTargetId) ? 'node' : 'pod';
-
-      /* ---- 步骤 3：执行自愈（3D 场景中的故障实体当场转绿） ---- */
-      healEntity(effectiveTargetId, actionType);
-
-      /* ---- 步骤 4：MCP 路由审计回显 ---- *
-       * 前缀 [MCP-ROUTER] 已被 TerminalEcho 的 TONE_RULES 映射为 router 色调
-       * （sky-300 天蓝），与控制器行（cyan-300）在视觉上明确区分：
-       * 天蓝代表「协议层调用」，青色代表「K8s 控制器动作」。 */
+    if (effectiveTargetId === null) {
       appendTerminalLog(
-        `[MCP-ROUTER] Invoked mcp://k8s-cluster/tools/${actionType} -> Target ${effectiveTargetId} healed`,
+        `[MCP-ROUTER] ABORTED ${actionType} -> no valid target in current cluster snapshot`,
       );
+      setPhase('idle');
+      return;
+    }
 
-      /* ---- 步骤 5：引导 3D 相机聚焦被修复实体 ---- *
-       * 【实体类型推导】drain_node → 节点；restart_pod / scale_deployment → Pod。
-       * 传给 selectEntity 的第二个参数让 CameraRig 能用正确的特写机位
-       * （节点是机架远景，Pod 是实例近景），而不是统一按一种方式聚焦。
-       *
-       * 【顺序】必须在 healEntity 之后：CameraRig 的 focus effect 依赖
-       * selectedEntityId 变化，而此时快照已更新为愈合态，
-       * 相机飞过去看到的就是"已修复"的绿色实例——时序上因果正确。 */
-      selectEntity(effectiveTargetId, effectiveEntityType);
+    /** 实体类型按**实际目标**重新推导，而非沿用动作卡的原始假设 */
+    const effectiveEntityType: SelectedEntityType =
+      snapshot.nodes.some((node): boolean => node.id === effectiveTargetId) ? 'node' : 'pod';
 
-      /* ---- 步骤 6：切换成功态并向上冒泡回调 ---- */
-      setPhase('done');
-      onActionExecuted?.(targetId, actionType);
-    }, EXECUTION_ANIMATION_MS);
-  }, [acknowledged, actionType, appendTerminalLog, healEntity, isHighRisk, onActionExecuted, phase, selectEntity, targetId]);
+    /** 展示名：优先用卡片已知的名字，否则剥前缀作为近似 */
+    const effectiveTargetName =
+      snapshot.pods.find((pod): boolean => pod.id === effectiveTargetId)?.name ??
+      snapshot.nodes.find((node): boolean => node.id === effectiveTargetId)?.name ??
+      targetName;
+
+    /**
+     * ================= 步骤 1：真实调用服务端 MCP 执行端点 =================
+     *
+     * 【顺序为何是「先请求服务端，再改本地状态」】
+     * 反过来的话（先 healEntity 再请求），一旦服务端返回失败，
+     * 本地 3D 场景已经变绿、终端已经打印成功行——这时再去纠正，
+     * 用户看到的是"先成功后失败"的闪烁，且无法判断到底成没成。
+     *
+     * 正确顺序是：**服务端确认受理 → 本地才宣布成功**。
+     * 这样"已执行"这个状态永远是服务端背书的，而不是客户端自说自话。
+     *
+     * 【为何保留 600ms 动画】服务端模拟路径有 220ms、真实集群可能更久，
+     * 动画在此期间持续播放，让"正在执行"有确定的可感知时长。
+     * 动画与服务端请求是并行的，不额外增加总耗时。
+     */
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const animationDone = new Promise<void>((resolve): void => {
+      timerRef.current = setTimeout((): void => {
+        timerRef.current = null;
+        resolve();
+      }, EXECUTION_ANIMATION_MS);
+    });
+
+    const requestDone = (async (): Promise<McpExecuteReceipt> => {
+      const timeout = setTimeout((): void => controller.abort(), MCP_REQUEST_TIMEOUT_MS);
+      try {
+        const response = await fetch(MCP_EXECUTE_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            actionType,
+            targetId: effectiveTargetId,
+            targetName: effectiveTargetName,
+            clusterMode: useClusterStore.getState().connectionMode,
+          }),
+          signal: controller.signal,
+        });
+
+        const payload: unknown = await response.json();
+
+        if (isRpcSuccess(payload)) return payload.result;
+
+        if (isRpcFailure(payload)) {
+          throw new Error(
+            payload.error.data !== undefined
+              ? `${payload.error.message}: ${payload.error.data}`
+              : payload.error.message,
+          );
+        }
+        throw new Error(`unexpected response shape (HTTP ${response.status})`);
+      } finally {
+        clearTimeout(timeout);
+      }
+    })();
+
+    void (async (): Promise<void> => {
+      try {
+        /* 动画与服务端请求并行等待：两者都完成才进入结果态 */
+        const [result] = await Promise.all([requestDone, animationDone]);
+        if (controller.signal.aborted) return;
+
+        abortRef.current = null;
+        setReceipt(result);
+
+        /* ---- 步骤 2：服务端已受理 → 落地本地自愈 ---- *
+         * healEntity 内部完成：免疫去重 → 派生愈合快照 → 计算前后对比
+         * → 双轨分发 → 终端审计。 */
+        healEntity(effectiveTargetId, actionType);
+
+        /* ---- 步骤 3：MCP 协议级审计回显 ---- *
+         * 与 store 写的 [KUBE-CONTROLLER] 控制器行互补：
+         * 前者说「谁通过什么通道调用了什么工具」，后者说「执行结果如何」。 */
+        appendTerminalLog(
+          `[MCP-ROUTER] ${result.executionId} invoked ${result.toolUri} -> ${result.targetName} healed in ${result.latencyMs}ms (${result.mode})`,
+        );
+        appendTerminalLog(`[MCP-ROUTER] equivalent: ${result.kubectlCommand}`);
+
+        /* ---- 步骤 4：引导 3D 相机聚焦被修复实体 ---- *
+         * 必须在 healEntity 之后：CameraRig 的 focus effect 依赖
+         * selectedEntityId 变化，此时快照已是愈合态，
+         * 相机飞过去看到的就是"已修复"的绿色实例——时序上因果正确。 */
+        selectEntity(effectiveTargetId, effectiveEntityType);
+
+        /* ---- 步骤 5：切换成功态并向上冒泡 ---- */
+        setPhase('done');
+        onActionExecuted?.(targetId, actionType);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        abortRef.current = null;
+
+        /**
+         * 【失败必须如实显示】服务端拒绝（权限/资源不存在/网络）时，
+         * 不修改本地状态、不打印成功行，只记录失败原因并回到可重试态。
+         * 让用户看到"执行失败 + 为什么"，而不是一个假的成功动画。
+         */
+        const message = error instanceof Error ? error.message : String(error);
+        setFailureReason(message);
+        setPhase('failed');
+        appendTerminalLog(`[MCP-ROUTER] FAILED ${actionType} on ${effectiveTargetId} -> ${message}`);
+      }
+    })();
+  }, [
+    acknowledged,
+    actionType,
+    appendTerminalLog,
+    healEntity,
+    isHighRisk,
+    onActionExecuted,
+    phase,
+    selectEntity,
+    targetId,
+    targetName,
+  ]);
 
   const isExecuting = phase === 'executing';
   const isDone = phase === 'done';
+  const isFailed = phase === 'failed';
 
   /** 按钮是否禁用：执行中 / 已完成 / 高危未勾选 */
   const buttonDisabled = isExecuting || isDone || (isHighRisk && !acknowledged);
@@ -345,12 +537,14 @@ export default function ActionConfirm({
                 <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
                 执行中…
               </>
+            ) : isFailed ? (
+              <>
+                <CircleAlert className="h-3 w-3" aria-hidden />
+                执行失败 · 点击重试
+              </>
             ) : (
               <>
                 <Wrench className="h-3 w-3" aria-hidden />
-                {/* 注意：这里必须用真实空格而非   实体——
-                    三元表达式返回的是 JS 字符串，不会经过 JSX 的 HTML 实体解析，
-                    写成 'confirm required' 会原样渲染出字面量 " "。 */}
                 {isHighRisk && !acknowledged ? '需二次确认' : '立即执行自愈方案'}
               </>
             )}
@@ -358,12 +552,159 @@ export default function ActionConfirm({
         </button>
       </div>
 
-      {/* ============ 执行完成后的回执 ============ */}
+      {/* ============ 失败态：如实展示服务端拒绝原因 ============ */}
+      {isFailed ? (
+        <div className="border-t border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5">
+          <p className="font-mono text-[11px] leading-relaxed text-rose-300">
+            [MCP-ERROR] 服务端未受理本次动作
+          </p>
+          <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-rose-300/70">
+            {failureReason.length > 0 ? failureReason : '未知错误'}
+          </p>
+        </div>
+      ) : null}
+
+      {/* ============ 已执行态：服务端回执 + 自愈前后指标对比 ============ */}
       {isDone ? (
-        <p className="border-t border-slate-800 px-2.5 py-1.5 font-mono text-[11px] tracking-wider text-emerald-400/80">
-          [OK] 自愈指令已下发 → 免疫窗口已登记 → 3D 视口已同步更新
-        </p>
+        <div className="border-t border-slate-800 px-2.5 py-1.5">
+          <p className="font-mono text-[11px] tracking-wider text-emerald-400/80">
+            [OK] 自愈指令已下发 → 免疫窗口已登记 → 3D 视口已同步更新
+          </p>
+
+          {/*
+           * ---- 服务端执行回执 ----
+           *
+           * 【为何要展示这些字段】在引入真实 MCP 调用之前，"已执行"是客户端
+           * 自己宣布的——没有任何外部证据。现在服务端返回了 executionId /
+           * latencyMs / auditDigest，把这三项摆出来，用户才能：
+           * 1. 拿 executionId 去服务端日志对账；
+           * 2. 用 latencyMs 判断执行是否异常缓慢；
+           * 3. 用 kubectlCommand 复核实际做了什么（懂 K8s 的人一眼看出影响范围）。
+           */}
+          {receipt !== null ? (
+            <div className="mt-1.5 rounded border border-emerald-500/20 bg-emerald-500/[0.04] p-1.5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-emerald-300/70">
+                <span className="text-emerald-400">[MCP RECEIPT]</span>
+                <span>{receipt.executionId}</span>
+                <span className="text-slate-500">·</span>
+                <span>{receipt.latencyMs}ms</span>
+                <span className="text-slate-500">·</span>
+                <span className={receipt.mode === 'real' ? 'text-emerald-400' : 'text-amber-300/80'}>
+                  {receipt.mode === 'real' ? 'LIVE CLUSTER' : 'SIMULATED'}
+                </span>
+              </div>
+
+              {/* 等价 kubectl 命令条：运维人员可直接复制复核 */}
+              <pre className="mt-1 overflow-x-auto rounded bg-slate-950/70 px-1.5 py-1 font-mono text-[10px] leading-relaxed text-cyan-300/90">
+                <code>$ {receipt.kubectlCommand}</code>
+              </pre>
+
+              <p className="mt-1 font-mono text-[9px] text-slate-500">
+                audit digest: {receipt.auditDigest}
+              </p>
+            </div>
+          ) : null}
+
+          {/* ---- 自愈前后指标对比面板 ---- */}
+          {diff !== null ? (
+            <div className="mt-1.5 rounded border border-cyan-500/20 bg-cyan-500/[0.04] p-1.5">
+              <p className="font-mono text-[10px] font-bold tracking-wider text-cyan-300">
+                自愈前后指标对比 · {diff.targetName}
+              </p>
+              <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5 font-mono text-[10px]">
+                <MetricDelta label="CPU" before={diff.beforeCpu} after={diff.afterCpu} unit="%" />
+                <MetricDelta label="内存" before={diff.beforeMem} after={diff.afterMem} unit="%" />
+                <MetricDelta
+                  label="健康分"
+                  before={diff.beforeHealth}
+                  after={diff.afterHealth}
+                  unit=""
+                  improveWhen="up"
+                />
+                <StatusDelta before={diff.beforeStatus} after={diff.afterStatus} />
+              </div>
+            </div>
+          ) : null}
+        </div>
       ) : null}
     </div>
+  );
+}
+
+/* ========================================================================== */
+/* 子组件：单行指标对比                                                        */
+/* ========================================================================== */
+
+/**
+ * MetricDelta —— 「前值 → 后值」单行指标对比。
+ *
+ * 【配色方向为何不能写死】这里有个容易搞错的地方：CPU / 内存 / 健康分
+ * 三个指标的"好"方向并不一致——前两者下降是好事，健康分上升才是好事。
+ * 若统一用"数值变化为正则绿色"，就会出现"CPU 从 40% 涨到 96% 显示为绿色"
+ * 这种严重误导。因此用 improveWhen 参数显式声明该指标的好坏方向。
+ *
+ * @param props 标签、前值、后值、单位、好方向
+ */
+function MetricDelta({
+  label,
+  before,
+  after,
+  unit,
+  improveWhen = 'down',
+}: {
+  readonly label: string;
+  readonly before: number;
+  readonly after: number;
+  readonly unit: string;
+  readonly improveWhen?: 'up' | 'down';
+}) {
+  const delta = after - before;
+  const improved = improveWhen === 'down' ? delta < -0.05 : delta > 0.05;
+  const worsened = improveWhen === 'down' ? delta > 0.05 : delta < -0.05;
+
+  const toneClass = improved ? 'text-emerald-300' : worsened ? 'text-rose-300' : 'text-slate-400';
+  const arrow = delta > 0.05 ? '↑' : delta < -0.05 ? '↓' : '→';
+
+  return (
+    <span className="flex items-baseline gap-1 whitespace-nowrap">
+      <span className="text-slate-500">{label}</span>
+      <span className="text-slate-400">
+        {before.toFixed(unit === '' ? 0 : 1)}
+        {unit}
+      </span>
+      <span className="text-slate-600">→</span>
+      <span className={toneClass}>
+        {after.toFixed(unit === '' ? 0 : 1)}
+        {unit} {arrow}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * StatusDelta —— 实体状态的前后对比（Pod 生命周期态 / Node 就绪态）。
+ *
+ * 【为何单独一个组件而非塞进 MetricDelta】状态是枚举而非数值，
+ * 没有"上升/下降"语义，只有"好转/恶化/不变"。硬套数值比较会得出荒谬结论
+ * （比如把 CrashLoopBackOff → Running 判定为"字符串变长"）。
+ * 这里用明确的成功态白名单判断。
+ *
+ * @param props 前状态、后状态
+ */
+function StatusDelta({ before, after }: { readonly before: string; readonly after: string }) {
+  /** 视为"健康"的状态集合（Pod 与 Node 的成功态） */
+  const healthyStates = new Set<string>(['Running', 'Ready']);
+  const improved = !healthyStates.has(before) && healthyStates.has(after);
+  const worsened = healthyStates.has(before) && !healthyStates.has(after);
+
+  const toneClass = improved ? 'text-emerald-300' : worsened ? 'text-rose-300' : 'text-slate-400';
+
+  return (
+    <span className="flex items-baseline gap-1 whitespace-nowrap">
+      <span className="text-slate-500">状态</span>
+      <span className="text-slate-400">{before}</span>
+      <span className="text-slate-600">→</span>
+      <span className={toneClass}>{after}</span>
+    </span>
   );
 }

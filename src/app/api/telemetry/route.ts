@@ -48,7 +48,11 @@
 
 import type { ChaosScenario, TelemetrySnapshot } from '@/types/cluster';
 import { INITIAL_CLUSTER_SNAPSHOT } from '@/types/cluster';
-import { TICK_INTERVAL_MS, stepTelemetrySimulation } from '@/utils/syntheticEngine';
+import {
+  TICK_INTERVAL_MS,
+  applyLiveChaosOverlay,
+  stepTelemetrySimulation,
+} from '@/utils/syntheticEngine';
 import { collectLiveTelemetrySnapshot } from '@/utils/liveTelemetry';
 
 /* ---- Next.js Route Segment 配置（必须位于模块顶层且为字面量导出） ---- */
@@ -214,7 +218,25 @@ export function GET(request: Request): Response {
           try {
             const collected = await collectLiveTelemetrySnapshot(snapshot);
             if (isClosed) return;
-            snapshot = collected.snapshot;
+
+            /**
+             * ---- 关键修复：live 模式下的故障演练叠加 ----
+             *
+             * 【原缺陷】此分支此前直接推送 `collected.snapshot`，
+             * 完全忽略上面解析出来的 chaos 参数。于是用户在「实时」模式点
+             * 「故障演练」时，服务端仍只推真实数据：3D 场景毫无变化、
+             * 指标纹丝不动、告警不出现，观感等同于按钮失效。
+             *
+             * 【现在】在真实快照之上叠加混沌效果：
+             * - 保留真实底盘（真实集群/宿主机的 pod/node 数据不被伪造）；
+             * - 只对混沌目标机架施加故障特征（OOM 内存漂白、CPU 飙升、网络分区）；
+             * - 告警与健康分用与 demo 模式完全相同的规则重算。
+             *
+             * 这样两种模式下"故障长什么样"是一致的，而 live 模式仍然
+             * 是**真实数据驱动**的——叠加层只改故障语义，不改数据来源。
+             */
+            snapshot =
+              chaos === 'NONE' ? collected.snapshot : applyLiveChaosOverlay(collected.snapshot, chaos);
 
             const frame = `data: ${JSON.stringify(snapshot)}\n\n`;
             if (!safeEnqueue(frame) && timer !== null) {

@@ -40,7 +40,9 @@ import { INITIAL_CLUSTER_SNAPSHOT } from '@/types/cluster';
 import type {
   ClusterState,
   ClusterStore,
+  PendingRemediation,
   PersistedClusterState,
+  RemediationDiff,
   RemediationRecord,
   SelectedEntityType,
   StatusFilter,
@@ -297,6 +299,56 @@ function deriveHealedSnapshot(
 }
 
 /**
+ * findEntityMetrics —— 从快照中取出指定实体的指标三元组（CPU / 内存 / 状态）。
+ *
+ * 【为何需要这个辅助】自愈前后对比必须取自**同一套字段口径**：
+ * Pod 与 Node 是两个不同的实体类型，各自持有 cpuUsage / memoryUsage / status。
+ * 若在两处分别写取值逻辑，很容易出现"before 取 Pod、after 取 Node"的错配，
+ * 差值就完全失去意义。集中到一处，口径只有一份。
+ *
+ * 【找不到时返回 0】调用方在使用前已确认目标存在（healEntity 步骤 2b 的闸门），
+ * 因此这里的兜底分支在实践中不会走到；返回 0 而非抛错是为了不让一个
+ * 理论上的边界情况打断整个自愈流程。
+ *
+ * @param snapshot 待检索的遥测快照
+ * @param entityId 目标实体 ID（Pod ID 或 Node ID）
+ * @returns CPU 使用率、内存使用率、状态字符串
+ */
+function findEntityMetrics(
+  snapshot: TelemetrySnapshot,
+  entityId: string,
+): { cpu: number; mem: number; status: string } {
+  const pod = snapshot.pods.find((item): boolean => item.id === entityId);
+  if (pod !== undefined) {
+    return { cpu: pod.cpuUsage, mem: pod.memoryUsage, status: pod.status };
+  }
+  const node = snapshot.nodes.find((item): boolean => item.id === entityId);
+  if (node !== undefined) {
+    return { cpu: node.cpuUsage, mem: node.memUsage, status: node.status };
+  }
+  return { cpu: 0, mem: 0, status: 'Unknown' };
+}
+
+/**
+ * resolveEntityDisplayName —— 把实体 ID 解析为可读展示名。
+ *
+ * 【为何必须解析】动作卡上显示 `pod-redis-cluster-shard-0` 这种内部 ID
+ * 对用户毫无意义；展示 `redis-cluster-shard-0` 才是他认识的容器名。
+ * 解析失败时退回原 ID（总比显示空白好）。
+ *
+ * @param snapshot 待检索的遥测快照
+ * @param entityId 目标实体 ID
+ * @returns 展示名；未找到时返回原 ID
+ */
+function resolveEntityDisplayName(snapshot: TelemetrySnapshot, entityId: string): string {
+  const pod = snapshot.pods.find((item): boolean => item.id === entityId);
+  if (pod !== undefined) return pod.name;
+  const node = snapshot.nodes.find((item): boolean => item.id === entityId);
+  if (node !== undefined) return node.name;
+  return entityId;
+}
+
+/**
  * 初始状态工厂 —— 返回全部确定性字面量（SSR/CSR 首帧逐字节一致）。
  *
  * 【契约】严禁在此调用 Date.now() / Math.random() / localStorage 读取，
@@ -325,6 +377,8 @@ function createInitialClusterState(): ClusterState {
     quickPromptTrigger: null,
     capturedViewportDataUrl: null,
     healedPodIds: {},
+    pendingRemediations: [],
+    lastRemediationDiff: null,
     totalMaskedSecrets: 0,
     remediationHistory: [],
   };
@@ -388,6 +442,24 @@ export const useClusterStore = create<ClusterStore>()(
 
         if (!existsInCluster) {
           set({ selectedEntityId: null, selectedEntityType: null });
+          /**
+           * 【安全审计】静默归零不等于静默无痕。
+           *
+           * 之前的实现注释写着"不抛错、不写日志——UI 层不该因为上游的一个
+           * 脏值而中断"。这个判断对**用户体验**是对的：确实不该弹错误框。
+           * 但对**安全可观测性**是错的：幽灵 ID 出现本身是一个信号——
+           * 它意味着上游（大模型动作卡、旧持久化会话、跨轮对话引用）
+           * 正在把不存在的实体 ID 送进来。如果连一行日志都不留，
+           * 这类问题在线上会完全不可见，只能靠用户报告"点了没反应"才发现。
+           *
+           * 因此改为：界面行为不变（依然静默不选中），但终端留一条
+           * [AUDIT-SECURITY] 审计行。前缀经 TerminalEcho 的 TONE_RULES
+           * 映射为告警色调，便于值班者快速识别这是「被拒绝的非法请求」
+           * 而非普通业务日志。
+           */
+          get().appendTerminalLog(
+            `[AUDIT-SECURITY] rejected selectEntity("${entityId}") -> target not found in current snapshot`,
+          );
           return;
         }
 
@@ -469,10 +541,48 @@ export const useClusterStore = create<ClusterStore>()(
         const now = Date.now();
         const previous = state.healedPodIds[targetId];
 
-        /* ---- 步骤 1：免疫窗口去重 ---- */
+        /**
+         * ---- 步骤 1：免疫窗口 → 指数退避排队（而非直接丢弃）----
+         *
+         * 【行为变更缘由】原实现在窗口内只打一行 BLOCKED 就 return，
+         * 用户连续点击时看到的是「点了完全没反应」。这在故障未消除时
+         * 是很自然的用户行为，静默丢弃等于把用户的意图吞掉。
+         *
+         * 现在改为入队 pendingRemediations：记录本次请求、算出退避秒数、
+         * 在终端明确告知「已排队，N 秒后重试」。防抖动的初衷保留
+         * （不会立刻重复执行），但用户能看到自己的点击被受理了。
+         *
+         * 【退避公式】backoffSec = min(30, 2^(retryCount + 1))
+         * 2 → 4 → 8 → 16 → 30（封顶）。指数退避让高频连点迅速降频，
+         * 同时避免无限膨胀的等待时间。
+         */
         if (previous !== undefined && now - previous < HEAL_IMMUNITY_WINDOW_MS) {
+          const remainingMs = HEAL_IMMUNITY_WINDOW_MS - (now - previous);
+          const remainingSec = Math.ceil(remainingMs / 1000);
+
+          /* 同一目标在当前窗口内已有多少条排队 → 作为退避指数 */
+          const retryCount = state.pendingRemediations.filter(
+            (item): boolean => item.targetId === targetId,
+          ).length;
+          const backoffSec = Math.min(30, Math.pow(2, retryCount + 1));
+
+          const targetName = resolveEntityDisplayName(state.snapshotSummary, targetId);
+          const pending: PendingRemediation = {
+            id: `pending-${now}-${remediationSeq++}`,
+            targetId,
+            targetName,
+            actionType,
+            retryCount,
+            backoffSec,
+            scheduledAt: new Date(now).toISOString(),
+          };
+
+          set((current) => ({
+            pendingRemediations: [...current.pendingRemediations, pending],
+          }));
+
           get().appendTerminalLog(
-            `[KUBE-CONTROLLER] BLOCKED ${actionType} on ${targetId} -> immunity window active (${Math.ceil((HEAL_IMMUNITY_WINDOW_MS - (now - previous)) / 1000)}s left)`,
+            `[KUBE-CONTROLLER] QUEUED ${actionType} on ${targetId} -> immunity window active (${remainingSec}s left), retry #${retryCount + 1} scheduled in ${backoffSec}s`,
           );
           return;
         }
@@ -542,12 +652,48 @@ export const useClusterStore = create<ClusterStore>()(
 
         const chaosWasActive = state.activeChaos !== 'NONE';
 
+        /**
+         * ---- 步骤 4b·补：计算自愈前后指标对比 ----
+         *
+         * 【为何在 set 之前算】before 必须取自**尚未提交**的旧快照，
+         * after 取自 newly derived 的愈合快照。一旦 set 完成，
+         * get().snapshotSummary 就已是新值，before 将无从获取。
+         *
+         * 【取值口径】
+         * - Pod 粒度：取该 Pod 自身的 cpuUsage/memoryUsage/status；
+         * - Node 粒度：取该节点的 cpuUsage/memUsage/status；
+         * - 健康分：始终取整个集群的 clusterHealthScore（局部修复也会改善总分）。
+         * before/after 同源同口径，差值才有解释力。
+         */
+        const beforeEntity = findEntityMetrics(snapshot, targetId);
+        const afterEntity = findEntityMetrics(healedSnapshot, targetId);
+
+        const diff: RemediationDiff = {
+          targetId,
+          targetName: resolveEntityDisplayName(snapshot, targetId),
+          actionType,
+          beforeCpu: beforeEntity.cpu,
+          afterCpu: afterEntity.cpu,
+          beforeMem: beforeEntity.mem,
+          afterMem: afterEntity.mem,
+          beforeHealth: snapshot.clusterHealthScore,
+          afterHealth: healedSnapshot.clusterHealthScore,
+          beforeStatus: beforeEntity.status,
+          afterStatus: afterEntity.status,
+          timestamp: new Date(now).toISOString(),
+        };
+
         /* ---- 步骤 4c：单次 set 原子提交响应轨全部变更
          * （拆成多次 set 会触发多轮订阅者重渲染，违背低频轨最小渲染纪律） ---- */
         set((current) => ({
           snapshotSummary: healedSnapshot,
           healedPodIds: { ...current.healedPodIds, ...immunityEntries },
           remediationHistory: [record, ...current.remediationHistory],
+          lastRemediationDiff: diff,
+          /* 本次目标已执行 → 清除它此前排队的重试（陈旧意图不应再触发） */
+          pendingRemediations: current.pendingRemediations.filter(
+            (item): boolean => item.targetId !== targetId,
+          ),
           // 混沌注入态复位：修复动作视为本轮演练的终止信号
           ...(chaosWasActive ? { activeChaos: 'NONE' as const } : {}),
         }));
@@ -561,6 +707,10 @@ export const useClusterStore = create<ClusterStore>()(
         get().appendTerminalLog(
           `[KUBE-CONTROLLER] Executed ${actionType} on ${targetId} -> Status verified: Running`,
         );
+        /* 前后对比审计行：把"改善了多少"落到终端，而不只是留在卡片里 */
+        get().appendTerminalLog(
+          `[KUBE-CONTROLLER] Self-heal delta on ${diff.targetName}: CPU ${diff.beforeCpu.toFixed(1)}%→${diff.afterCpu.toFixed(1)}%, MEM ${diff.beforeMem.toFixed(1)}%→${diff.afterMem.toFixed(1)}%, health ${diff.beforeHealth.toFixed(0)}→${diff.afterHealth.toFixed(0)}`,
+        );
         if (chaosWasActive) {
           get().appendTerminalLog(
             `[KUBE-CONTROLLER] Chaos drill ${state.activeChaos} terminated -> cluster restored to steady state`,
@@ -571,6 +721,35 @@ export const useClusterStore = create<ClusterStore>()(
             `[KUBE-CONTROLLER] Node-scope heal on ${targetId} -> ${healPodIds.size} abnormal pods recovered`,
           );
         }
+      },
+
+      /**
+       * clearPendingRemediations —— 清空退避队列。
+       *
+       * 【使用场景】用户主动放弃重试、或切换集群上下文时，陈旧的排队任务
+       * 不应继续存在——否则它们会在将来某个时刻突然生效。
+       *
+       * @param targetId 只清除该目标；省略则全清
+       */
+      clearPendingRemediations: (targetId) => {
+        set((current) => ({
+          pendingRemediations:
+            targetId === undefined
+              ? []
+              : current.pendingRemediations.filter(
+                  (item): boolean => item.targetId !== targetId,
+                ),
+        }));
+        get().appendTerminalLog(
+          targetId === undefined
+            ? '[KUBE-CONTROLLER] pending remediation queue cleared'
+            : `[KUBE-CONTROLLER] pending remediation queue cleared for ${targetId}`,
+        );
+      },
+
+      /** clearLastRemediationDiff —— 清除最近一次自愈对比（换会话/重开卡片时避免串味） */
+      clearLastRemediationDiff: () => {
+        set({ lastRemediationDiff: null });
       },
 
       /** setCapturedViewport —— 设置/清除 3D 视口多模态截图（非持久化，体积敏感） */
@@ -783,59 +962,92 @@ export const useClusterStore = create<ClusterStore>()(
 /* ========================================================================== */
 
 /**
- * rehydratePersistedClusterState —— 客户端手动水合入口（幂等）。
+ * rehydratePersistedClusterState —— 客户端手动水合入口（Promise 幂等）。
  *
  * 【调用契约】必须在客户端根组件的 useEffect 中调用一次：
- *   useEffect(() => { rehydratePersistedClusterState(); }, []);
+ *   useEffect(() => { void rehydratePersistedClusterState(); }, []);
  * 此时首帧 HTML 已提交，从 localStorage 读出的持久化字段以正常 React
  * 更新通道合并进 Store，不会产生水合不匹配。
  *
- * 【幂等性】内部以模块级标志位守卫，StrictMode 双调用 / 多组件重复调用
- * 均只会真正补水一次，避免重复触发订阅者重渲染。
- * rehydrate() 返回 Promise<void | unknown>（旧缓存解析失败时 resolve undefined），
- * 失败分支写一行终端日志便于排查，绝不抛出以免中断根组件挂载。
+ * 【为何用 Promise 守卫而非布尔标志】
+ * 原实现用 `let hasRehydrated = false`：第一次调用立刻把标志置 true，
+ * 然后才发起异步 rehydrate。这留下一段危险窗口——若 StrictMode 在
+ * rehydrate 尚未 resolve 时双调用，第二次会被标志挡住，
+ * 而**此时真实水合可能还没完成**，依赖水合结果的组件会读到默认值并永久
+ * 停留（标志已是 true，不会再有第二次机会）。
+ *
+ * 改为缓存 Promise 后，第二次调用拿到的是**同一个 Promise**，
+ * 它可以 await 到真正的完成时刻，而不是被"已调用过"误导。
+ * 这同时保证：无论调用多少次，落盘的 rehydrate 只执行一次。
+ *
+ * 【严禁把标记写入 localStorage】曾考虑用 localStorage 记录
+ * "已水合过"，但那是错误的：标记与实际数据生命周期不同步——
+ * 用户清空浏览器数据、无痕模式、或数据被外部修改时，
+ * 标记仍存在会让应用**永久跳过水合**，表现为"设置全部丢失且无法恢复"。
+ * 模块级 Promise 只活在当前页面生命周期内，与数据同生共死，才是正确粒度。
  */
-let hasRehydrated = false;
+let rehydrationPromise: Promise<void> | null = null;
 
-export function rehydratePersistedClusterState(): void {
-  if (hasRehydrated) return;
-  hasRehydrated = true;
+export function rehydratePersistedClusterState(): Promise<void> {
+  /* 已发起过 → 复用同一个 Promise（StrictMode 双挂载 / 多组件调用皆安全） */
+  const existing = rehydrationPromise;
+  if (existing !== null) return existing;
 
-  void useClusterStore
-    .persist
-    .rehydrate()
-    ?.then(() => {
+  const task = (async (): Promise<void> => {
+    try {
+      await useClusterStore.persist.rehydrate();
       const { terminalLogs } = useClusterStore.getState();
       if (terminalLogs.length > 0) {
         useClusterStore
           .getState()
           .appendTerminalLog('[system] persisted session state rehydrated from localStorage');
       }
-    })
-    .catch(() => {
+    } catch {
+      /* 旧缓存解析失败 / storage 被禁用 → 用默认值继续，绝不中断挂载 */
       useClusterStore
         .getState()
         .appendTerminalLog('[system] WARN persisted state rehydration failed → using defaults');
-    });
+    }
+  })();
+
+  rehydrationPromise = task;
+  return task;
 }
 
 /**
  * useHasHydratedClusterStore —— 水合完成标志的响应式读取 Hook。
  *
  * 【设计意图】部分 UI（如「历史自愈记录」面板）需要在补水完成后才渲染真实数据，
- * 否则会闪现一帧空态。本 Hook 订阅 persist.onFinishHydration 事件，
- * 返回布尔标志供组件条件渲染。skipHydration 模式下若无缓存可补，
- * rehydrate() 不触发 finish 事件，故初始值直接取 hasRehydrated 模块标志兜底。
+ * 否则会闪现一帧空态。
+ *
+ * 【双源判定，缺一不可】
+ * 1. `persist.hasHydrated()` —— 同步读取 Store 内部的完成标志。
+ *    这一条覆盖"订阅建立前水合已完成"的竞态：若只依赖事件订阅，
+ *    组件在完成后才挂载就永远收不到 onFinishHydration，会卡在 false。
+ * 2. `onFinishHydration` 订阅 —— 覆盖"挂载时尚未完成"的情况。
+ *
+ * 【StrictMode 安全】effect 会被执行两次（挂载 → 卸载 → 再挂载）。
+ * 每次挂载都重新订阅并在清理函数中退订，不会累积监听器；
+ * 同时每次挂载都重新读一次 hasHydrated()，保证第二次挂载也能拿到真实状态。
  */
 export function useHasHydratedClusterStore(): boolean {
-  const [hydrated, setHydrated] = useState<boolean>(hasRehydrated);
+  const [hydrated, setHydrated] = useState<boolean>((): boolean =>
+    useClusterStore.persist.hasHydrated(),
+  );
 
-  useEffect(() => {
-    const unsubscribe = useClusterStore.persist.onFinishHydration(() => {
+  useEffect((): (() => void) => {
+    /* 挂载即校正一次：覆盖"本组件挂载前水合已结束"的竞态 */
+    setHydrated(useClusterStore.persist.hasHydrated());
+
+    const unsubscribe = useClusterStore.persist.onFinishHydration((): void => {
       setHydrated(true);
     });
-    // 订阅建立前水合可能已完成（竞态），此处二次校正
-    setHydrated(hasRehydrated);
+
+    /* 订阅建立后再校正一次：订阅与同步读取之间可能恰好完成水合 */
+    if (useClusterStore.persist.hasHydrated()) {
+      setHydrated(true);
+    }
+
     return unsubscribe;
   }, []);
 

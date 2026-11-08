@@ -40,12 +40,17 @@ import type { TerminalLineProps, TerminalEchoProps, TerminalLogTone, TerminalTon
  * 前缀 → 色调映射规则表（匹配契约见 layout.ts TerminalToneRule JSDoc：
  * includes 匹配 + 严重度降序 + 首个命中返回）。
  *
- * 排列顺序即优先级：ERR > WARN > CHAOS-MESH > KUBE-CONTROLLER >
- * EDGE-WASM > MCP-ROUTER；全部未命中兜底 info。
+ * 排列顺序即优先级：ERR > WARN > AUDIT-SECURITY > CHAOS-MESH >
+ * KUBE-CONTROLLER > EDGE-WASM > MCP-ROUTER；全部未命中兜底 info。
+ *
+ * 【AUDIT-SECURITY 排在 WARN 之后、CHAOS 之前】它比演练更值得注意
+ * （意味着有异常输入进来），但不如真正的告警紧急——被拒绝的请求
+ * 没有造成实际影响，属于"需要知道"而非"需要立刻处置"。
  */
 const TONE_RULES: readonly TerminalToneRule[] = [
   { prefix: '[ERR]', tone: 'err' },
   { prefix: '[WARN]', tone: 'warn' },
+  { prefix: '[AUDIT-SECURITY]', tone: 'security' },
   { prefix: '[CHAOS-MESH]', tone: 'chaos' },
   { prefix: '[KUBE-CONTROLLER]', tone: 'controller' },
   { prefix: '[EDGE-WASM]', tone: 'edge' },
@@ -64,6 +69,7 @@ const TONE_TEXT_CLASS: Readonly<Record<TerminalLogTone, string>> = {
   controller: 'text-cyan-300',
   edge: 'text-emerald-300',
   router: 'text-sky-300',
+  security: 'text-violet-300',
   info: 'text-slate-400',
 };
 
