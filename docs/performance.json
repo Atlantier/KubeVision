@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-11-07T02:24:03.243Z",
+  "generatedAt": "2026-11-08T05:38:53.632Z",
   "environment": {
     "os": "win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM",
-    "node": "v24.18.1",
+    "node": "v24.16.0",
     "cpuCores": 24,
     "webglRenderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
     "webglVendor": "Google Inc. (Google)",
@@ -10,38 +10,38 @@
   },
   "rendering": {
     "fps": {
-      "count": 20,
-      "mean": 13.65,
-      "median": 15,
-      "p95": 17,
-      "min": 2,
-      "max": 17
+      "count": 19,
+      "mean": 1.84,
+      "median": 2,
+      "p95": 2,
+      "min": 1,
+      "max": 2
     },
     "frameTimeMs": {
-      "count": 20,
-      "mean": 94.5,
-      "median": 66.1,
-      "p95": 519.5,
-      "min": 58.5,
-      "max": 519.5
+      "count": 19,
+      "mean": 591.74,
+      "median": 534.3,
+      "p95": 970.3,
+      "min": 498.6,
+      "max": 970.3
     },
     "drawCalls": {
-      "count": 20,
-      "mean": 141,
-      "median": 141,
-      "p95": 141,
-      "min": 141,
-      "max": 141
+      "count": 19,
+      "mean": 307,
+      "median": 307,
+      "p95": 307,
+      "min": 307,
+      "max": 307
     },
     "triangles": {
-      "count": 20,
-      "mean": 24288,
-      "median": 24288,
-      "p95": 24288,
-      "min": 24288,
-      "max": 24288
+      "count": 19,
+      "mean": 127862,
+      "median": 127862,
+      "p95": 127862,
+      "min": 127862,
+      "max": 127862
     },
-    "sampleCount": 20,
+    "sampleCount": 19,
     "dprSettled": 1,
     "softwareRenderer": true,
     "viewportSleep": {
@@ -51,12 +51,12 @@
     }
   },
   "batching": {
-    "meshes": 112,
-    "instanced": 5,
-    "instancedTotal": 150,
-    "points": 1,
-    "lines": 0,
-    "drawCalls": 141
+    "meshes": 237,
+    "instanced": 10,
+    "instancedTotal": 352,
+    "points": 6,
+    "lines": 2,
+    "drawCalls": 307
   },
   "edgeInference": {
     "runtime": "builtin (fallback)",
@@ -65,22 +65,22 @@
     "fallback": true,
     "latencyMs": {
       "count": 15,
-      "mean": 0.1,
+      "mean": 0.08,
       "median": 0.1,
-      "p95": 0.1,
-      "min": 0.1,
-      "max": 0.1
+      "p95": 0.2,
+      "min": 0,
+      "max": 0.2
     },
     "sampleCount": 15
   },
   "rag": {
     "latencyMs": {
       "count": 20,
-      "mean": 12.33,
-      "median": 13.58,
-      "p95": 16.88,
-      "min": 6.41,
-      "max": 16.88
+      "mean": 11.14,
+      "median": 11.08,
+      "p95": 12.48,
+      "min": 10.18,
+      "max": 12.48
     },
     "sampleCount": 20
   },
@@ -88,27 +88,28 @@
     "batchSize": 100,
     "latencyMs": {
       "count": 5,
-      "mean": 11.12,
-      "median": 8.05,
-      "p95": 16.66,
-      "min": 6.75,
-      "max": 16.66
+      "mean": 10.45,
+      "median": 10.58,
+      "p95": 11.1,
+      "min": 9.56,
+      "max": 11.1
     },
-    "throughputPerSec": 8990
+    "throughputPerSec": 9573
   },
   "bundle": {
     "routes": [
       "Route (app)                              Size     First Load JS",
-      "┌ ○ /                                    64.6 kB         152 kB",
-      "├ ○ /_not-found                          873 B          88.3 kB",
+      "┌ ○ /                                    67.7 kB         155 kB",
+      "├ ○ /_not-found                          873 B          88.4 kB",
       "├ ƒ /api/chat                            0 B                0 B",
+      "├ ƒ /api/logs/live                       0 B                0 B",
       "├ ƒ /api/telemetry                       0 B                0 B",
       "├ ƒ /api/verify/rag                      0 B                0 B",
       "└ ƒ /api/verify/sanitize                 0 B                0 B",
       "+ First Load JS shared by all            87.5 kB",
-      "├ chunks/671-04611df55aca1554.js       31.6 kB",
+      "├ chunks/671-2943fbe313056d46.js       31.6 kB",
       "├ chunks/c070312d-517b88b977c85670.js  53.6 kB",
-      "└ other shared chunks (total)          2.23 kB"
+      "└ other shared chunks (total)          2.27 kB"
     ]
   },
   "notes": [
