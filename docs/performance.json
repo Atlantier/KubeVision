@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-08T12:35:54.500Z",
+  "generatedAt": "2026-11-08T14:14:08.671Z",
   "environment": {
     "os": "win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM",
     "node": "v24.16.0",
@@ -10,38 +10,38 @@
   },
   "rendering": {
     "fps": {
-      "count": 16,
-      "mean": 1.5,
+      "count": 20,
+      "mean": 2,
       "median": 2,
-      "p95": 2,
+      "p95": 4,
       "min": 1,
-      "max": 2
+      "max": 4
     },
     "frameTimeMs": {
-      "count": 16,
-      "mean": 754.04,
-      "median": 668.7,
-      "p95": 1689.5,
-      "min": 584.6,
-      "max": 1689.5
+      "count": 20,
+      "mean": 571.94,
+      "median": 467.4,
+      "p95": 1568.1,
+      "min": 252.5,
+      "max": 1568.1
     },
     "drawCalls": {
-      "count": 16,
-      "mean": 339.63,
-      "median": 388,
-      "p95": 388,
-      "min": 1,
-      "max": 388
+      "count": 20,
+      "mean": 396,
+      "median": 396,
+      "p95": 396,
+      "min": 396,
+      "max": 396
     },
     "triangles": {
-      "count": 16,
-      "mean": 115659.38,
-      "median": 132182,
-      "p95": 132182,
-      "min": 1,
-      "max": 132182
+      "count": 20,
+      "mean": 135480,
+      "median": 135480,
+      "p95": 135480,
+      "min": 135480,
+      "max": 135480
     },
-    "sampleCount": 16,
+    "sampleCount": 20,
     "dprSettled": 1,
     "softwareRenderer": true,
     "viewportSleep": {
@@ -51,12 +51,12 @@
     }
   },
   "batching": {
-    "meshes": 306,
-    "instanced": 19,
-    "instancedTotal": 538,
+    "meshes": 311,
+    "instanced": 21,
+    "instancedTotal": 610,
     "points": 6,
-    "lines": 2,
-    "drawCalls": 388
+    "lines": 3,
+    "drawCalls": 396
   },
   "edgeInference": {
     "runtime": "builtin (fallback)",
@@ -76,11 +76,11 @@
   "rag": {
     "latencyMs": {
       "count": 20,
-      "mean": 24.38,
-      "median": 22.9,
-      "p95": 38.47,
-      "min": 15.45,
-      "max": 38.47
+      "mean": 7.87,
+      "median": 8.03,
+      "p95": 9.62,
+      "min": 6.66,
+      "max": 9.62
     },
     "sampleCount": 20
   },
@@ -88,13 +88,13 @@
     "batchSize": 100,
     "latencyMs": {
       "count": 5,
-      "mean": 30.57,
-      "median": 27.31,
-      "p95": 38.34,
-      "min": 23.39,
-      "max": 38.34
+      "mean": 6.7,
+      "median": 6.72,
+      "p95": 6.9,
+      "min": 6.45,
+      "max": 6.9
     },
-    "throughputPerSec": 3272
+    "throughputPerSec": 14931
   },
   "bundle": {
     "routes": [
