@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — MASTER 控制平面程序化 3D 模型（MasterNode3D）
@@ -575,7 +575,7 @@ const RING_TICKS: ReadonlyArray<{
  *   世界 Y = 2.5 + (−2.42 + 0.14) = **0.22**（略高于地面 y=0.08 的刻度环）
  *   世界 Z = 2.35 + 0.45 = **2.80**（朝相机侧探出，在刻度环正前方）
  */
-const LABEL_POSITION: readonly [number, number, number] = [0, -2.28, 2.45];
+const LABEL_POSITION: readonly [number, number, number] = [0, -1.96, 1.48];
 
 /* ========================================================================== */
 /* MasterNode3D 主体                                                           */
@@ -1461,7 +1461,23 @@ export default function MasterNode3D() {
         zIndexRange={[10, 0]}
         className="pointer-events-none"
       >
-        <div className="flex flex-col items-center gap-1 whitespace-nowrap border border-cyan-400/35 bg-slate-950/80 px-3 py-1 font-mono backdrop-blur-md">
+        <div className="relative flex flex-col items-center gap-1 overflow-hidden whitespace-nowrap bg-slate-950/90 px-3 py-1 font-mono backdrop-blur-md border border-cyan-400/35 shadow-[0_8px_28px_rgba(6,182,212,0.22)]">
+          {/*
+           * ── 顶部 1px 渐变青色扫描高光 ──
+           *
+           * 真实仪器面板的上缘会捕捉一道极细的镜面高光（暗示面板有厚度）。
+           * 两端透明、中间最亮：光仿佛在边缘上"游走"，
+           * 比一条均匀白线更像玻璃/金属，也把铭牌与身后水平射入的
+           * 青色地面光纤总线在视觉上区分开。
+           */}
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-0 block h-px"
+            style={{
+              background:
+                'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.85) 25%, rgba(224,242,254,0.98) 50%, rgba(34,211,238,0.85) 75%, transparent 100%)',
+            }}
+          />
           {/*
            * ── 左右对称水平发光翼线 ──
            * 从标题两侧向外延伸的细横线，是 HUD 铭牌的"翼展"：

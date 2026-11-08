@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — 3D 集群拓扑根画布（ClusterCanvas）
@@ -26,6 +26,7 @@ import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import CyberMatrixRain3D from '@/components/canvas/CyberMatrixRain3D';
+import ProceduralPbrEnvironment from '@/components/canvas/ProceduralPbrEnvironment';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { useInViewPause } from '@/hooks/useInViewPause';
 import { dispatchViewPreset, subscribeViewPreset } from '@/utils/viewPresetBus';
@@ -551,10 +552,21 @@ export default function ClusterCanvas() {
          *
          * 【层级】挂载在场景根、所有前景物体外侧，且 depthWrite=false
          * + 加色混合，因此它只往天空加光，绝不遮挡任何主体。
-         * 【不透明度】着色器末端统一乘 uOpacity（0.16 封顶），
+         * 【不透明度】着色器末端统一乘 uOpacity（常态 0.075 / 故障态 0.115），
          * 保证它永远是氛围层而不是与主体争视觉权重的第二主角。
          */}
         <CyberMatrixRain3D />
+
+        {/*
+         * ---- 程序化 PBR 环境反射（零外链 HDR）----
+         *
+         * RoomEnvironment 是 three 自带的程序化"摄影棚"场景，
+         * 经 PMREMGenerator 预滤波后注入 scene.environment。
+         * 机架立柱、刀片装甲、晶核切角因此获得真实的冷金属镜面高光，
+         * 且**不发起任何 .hdr 网络请求**（离线可跑、零 CDN 依赖）。
+         * 组件自身返回 null，不产生绘制对象，只做一次性资源装配与释放。
+         */}
+        <ProceduralPbrEnvironment />
 
         {/* ---- MASTER 控制平面全息模型（锚定 [0,2.5,0]，可点击选中 → 鸟瞰复位） ---- */}
         <MasterNode3D />
