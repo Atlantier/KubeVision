@@ -437,6 +437,29 @@ function pushBand(
     const s0 = fadeAt(t0);
     const s1 = fadeAt(t1);
 
+    /**
+     * 中央静默区衰减（本轮新增）。
+     *
+     * 【解决什么】水平发光总线横贯整个地面，包括原点正上方。而中央主控铭牌
+     * 就悬浮在 r ≈ 1.48 处、正对着这条亮线——地面强光会从文字背后穿过去，
+     * 把铭牌压得看不清。
+     *
+     * 【数学】按顶点到原点的平面距离做 smoothstep：
+     *   d = hypot(x, z)
+     *   scale = smoothstep(CENTER_QUIET_INNER, CENTER_QUIET_OUTER, d)
+     * r < 1.05 完全熄灭、1.05~1.6 平滑爬升、r > 1.6 恢复原亮度。
+     * 用 smoothstep 而非线性 clamp：线性会在过渡区留下可见的亮度折角，
+     * S 形曲线让光看起来是"被中心吞掉"而不是"被切掉一段"。
+     */
+    const centerQuietAt = (x: number, z: number): number => {
+      const d = Math.hypot(x, z);
+      const t = Math.min(
+        1,
+        Math.max(0, (d - CENTER_QUIET_INNER) / (CENTER_QUIET_OUTER - CENTER_QUIET_INNER)),
+      );
+      return t * t * (3 - 2 * t);
+    };
+
     const quad: ReadonlyArray<readonly [number, number]> = alongX
       ? [
           [t0, -halfW],
@@ -459,11 +482,23 @@ function pushBand(
       : [s0, s1, s1, s0, s1, s0];
 
     for (let k = 0; k < quad.length; k++) {
+      /* 顶点色 = 端点淡出 × 中央静默区衰减 */
+      const scale = scales[k] * centerQuietAt(quad[k][0], quad[k][1]);
       soup.positions.push(quad[k][0], 0, quad[k][1]);
-      soup.colors.push(rgb[0] * scales[k], rgb[1] * scales[k], rgb[2] * scales[k]);
+      soup.colors.push(rgb[0] * scale, rgb[1] * scale, rgb[2] * scale);
     }
   }
 }
+
+/**
+ * 中央静默区半径（水平发光总线的透明度衰减区间）。
+ *
+ * 【取值依据】内半径 1.05 = 内层晶核在世界地面的投影半径；
+ * 外半径 1.6 ≈ 中央主控铭牌所在的 r≈1.48 之外一点。
+ * 两者之间是"光被吞掉"的过渡带，确保铭牌文字背后不再有强光穿过。
+ */
+const CENTER_QUIET_INNER = 1.05;
+const CENTER_QUIET_OUTER = 1.6;
 
 /** 围栏锚点数量 */
 const RADAR_ANCHOR_COUNT = 24;

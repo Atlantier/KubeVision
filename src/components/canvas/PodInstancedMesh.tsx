@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — 高性能 Pod 容器实例渲染器（PodInstancedMesh）
@@ -1132,10 +1132,14 @@ export default function PodInstancedMesh() {
        * （实例色与材质色相乘，白基色保证 instanceColor 原样呈现）
        * 且 toneMapped={false}（状态色绕过色调映射，红/绿/琥珀保持语义纯度）。
        *
-       * 【PBR 吞光修复】原配置 metalness={0.5} roughness={0.2}，但场景内
+       * 【PBR 吞光修复】早先的配置是 metalness={0.5} roughness={0.2}，但当时场景内
        * **没有任何环境贴图**（无 <Environment> / envMap）。按 PBR 能量守恒，
        * 金属度 0.5 会把一半的漫反射固有色替换成"环境反射"，
        * 而环境是 #020617 纯黑背景 → 反射回黑色 → 翠绿被砍成暗沉泥绿。
+       * 后续 ClusterCanvas 注入了 RoomEnvironment 生成的 PMREM 环境贴图，
+       * 环境反射终于有东西可借；但刀片是**画面主体**，
+       * 环境贡献必须比机柜外框更低，否则装甲反光会盖过状态色语义。
+       *
        * 【关于 emissive 的重要修正】
        * 曾尝试把 `emissive` 设为 `#ffffff` 并抬高 `emissiveIntensity` 来"更亮"，
        * 结果是**所有容器一起变白**、翠绿/绯红状态色被冲掉。
@@ -1145,13 +1149,21 @@ export default function PodInstancedMesh() {
        * 本项目真正的逐实例发光来自下方 `injectCrystalShader`：
        * 它把"霓虹棱边 / 阳极氧化凹槽 / 内芯光"三层结构注入 `emissive` 通道，
        * 并由 `vColor`（实例色）着色，因此天然跟随状态色。
-       * 所以这里**保持 emissive 为默认黑**，亮度交给着色器；
-       * 提升"光感"只动表面的镜面参数（roughness / metalness），不动自发光底色。
+       * 所以这里**保持 emissive 为默认黑**，亮度交给着色器。
        */}
       <meshStandardMaterial
         color="#ffffff"
         roughness={0.18}
         metalness={0.15}
+        /*
+         * 环境贴图贡献：0.30。
+         *
+         * 【为何明显低于机柜的 0.65】刀片承载状态语义（绿=Running / 琥珀 / 绯红），
+         * 一旦环境反射占比过高，金属高光会在正面形成大片冷白，
+         * 把"这排容器是绿的"这一最关键的判读信息冲淡。
+         * 0.30 只让边缘切角吃到一点冷金属反光，正面仍然由状态色主导。
+         */
+        envMapIntensity={0.3}
         toneMapped={false}
         onBeforeCompile={injectCrystalShader}
       />

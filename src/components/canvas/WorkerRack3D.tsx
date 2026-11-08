@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 /**
  * KubeVision AI — 计算节点机架程序化 3D 模型（WorkerRack3D）
@@ -170,8 +170,37 @@ const STATUS_TEXT_COLOR: Readonly<Record<NodeStatus, string>> = {
  *    纯色块在深空背景下没有边界，棱线是「看懂这是个立方体」的最后保障。
  */
 const HARDWARE_COLOR = '#1e293b';
-const HARDWARE_METALNESS = 0.45;
-const HARDWARE_ROUGHNESS = 0.32;
+
+/**
+ * 机柜外框的金属度（本轮 0.45 → 0.72）。
+ *
+ * 【为何在引入 RoomEnvironment 之后要提高】metalness 的本质是
+ * "该像素的漫反射占比有多低、镜面反射占比有多高"。没有环境贴图时，
+ * 高 metalness 只会让物体变黑（没有可反射的环境）；一旦注入 PMREM 环境，
+ * 高 metalness 才开始真正"借"环境的形状来表现金属。
+ * 0.72 属于拉丝阳极氧化铝的典型区间：够亮到能看出切角反光，
+ * 又保留 28% 的漫反射，不至于把内部刀片的绿色完全压掉。
+ */
+const HARDWARE_METALNESS = 0.72;
+
+/**
+ * 机柜外框的粗糙度（本轮 0.32 → 0.22）。
+ *
+ * 【与 metalness 的配合】粗糙度决定反射的"锐利程度"。
+ * 0.22 让环境面板在立柱切角上形成**清晰的长条高光**（工业金属的关键特征）；
+ * 再低会像镜子（舞台感），再高就糊成一团柔光（塑料感）。
+ */
+const HARDWARE_ROUGHNESS = 0.22;
+
+/**
+ * 环境贴图贡献强度。
+ *
+ * 【为何不拉到 1.0】0.65 是"我借了环境的形状，但不被环境照亮"的平衡点：
+ * 机柜立面获得冷金属反光，同时不会亮过内部的绿色刀片——
+ * 那才是这个画面的信息主体。超过 0.8 时机柜会开始"抢戏"。
+ */
+const HARDWARE_ENV_MAP_INTENSITY = 0.65;
+
 const HARDWARE_EMISSIVE = '#0e7490';
 const HARDWARE_EMISSIVE_INTENSITY = 0.22;
 const HARDWARE_EDGE_COLOR = '#1e3a5f';
@@ -1109,8 +1138,9 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           <boxGeometry args={[PILLAR_SIZE, RACK_BODY_SIZE[1], PILLAR_SIZE]} />
           <meshStandardMaterial
             color={PILLAR_COLOR}
-            metalness={0.45}
-            roughness={0.42}
+            metalness={HARDWARE_METALNESS}
+            roughness={HARDWARE_ROUGHNESS}
+            envMapIntensity={HARDWARE_ENV_MAP_INTENSITY}
             emissive={PILLAR_EMISSIVE}
             emissiveIntensity={PILLAR_EMISSIVE_INTENSITY}
           />
@@ -1141,6 +1171,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           color={HARDWARE_COLOR}
           metalness={HARDWARE_METALNESS}
           roughness={HARDWARE_ROUGHNESS}
+          envMapIntensity={HARDWARE_ENV_MAP_INTENSITY}
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
@@ -1247,6 +1278,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           color={HARDWARE_COLOR}
           metalness={HARDWARE_METALNESS}
           roughness={HARDWARE_ROUGHNESS}
+          envMapIntensity={HARDWARE_ENV_MAP_INTENSITY}
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
@@ -1278,6 +1310,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           color={HARDWARE_COLOR}
           metalness={HARDWARE_METALNESS}
           roughness={HARDWARE_ROUGHNESS}
+          envMapIntensity={HARDWARE_ENV_MAP_INTENSITY}
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
@@ -1300,8 +1333,9 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         <boxGeometry args={[CROWN_WIDTH - 0.42, 0.02, CROWN_DEPTH - 0.42]} />
         <meshStandardMaterial
           color="#091326"
-          metalness={0.55}
-          roughness={0.38}
+          metalness={HARDWARE_METALNESS}
+          roughness={HARDWARE_ROUGHNESS}
+          envMapIntensity={HARDWARE_ENV_MAP_INTENSITY}
           emissive="#0e7490"
           emissiveIntensity={0.06}
         />
