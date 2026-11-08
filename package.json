@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "verify": "node scripts/verify.mjs",
     "verify:quick": "node scripts/verify.mjs --quick",
+    "verify:stream": "node scripts/verify-stream-integrity.mjs",
     "benchmark": "node scripts/benchmark.mjs"
   },
   "dependencies": {
