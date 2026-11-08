@@ -594,8 +594,41 @@ async function initModelWithTimeout(
     const winner = await Promise.race([loadTask, timeoutTask]);
 
     if (winner === null) {
-      /* ---- 超时熔断：降级到内置分类器 ---- */
+      /* ---- 超时熔断：立即降级到内置分类器，保证界面可用 ---- */
       postProgress(post, runtime, label, 100, `${MODEL_ID} (timeout -> builtin)`);
+
+      /*
+       * 【后台续载：本轮关键修复】
+       *
+       * 3500ms 熔断的设计初衷是"别让界面卡在等模型下载"——这没错。
+       * 但旧实现把 loadTask **连同熔断一起丢弃**了：模型其实还在下载，
+       * 完成后却没人接住它。结果是冷启动场景下永远停在向内建分类器，
+       * 384 维嵌入与原型锚点从头到尾都没机会参与决策。
+       *
+       * 正确做法是**渐进增强**：熔断只决定"此刻用谁回答"，
+       * 不等于"放弃加载"。这里继续等待 loadTask，一旦成功就把
+       * modelHandle 热切换为真实模型、补算原型锚点、并推送一条
+       * fallback:false 的 ready 消息——主线程据此把状态从
+       * "READY · builtin fallback" 升级为真实 WebGPU 推理。
+       */
+      void loadTask
+        .then(async (extractor): Promise<void> => {
+          modelHandle = { extractor, fallback: false };
+          await ensurePrototypes(extractor);
+          postProgress(post, runtime, label, 100, MODEL_ID);
+          post({
+            type: 'ready',
+            runtime,
+            runtimeLabel: label,
+            modelName: MODEL_ID,
+            fallback: false,
+          });
+          postStatus('READY');
+        })
+        .catch((): void => {
+          /* 后台加载最终失败：安静地停留在内置分类器，不弹错 */
+        });
+
       return { extractor: null, fallback: true };
     }
 
