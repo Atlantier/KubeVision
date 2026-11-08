@@ -331,10 +331,25 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
 
       return true;
     } catch {
-      /* 权限拒绝或没有麦克风设备 */
+      /**
+       * 【异常路径也必须释放资源】
+       *
+       * 这个 catch 覆盖的范围比"权限被拒绝"更广：
+       * - getUserMedia 抛错 → 此时还没有资源，releaseAudio 是空操作；
+       * - AudioContext 构造失败 → 但 stream 已经拿到了！若不 stop，
+       *   麦克风会一直占用，地址栏录音指示灯常亮；
+       * - createMediaStreamSource / createAnalyser 失败 → 同上；
+       * - ctx.resume() 拒绝 → 同上。
+       *
+       * 旧实现直接 `return false` 什么都不清，属于**真实泄漏路径**：
+       * 一条已激活的音频轨道会一直挂在那里，直到页面关闭。
+       * 实测中没复现是因为权限拒绝发生在 getUserMedia 阶段（尚无资源），
+       * 但换一个失败点（如 AudioContext 达到设备上限）就会泄漏。
+       */
+      releaseAudio();
       return false;
     }
-  }, []);
+  }, [releaseAudio]);
 
   /**
    * runSpectrumLoop —— rAF 驱动的频谱采样循环。
