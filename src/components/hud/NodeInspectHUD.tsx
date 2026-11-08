@@ -152,11 +152,20 @@ const TONE_RING_CLASS: Readonly<Record<InspectTone, string>> = {
 };
 
 /** 语义色 → 辉光阴影类 */
-const TONE_GLOW_CLASS: Readonly<Record<InspectTone, string>> = {
-  healthy: 'shadow-glow-emerald',
-  warning: 'shadow-glow-amber',
-  critical: 'shadow-glow-rose',
-};
+/**
+ * 卡片外框（本轮重做）。
+ *
+ * 【修复什么】此前外框使用 shadow-glow-emerald / amber / rose 这类大面积彩色
+ * 模糊阴影。在深色画布上，那不是"发光"，而是一团脏兮兮的荧光雾：
+ * 边界糊掉、颜色发闷、还随状态在三色间跳变，整张卡片看起来像廉价霓虹贴纸。
+ *
+ * 【改为】军工级冷峻边框：单像素 slate-700 描边 + 近黑的深空底色 +
+ * 中性冷阴影（0 12px 36px rgba(2,6,23,0.85)）。
+ * 状态语义不再靠"整块泛光"表达，而是交给呼吸点、状态徽标与外环色——
+ * 一处信息只说一次，这才是仪表该有的克制。
+ */
+const CARD_SHELL_CLASS =
+  'border border-slate-700/80 bg-slate-950/88 backdrop-blur-xl shadow-[0_12px_36px_rgba(2,6,23,0.85)]';
 
 /* ========================================================================== */
 /* 空态静态表                                                                  */
@@ -415,10 +424,13 @@ function deriveMasterView(snapshot: TelemetrySnapshot): EntityInspectView {
   const running = pods.filter((pod): boolean => pod.status === 'Running').length;
 
   const metaRows: InspectMetaRow[] = [
-    { label: '作用域', value: '集群控制平面' },
-    { label: '工作节点', value: `${nodes.length} 个` },
-    { label: 'Pod 数', value: `${running}/${pods.length} 运行中` },
-    { label: 'QPS', value: snapshot.totalQps.toLocaleString('en-US') },
+    { label: '架构角色', value: 'API-Server' },
+    {
+      label: '在线节点',
+      value: `${nodes.filter((n): boolean => n.status === 'Ready').length} / ${nodes.length} Ready`,
+    },
+    { label: '容器就绪', value: `${running} / ${pods.length}` },
+    { label: '吞吐速率', value: `${snapshot.totalQps.toLocaleString('en-US')} req/s` },
   ];
 
   return {
@@ -865,15 +877,12 @@ function EntityProbeCard({
   }, [view.memSeries, view.statusTone]);
 
   /** 元数据条：只取 value 并用 `·` 连接（label 保留在 title 中供核对） */
-  const metaLine = view.metaRows.map((row): string => row.value).join(' · ');
-  const metaTitle = view.metaRows.map((row): string => `${row.label}: ${row.value}`).join(' / ');
 
   return (
     <div
       className={cn(
-        'kv-panel pointer-events-auto relative w-[288px] max-w-full overflow-hidden p-3',
-        TONE_RING_CLASS[view.statusTone],
-        TONE_GLOW_CLASS[view.statusTone],
+        'kv-panel pointer-events-auto relative w-[320px] sm:w-[340px] max-w-full overflow-hidden p-3',
+        CARD_SHELL_CLASS,
       )}
     >
       {/*
@@ -941,20 +950,29 @@ function EntityProbeCard({
           {view.statusLabel}
         </span>
 
-        {/* 重启徽标：仅 > 0 时出现（0 次是常态，不占头部空间） */}
-        {view.restarts > 0 ? (
-          <span
-            className={cn(
-              'shrink-0 rounded border px-1 py-0.5 font-mono text-[9px] font-bold leading-none tabular-nums tracking-wide',
-              restartsTone === 'critical'
+        {/*
+         * 重启徽标（本轮改为常驻）。
+         *
+         * 【修复什么】旧实现只在 restarts > 0 时渲染，看似省空间，实则让
+         * "0 次重启"这一关键稳态信息完全不可见——用户无法确认集群是否真的干净。
+         *
+         * 【改为】始终显示：0 次时用沉稳灰青（slate-600 边框 + slate-400 文字），
+         * 传达"读过了，就是 0"而不是"没有这项数据"；> 0 才升级为琥珀/玫瑰告警色。
+         * 灰徽章在视觉上安静，不会与健康态的绿色状态徽标抢注意力。
+         */}
+        <span
+          className={cn(
+            'shrink-0 rounded border px-1 py-0.5 font-mono text-[9px] font-bold leading-none tabular-nums tracking-wide',
+            view.restarts === 0
+              ? 'border-slate-600/50 text-slate-400'
+              : restartsTone === 'critical'
                 ? 'border-rose-500/50 text-rose-300'
                 : 'border-amber-500/50 text-amber-300',
-            )}
-            title={`累计重启 ${view.restarts} 次`}
-          >
-            重启 {view.restarts} 次
-          </span>
-        ) : null}
+          )}
+          title={view.restarts === 0 ? '初始稳态：该对象无重启记录' : `累计重启 ${view.restarts} 次`}
+        >
+          {view.restarts} 次重启
+        </span>
 
         <button
           type="button"
@@ -973,22 +991,38 @@ function EntityProbeCard({
         <MiniGauge series={memSeries} icon={<MemoryStick className="h-2.5 w-2.5" aria-hidden />} />
       </div>
 
-      {/* ============ 第 3 行：单行浓缩元数据条 ============ */}
-      <p
-        className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded bg-white/[0.03] px-2 py-1 font-mono text-[10px] text-slate-400"
-        title={metaTitle}
-      >
+      {/* ============ 第 3 行：2×2 结构化微仪表网格 ============ */}
+      {/*
+       * 【修复什么】此前是一行用 `·` 连接的纯值串（`3 个 · 24 / 24 运行中 · 1,586`），
+       * 字段名被全部丢弃——读者根本不知道 `3 个` 指什么、`1,586` 是什么单位。
+       * 信息没传达出去，却照样占满一整行。
+       *
+       * 【改为】2×2 微仪表网格：左列浅灰字段名（等宽、固定不收缩），
+       * 右列亮白数值（tabular-nums 等宽数字，纵向对齐）。
+       * 这是仪表盘的标准做法：标签与值分列，视线能沿列快速扫读。
+       */}
+      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1.5">
         {view.metaRows.length === 0 ? (
-          <span className="text-slate-600">—</span>
+          <span className="col-span-2 font-mono text-[10px] text-slate-600">—</span>
         ) : (
-          view.metaRows.map((row, index): ReactNode => (
-            <span key={row.label} className="flex items-center gap-x-2">
-              {index > 0 ? <span className="text-slate-600" aria-hidden>·</span> : null}
-              <span className="max-w-[9rem] truncate">{row.value}</span>
-            </span>
+          view.metaRows.slice(0, 4).map((row): ReactNode => (
+            <div key={row.label} className="flex min-w-0 items-baseline gap-1.5">
+              <span
+                className="shrink-0 font-mono text-[9px] uppercase tracking-wider text-slate-500"
+                title={row.label}
+              >
+                {row.label}
+              </span>
+              <span
+                className="min-w-0 truncate font-mono text-[10px] font-semibold tabular-nums text-slate-100"
+                title={row.value}
+              >
+                {row.value}
+              </span>
+            </div>
           ))
         )}
-      </p>
+      </div>
 
       {/* ============ 第 4 行：双战术按钮并排 ============ */}
       <div className="mt-2 grid grid-cols-2 gap-1.5">

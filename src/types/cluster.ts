@@ -1,4 +1,4 @@
-/**
+﻿/**
  * KubeVision AI — 集群领域全局严格类型契约（唯一类型源）
  *
  * 【契约】依据 AGENTS.md 第 2 条：禁止 any / @ts-ignore；所有组件 Props、
@@ -324,7 +324,7 @@ const POD_SEED_TABLE: readonly PodSeedEntry[] = [
     status: 'Running',
     cpuUsage: 52,
     memoryUsage: 61,
-    restarts: 1,
+    restarts: 0,
     ip: '10.244.0.13',
     createdAt: '2026-11-05T01:07:33.000Z',
     cpuHistory: [47, 49, 54, 50, 51, 52],
@@ -380,7 +380,7 @@ const POD_SEED_TABLE: readonly PodSeedEntry[] = [
     status: 'Running',
     cpuUsage: 44,
     memoryUsage: 71,
-    restarts: 2,
+    restarts: 0,
     ip: '10.244.0.41',
     createdAt: '2026-11-03T09:26:15.000Z',
     cpuHistory: [40, 42, 46, 43, 45, 44],
@@ -452,7 +452,7 @@ const POD_SEED_TABLE: readonly PodSeedEntry[] = [
     status: 'Running',
     cpuUsage: 37,
     memoryUsage: 43,
-    restarts: 1,
+    restarts: 0,
     ip: '10.244.1.14',
     createdAt: '2026-11-05T00:52:26.000Z',
     cpuHistory: [33, 35, 39, 36, 38, 37],
