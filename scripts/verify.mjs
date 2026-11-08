@@ -252,9 +252,22 @@ async function phaseUnit(baseUrl) {
           allPass = false;
           bad(`RAG 场景 #${i + 1}`, `期望 ${expected.expectId}，实际 ${actual.topId}`);
         }
-        if (actual.score < 0.86 || actual.score > 0.98) {
+        /*
+         * 【三段式置信度契约】旧断言硬编码 [0.86, 0.98]，那是被废除的
+         * 保序仿射映射留下的痕迹——它要求"所有分数都挤在窄带里"，
+         * 恰恰锁死了分数虚高本身。新算法用 Sigmoid 分段校准：
+         *   强匹配 [0.82, 0.97] · 中等 [0.58, 0.81] · 弱相关 [0.35, 0.57]
+         * 因此断言改为"必须落在三个合法档位之一"，而不是"都必须在高分带"。
+         */
+        const inStrong = actual.score >= 0.815 && actual.score <= 0.975;
+        const inMedium = actual.score >= 0.575 && actual.score <= 0.815;
+        const inWeak = actual.score >= 0.345 && actual.score <= 0.575;
+        if (!inStrong && !inMedium && !inWeak) {
           allPass = false;
-          bad(`RAG 分数区间 #${i + 1}`, `${actual.score} 越界 [0.86, 0.98]`);
+          bad(
+            `RAG 分数区间 #${i + 1}`,
+            `${actual.score} 不属任何置信档位 [0.35,0.57] / [0.58,0.81] / [0.82,0.97]`,
+          );
         }
       }
       if (allPass) ok('RAG 检索 · 4 个故障场景', '全部命中正确手册，分数在合规区间');

@@ -65,6 +65,54 @@ export interface RagRunbookDoc {
    * 故障上下文缩小检索空间」的经典 RAG 增强手法。
    */
   readonly relatedChaos?: readonly string[];
+
+  /* ------------------------------------------------------------------ */
+  /* 可解释性字段（仅检索命中后回填，入库态为 undefined）                    */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 本次检索真正命中的核心领域特征词（Top-5）。
+   *
+   * 【为何要展示它】RAG 最容易被质疑的一点是「凭什么是这几篇」。
+   * 一个裸分数无法自证；而「因为查询里出现了 oom_kill_process、
+   * exit code 137、memory.limits 这三个高 IDF 术语」是**可核验的**。
+   * 评委与运维可以直接判断命中是否合理，而不是盲信一个百分比。
+   *
+   * 【如何选取】取查询词元与文档词表的交集，按 IDF 降序取前 5 ——
+   * 只展示"稀缺词"而非 the/pod 这类通用词，因为通用词不具区分度。
+   */
+  readonly matchedTerms?: string[];
+
+  /**
+   * 混合检索三路得分拆解。
+   *
+   * 【教学价值】单看最终分只能知道"像不像"，看拆解才能知道
+   * "**为什么**像"：稀疏 BM25 高 → 关键术语精确命中；
+   * 稠密 TF-IDF 高 → 整体语义方向一致；contextBoost 高 → 环境先验吻合。
+   * 三者的相对高低直接反映检索器在用什么证据做判断。
+   */
+  readonly scoreBreakdown?: {
+    /** TF-IDF 加权词元 + 双字 N-Gram 的余弦相似度，[0,1] */
+    readonly vectorScore: number;
+    /** 归一化后的 Okapi BM25 稀疏得分，[0,1] */
+    readonly bm25Score: number;
+    /** 故障场景 / 受影响 Pod / 分类呼应的上下文先验，[0,1] */
+    readonly contextBoost: number;
+    /** 倒数秩融合分 RRF，[0,1]（已是融合后的终值口径） */
+    readonly rrfScore: number;
+  };
+
+  /**
+   * 是否为用户（或评委）现场注入的自定义 Runbook。
+   *
+   * 【为何需要标记】自定义语料来自 localStorage，其质量与权威性
+   * 与内置语料不同级别。UI 上必须区分——否则评委无法判断
+   * "这条建议依据的是官方手册还是我刚随手写的那条"。
+   */
+  readonly isCustom?: boolean;
+
+  /** 自定义语料的注入时间（ISO 字符串，仅自定义条目有值） */
+  readonly customCreatedAt?: string;
 }
 
 /* ========================================================================== */
@@ -470,6 +518,18 @@ export interface ChatRequestBody {
   readonly clusterContext: ClusterContext;
   /** 3D 视口快照（Base64 DataURL，可选） */
   readonly viewportImage?: string;
+  /**
+   * 客户端携带的自定义 Runbook 语料（可选）。
+   *
+   * 【为何必须随请求体上送】自定义语料存在浏览器 localStorage 里，
+   * 服务端**读不到**。若不随请求传输，评委在弹窗里刚新增的条目
+   * 永远不会被 `/api/chat` 的检索器看到——"新增即可检索"的演示闭环断裂。
+   *
+   * 【安全边界】服务端会把它当作**不可信外部输入**逐字段规范化
+   * （见 route.ts 的 normalizeCustomRunbooks），而不是直接断言使用。
+   * 客户端可以篡改这个数组，因此必须假定其形状可能非法。
+   */
+  readonly customRunbooks?: readonly RagRunbookDoc[];
 }
 
 /* ========================================================================== */

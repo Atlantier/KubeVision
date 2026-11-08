@@ -34,6 +34,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowUpRight,
+  BookOpen,
   Bot,
   Camera,
   CheckCircle2,
@@ -80,6 +81,8 @@ import type {
 import type { RightPanelTab, SelectedEntityType } from '@/types/store';
 import type { PodEntity, WorkerNodeEntity } from '@/types/cluster';
 import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
+import RagKnowledgeModal from '@/components/ai/RagKnowledgeModal';
+import { getCustomRunbooks } from '@/utils/sreRagEngine';
 
 /* ========================================================================== */
 /* 懒加载：端侧日志审计台                                                        */
@@ -831,6 +834,9 @@ export default function CopilotDrawer() {
   const [messages, setMessages] = useState<readonly CopilotMessage[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  /** RAG 知识库弹窗开关（低频 UI 态，允许 useState） */
+  const [ragModalOpen, setRagModalOpen] = useState<boolean>(false);
+
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [speechSupported, setSpeechSupported] = useState<boolean>(true);
@@ -1119,6 +1125,20 @@ export default function CopilotDrawer() {
             messages: history,
             clusterContext: buildClusterContext(),
             ...(viewportForSend !== null ? { viewportImage: viewportForSend } : {}),
+            /*
+             * 【自定义语料随请求上送】
+             *
+             * 自定义 Runbook 存在浏览器 localStorage，服务端读不到。
+             * 每次发消息时把当前语料一起带上，才能保证
+             * "评委刚在弹窗里新增的条目，下一条提问立刻可被检索"。
+             *
+             * 【为何每次现读而不缓存】getCustomRunbooks() 是同步读取
+             * localStorage 并做形状校验，开销在微秒级；而缓存会引入
+             * "弹窗新增后缓存未失效"的一致性 bug。此处宁可直接读。
+             */
+            ...(getCustomRunbooks().length > 0
+              ? { customRunbooks: getCustomRunbooks() }
+              : {}),
           }),
           signal: controller.signal,
         });
@@ -1703,6 +1723,31 @@ export default function CopilotDrawer() {
               <ContextPill entityId={selectedEntityId} entityType={selectedEntityType} />
             </span>
 
+            {/*
+             * ---- RAG 知识库入口 ----
+             *
+             * 【为何放在状态栏】它是"知识底座"的入口，与在线状态、上下文同级——
+             * 都在表达"这次对话凭什么可信"：状态说明服务可达，胶囊说明
+             * 当前聚焦哪个实体，而这里说明 AI 依据的是哪套手册。
+             *
+             * 【计数徽章为何是 12+】内置 12 篇恒定，但自定义条目是变量，
+             * 写死 12 会在评委新增后立刻与弹窗内容不符。用 `12+` 表达
+             * "至少 12 篇且可继续扩充"，与弹窗左上角的实时计数互补。
+             */}
+            <button
+              type="button"
+              onClick={(): void => setRagModalOpen(true)}
+              aria-label="打开 SRE 领域知识库"
+              title="SRE 领域知识库：浏览语料、实时检索沙盒、现场新增 Runbook"
+              className="flex shrink-0 items-center gap-1 rounded border border-cyan-400/25 bg-cyan-400/[0.07] px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wide text-cyan-300 transition-colors hover:border-cyan-300/60 hover:bg-cyan-400/15"
+            >
+              <BookOpen className="h-2.5 w-2.5" aria-hidden />
+              RAG 知识库
+              <span className="rounded-sm bg-cyan-400/20 px-1 text-[8px] tabular-nums text-cyan-200">
+                12+
+              </span>
+            </button>
+
             {/* TTS 开关（图标按钮自身的选中态即状态，无需额外文字说明） */}
             <button
               type="button"
@@ -2182,6 +2227,19 @@ export default function CopilotDrawer() {
           </div>
         </div>
       )}
+
+      {/*
+       * ---- SRE 领域知识库弹窗 ----
+       *
+       * 【为何挂在这里而非页面级】弹窗开关态属于 Copilot 的局部 UI 上下文，
+       * 由本组件持有最内聚；提到 ShellLayout 会让「知识库属于 Copilot」
+       * 这层语义在代码结构上消失。
+       *
+       * 【层级】模态自带 fixed inset-0 z-50 + backdrop-blur，打开时覆盖
+       * 包括顶栏在内的全部内容，符合 AGENTS.md 第 6 条层级契约
+       * （drei <Html> 恒为 [10,0]，绝不会盖住它）。
+       */}
+      <RagKnowledgeModal open={ragModalOpen} onClose={(): void => setRagModalOpen(false)} />
     </div>
   );
 }

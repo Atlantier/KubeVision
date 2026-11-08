@@ -1886,6 +1886,17 @@ function buildGreetingReport(ctx: ClusterContext): string {
 const MAX_BODY_CHARS = 8_000_000;
 
 /**
+ * 单次请求最多接收的自定义 Runbook 条数。
+ *
+ * 【为何要限流】自定义语料是客户端可任意构造的数组。
+ * 不限量的话，一个恶意请求可以塞进上万条文档，让服务端的
+ * IDF 统计与 BM25 打分循环从微秒级膨胀到秒级——
+ * 这是典型的**算法复杂度 DoS**。12 条足够演示"现场新增即可检索"，
+ * 又不会让任何一次请求的计算量失控。
+ */
+const MAX_CUSTOM_RUNBOOKS = 12;
+
+/**
  * normalizeChaos —— 把不可信的 chaos 字符串收敛为合法的 ChaosScenario。
  *
  * 【为何需要】clusterContext 来自客户端，activeChaos 是 string 类型
@@ -1998,7 +2009,83 @@ async function parseRequestBody(request: Request): Promise<ChatRequestBody | nul
     viewportImage = obj.viewportImage;
   }
 
-  return { messages, clusterContext, viewportImage };
+  /* ---- customRunbooks：可选，逐字段规范化 ---- */
+  const customRunbooks = normalizeCustomRunbooks(obj.customRunbooks);
+
+  return {
+    messages,
+    clusterContext,
+    ...(viewportImage !== undefined ? { viewportImage } : {}),
+    ...(customRunbooks.length > 0 ? { customRunbooks } : {}),
+  };
+}
+
+/**
+ * normalizeCustomRunbooks —— 把请求体里的自定义 Runbook 数组规范化为可信形状。
+ *
+ * 【为何必须逐字段校验】这个数组完全来自客户端，可被任意篡改：
+ * 字段缺失会让 tokenize 收到 undefined 而抛异常（整个请求 500），
+ * 超长文本则可能撑爆 LLM 上下文预算。服务端不能假定它"应该是对的"。
+ *
+ * 【裁剪策略】
+ * - 最多接收 MAX_CUSTOM_RUNBOOKS 条（防止构造巨型语料库拖慢 IDF 统计）；
+ * - 单字段长度截断（标题 200 / 症状 2000 / 根因 4000），
+ *   既防滥用又不至于把正常提交砍断；
+ * - 数组字段限长，避免构造十万个特征词让 BM25 循环爆炸；
+ * - 缺失关键字段的整条丢弃，而不是补默认值——
+ *   一条残缺的"手册"比没有更危险（会让模型引用不存在的处置步骤）。
+ *
+ * @param raw 请求体中的原始值（unknown）
+ * @returns 规范化后的自定义语料数组（可能为空数组）
+ */
+function normalizeCustomRunbooks(raw: unknown): RagRunbookDoc[] {
+  if (!Array.isArray(raw)) return [];
+
+  const out: RagRunbookDoc[] = [];
+  const seenIds = new Set<string>();
+
+  for (const item of raw) {
+    if (out.length >= MAX_CUSTOM_RUNBOOKS) break;
+    if (typeof item !== 'object' || item === null) continue;
+    const doc = item as Record<string, unknown>;
+
+    /* 核心字符串字段：必须是非空字符串 */
+    if (typeof doc.id !== 'string' || doc.id.length === 0 || doc.id.length > 120) continue;
+    if (typeof doc.title !== 'string' || doc.title.length === 0) continue;
+    if (typeof doc.symptom !== 'string' || doc.symptom.length === 0) continue;
+    if (typeof doc.rootCauseMechanism !== 'string') continue;
+    if (seenIds.has(doc.id)) continue;
+    seenIds.add(doc.id);
+
+    /* 数组字段：只保留字符串元素并限长 */
+    const toStringArray = (value: unknown, maxItems: number, maxLen: number): string[] => {
+      if (!Array.isArray(value)) return [];
+      const result: string[] = [];
+      for (const entry of value) {
+        if (result.length >= maxItems) break;
+        if (typeof entry === 'string' && entry.length > 0) result.push(entry.slice(0, maxLen));
+      }
+      return result;
+    };
+
+    out.push({
+      id: doc.id,
+      title: doc.title.slice(0, 200),
+      category: typeof doc.category === 'string' ? doc.category.slice(0, 60) : 'custom',
+      tags: toStringArray(doc.tags, 20, 60),
+      symptom: doc.symptom.slice(0, 2000),
+      remediationSteps: toStringArray(doc.remediationSteps, 20, 500),
+      featureVocabulary: toStringArray(doc.featureVocabulary, 80, 80),
+      rootCauseMechanism: doc.rootCauseMechanism.slice(0, 4000),
+      relatedChaos: toStringArray(doc.relatedChaos, 8, 40),
+      isCustom: true,
+      ...(typeof doc.customCreatedAt === 'string'
+        ? { customCreatedAt: doc.customCreatedAt.slice(0, 40) }
+        : {}),
+    });
+  }
+
+  return out;
 }
 
 /* ========================================================================== */
@@ -2058,6 +2145,18 @@ export async function POST(request: Request): Promise<Response> {
           normalizeChaos(clusterContext.activeChaos),
           faultyPodNames,
           RAG_TOP_K,
+          /*
+           * 【自定义语料注入】把本次请求携带的自定义 Runbook 一并纳入检索池。
+           *
+           * 服务端没有 localStorage，评委在弹窗里新增的条目只能随请求体上来；
+           * 若此处不传，就会出现"前端能看到新条目、AI 却检索不到"的断裂，
+           * 演示时最致命。
+           *
+           * 【为何不复用全局状态】路由是并发执行的（多个请求可能同时到达），
+           * 用模块级可变单例存自定义语料会造成请求间串味。
+           * 显式按请求传参是唯一安全做法。
+           */
+          body.customRunbooks ?? [],
         );
 
   const systemPrompt = buildSystemPrompt(clusterContext, runbooks, hasImage, intent);
