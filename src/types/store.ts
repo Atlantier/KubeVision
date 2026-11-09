@@ -243,6 +243,14 @@ export interface ClusterState {
   /** 自愈免疫时间戳字典：targetId → 最近自愈 epoch 毫秒（免疫窗口去重依据） */
   readonly healedPodIds: Record<string, number>;
   /**
+   * 导演模式信号：自动路演在走真实 HITL 流程时，允许代用户完成
+   * 「勾选风险 → 点击立即执行」两步。
+   *
+   * 【为何必须是内存态、非持久化】它是"当前正在演示"的运行时标志，
+   * 刷新后不该残留；若被持久化，用户下次手动打开卡片会莫名其妙地自动执行。
+   */
+  readonly demoAutoConfirm: boolean;
+  /**
    * 等待退避后重试的自愈队列（非持久化）。
    *
    * 【为何不持久化】退避窗口最长 30s，跨会话留存一个早已过期的重试任务是
@@ -295,6 +303,29 @@ export interface ClusterActions {
    * 清除最近一次自愈对比（卡片重置/换会话时调用，避免旧对比挂在新卡片上）。
    */
   clearLastRemediationDiff: () => void;
+  /**
+   * 清空自愈免疫表。
+   *
+   * 【为何必须有这个入口】`healEntity` 会按 30 秒免疫窗口去重：同一目标
+   * 30 秒内重复自愈会被转入退避队列而不是真正执行。自动路演若在 30 秒内
+   * 连跑第二遍，第二遍的自愈全部会被免疫窗口吞掉，表现为"路演跑了但没自愈"。
+   * 修复前 Store 没有任何清除免疫表的入口，这正是"连跑两遍第二遍失败"的根因。
+   */
+  clearHealedPodIds: () => void;
+  /**
+   * 复位「路演临时态」——只清演示期产生的易变数据，不动持久化审计记录。
+   *
+   * 【清理范围】healedPodIds / pendingRemediations / lastRemediationDiff /
+   * capturedViewportDataUrl / statusFilter→'ALL' /
+   * isChaosModalOpen→false / isPerfHudOpen→false / activeRightTab→'copilot'。
+   *
+   * 【为何与 clearPersistedHistory 分开】后者是"用户主动清除审计数据"，
+   * 属于数据删除；本动作只是让下一次演示从干净起点开始，
+   * remediationHistory 与 totalMaskedSecrets 必须保留（它们是审计证据）。
+   */
+  resetDemoEphemeralState: () => void;
+  /** 设置导演自动确认标志（start 置 true / stop 与 finished 置 false） */
+  setDemoAutoConfirm: (enabled: boolean) => void;
   /** 设置/清除 3D 视口多模态截图（dataUrl=null 即清除） */
   setCapturedViewport: (dataUrl: string | null) => void;
   /** 累加端侧脱敏计数（负数/小数防御：截断为非负整数） */

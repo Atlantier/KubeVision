@@ -381,6 +381,7 @@ function createInitialClusterState(): ClusterState {
     lastRemediationDiff: null,
     totalMaskedSecrets: 0,
     remediationHistory: [],
+    demoAutoConfirm: false,
   };
 }
 
@@ -750,6 +751,54 @@ export const useClusterStore = create<ClusterStore>()(
       /** clearLastRemediationDiff —— 清除最近一次自愈对比（换会话/重开卡片时避免串味） */
       clearLastRemediationDiff: () => {
         set({ lastRemediationDiff: null });
+      },
+
+      /**
+       * clearHealedPodIds —— 清空自愈免疫表。
+       *
+       * 【为何必须有】`healEntity` 对同一目标有 30 秒免疫窗口：窗口内重复自愈
+       * 会被转入退避队列而非真正执行。自动路演若在 30 秒内连跑第二遍，
+       * 第二遍的自愈会被免疫窗口整体吞掉，表现为"跑了但没自愈"。
+       * 修复前 Store 没有任何清除入口，这是"连跑两遍第二遍失败"的根因。
+       *
+       * 【安全性】只清免疫时间戳，不动 remediationHistory —— 审计记录必须保留。
+       */
+      clearHealedPodIds: () => {
+        set({ healedPodIds: {} });
+        get().appendTerminalLog('[DEMO-DIRECTOR] immunity window table cleared');
+      },
+
+      /**
+       * resetDemoEphemeralState —— 复位路演临时态，让下一次演示从干净起点开始。
+       *
+       * 【清理范围与理由】
+       * · healedPodIds / pendingRemediations / lastRemediationDiff：
+       *   都是"上一次自愈留下的痕迹"，不清会让新剧本读到旧状态；
+       * · capturedViewportDataUrl：多模态截图体积大且属于上一轮语境；
+       * · statusFilter → 'ALL'：路演要展示全量容器，若用户事先筛了"仅崩溃"
+       *   会让画面只剩红块，失去对比；
+       * · isChaosModalOpen / isPerfHudOpen → false：避免弹窗挡住 3D 演示；
+       * · activeRightTab → 'copilot'：阶段 3 要让评委看到 AI 副驾。
+       *
+       * 【刻意不清的东西】remediationHistory 与 totalMaskedSecrets 属于审计证据，
+       * 清掉就是数据丢失；connectionMode / snapshotSummary 也不动（由调用方管理）。
+       */
+      resetDemoEphemeralState: () => {
+        set({
+          healedPodIds: {},
+          pendingRemediations: [],
+          lastRemediationDiff: null,
+          capturedViewportDataUrl: null,
+          statusFilter: 'ALL',
+          isChaosModalOpen: false,
+          isPerfHudOpen: false,
+          activeRightTab: 'copilot',
+        });
+      },
+
+      /** setDemoAutoConfirm —— 导演模式信号（内存态，仅路演期间为 true） */
+      setDemoAutoConfirm: (enabled) => {
+        set({ demoAutoConfirm: enabled });
       },
 
       /** setCapturedViewport —— 设置/清除 3D 视口多模态截图（非持久化，体积敏感） */

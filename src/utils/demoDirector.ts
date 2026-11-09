@@ -36,6 +36,13 @@ import { useEffect, useSyncExternalStore } from 'react';
 
 import type { ChaosScenario } from '@/types/cluster';
 import { useClusterStore } from '@/store/useClusterStore';
+import {
+  CHAOS_TARGETS,
+  isActionAllowedForPod,
+  resolveVictimPods,
+  type ActiveChaosScenario,
+  type ChaosRemediationAction,
+} from '@/utils/chaosTargets';
 
 /* ========================================================================== */
 /* 类型契约                                                                    */
@@ -106,18 +113,39 @@ const TICK_INTERVAL_MS = 120;
 const MCP_EXECUTE_ENDPOINT = '/api/mcp/execute';
 
 /**
- * 阶段动作的目标实体 ID。
+ * 【P0-1 修复记录 · 受灾目标不再硬编码】
  *
- * 【为何不用规格里的 node-alpha】实体 ID 的真实取值是 `node-worker-alpha`；
- * 写错会导致 selectEntity 命中不到目标而静默失败（store 会记一条
- * [AUDIT-SECURITY] rejection 日志），演示当场"镜头不动"。
+ * 修复前这里手写了两行：
+ *   `const OOM_TARGET_NODE_ID = 'node-worker-alpha'`
+ *   `const NETWORK_TARGET_NODE_ID = 'node-worker-beta'`
+ * 而引擎的事实是：OOM→rackIndex 1(node-worker-beta)、
+ * NET_PACKET_LOSS→rackIndex 2(node-worker-gamma)。
+ * 两者正好写反 —— 阶段 2 镜头锁在**健康**机架上，
+ * 同屏 AI 正文却写"宿主节点 node-worker-beta"，当场自证矛盾。
+ *
+ * 现在统一从 `utils/chaosTargets.ts` 的单一事实源取，本文件不再出现节点字面量。
  */
-const OOM_TARGET_NODE_ID = 'node-worker-alpha';
-const NETWORK_TARGET_NODE_ID = 'node-worker-beta';
 
-/** 自愈动作类型（与 NodeInspectHUD 的合法取值对齐） */
-const ACTION_DRAIN_NODE = 'drain_node';
-const ACTION_RESTART_POD = 'restart_pod';
+/** 阶段 2 注入后等待数据回传并断言"该机架确实出现异常 Pod"的超时上限 */
+const FAULT_VERIFY_TIMEOUT_MS = 2_000;
+
+/** 阶段 2 断言轮询间隔 */
+const FAULT_VERIFY_POLL_MS = 250;
+
+/**
+ * 阶段 4 等待 ActionConfirm 动作卡挂载的超时上限。
+ *
+ * 【为何是 8 秒】AI 流式生成 4 步推理 + 3 张卡片在软件渲染环境下约需 28 秒，
+ * 但卡片常在第一张出现后陆续挂载。8 秒足够覆盖"卡片已挂载、按钮可点"的时刻；
+ * 超时则按 D 项要求如实降级，绝不假装执行过。
+ */
+const ACTION_CARD_TIMEOUT_MS = 8_000;
+
+/** 阶段 4 点击「立即执行」后等待自愈回执落库的超时上限 */
+const HEAL_CONFIRM_TIMEOUT_MS = 6_000;
+
+/** 阶段 4 的 DOM 轮询间隔 */
+const DOM_POLL_MS = 200;
 
 /* ========================================================================== */
 /* 剧本定义                                                                    */
@@ -232,6 +260,37 @@ let currentScript: DemoScript | null = null;
 /** 已经触达的阶段下标（-1 表示尚未进入任何阶段） */
 let phaseIndex = -1;
 
+/**
+ * 运行时旁白覆盖（null 表示回落到剧本里的静态兜底文案）。
+ *
+ * 【为何需要】B.4 要求旁白由**当帧事实**渲染（受害 Pod 数、节点名、动作类型、
+ * 健康分前后）。但事实要等数据回传才知道，无法预先写进静态剧本。
+ * 因此阶段动作在拿到事实后通过 setNarration() 覆盖；
+ * 事实取不到时**去掉具体数字与名称**，绝不编造。
+ *
+ * 【生命周期】每次进入新阶段由 enterPhase 重置为 null，避免上一阶段的事实文案漏到下一阶段。
+ */
+let narrationOverride: string | null = null;
+
+/**
+ * 运行代次：每次 start / stop 自增。
+ *
+ * 【解决什么问题】阶段动作里有若干异步链（故障校验轮询、HITL 等待、
+ * MCP 回执）。若用户中途停止或切换剧本，这些在飞链必须**自行放弃**，
+ * 否则停止后 8 秒还会弹出一条"自愈完成"的旁白——那正是
+ * "停止后仍有幽灵动作"的经典形态。代次变化即视为过期。
+ */
+let runGeneration = 0;
+
+/** 本轮注入的混沌场景（阶段 4 据此决定自愈动作类型）；未注入时为 null */
+let lastInjectedChaos: ActiveChaosScenario | null = null;
+
+/** 写入运行时旁白并立即广播（阶段动作用） */
+function setNarration(text: string): void {
+  narrationOverride = text;
+  publish();
+}
+
 /** 本轮「running 段」的起算点（performance.now） */
 let segmentStartedAt = 0;
 
@@ -275,15 +334,29 @@ let cachedSnapshot: DemoDirectorSnapshot = {
 let narrator: ((text: string) => void) | null = null;
 
 /**
+ * 可选解说停止器（TTS 的 stop）。
+ *
+ * 【为何需要】暂停 / 停止时若只停止推进字幕，浏览器仍在念上一句旁白，
+ * 观感是"点了停止它还在说话"。注册时一并传入 stop，由引擎在
+ * pause / stop / finish 三处调用。
+ */
+let narratorStop: (() => void) | null = null;
+
+/**
  * registerDemoNarrator —— 注册/注销语音解说回调。
  *
  * @param fn 解说回调；传 null 表示关闭语音解说
  * @returns 注销函数（供 useEffect 清理）
  */
-export function registerDemoNarrator(fn: ((text: string) => void) | null): () => void {
+export function registerDemoNarrator(
+  fn: ((text: string) => void) | null,
+  stopFn: (() => void) | null = null,
+): () => void {
   narrator = fn;
+  narratorStop = stopFn;
   return (): void => {
     if (narrator === fn) narrator = null;
+    if (narratorStop === stopFn) narratorStop = null;
   };
 }
 
@@ -342,7 +415,8 @@ function publish(): void {
         ? 0
         : Math.min(1, Math.max(0, elapsed / script.durationMs)),
     badge: activePhase?.badge ?? '',
-    narration: activePhase?.narration ?? '',
+    /* 优先用当帧事实渲染的旁白，其次才是剧本静态兜底文案 */
+    narration: narrationOverride ?? activePhase?.narration ?? '',
   };
 
   for (const listener of listeners) listener();
@@ -364,8 +438,105 @@ function resetToBaseline(): void {
 }
 
 /* ========================================================================== */
-/* 阶段动作                                                                    */
+/* 阶段动作（P0-1 / P0-2 / P0-3 修复版）                                        */
 /* ========================================================================== */
+
+/**
+ * 帧率无关的轮询等待：predicate 成立即返回 true，超时返回 false。
+ *
+ * 【为何不用固定 sleep】故障注入 → 合成引擎推进 → SSE 下发 → Store 更新
+ * 是一条异步链，固定等待要么太短读不到、要么太长浪费演示时间。
+ * 轮询在数据到达的第一时间继续，既快又准。
+ *
+ * 【为何要检查 generation】stop / 重启剧本会让上一轮的等待继续跑，
+ * 若不加代次检查，停止后 8 秒仍可能弹出一条"自愈完成"的旁白——
+ * 那正是"停止后还有幽灵动作"的经典形态。
+ *
+ * @param predicate 条件
+ * @param timeoutMs 超时上限
+ * @param intervalMs 轮询间隔
+ * @param generation 发起时的运行代次（代次变化即放弃）
+ */
+function pollUntil(
+  predicate: () => boolean,
+  timeoutMs: number,
+  intervalMs: number,
+  generation: number,
+): Promise<boolean> {
+  return new Promise((resolve): void => {
+    const startedAt = performance.now();
+    const tick = (): void => {
+      if (generation !== runGeneration) {
+        resolve(false);
+        return;
+      }
+      let satisfied = false;
+      try {
+        satisfied = predicate();
+      } catch {
+        /* 读取 DOM / Store 时的瞬时异常不应中断演示时间轴 */
+        satisfied = false;
+      }
+      if (satisfied) {
+        resolve(true);
+        return;
+      }
+      if (performance.now() - startedAt >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+      setTimeout(tick, intervalMs);
+    };
+    tick();
+  });
+}
+
+/** 毫秒级延时（与 pollUntil 同一套代次保护） */
+function delay(ms: number, generation: number): Promise<void> {
+  return new Promise((resolve): void => {
+    setTimeout(() => {
+      if (generation === runGeneration) resolve();
+      else resolve();
+    }, ms);
+  });
+}
+
+/**
+ * 查找当前挂载的「自愈操作确认」动作卡。
+ *
+ * 【为何用 aria-label 而不是 class】class 是样式实现细节，随时会变；
+ * aria-label 是**对外契约**（verify.mjs 的 32 项断言也依赖它），
+ * 用它定位等于复用既有可访问性承诺，不会因视觉改版而失联。
+ *
+ * @returns 卡片元素；未挂载返回 null
+ */
+function findActionCard(): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  const candidates = document.querySelectorAll('[aria-label^="自愈操作确认"]');
+  for (const el of Array.from(candidates)) {
+    if (el instanceof HTMLElement) return el;
+  }
+  return null;
+}
+
+/**
+ * 在动作卡内找到「立即执行自愈方案」按钮。
+ *
+ * 【判定口径】文案含「立即执行」或「需二次确认」——高危动作未勾选时
+ * 按钮文案会变成后者，两者都是同一个执行入口。
+ *
+ * @param card 动作卡元素
+ * @returns 可点击按钮；找不到返回 null
+ */
+function findExecuteButton(card: HTMLElement): HTMLButtonElement | null {
+  const buttons = card.querySelectorAll('button');
+  for (const el of Array.from(buttons)) {
+    if (!(el instanceof HTMLButtonElement)) continue;
+    const text = (el.textContent ?? '').trim();
+    if (text.includes('立即执行') || text.includes('需二次确认')) return el;
+  }
+  return null;
+}
 
 /**
  * 阶段 1：全景稳态巡航。
@@ -375,117 +546,294 @@ function resetToBaseline(): void {
  */
 function enterCruise(): void {
   const api = actions();
-  resetToBaseline();
+  api.setActiveChaos('NONE');
+  api.selectEntity(null);
   api.setOrbitPatrolActive(true);
   api.appendTerminalLog('[DEMO-DIRECTOR] 阶段 1/4 · 已重置集群稳态并开启 3D 环绕巡检');
 }
 
 /**
- * 通用「注入混沌并锁定镜头」阶段。
+ * 阶段 2：注入混沌 + 锁定**真实受灾**机架（P0-1 修复）。
  *
- * @param chaos  要注入的混沌场景
- * @param nodeId 需要聚焦的节点实体 ID
- * @param label  终端日志前缀
+ * 【修复前】节点 ID 是手写字面量，且 OOM/网络两个剧本正好与引擎行为相反
+ * ——镜头锁定健康机架，同屏 AI 正文却写另一个节点名，当场自证矛盾。
+ *
+ * 【修复后】nodeId 来自 `CHAOS_TARGETS` 单一事实源；注入后**轮询断言**
+ * 该机架名下确实出现了异常 Pod，断言失败则旁白降级为"等待数据回传"，
+ * 绝不宣称"已锁定告警机架"。
+ *
+ * @param chaos 要注入的混沌场景（非 'NONE'）
+ * @param label 终端日志前缀
  */
-function enterFaultAndLock(chaos: ChaosScenario, nodeId: string, label: string): void {
+function enterFaultAndLock(chaos: ActiveChaosScenario, label: string): void {
+  const generation = runGeneration;
+  const target = CHAOS_TARGETS[chaos];
   const api = actions();
+
+  /* 记录本轮注入的场景，供阶段 4 决定自愈动作类型 */
+  lastInjectedChaos = chaos;
+
   /* 关闭环绕：镜头要交给 CameraRig 的聚焦飞行，两者同时跑会互相拉扯 */
   api.setOrbitPatrolActive(false);
   api.setActiveChaos(chaos);
-  api.selectEntity(nodeId, 'node');
-  api.appendTerminalLog(`[DEMO-DIRECTOR] ${label} · 已注入 ${chaos} 并锁定 ${nodeId}`);
+  api.selectEntity(target.nodeId, 'node');
+
+  /* 先用静态兜底文案，避免断言期间字幕空白 */
+  setNarration('故障已注入，正在校验受灾目标的数据回传...');
+  api.appendTerminalLog(
+    `[DEMO-DIRECTOR] ${label} · 已注入 ${chaos}（${target.label}）并锁定 ${target.nodeId}`,
+  );
+
+  /* ---- 运行时断言：该节点名下必须出现异常 Pod ---- */
+  void pollUntil(
+    (): boolean => {
+      const snapshot = actions().snapshotSummary;
+      return snapshot.pods.some(
+        (pod): boolean => pod.nodeId === target.nodeId && pod.status !== 'Running',
+      );
+    },
+    FAULT_VERIFY_TIMEOUT_MS,
+    FAULT_VERIFY_POLL_MS,
+    generation,
+  ).then((verified: boolean): void => {
+    if (generation !== runGeneration) return;
+    if (verified) {
+      const snapshot = actions().snapshotSummary;
+      const victims = resolveVictimPods(snapshot.pods, snapshot.activeAlerts, 99);
+      const nodeLabel =
+        snapshot.nodes.find((node): boolean => node.id === target.nodeId)?.name ?? target.nodeId;
+      setNarration(
+        `检测到 ${victims.length} 个容器触发 ${target.expectedPodStatus}（${target.label}），3D 镜头已锁定受灾机架 ${nodeLabel}！`,
+      );
+      actions().appendTerminalLog(
+        `[DEMO-DIRECTOR] 受灾校验通过：${target.nodeId} 名下 ${victims.length} 个异常 Pod`,
+      );
+    } else {
+      /* 如实降级：不宣称已锁定告警机架 */
+      setNarration(
+        '已注入故障，正在等待数据回传（本环境未在预期时间内收到异常事件）。',
+      );
+      actions().appendTerminalLog(
+        `[DEMO-DIRECTOR] 受灾校验超时：${target.nodeId} 名下未观察到异常 Pod，旁白已降级`,
+      );
+    }
+  });
 }
 
 /**
- * 通用「唤醒 AI 副驾」阶段。
+ * 阶段 3：唤醒 AI 副驾做 RAG 诊断。
+ *
+ * 【顺带塞入 3D 截图】把「多模态快照诊断」卖点纳入自动路演：
+ * 若画布可导出 dataUrl，就写入 capturedViewportDataUrl，让 AI 拿到真实画面。
+ * 导出失败（跨域/上下文丢失）不阻断流程——诊断仍可纯文本进行。
  *
  * @param prompt 送入副驾的诊断提示词
  * @param label  终端日志前缀
  */
 function enterAiDiagnosis(prompt: string, label: string): void {
   const api = actions();
+
+  /* ---- 多模态快照（尽力而为，失败静默降级） ---- */
+  if (typeof document !== 'undefined') {
+    const canvas = document.querySelector('canvas');
+    if (canvas instanceof HTMLCanvasElement) {
+      try {
+        const dataUrl = canvas.toDataURL('image/png');
+        if (dataUrl.startsWith('data:image/png')) api.setCapturedViewport(dataUrl);
+      } catch {
+        api.appendTerminalLog('[DEMO-DIRECTOR] 3D 快照导出失败，本轮以纯文本诊断继续');
+      }
+    }
+  }
+
   api.triggerQuickPrompt(prompt);
   api.appendTerminalLog(`[DEMO-DIRECTOR] ${label} · 已唤醒 AI 运维副驾`);
 }
 
 /**
- * 从快照里挑出「值得自愈」的目标。
+ * 阶段 4：MCP 闭环自愈（P0-2 / P0-3 修复）。
  *
- * 【为何要动态挑选而不是写死 ID】Pod ID 由合成引擎生成，硬编码会随
- * 引擎改动失效；而且真实故障态下哪几个 Pod 崩了是运行时决定的。
- * 这里按"目标节点名下 → 状态异常 → 最多 3 个"的口径现场挑选，
- * 挑不到就退化为自愈该节点本身（drain_node），保证阶段 4 永远有动作。
+ * 【修复 P0-2：受害者解析改为全局】
+ * 修复前按"聚焦节点"过滤，一旦镜头锁错节点就解析不到受害者，
+ * 然后兜底对健康节点执行 drain_node —— 宣称闭环而实际一个没修。
+ * 现在用 `resolveVictimPods` 从 P0 告警 + 全量非 Running Pod 里解析，
+ * **不再按镜头过滤，也不再 drain_node 兜底**。
  *
- * @param nodeId 受影响节点 ID
- * @returns 待自愈目标列表（含 actionType）
+ * 【修复 P0-3：HITL 走真实 UI】
+ * 修复前直接调 healEntity，旁白说"MCP 闭环自愈完成"而动作卡仍是
+ * "立即执行自愈方案"待点 —— 同一屏上"系统已替你执行"与"需要你确认"并存。
+ * 现在：置 demoAutoConfirm → 等卡片挂载 → 勾选风险 → 点击真实按钮 → 等回执。
+ * 卡片 8 秒内未挂载才降级为直接 healEntity，并在旁白中**如实说明**。
+ *
+ * @param label 终端日志前缀
  */
-function resolveHealTargets(nodeId: string): Array<{ id: string; actionType: string }> {
-  const snapshot = actions().snapshotSummary;
-  const victims = snapshot.pods
-    .filter(
-      (pod): boolean =>
-        pod.nodeId === nodeId &&
-        (pod.status === 'OOMKilled' ||
-          pod.status === 'CrashLoopBackOff' ||
-          pod.status === 'Pending'),
-    )
-    .slice(0, 3)
-    .map((pod) => ({ id: pod.id, actionType: ACTION_RESTART_POD }));
+function enterHeal(label: string): void {
+  const generation = runGeneration;
+  const api = actions();
+  const chaos = lastInjectedChaos;
+  const target = chaos === null ? null : CHAOS_TARGETS[chaos];
 
-  if (victims.length > 0) return victims;
-  /* 兜底：没有异常 Pod 时自愈节点自身，保证演示链路完整 */
-  return [{ id: nodeId, actionType: ACTION_DRAIN_NODE }];
+  /* ---- 1. 解析真实受害 Pod（全局视角） ---- */
+  const snapshot = api.snapshotSummary;
+  const victims = resolveVictimPods(snapshot.pods, snapshot.activeAlerts, 3);
+  const healthBefore = Math.round(snapshot.clusterHealthScore);
+
+  /**
+   * 自愈动作类型：由场景事实决定（OOM→restart_pod / 网络→drain_node / CPU→scale）。
+   * Pod 目标额外过一次白名单：drain_node 作用在单个 Pod 上毫无意义。
+   */
+  const sceneAction: ChaosRemediationAction = target?.remediationAction ?? 'restart_pod';
+  const podAction: ChaosRemediationAction = isActionAllowedForPod(sceneAction)
+    ? sceneAction
+    : 'restart_pod';
+
+  /* ---- 2. 无受害者：如实降级，不伪造闭环 ---- */
+  if (victims.length === 0) {
+    api.setActiveChaos('NONE');
+    api.selectEntity(null);
+    api.setOrbitPatrolActive(true);
+    setNarration('已解除混沌并恢复稳态，但未捕获到可自愈的异常容器（自愈未验证）。');
+    api.appendTerminalLog('[DEMO-DIRECTOR] 阶段 4/4 · 无受害 Pod，已终止演练并如实降级旁白');
+    return;
+  }
+
+  const primary = victims[0];
+  setNarration(`正在对 ${victims.length} 个异常容器执行 MCP 自愈（动作 ${podAction}）...`);
+  api.setDemoAutoConfirm(true);
+
+  /* ---- 3. HITL：等卡片 → 勾选 → 点击真实按钮 ---- */
+  void (async (): Promise<void> => {
+    const cardReady = await pollUntil(
+      (): boolean => findActionCard() !== null,
+      ACTION_CARD_TIMEOUT_MS,
+      DOM_POLL_MS,
+      generation,
+    );
+    if (generation !== runGeneration) return;
+
+    let executedViaUi = false;
+    if (cardReady) {
+      const card = findActionCard();
+      if (card !== null) {
+        /* 高危动作必须先勾选风险确认，否则按钮处于禁用态 */
+        const checkbox = card.querySelector('input[type="checkbox"]');
+        if (checkbox instanceof HTMLInputElement && !checkbox.checked) {
+          checkbox.click();
+          await delay(DOM_POLL_MS, generation);
+          if (generation !== runGeneration) return;
+        }
+        const button = findExecuteButton(card);
+        if (button !== null && !button.disabled) {
+          button.click();
+          executedViaUi = true;
+          actions().appendTerminalLog(
+            '[DEMO-DIRECTOR] 已通过动作卡「立即执行自愈方案」完成 HITL 确认（导演自动确认模式）',
+          );
+        }
+      }
+    }
+
+    /* ---- 4. 降级路径：卡片没来，直接走 Store 自愈并如实说明 ---- */
+    if (!executedViaUi) {
+      for (const victim of victims) {
+        actions().healEntity(victim.id, podAction);
+      }
+      actions().appendTerminalLog(
+        '[DEMO-DIRECTOR] 动作卡未在 8 秒内挂载，已降级为直接调用 healEntity（旁白将如实说明）',
+      );
+    }
+
+    /* ---- 5. 等自愈回执落库 ---- */
+    await pollUntil(
+      (): boolean => Object.keys(actions().healedPodIds).length > 0,
+      HEAL_CONFIRM_TIMEOUT_MS,
+      DOM_POLL_MS,
+      generation,
+    );
+    if (generation !== runGeneration) return;
+
+    /* ---- 6. 校验覆盖度：受害者是否真的全部被自愈 ---- */
+    const healedIds = Object.keys(actions().healedPodIds);
+    const coveredCount = victims.filter((victim): boolean =>
+      healedIds.includes(victim.id),
+    ).length;
+    const fullyCovered = coveredCount === victims.length;
+    const healthAfter = Math.round(actions().snapshotSummary.clusterHealthScore);
+    const nodeLabel =
+      actions().snapshotSummary.nodes.find((node): boolean => node.id === (target?.nodeId ?? ''))
+        ?.name ??
+      target?.nodeId ??
+      '受灾机架';
+
+    /* ---- 7. 复位画面并给出**与事实一致**的终态旁白 ---- */
+    actions().setActiveChaos('NONE');
+    actions().selectEntity(null);
+    actions().setOrbitPatrolActive(true);
+
+    if (fullyCovered) {
+      setNarration(
+        `已下发控制器调谐指令（${podAction}），${coveredCount} 个异常容器恢复 Running，集群健康分 ${healthBefore} → ${healthAfter}。`,
+      );
+      actions().appendTerminalLog(
+        `[DEMO-DIRECTOR] 阶段 4/4 · 闭环校验通过：${coveredCount}/${victims.length} 个受害者已自愈`,
+      );
+    } else if (executedViaUi) {
+      /* 走了真实 UI 但覆盖不全：这是 AI 卡片的 target 与受害者不一致，如实说明 */
+      setNarration(
+        `已通过动作卡执行自愈（${podAction}），本次覆盖 ${coveredCount}/${victims.length} 个异常容器，其余由控制器自行收敛。`,
+      );
+      actions().appendTerminalLog(
+        `[DEMO-DIRECTOR] 阶段 4/4 · 部分覆盖：${coveredCount}/${victims.length}（未宣称完整闭环）`,
+      );
+    } else {
+      setNarration(
+        `已终止演练并恢复稳态，自愈未完全验证（${coveredCount}/${victims.length}）。`,
+      );
+      actions().appendTerminalLog(
+        `[DEMO-DIRECTOR] 阶段 4/4 · 自愈未完全验证：${coveredCount}/${victims.length}`,
+      );
+    }
+
+    /* ---- 8. MCP 回执：target 用首个受害 Pod（不是节点），targetName 用可读名 ---- */
+    repairMcpReceipt(primary.id, primary.name, podAction, generation);
+
+    actions().setDemoAutoConfirm(false);
+    void nodeLabel;
+  })();
 }
 
 /**
- * 阶段 4：MCP 闭环自愈。
+ * 请求 `/api/mcp/execute` 并把 JSON-RPC 回执写进终端日志。
  *
- * 两步走，缺一不可：
- * 1. **healEntity** 是"控制器已验证的修复"——它真正改 store 里的状态水位，
- *    3D 里的刀片会打出自愈充能脉冲，HUD 健康分回升。
- * 2. **POST /api/mcp/execute** 是"对外出示调用回执"——答辩时服务端返回的
- *    JSON-RPC receipt 是"我们真的走了 MCP 协议"的证据，写进终端日志后
- *    评委可以直接看到 actionType / targetId / 执行耗时。
+ * 【为何单独抽出】阶段 4 的异步链已经很长；把网络部分隔离后，
+ * 主流程可以只关心"HITL 是否完成、覆盖度如何"这两件业务事实。
  *
- * 【请求失败不阻断剧本】自愈的真实状态由 healEntity 保证；MCP 回执只是
- * 证据链。网络异常时降级为一条告警日志，剧本继续走完——总比卡在阶段 3
- * 强。失败也绝不伪造成功回执。
+ * 【绝不伪造成功】HTTP 非 2xx、响应结构不符、网络异常三种情况
+ * 都只记一条如实说明，不打印任何"已完成"字样。
  *
- * @param nodeId 受影响节点 ID
- * @param label  终端日志前缀
+ * @param targetId   首个受害 Pod 的实体 ID
+ * @param targetName 可读名（pod.name，而非 ID）
+ * @param actionType 实际执行的动作类型
+ * @param generation 发起时的运行代次
  */
-function enterHeal(nodeId: string, label: string): void {
-  const api = actions();
-  const targets = resolveHealTargets(nodeId);
-
-  for (const target of targets) {
-    api.healEntity(target.id, target.actionType);
-  }
-  api.appendTerminalLog(
-    `[DEMO-DIRECTOR] ${label} · 已对 ${targets.length} 个目标下发自愈（${targets
-      .map((t) => t.id)
-      .join(', ')}）`,
-  );
-
-  /* 镜头与混沌复位：让画面回到"一切正常"的全景，收束整场演示 */
-  api.setActiveChaos('NONE');
-  api.selectEntity(null);
-  api.setOrbitPatrolActive(true);
-
-  /* ---- MCP 执行回执（异步，不阻塞时间轴）---- */
+function repairMcpReceipt(
+  targetId: string,
+  targetName: string,
+  actionType: ChaosRemediationAction,
+  generation: number,
+): void {
   abortMcp();
   const controller = new AbortController();
   mcpAbort = controller;
-  const primary = targets[0];
 
   void fetch(MCP_EXECUTE_ENDPOINT, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      actionType: primary.actionType,
-      targetId: primary.id,
-      targetName: primary.id,
-      clusterMode: api.connectionMode,
+      actionType,
+      targetId,
+      targetName,
+      clusterMode: actions().connectionMode,
     }),
     signal: controller.signal,
   })
@@ -494,26 +842,24 @@ function enterHeal(nodeId: string, label: string): void {
         return `MCP 执行返回 HTTP ${response.status}（未伪造成功回执）`;
       }
       const payload: unknown = await response.json();
-      /* 只读取已知字段，不做 as any 断言 */
       if (typeof payload === 'object' && payload !== null && 'result' in payload) {
         const receipt = (payload as { result?: unknown }).result;
         if (typeof receipt === 'object' && receipt !== null) {
-          const r = receipt as { executionId?: unknown; actionType?: unknown };
-          const id = typeof r.executionId === 'string' ? r.executionId : '(unknown)';
-          const act = typeof r.actionType === 'string' ? r.actionType : primary.actionType;
+          const record = receipt as { executionId?: unknown; actionType?: unknown };
+          const id = typeof record.executionId === 'string' ? record.executionId : '(unknown)';
+          const act = typeof record.actionType === 'string' ? record.actionType : actionType;
           return `MCP 回执 ${id} · ${act} 已完成控制器调谐`;
         }
       }
       return 'MCP 响应结构不符合 JSON-RPC 回执契约';
     })
     .then((line: string): void => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || generation !== runGeneration) return;
       actions().appendTerminalLog(`[DEMO-DIRECTOR] ${line}`);
     })
     .catch((): void => {
-      /* abort 与网络失败都走这里：不伪造成功，只诚实记一条 */
-      if (controller.signal.aborted) return;
-      actions().appendTerminalLog('[DEMO-DIRECTOR] MCP 执行请求失败（自愈已由 store 侧完成）');
+      if (controller.signal.aborted || generation !== runGeneration) return;
+      actions().appendTerminalLog('[DEMO-DIRECTOR] MCP 执行请求失败（自愈已由 Store 侧完成）');
     })
     .finally((): void => {
       if (mcpAbort === controller) mcpAbort = null;
@@ -523,31 +869,29 @@ function enterHeal(nodeId: string, label: string): void {
 /**
  * 阶段动作表：scriptId → 按下标对齐的动作序列。
  *
- * 【为何按 scriptId + 下标而不是挂在 DemoPhase 上】见 DemoPhase 的注释：
- * 展示数据保持纯净，动作集中一处便于对照阅读与替换。
+ * 【为何按 scriptId + 下标而不是挂在 DemoPhase 上】展示数据保持纯净，
+ * 动作集中一处便于对照阅读与替换。
  */
 const PHASE_ACTIONS: Readonly<Record<DemoScriptId, readonly (() => void)[]>> = {
   'oom-autofix': [
     enterCruise,
-    (): void =>
-      enterFaultAndLock('POD_OOM_SWARM', OOM_TARGET_NODE_ID, '阶段 2/4'),
+    (): void => enterFaultAndLock('POD_OOM_SWARM', '阶段 2/4'),
     (): void =>
       enterAiDiagnosis(
         '检测到集群发生 OOMKilled 内存溢出告警，请结合 RAG 知识库定位根因并生成 MCP 自愈方案。',
         '阶段 3/4',
       ),
-    (): void => enterHeal(OOM_TARGET_NODE_ID, '阶段 4/4'),
+    (): void => enterHeal('阶段 4/4'),
   ],
   'network-latency-trace': [
     enterCruise,
-    (): void =>
-      enterFaultAndLock('NET_PACKET_LOSS', NETWORK_TARGET_NODE_ID, '阶段 2/4'),
+    (): void => enterFaultAndLock('NET_PACKET_LOSS', '阶段 2/4'),
     (): void =>
       enterAiDiagnosis(
         '检测到跨节点网络延迟与丢包，请结合 RAG 知识库定位 CNI VXLAN 隧道瓶颈并生成 MCP 自愈方案。',
         '阶段 3/4',
       ),
-    (): void => enterHeal(NETWORK_TARGET_NODE_ID, '阶段 4/4'),
+    (): void => enterHeal('阶段 4/4'),
   ],
 };
 
@@ -566,6 +910,8 @@ function enterPhase(index: number): void {
   phaseIndex = index;
 
   const phase = script.phases[index];
+  /* 进入新阶段先清空上一阶段的事实旁白，避免串到本阶段 */
+  narrationOverride = null;
   const actionList = PHASE_ACTIONS[script.id];
   const action = actionList[index];
   if (action !== undefined) action();
@@ -654,13 +1000,40 @@ export function startDemoDirector(id: DemoScriptId): void {
   /* 先彻底停掉上一轮，避免两套定时器同时向 store 写动作 */
   stopDemoDirector('switch');
 
+  /*
+   * 【E 项：路演必须运行在合成数据源上】
+   * 实时模式展示的是物理机真实水位，混沌注入只作用于合成引擎状态机——
+   * 若用户在 live 模式点路演，画面不会有任何变化，评委看到的是"功能坏了"。
+   * 因此启动首步强制切回 demo，并写审计行说明原因。
+   */
+  const bootApi = actions();
+  if (bootApi.connectionMode !== 'demo') {
+    bootApi.setConnectionMode('demo');
+    bootApi.appendTerminalLog('[DEMO-DIRECTOR] 路演需要合成数据源，已自动切回「合成演练」模式');
+  }
+
+  /*
+   * 【E 项：全量复位路演临时态】
+   * clearHealedPodIds 是"连跑两遍"的关键：healEntity 有 30 秒免疫窗口，
+   * 不清免疫表时第二遍的自愈会被整体转入退避队列而**不真正执行**，
+   * 表现为"第二遍跑了但什么都没修"。
+   */
+  bootApi.resetDemoEphemeralState();
+  bootApi.clearHealedPodIds();
+  bootApi.setDemoAutoConfirm(false);
+
+  /* 代次自增：让上一轮所有在飞异步链立即过期 */
+  runGeneration += 1;
+  lastInjectedChaos = null;
+  narrationOverride = null;
+
   currentScript = script;
   status = 'running';
   phaseIndex = -1;
   accumulatedMs = 0;
   segmentStartedAt = performance.now();
 
-  actions().appendTerminalLog(
+  bootApi.appendTerminalLog(
     `[DEMO-DIRECTOR] ▶ 启动剧本「${script.title}」（约 ${Math.round(script.durationMs / 1000)} 秒）`,
   );
 
@@ -682,6 +1055,7 @@ export function pauseDemoDirector(): void {
   status = 'paused';
   clearAllTimers();
   abortMcp();
+  if (narratorStop !== null) narratorStop();
   actions().appendTerminalLog('[DEMO-DIRECTOR] ⏸ 已暂停（进度保留，可继续）');
   publish();
 }
@@ -720,6 +1094,10 @@ export function togglePauseDemoDirector(): void {
 function finishDemoDirector(): void {
   clearAllTimers();
   abortMcp();
+  if (narratorStop !== null) narratorStop();
+  actions().setDemoAutoConfirm(false);
+  /* 代次自增：让所有在飞异步链（自愈校验、MCP 回执）立即过期 */
+  runGeneration += 1;
   status = 'finished';
   if (currentScript !== null) {
     phaseIndex = currentScript.phases.length - 1;
@@ -744,6 +1122,12 @@ export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user')
 
   clearAllTimers();
   abortMcp();
+  if (narratorStop !== null) narratorStop();
+  actions().setDemoAutoConfirm(false);
+  /* 代次自增：停止后任何在飞异步链都不得再写 store / 改旁白 */
+  runGeneration += 1;
+  lastInjectedChaos = null;
+  narrationOverride = null;
 
   status = 'idle';
   currentScript = null;

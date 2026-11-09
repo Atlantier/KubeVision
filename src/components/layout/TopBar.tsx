@@ -979,9 +979,15 @@ export default function TopBar() {
    */
   useEffect((): (() => void) | undefined => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return undefined;
-    return registerDemoNarrator((text: string): void => {
-      tts.speak(text, 'demo-director');
-    });
+    return registerDemoNarrator(
+      (text: string): void => {
+        tts.speak(text, 'demo-director');
+      },
+      /* 暂停 / 停止 / 结束三处由引擎回调，避免"点了停止它还在念" */
+      (): void => {
+        tts.stop();
+      },
+    );
   }, [tts]);
 
   /**
