@@ -1,0 +1,49 @@
+KubeVision AI — WebGL 黑屏探针（probe-blackout.mjs）
+  目标    : http://127.0.0.1:3000
+  动作    : demo
+  时长    : 60s · 间隔 500ms · 阈值 2
+  开始    : 2026-11-09T13:13:44.586Z
+  commit  : 5b109e2
+
+[自检] 读取 3 次基线亮度，确认 readPixels 在本环境可用…
+  基线 1: avg=29.534 max=231 min=1 1086x934 lost=false
+  基线 2: avg=29.183 max=234 min=8 1086x934 lost=false
+  基线 3: avg=31.615 max=242 min=8 1086x934 lost=false
+  基线均值: 30.110
+[自检] 通过 —— 基线亮度足以区分"暗"与"黑"。
+
+[动作] 启动剧本路演 → {"ok":true}
+
+[探测] 开始，每 500ms 采样一次，共 60s
+  时间(s) | 状态      | 平均亮度 | 最大 | 最小 | 混沌       | 选中
+  ------------------------------------------------------------------------------------------------
+     0.0 | OK        |   29.803 |  208 |    8 | NONE       | null
+     2.3 | OK        |   27.093 |  251 |    1 | NONE       | null
+     5.7 | OK        |   29.532 |  231 |    8 | POD_OOM_SWARM | node-worker-beta
+     9.5 | OK        |   44.923 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    12.5 | OK        |   60.325 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    16.3 | OK        |   66.594 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    20.1 | OK        |   68.095 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    23.6 | OK        |   67.519 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    26.5 | OK        |   66.512 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    29.5 | OK        |   68.562 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    33.5 | OK        |   66.818 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    37.6 | OK        |   66.721 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    41.1 | OK        |   66.557 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    44.4 | OK        |   67.990 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    47.5 | OK        |   68.648 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    50.6 | OK        |   67.228 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    53.5 | OK        |   65.625 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    56.5 | OK        |   68.492 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+    59.5 | OK        |   68.744 |  255 |    8 | POD_OOM_SWARM | node-worker-beta
+
+==============================================================================
+探测汇总
+==============================================================================
+  采样次数      : 19
+  采样错误      : 0
+  黑屏事件      : 0
+  首次黑屏时刻  : 未复现
+  判定          : 【未复现黑屏】
+  commit        : 5b109e2
+  结束时刻      : 2026-11-09T13:15:10.086Z

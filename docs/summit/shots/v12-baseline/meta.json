@@ -1,0 +1,153 @@
+{
+  "baseline": {
+    "commit": "5b109e2",
+    "tag": "v12-baseline",
+    "generatedAt": "2026-11-09T13:19:45.963Z"
+  },
+  "scenes": {
+    "overview@1920x1080": {
+      "scene": "overview",
+      "sceneLabel": "全景稳态（三机架 + 控制平面 + 地面拓扑）",
+      "file": "overview-1920x1080.png",
+      "timestamp": "2026-11-09T13:18:33.904Z",
+      "commit": "5b109e2",
+      "tag": "v12-baseline",
+      "viewport": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "metrics": {
+        "glStats": {
+          "fps": 2,
+          "frameTimeMs": 568.3,
+          "drawCalls": 403,
+          "triangles": 188738,
+          "sseLatencyMs": 809,
+          "workerStatus": "idle"
+        },
+        "dpr": 1,
+        "devicePixelRatio": 1,
+        "contextLost": false,
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "canvas": {
+          "width": 1244,
+          "height": 1014
+        },
+        "store": {
+          "activeChaos": "NONE",
+          "selectedEntityId": null,
+          "connectionMode": "demo",
+          "clusterHealthScore": 100,
+          "runningPods": 24,
+          "totalPods": 24,
+          "activeAlerts": 0,
+          "isOrbitPatrolActive": false
+        }
+      },
+      "consoleErrors": 0,
+      "consoleWarns": 1,
+      "consoleErrorSamples": [],
+      "consoleWarnSamples": [
+        "[DEPRECATED] Use `createWithEqualityFn` instead of `create` or use `useStoreWithEqualityFn` instead of `useStore`. They can be imported from 'zustand/traditional'. https://github.com/pmndrs/zustand/di"
+      ],
+      "note": "dpr 取自 renderer.getPixelRatio()，是该构建下唯一可观测的\"自适应画质档位\"代理；glStats 的 fps/frameTime 来自 SwiftShader 软件光栅化，不代表真机 GPU 性能，drawCalls/triangles 与硬件无关。"
+    },
+    "oom@1920x1080": {
+      "scene": "oom",
+      "sceneLabel": "OOM 故障态（受灾机架 worker-beta 特写 + 红色告警）",
+      "file": "oom-1920x1080.png",
+      "timestamp": "2026-11-09T13:19:08.675Z",
+      "commit": "5b109e2",
+      "tag": "v12-baseline",
+      "viewport": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "metrics": {
+        "glStats": {
+          "fps": 2,
+          "frameTimeMs": 623.5,
+          "drawCalls": 155,
+          "triangles": 131600,
+          "sseLatencyMs": 883,
+          "workerStatus": "idle"
+        },
+        "dpr": 1,
+        "devicePixelRatio": 1,
+        "contextLost": false,
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "canvas": {
+          "width": 1244,
+          "height": 1014
+        },
+        "store": {
+          "activeChaos": "POD_OOM_SWARM",
+          "selectedEntityId": "node-worker-beta",
+          "connectionMode": "demo",
+          "clusterHealthScore": 77,
+          "runningPods": 21,
+          "totalPods": 24,
+          "activeAlerts": 3,
+          "isOrbitPatrolActive": false
+        }
+      },
+      "consoleErrors": 0,
+      "consoleWarns": 1,
+      "consoleErrorSamples": [],
+      "consoleWarnSamples": [
+        "[DEPRECATED] Use `createWithEqualityFn` instead of `create` or use `useStoreWithEqualityFn` instead of `useStore`. They can be imported from 'zustand/traditional'. https://github.com/pmndrs/zustand/di"
+      ],
+      "note": "dpr 取自 renderer.getPixelRatio()，是该构建下唯一可观测的\"自适应画质档位\"代理；glStats 的 fps/frameTime 来自 SwiftShader 软件光栅化，不代表真机 GPU 性能，drawCalls/triangles 与硬件无关。"
+    },
+    "pod-closeup@1920x1080": {
+      "scene": "pod-closeup",
+      "sceneLabel": "刀片近景（worker-alpha 机架内 Pod 阵列）",
+      "file": "pod-closeup-1920x1080.png",
+      "timestamp": "2026-11-09T13:19:45.963Z",
+      "commit": "5b109e2",
+      "tag": "v12-baseline",
+      "viewport": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "metrics": {
+        "glStats": {
+          "fps": 1,
+          "frameTimeMs": 1154.8,
+          "drawCalls": 146,
+          "triangles": 130634,
+          "sseLatencyMs": 1008,
+          "workerStatus": "idle"
+        },
+        "dpr": 1,
+        "devicePixelRatio": 1,
+        "contextLost": false,
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "canvas": {
+          "width": 1244,
+          "height": 1014
+        },
+        "store": {
+          "activeChaos": "NONE",
+          "selectedEntityId": "node-worker-alpha",
+          "connectionMode": "demo",
+          "clusterHealthScore": 100,
+          "runningPods": 24,
+          "totalPods": 24,
+          "activeAlerts": 0,
+          "isOrbitPatrolActive": false
+        }
+      },
+      "consoleErrors": 0,
+      "consoleWarns": 1,
+      "consoleErrorSamples": [],
+      "consoleWarnSamples": [
+        "[DEPRECATED] Use `createWithEqualityFn` instead of `create` or use `useStoreWithEqualityFn` instead of `useStore`. They can be imported from 'zustand/traditional'. https://github.com/pmndrs/zustand/di"
+      ],
+      "note": "dpr 取自 renderer.getPixelRatio()，是该构建下唯一可观测的\"自适应画质档位\"代理；glStats 的 fps/frameTime 来自 SwiftShader 软件光栅化，不代表真机 GPU 性能，drawCalls/triangles 与硬件无关。"
+    }
+  }
+}

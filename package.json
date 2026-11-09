@@ -18,7 +18,10 @@
     "verify": "node scripts/verify.mjs",
     "verify:quick": "node scripts/verify.mjs --quick",
     "verify:stream": "node scripts/verify-stream-integrity.mjs",
-    "benchmark": "node scripts/benchmark.mjs"
+    "verify:demo": "node scripts/verify-demo.mjs",
+    "benchmark": "node scripts/benchmark.mjs",
+    "shot": "node scripts/shot.mjs",
+    "probe:blackout": "node scripts/probe-blackout.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "0.0.66",
