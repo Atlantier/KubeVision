@@ -122,6 +122,49 @@ const FILTER_SCALE_LERP_RATE = 8;
 /** 单帧 Δt 钳制上限（秒）：掉帧时限制插值步长，防颜色/缩放跳变 */
 const MAX_FRAME_DELTA = 0.1;
 
+/* ========================================================================== */
+/* 近大远小光泽对比（Distance-Based Specular Contrast）                          */
+/* ========================================================================== */
+
+/**
+ * 刀片发光对比度的距离参数。
+ *
+ * 【设计意图】同一座机架内，靠近相机一侧的刀片应当有更锐利的高光边缘，
+ * 远离的一侧则柔和下沉——这是真实镜头下的景深与光衰减共同作用的结果。
+ * 没有这层调制时，24 个刀片无论远近都是同一亮度，机柜读起来像一张平面贴图。
+ *
+ * 【公式】distanceGain = clamp(1.18 − (instanceCamDist − 8) · 0.045, 0.68, 1.22)
+ *
+ * 参数依据：
+ * · 相机到刀片的典型距离在 18~30 单位之间（机架半径 9.5 + 相机偏移），
+ *   但**机架内部各刀片之间**的距离差只有 1~3 单位 —— 调制幅度必须
+ *   足够敏感才能在同一机架内看出差异，因此斜率取 0.045（比机架的 0.032 更陡）；
+ * · 8 是"理想近距"基准（相机贴近机架时刀片约在此距离）；
+ * · 下界 0.68 保证最远的刀片仍然可辨（不会被压成黑块）；
+ * · 上界 1.22 防止贴脸时高光过曝。
+ */
+const POD_DEPTH_BASE = 1.18;
+const POD_DEPTH_PIVOT = 8;
+const POD_DEPTH_SLOPE = 0.045;
+const POD_DEPTH_MIN = 0.68;
+const POD_DEPTH_MAX = 1.22;
+
+/**
+ * 故障态呼吸频闪的频率与幅度。
+ *
+ * 【为何故障态需要"呼吸频闪"而非固定亮度】CrashLoopBackOff / OOMKilled
+ * 是**持续性**故障——如果只是变红不动，用户看久了会失去警觉。
+ * 加一层低频呼吸（1.6 rad/s ≈ 3.9 秒一个周期）配合较深的幅度
+ * （0.55~1.35），既保持"它一直在出问题"的持续感，
+ * 又用明暗变化抓住余光。
+ *
+ * 【为何频率不能太高】超过 4 rad/s 在 60FPS 下会接近闪烁融合阈值，
+ * 观感变成"屏幕坏了"而不是"容器在崩溃重启"，反而降低专业感。
+ */
+const FAULT_BREATH_RATE = 1.6;
+const FAULT_BREATH_MIN = 0.55;
+const FAULT_BREATH_GAIN = 0.8;
+
 /* ---- Running 态：负载驱动的悬浮呼吸参数 ---- */
 /** 悬浮振幅基线（世界单位）+ 负载增量系数：cpu 0%→2%、100%→6% */
 const RUN_HOVER_BASE = 0.012;
@@ -1088,9 +1131,55 @@ export default function PodInstancedMesh() {
       tempObject.updateMatrix();
       mesh.setMatrixAt(i, tempObject.matrix);
 
-      /* ---- 7. 颜色平滑渐变（instanceColor 缓冲即当前值持久态） ---- */
+      /* ---- 7. 颜色平滑渐变 + 近大远小光泽对比 + 故障呼吸频闪 ---- */
       mesh.getColorAt(i, tempColor);
       tempColor.lerp(tempTargetColor, colorAlpha);
+
+      /*
+       * ---- 7a. 相机距离光泽对比（近景更锐利、远景更柔和）----
+       *
+       * 【为何用本帧刚算出的 posX/posY/posZ 而非实例矩阵反解】
+       * 这三个变量就是本帧最终的世界位置，直接拿来算距离比
+       * 从矩阵 decompose 更省（矩阵反解要 3 次乘加 + 开方）。
+       *
+       * 【零分配】纯标量算术，不构造 Vector3。
+       */
+      const camPos = state.camera.position;
+      const pdx = camPos.x - posX;
+      const pdy = camPos.y - posY;
+      const pdz = camPos.z - posZ;
+      const instanceDist = Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
+      const distanceGain = Math.min(
+        POD_DEPTH_MAX,
+        Math.max(POD_DEPTH_MIN, POD_DEPTH_BASE - (instanceDist - POD_DEPTH_PIVOT) * POD_DEPTH_SLOPE),
+      );
+
+      /*
+       * 【为何用 multiplyScalar 而非 lerp 到白色】
+       * 直接乘到颜色向量上是**等比提亮**：保留色相，只改明度。
+       * 若 lerp 到白色，近景刀片会褪色成灰白，失去翡翠/青的语义色。
+       * 等比提亮后，近景刀片仍是翡翠绿，只是更亮更锐利。
+       */
+      tempColor.multiplyScalar(distanceGain);
+
+      /*
+       * ---- 7b. 故障态呼吸频闪 ----
+       *
+       * 【为何只对故障态施加】正常运行态已由负载呼吸（悬浮抬升）表达活力，
+       * 再叠一层亮度频闪会让整个机柜"一直在抖"，反而干扰阅读。
+       * 只有故障态需要"持续报警"的视觉压力。
+       *
+       * 【相位错开】用 i * 0.7 让 24 个刀片不同步呼吸——
+       * 若全部同相，整排刀片会像一根灯管一样整齐闪烁，那是装饰灯不是故障。
+       */
+      const isFaulty =
+        pod.status === 'CrashLoopBackOff' || pod.status === 'OOMKilled' || pod.status === 'Terminating';
+      if (isFaulty) {
+        const breathPhase = t * FAULT_BREATH_RATE + i * 0.7;
+        const faultBreath = FAULT_BREATH_MIN + FAULT_BREATH_GAIN * (0.5 + 0.5 * Math.sin(breathPhase));
+        tempColor.multiplyScalar(faultBreath);
+      }
+
       mesh.setColorAt(i, tempColor);
     }
 

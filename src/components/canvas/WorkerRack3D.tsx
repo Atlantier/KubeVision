@@ -100,6 +100,54 @@ const CRITICAL_PULSE_MAX = 1.0;
 const GUIDE_BASE_OPACITY = 0.95;
 
 /* ========================================================================== */
+/* 相机距离景深衰减（Camera-Distance Aerial Perspective）                         */
+/* ========================================================================== */
+
+/**
+ * 景深衰减的基准距离与斜率。
+ *
+ * 【公式】depthFactor = clamp(1.22 − (camDist − 12)·0.032, 0.62, 1.18)
+ *
+ * 逐项含义：
+ * · 1.22 是 camDist = 12 时的基准值（略高于 1，近景可以"过亮"一点点，
+ *   因为近处机架的锐度与高光对比应当最强）；
+ * · 0.032 / 单位 是衰减斜率 —— 每远离 10 单位，亮度降 32%；
+ * · camDist = 12 是"理想近景距离"，此时 factor = 1.22。
+ *
+ * 【关键实测校准】三座机架半径 9.5，相机默认 (7.8, 14, 22)：
+ * · 近端 worker-alpha 到相机约 20 单位 → factor ≈ 1.22 − 8×0.032 = 0.964
+ * · 中端约 24 单位                  → factor ≈ 1.22 − 12×0.032 = 0.836
+ * · 远端 worker-gamma 约 28 单位    → factor ≈ 1.22 − 16×0.032 = 0.708
+ * 三层 0.964 / 0.836 / 0.708 形成 1 : 0.87 : 0.73 的清晰梯度，
+ * 配合雾效叠加后纵深立刻拉开。
+ *
+ * 【下界 0.62 的意义】防止极远景（如用户拉远到 40+ 单位）时机架完全黑掉。
+ * 0.62 仍能辨认轮廓与状态色，只是"退到背景里"。
+ *
+ * 【上界 1.18 的意义】双击聚焦拉近时 factor 会超过 1.22 的基准——
+ * 但钳制在 1.18 防止贴脸时过曝。聚焦到 12 单位以内即恢复满锐度高亮。
+ */
+const DEPTH_BASE = 1.22;
+const DEPTH_PIVOT_DISTANCE = 12;
+const DEPTH_SLOPE = 0.032;
+const DEPTH_MIN = 0.62;
+const DEPTH_MAX = 1.18;
+
+/**
+ * 景深对暗棱线与光带的差异化影响系数。
+ *
+ * 【为何不完全同倍率缩放】远景机架如果连导光柱也一起变暗，
+ * 会失去"状态遥测仍可读"的功能性——用户拉远仍需一眼看出
+ * 哪台机架在告警（琥珀）、哪台正常（翠绿）。
+ *
+ * 因此：
+ * · 结构件（棱线、AO、铆钉）按完整 depthFactor 衰减 → 远景自然退场；
+ * · 状态发光件（导光柱、腔体光、灯眉）只按 55% 的衰减幅度缩放
+ *   → 远景变暗但仍保留足够亮度传达状态色。
+ */
+const DEPTH_EMISSIVE_DAMPING = 0.55;
+
+/* ========================================================================== */
 /* 装甲线框（Edges）描边参数                                                     */
 /* ========================================================================== */
 
@@ -1051,6 +1099,28 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
 
   /** 装甲棱线（drei Edges，官方 EdgesRef 类型）ref：useFrame 驱动选中态呼吸描边 */
   const armorEdgesRef = useRef<EdgesRef | null>(null);
+
+  /* ---- 景深衰减：需要被统一调节亮度的发光件 ref ---- */
+
+  /**
+   * 底座光圈 / 底部承载板的发光材质。
+   *
+   * 【为何单独收集】底座的亮度是"机架整体存在感"的锚点：
+   * 远景机架若底座仍全亮，会与近景机架争夺注意力，纵深被打平。
+   * 把它的亮度纳入 depthFactor 缩放后，远端机架的"地基"自然沉入雾中。
+   */
+  const plinthGlowRef = useRef<THREE.MeshBasicMaterial>(null);
+
+  /**
+   * 四层灯眉材质的集合（8 条：4 层 × 前后双面）。
+   *
+   * 【为何用数组】灯眉是按 TIER_DIVIDER_YS 映射生成的，无法用单个 ref。
+   * 在 useFrame 里遍历这个数组统一缩放 opacity 即可——
+   * 数组长度固定为 8，遍历开销可忽略且零分配。
+   */
+  const tierBandMatsRef = useRef<Array<THREE.MeshBasicMaterial | null>>([]);
+  tierBandMatsRef.current.length = TIER_DIVIDER_YS.length * 2;
+
   /** 最新 node 快照引用：useFrame 读取，避免把 node 塞进渲染循环依赖 */
   const nodeRef = useRef<WorkerRack3DProps['node']>(node);
 
@@ -1312,6 +1382,42 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   useFrame((state, delta): void => {
     const current = nodeRef.current;
 
+    /*
+     * ==================================================================
+     * 相机距离景深衰减（本轮新增 · Camera-Distance Aerial Perspective）
+     *
+     * 【核心数学】depthFactor = clamp(1.22 − (camDist − 12)·0.032, 0.62, 1.18)
+     *
+     * camDist 是**机架中心到相机**的直线距离。rackTransform.position 已是
+     * 世界坐标（机架直接挂在场景根 group 下，无中间父级缩放），
+     * 因此无需 getWorldPosition（那会触发矩阵更新，是 useFrame 里的浪费）。
+     *
+     * 【为何用机架中心而非逐个构件】景深是"整机远近"的宏观表现，
+     * 同一座机架内部所有构件到相机距离差不到 3 单位，逐构件计算既不必要
+     * 也会让机架内部出现亮度断层（近侧亮、远侧暗），破坏硬件整体感。
+     *
+     * 【零分配】全部为标量算术，不 new 任何 Vector3 —— 距离公式直接展开。
+     * ==================================================================
+     */
+    const rackX = rackTransform.position[0];
+    const rackY = rackTransform.position[1];
+    const rackZ = rackTransform.position[2];
+    const camPos = state.camera.position;
+    const dx = camPos.x - rackX;
+    const dy = camPos.y - rackY;
+    const dz = camPos.z - rackZ;
+    const camDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const depthFactor = Math.min(
+      DEPTH_MAX,
+      Math.max(DEPTH_MIN, DEPTH_BASE - (camDist - DEPTH_PIVOT_DISTANCE) * DEPTH_SLOPE),
+    );
+
+    /**
+     * 状态发光件的景深亮度（衰减幅度只需结构件的 55%）。
+     * 远景机架仍要能读出状态色（琥珀告警 / 翠绿正常），否则遥测不可用。
+     */
+    const emissiveDepth = 1 - (1 - depthFactor) * DEPTH_EMISSIVE_DAMPING;
+
     let target: THREE.Color;
     if (isSelected) {
       target = COLOR_SELECTED;
@@ -1330,12 +1436,18 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
     const alpha = 1 - Math.exp(-COLOR_LERP_RATE * Math.min(delta, MAX_FRAME_DELTA));
 
     // 分区态告警呼吸脉冲；其余状态恒定透明度
-    const opacity =
+    const baseOpacity =
       current.status === 'NetworkPartition' && !isSelected
         ? CRITICAL_PULSE_MIN +
           (CRITICAL_PULSE_MAX - CRITICAL_PULSE_MIN) *
             (0.5 + 0.5 * Math.sin(state.clock.getElapsedTime() * CRITICAL_PULSE_RATE))
         : GUIDE_BASE_OPACITY;
+
+    /*
+     * 导光柱是状态发光件：按 emissiveDepth 缩放（衰减幅度仅为结构件的 55%）。
+     * 远景时它变暗但不会消失 —— 用户拉远仍能一眼分辨哪台机架在告警。
+     */
+    const opacity = baseOpacity * emissiveDepth;
 
     if (leftGuideMat.current !== null) {
       leftGuideMat.current.color.lerp(target, alpha);
@@ -1354,9 +1466,33 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       backGuideMatRight.current.color.lerp(target, alpha);
       backGuideMatRight.current.opacity = opacity;
     }
-    /* 腔体点光：与导光柱同 target 同 alpha，色温永不脱节 */
+    /* 腔体点光：与导光柱同 target 同 alpha，色温永不脱节。
+       强度也按 emissiveDepth 缩放 —— 远景机架的腔内不应再"照亮"周围地面。 */
     if (cavityLightRef.current !== null) {
       cavityLightRef.current.color.lerp(target, alpha);
+      cavityLightRef.current.intensity = CAVITY_LIGHT_INTENSITY * emissiveDepth;
+    }
+
+    /*
+     * ---- 四层灯眉（8 条）随距离衰减 ----
+     *
+     * 灯眉是机架正面最显眼的分层标识。远景若不衰减，8 条亮线会与
+     * 近景机架的灯眉在同一亮度水平上竞争，纵深立刻被拉平。
+     * 这里用同一个 emissiveDepth 统一缩放，保持 8 条同步。
+     */
+    const tierBands = tierBandMatsRef.current;
+    const baseTierOpacity = emphasized ? 0.95 : 0.62;
+    const scaledTierOpacity = baseTierOpacity * emissiveDepth;
+    for (let i = 0; i < tierBands.length; i += 1) {
+      const bandMat = tierBands[i];
+      if (bandMat !== null && bandMat !== undefined) {
+        bandMat.opacity = scaledTierOpacity;
+      }
+    }
+
+    /* ---- 底座光圈随距离衰减（结构件全幅度）---- */
+    if (plinthGlowRef.current !== null) {
+      plinthGlowRef.current.opacity = (isSelected ? 0.9 : 0.45) * depthFactor;
     }
 
     /*
@@ -1734,6 +1870,9 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           <mesh position={[0, tierY, RACK_BODY_SIZE[2] / 2 - 0.05]} raycast={noRaycast}>
             <boxGeometry args={[RACK_BODY_SIZE[0] - 0.42, 0.016, 0.016]} />
             <meshBasicMaterial
+              ref={(mat): void => {
+                tierBandMatsRef.current[index * 2] = mat;
+              }}
               color={statusColor}
               toneMapped={false}
               transparent
@@ -1744,6 +1883,9 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           <mesh position={[0, tierY, -(RACK_BODY_SIZE[2] / 2 - 0.05)]} raycast={noRaycast}>
             <boxGeometry args={[RACK_BODY_SIZE[0] - 0.42, 0.016, 0.016]} />
             <meshBasicMaterial
+              ref={(mat): void => {
+                tierBandMatsRef.current[index * 2 + 1] = mat;
+              }}
               color={statusColor}
               toneMapped={false}
               transparent
@@ -2115,6 +2257,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noRaycast}>
           <ringGeometry args={[1.9, 2.15, 48]} />
           <meshBasicMaterial
+            ref={plinthGlowRef}
             color="#22d3ee"
             toneMapped={false}
             transparent

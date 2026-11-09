@@ -111,6 +111,182 @@ const PEDESTAL_DISK_OPACITIES: readonly number[] = [0.52, 0.68, 0.42];
 
 /** 第四层：前方两侧导流短轨 */
 const GUIDE_RAIL_WIDTH = 0.06;
+
+/* ========================================================================== */
+/* 加密罗盘微刻度与双层量子点阵（Compass Micro-Ticks & Quantum Lattice）          */
+/* ========================================================================== */
+
+/**
+ * 罗盘微刻度的数量与几何。
+ *
+ * 【为何要加密到 128 枚】原有 64 枚刻度是"每 5.6° 一格"，
+ * 在默认机位下每个刻度约 9 像素宽，读起来像"稀疏的虚线"。
+ * 加密到 128 枚（每 2.8° 一格）后，环带变成一条**连续细密的刻度带**——
+ * 这正是精密罗盘与科幻全息沙盘的区别：刻度越密，"精密感"越强。
+ *
+ * 【为何用实例化】128 段若逐个 mesh，在反射地面会被二次渲染成 256 次
+ * draw call。实例化后仅 1 次。
+ */
+const COMPASS_TICK_COUNT = 128;
+const COMPASS_TICK_INNER = RACK_RADIUS - 0.62;
+const COMPASS_TICK_OUTER = RACK_RADIUS - 0.52;
+
+/**
+ * 双层错位量子点阵的半径、数量与尺寸。
+ *
+ * 【为何"双层错位"】单层点阵无论多密，都是一圈规则排列的圆点，
+ * 眼睛立刻识别出"周期性图案"。两层**半径不同、相位错开半格**后，
+ * 相邻点的间距不再恒定，产生类似莫尔条纹的微扰——
+ * 视觉上就成了"随机分布的量子泡沫"而非"刻好的点阵"。
+ *
+ * 数量取 96 与 120（互质程度较高），使两层的最小公倍数很大，
+ * 叠加后的图案周期极长，看不出重复。
+ */
+const QUANTUM_LAYER_A_COUNT = 96;
+const QUANTUM_LAYER_A_RADIUS = RACK_RADIUS - 1.42;
+const QUANTUM_LAYER_B_COUNT = 120;
+const QUANTUM_LAYER_B_RADIUS = RACK_RADIUS - 1.68;
+
+/** 单个量子点的边长（正方形薄片，比圆更省三角面且远景无差别） */
+const QUANTUM_DOT_SIZE = 0.052;
+
+/**
+ * 量子点阵的浮动参数。
+ *
+ * 【为何要浮动】静止的点阵是"贴纸"；只有轻微上下浮动 + 明暗呼吸，
+ * 才像悬浮在地面上的量子泡沫。浮动幅度 0.012 极小（约点尺寸的 1/4），
+ * 不会破坏"贴地"的空间定位，但足以在近景看出层次。
+ */
+const QUANTUM_FLOAT_AMPLITUDE = 0.012;
+const QUANTUM_FLOAT_RATE = 0.9;
+const QUANTUM_PULSE_RATE = 1.4;
+
+/* ========================================================================== */
+/* 60° 全息数字雷达扫描扇区（Digital Radar Sweep Sector）                        */
+/* ========================================================================== */
+
+/**
+ * 雷达扫描扇区的角速度（rad/s）。
+ *
+ * 【为何是 0.38】一圈约 16.5 秒。真实军用雷达通常是 2~6 秒/圈，
+ * 但那种速度在视觉上会变成"闪烁"而非"扫描"——人眼来不及跟踪前沿
+ * 扫过地面网格的过程。0.38 让扫描线以肉眼可跟随的速度匀速推移，
+ * 既保留"雷达感"，又能看清扫过之处激发的回波。
+ */
+const RADAR_SWEEP_SPEED = 0.38;
+
+/**
+ * 扫描扇区的总张角（弧度）。
+ *
+ * 60° = π/3。这是军用雷达 PPI 显示器的经典扇形张角：
+ * 足够宽以形成"扇面"的体积感，又足够窄以保持"指向性"——
+ * 张角超过 120° 就退化成一圈旋转的发光环，失去扫描的方向语义。
+ */
+const RADAR_SECTOR_ANGLE = Math.PI / 3;
+
+/** 扇区内半径与外半径（覆盖主能量环内部，不越出机架轨道） */
+const RADAR_SECTOR_INNER = 0.55;
+const RADAR_SECTOR_OUTER = RACK_RADIUS - 0.55;
+
+/**
+ * 扫描扇区的顶点着色器。
+ *
+ * 【只传 uv】扇形的全部视觉逻辑都在片元里（角向梯度 + 径向衰减），
+ * 顶点阶段只需要把平面 uv 透传下去，任何多余计算都是浪费。
+ */
+const RADAR_SECTOR_VERTEX_SHADER = `
+  varying vec2 vUv;
+
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+/**
+ * 扫描扇区的片元着色器 —— 前沿锐利激光线 + 指数衰减尾迹。
+ *
+ * 【极坐标重建】扇区是一个 PlaneGeometry，在片元里用 uv 反推极坐标：
+ *   · 直角坐标 p = (uv − 0.5)·2     → 归一化到 [−1,1]
+ *   · 极角 θ = atan(p.y, p.x)       → 扇形的角向位置
+ *   · 极径 r = length(p)            → 距圆心的远近
+ *
+ * 【角向梯度（核心）】扇区的总张角是 60°，其中：
+ *   · 前沿（θ 最接近 0 处）= 一根锐利的青色激光扫描线
+ *   · 后沿（θ 向 60° 展开）= 亮度按 e^(−k·θ) 指数衰减的半透明尾迹
+ * 这个"前亮后暗"的非对称是雷达扫描最本质的特征——
+ * 若做成对称渐变，看起来就只是一块旋转的扇形光斑，不是扫描。
+ *
+ * 【径向边缘软化】扇形的内外半径处必须 smoothstep 归零，
+ * 否则会看到两个硬圆形边界。
+ */
+const RADAR_SECTOR_FRAGMENT_SHADER = `
+  uniform vec3 uColor;
+  uniform vec3 uEdgeColor;
+  uniform float uSweepAngle;
+  uniform float uSectorAngle;
+  uniform float uInner;
+  uniform float uOuter;
+  uniform float uIntensity;
+
+  varying vec2 vUv;
+
+  void main() {
+    /* 极坐标重建 */
+    vec2 p = (vUv - 0.5) * 2.0;
+    float radius = length(p);
+    float theta = atan(p.y, p.x);
+
+    /*
+     * 把片元角度换算成"相对扫描前沿的角向偏移"。
+     * uSweepAngle 是当前扫描前沿的角度，用 fract 保证跨 ±π 回绕正确。
+     */
+    float rel = theta - uSweepAngle;
+    /* 归一到 [−π, π)：这是环形角差的标准写法 */
+    rel = mod(rel + 3.14159265, 6.28318531) - 3.14159265;
+
+    /*
+     * 【方位掩码】只有落在 [0, uSectorAngle] 区间内的片元才属于扇区。
+     * rel = 0 是前沿（最亮），rel 增大则向后沿展开。
+     * 用负值区（rel < 0）完全剔除——雷达扫描只朝一个方向拖尾。
+     */
+    float inSector = step(0.0, rel) * step(rel, uSectorAngle);
+
+    /*
+     * 【角向衰减】
+     * · 前沿：exp(−rel·14) 形成极窄的高亮线（rel=0 处为 1，rel=0.05 处降到 0.5）
+     * · 后沿：整体按 exp(−rel·2.2) 缓慢衰减，形成可见的扇形尾迹
+     * 两者相乘 → 前沿锐利、尾部渐隐，正是雷达 PPI 的经典形态。
+     */
+    float frontLine = exp(-rel * 14.0);
+    float trailFade = exp(-rel * 2.2);
+    float angular = (frontLine * 1.0 + trailFade * 0.32) * inSector;
+
+    /*
+     * 【径向衰减】距圆心越远越淡（能量从中心向外扩散）
+     * 同时内外边界各留 12% 软化带，避免硬圆边。
+     */
+    float radialNorm = (radius - uInner) / (uOuter - uInner);
+    float radialMask = smoothstep(0.0, 0.12, radialNorm) * smoothstep(1.0, 0.88, radialNorm);
+    /* 沿半径方向再叠一层由内向外递减的强度 */
+    float radialFade = 1.0 - 0.45 * clamp(radialNorm, 0.0, 1.0);
+
+    /*
+     * 【网格回波】在扫描面上叠一层细密同心环，模拟"扫过地面网格时
+     * 激发出的回波纹路"。用 r 的高频正弦，密度随半径略变。
+     */
+    float echoRings = 0.55 + 0.45 * sin(radius * 46.0);
+    float echoGain = 0.75 + 0.25 * echoRings;
+
+    /*
+     * 【颜色】前沿偏白青（激光），尾迹偏深青蓝（扩散的光）
+     */
+    vec3 color = mix(uColor, uEdgeColor, clamp(frontLine, 0.0, 1.0));
+
+    float alpha = angular * radialMask * radialFade * echoGain * uIntensity;
+    gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
+  }
+`;
 const GUIDE_RAIL_LENGTH = 0.62;
 const GUIDE_RAIL_OFFSET_X = 0.92;
 const GUIDE_RAIL_OFFSET_Z = 2.05;
@@ -862,6 +1038,13 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
   /** 主轨道 64 段虚线刻度的单实例网格（1 次 Draw Call） */
   const orbitTicksRef = useRef<THREE.InstancedMesh>(null);
 
+  /** 加密罗盘微刻度（128 枚，1 次 Draw Call） */
+  const compassTicksRef = useRef<THREE.InstancedMesh>(null);
+  /** 双层错位量子点阵 A（96 枚） */
+  const quantumLayerARef = useRef<THREE.InstancedMesh>(null);
+  /** 双层错位量子点阵 B（120 枚） */
+  const quantumLayerBRef = useRef<THREE.InstancedMesh>(null);
+
   /**
    * 中央雷达「旋转批次」(12 段装甲弧 × 2 道 + 72 道刻度)ref。
    *
@@ -888,6 +1071,36 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
     }),
     [],
   );
+
+  /**
+   * 60° 雷达扫描扇区的 uniforms（useMemo 预分配，useFrame 内只写 .value）。
+   *
+   * 【为何 uSweepAngle 用标量而非时间】着色器里若用 `uTime * speed` 算角度，
+   * 长时间运行后浮点精度会下降（t 到几千秒时角度精度不足，前沿会抖动）。
+   * 由 CPU 侧维护 angle 并做 mod 2π 归约，传给着色器的永远是 [0, 2π) 的小数，
+   * 精度恒定。
+   */
+  const radarSweepUniforms = useMemo(
+    (): Record<string, THREE.IUniform> => ({
+      uColor: { value: new THREE.Color('#0e7490') },
+      uEdgeColor: { value: new THREE.Color('#a5f3fc') },
+      uSweepAngle: { value: 0 },
+      uSectorAngle: { value: RADAR_SECTOR_ANGLE },
+      uInner: { value: RADAR_SECTOR_INNER / RADAR_SECTOR_OUTER },
+      uOuter: { value: 1 },
+      uIntensity: { value: 1 },
+    }),
+    [],
+  );
+
+  /**
+   * 雷达扫描当前角度（跨帧累积的持久态）。
+   *
+   * 【为何用 ref 而非在 uniforms 里累加】uniform 的 .value 是渲染侧读的，
+   * 在里面做 mod 会引入浮点累积误差且语义混乱。用独立的 ref 承载
+   * "纯角度"，每帧归约后再写入 uniform，职责清晰。
+   */
+  const radarSweepAngleRef = useRef<number>(0);
 
   /**
    * 故障扇区目标电平（由 racks 派生，低频）。
@@ -971,6 +1184,97 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
     mesh.instanceMatrix.needsUpdate = true;
   }, [orbitTickMatrices]);
 
+  /**
+   * 加密罗盘微刻度的实例矩阵（挂载一次）。
+   *
+   * 【矩阵构造】与轨道刻度同一套手法：mesh 整体绕 X 转 −90° 平铺到地面，
+   * 因此实例只需在**本地 Z 轴**上旋转即可摆到各自角度。
+   * 几何是一段 arc（thetaStart=0），旋转 θ 后即落在 θ 位置。
+   *
+   * 【为何预计算而非每帧算】刻度是完全静态的装饰，
+   * 每帧重算 128 次矩阵是纯浪费。挂载时写一次，之后只读。
+   */
+  const compassTickMatrices = useMemo((): THREE.Matrix4[] => {
+    const list: THREE.Matrix4[] = [];
+    /* 临时 Object3D 仅在 useMemo 内使用，不进入渲染循环 */
+    const object = new THREE.Object3D();
+    for (let i = 0; i < COMPASS_TICK_COUNT; i += 1) {
+      const theta = (i / COMPASS_TICK_COUNT) * Math.PI * 2;
+      object.position.set(0, 0, 0);
+      object.rotation.set(0, 0, theta);
+      object.scale.set(1, 1, 1);
+      object.updateMatrix();
+      list.push(object.matrix.clone());
+    }
+    return list;
+  }, []);
+
+  useEffect((): void => {
+    const mesh = compassTicksRef.current;
+    if (mesh === null) return;
+    for (let i = 0; i < compassTickMatrices.length; i++) {
+      mesh.setMatrixAt(i, compassTickMatrices[i]);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [compassTickMatrices]);
+
+  /**
+   * 双层量子点阵的实例矩阵（挂载一次）。
+   *
+   * 【核心数学：两层错位】A 层 96 枚沿半径 rA 均匀分布；
+   * B 层 120 枚沿半径 rB 分布，且初始角**额外偏移半格**
+   * （π / QUANTUM_LAYER_B_COUNT）。因为两层格距不同，
+   * 半格偏移使相邻点的实际间距不再是常数，
+   * 叠加后形成接近随机的分布——这是打破"规则点阵感"的关键。
+   *
+   * 【位置在本地 XY 平面】mesh 绕 X 转 −90° 后本地 XY 即世界 XZ 地面，
+   * 因此这里直接用 (cos·r, sin·r, 0) 构造即可，无需再做坐标变换。
+   */
+  const quantumMatrices = useMemo(
+    (): { readonly layerA: THREE.Matrix4[]; readonly layerB: THREE.Matrix4[] } => {
+      const object = new THREE.Object3D();
+      const build = (count: number, radius: number, phaseOffset: number): THREE.Matrix4[] => {
+        const list: THREE.Matrix4[] = [];
+        for (let i = 0; i < count; i += 1) {
+          const theta = (i / count) * Math.PI * 2 + phaseOffset;
+          object.position.set(Math.cos(theta) * radius, Math.sin(theta) * radius, 0);
+          /*
+           * 每个点轻微自转一个小角度：正方形薄片若全部同向，
+           * 远看会形成一致的方向纹理；随机微旋后更像悬浮的碎晶。
+           * 角度用 i 的确定性函数（不用 Math.random），保证可复现。
+           */
+          object.rotation.set(0, 0, (i * 0.618) % (Math.PI / 2));
+          object.scale.set(1, 1, 1);
+          object.updateMatrix();
+          list.push(object.matrix.clone());
+        }
+        return list;
+      };
+      return {
+        layerA: build(QUANTUM_LAYER_A_COUNT, QUANTUM_LAYER_A_RADIUS, 0),
+        layerB: build(QUANTUM_LAYER_B_COUNT, QUANTUM_LAYER_B_RADIUS, Math.PI / QUANTUM_LAYER_B_COUNT),
+      };
+    },
+    [],
+  );
+
+  useEffect((): void => {
+    const a = quantumLayerARef.current;
+    if (a !== null) {
+      for (let i = 0; i < quantumMatrices.layerA.length; i += 1) {
+        a.setMatrixAt(i, quantumMatrices.layerA[i]);
+      }
+      a.instanceMatrix.needsUpdate = true;
+    }
+    const b = quantumLayerBRef.current;
+    if (b !== null) {
+      for (let i = 0; i < quantumMatrices.layerB.length; i += 1) {
+        b.setMatrixAt(i, quantumMatrices.layerB[i]);
+      }
+      b.instanceMatrix.needsUpdate = true;
+    }
+  }, [quantumMatrices]);
+
   /** 写入各机架刻度齿实例矩阵（挂载一次；随机架数组长度变化重建） */
   useEffect((): void => {
     for (let i = 0; i < teethRefs.current.length; i++) {
@@ -1017,6 +1321,54 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
     (dataCityUniforms.uFaultLevels.value as THREE.Vector3).copy(faultLevelsCurrent);
     (dataCityUniforms.uFaultAngles.value as THREE.Vector3).copy(faultAngles);
 
+    /*
+     * 0c) 60° 雷达扫描扇区推进（放在 clampedDelta 之后，依赖它）。
+     *
+     * 【为何用增量累积而非 t·ω】与装甲弧的 `t * RATE` 不同，这里用
+     * angle += ω·Δt 再 mod 2π：
+     * · 增量累积天然支持"暂停后继续"——若用绝对时间，页签切回时
+     *   角度会一次性跳变到新位置，扫描看起来像瞬移；
+     * · mod 2π 保证角度始终落在 [0, 6.28)，着色器收到的始终是小数，
+     *   长时间运行不丢精度。
+     *
+     * 【零分配】纯标量算术，仅写 uniform 的 .value。
+     */
+    let sweep = radarSweepAngleRef.current + RADAR_SWEEP_SPEED * clampedDelta;
+    /* 手动 mod 2π（比 % 更快且对负数安全，虽然此处的值恒为正） */
+    if (sweep >= Math.PI * 2) sweep -= Math.PI * 2;
+    radarSweepAngleRef.current = sweep;
+    radarSweepUniforms.uSweepAngle.value = sweep;
+
+    /*
+     * 0d) 双层量子点阵：整体浮动 + 呼吸明暗。
+     *
+     * 【为何整组统一浮动而非逐点】逐点浮动需要每帧重写 216 个实例矩阵，
+     * 是这一层唯一的性能敏感点。改为**整体 Y 偏移 + 透明度呼吸**后，
+     * 每帧只写 2 个 position.y 与 2 个 material.opacity，
+     * 视觉上仍是"整片点阵在起伏呼吸"，成本却降了两个数量级。
+     *
+     * 【两层相位错开 π/3】若同相浮动，两层会像一块板一起上下；
+     * 错相后两层交替起伏，产生"量子泡沫翻涌"的层次感。
+     */
+    const quantumFloatA = Math.sin(t * QUANTUM_FLOAT_RATE) * QUANTUM_FLOAT_AMPLITUDE;
+    const quantumFloatB = Math.sin(t * QUANTUM_FLOAT_RATE + Math.PI / 3) * QUANTUM_FLOAT_AMPLITUDE;
+    const layerA = quantumLayerARef.current;
+    if (layerA !== null) {
+      layerA.position.y = 0.009 + quantumFloatA;
+      const matA = layerA.material;
+      if (matA instanceof THREE.MeshBasicMaterial) {
+        matA.opacity = 0.38 + 0.2 * (0.5 + 0.5 * Math.sin(t * QUANTUM_PULSE_RATE));
+      }
+    }
+    const layerB = quantumLayerBRef.current;
+    if (layerB !== null) {
+      layerB.position.y = 0.011 + quantumFloatB;
+      const matB = layerB.material;
+      if (matB instanceof THREE.MeshBasicMaterial) {
+        matB.opacity = 0.26 + 0.16 * (0.5 + 0.5 * Math.sin(t * QUANTUM_PULSE_RATE + Math.PI / 2));
+      }
+    }
+
     /* 1) 主轨道脉冲流光弧：缓慢绕环扫过 */
     if (orbitPulseRef.current !== null) {
       orbitPulseRef.current.rotation.z = t * ORBIT_PULSE_SPIN_RATE;
@@ -1052,7 +1404,121 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
   return (
     <group position={[0, FLOOR_Y, 0]}>
       {/*
-       * ═══ 第 0 重：地面数据星城（1,400 颗微节点，单 Draw Call）═══
+       * ═══ 第 R 重：60° 全息数字雷达扫描扇区（Digital Radar Sweep）═══
+       *
+       * 【为何放在最底层（先渲染）】雷达扫描是"地面上的光"，
+       * 它应当**叠加在网格与圆环之下**，而不是盖住它们。
+       * 用加色混合 + depthWrite:false 后，扫描扇区会像一层
+       * 贴地的光幕，透过它仍能看见地面刻度与总线——
+       * 这正是真实雷达 PPI 屏上"扫描线扫过网格"的叠层关系。
+       *
+       * 【为何用 plane 而非环形几何】扇形的角向梯度（前亮后暗）
+       * 必须在片元里用极坐标算，环形几何没有连续的角向 uv。
+       * 用一个覆盖整个扫描区域的方平面 + 片元内极坐标掩码，
+       * 几何成本最低（2 个三角形），且角向渐变完全连续无接缝。
+       *
+       * 【尺寸】直径 = 2 × RADAR_SECTOR_OUTER，恰好覆盖主能量环内部。
+       */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.006, 0]} raycast={(): void => undefined}>
+        <planeGeometry args={[RADAR_SECTOR_OUTER * 2, RADAR_SECTOR_OUTER * 2]} />
+        <shaderMaterial
+          uniforms={radarSweepUniforms}
+          vertexShader={RADAR_SECTOR_VERTEX_SHADER}
+          fragmentShader={RADAR_SECTOR_FRAGMENT_SHADER}
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+
+      {/*
+       * ═══ 第 C 重：加密罗盘微刻度（128 枚，单 Draw Call）═══
+       *
+       * 【为何叠在主轨道刻度之内】原有 64 枚刻度在 r = RACK_RADIUS + 0.30
+       * （机架圈外侧），本组在其内侧 r = RACK_RADIUS − 0.62 ~ −0.52，
+       * 形成"外粗内细"的双层刻度带——这正是真实罗盘/度盘的分层方式：
+       * 外圈主刻度标注整十度，内圈细刻度提供 1° 精度。
+       *
+       * 【几何】用一段极窄的 ringGeometry 弧段（thetaLength 只占整圈的
+       * 1/128 × 0.42），实例靠本地 Z 旋转摆到各角度位置。
+       * 这样 128 个刻度共用一份几何，仅 1 次 draw call。
+       */}
+      <instancedMesh
+        ref={compassTicksRef}
+        args={[undefined, undefined, COMPASS_TICK_COUNT]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.007, 0]}
+        frustumCulled={false}
+        raycast={(): void => undefined}
+      >
+        <ringGeometry
+          args={[
+            COMPASS_TICK_INNER,
+            COMPASS_TICK_OUTER,
+            RING_SEGMENTS,
+            1,
+            0,
+            ((Math.PI * 2) / COMPASS_TICK_COUNT) * 0.42,
+          ]}
+        />
+        <meshBasicMaterial
+          color={COLOR_INNER}
+          transparent
+          opacity={0.26}
+          side={THREE.DoubleSide}
+          toneMapped={false}
+          depthWrite={false}
+        />
+      </instancedMesh>
+
+      {/*
+       * ═══ 第 Q 重：双层错位量子点阵（96 + 120 枚，各 1 Draw Call）═══
+       *
+       * 两层半径不同、数量不同（因此相位自然错开），叠加后打破单层的
+       * 周期性，看起来像随机分布的量子泡沫。浮动与呼吸由 useFrame
+       * 写入 y 偏移与材质透明度，零逐点矩阵重写（整组统一动）。
+       */}
+      <instancedMesh
+        ref={quantumLayerARef}
+        args={[undefined, undefined, QUANTUM_LAYER_A_COUNT]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.009, 0]}
+        frustumCulled={false}
+        raycast={(): void => undefined}
+      >
+        <planeGeometry args={[QUANTUM_DOT_SIZE, QUANTUM_DOT_SIZE]} />
+        <meshBasicMaterial
+          color="#67e8f9"
+          transparent
+          opacity={0.5}
+          side={THREE.DoubleSide}
+          toneMapped={false}
+          depthWrite={false}
+        />
+      </instancedMesh>
+
+      <instancedMesh
+        ref={quantumLayerBRef}
+        args={[undefined, undefined, QUANTUM_LAYER_B_COUNT]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.011, 0]}
+        frustumCulled={false}
+        raycast={(): void => undefined}
+      >
+        <planeGeometry args={[QUANTUM_DOT_SIZE * 0.78, QUANTUM_DOT_SIZE * 0.78]} />
+        <meshBasicMaterial
+          color="#a5f3fc"
+          transparent
+          opacity={0.36}
+          side={THREE.DoubleSide}
+          toneMapped={false}
+          depthWrite={false}
+        />
+      </instancedMesh>
+
+      {/*
        *
        * 【解决什么】此前 r∈[3.1, 9.5] 之间是一大片空旷死黑：
        * 只有几道细环，中间什么都没有，地面读起来像"黑纸上的几个圈"。
