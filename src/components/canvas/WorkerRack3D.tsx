@@ -56,6 +56,7 @@ import { getBrushedMetalTextures } from '@/components/canvas/ProceduralPbrEnviro
 import { useOptionalGltfModel } from '@/hooks/useOptionalGltfModel';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
 import {
   POD_BOX_SIZE,
   RACK_BODY_CENTER_Y,
@@ -529,6 +530,17 @@ void main() {
 
   float alpha = (glow * 1.05 + ringA * 0.62 + ringB * 0.42) * uPulse;
   gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
 }
 `;
 
@@ -717,6 +729,17 @@ void main() {
   float alpha = mix(0.10, uOpacity, bone) * verticalFade;
 
   gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
 }
 `;
 
@@ -818,6 +841,17 @@ void main() {
   float alpha = (base + pulse * 0.95) * uIntensity;
 
   gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
 }
 `;
 
@@ -2084,6 +2118,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         >
           <planeGeometry args={[RACK_BODY_SIZE[2] * 0.9, RACK_BODY_SIZE[1] * 0.9]} />
           <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
             uniforms={meshPanelUniforms}
             vertexShader={MESH_PANEL_VERTEX_SHADER}
             fragmentShader={MESH_PANEL_FRAGMENT_SHADER}
@@ -2114,6 +2149,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           raycast={noRaycast}
         >
           <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
             uniforms={harnessUniforms}
             vertexShader={HARNESS_VERTEX_SHADER}
             fragmentShader={HARNESS_FRAGMENT_SHADER}
@@ -2186,6 +2222,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       <mesh position={[0, FIBER_RING_Y + 0.006, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noRaycast}>
         <planeGeometry args={[BEAM_BLOOM_SIZE, BEAM_BLOOM_SIZE]} />
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           uniforms={beamBloomUniforms}
           vertexShader={BEAM_BLOOM_VERTEX_SHADER}
           fragmentShader={BEAM_BLOOM_FRAGMENT_SHADER}

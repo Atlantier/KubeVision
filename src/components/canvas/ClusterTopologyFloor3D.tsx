@@ -39,6 +39,7 @@ import * as THREE from 'three';
 import { useClusterStore } from '@/store/useClusterStore';
 import { RACK_RADIUS, getRackTransform } from '@/utils/spatialLayout';
 import type { PodEntity, WorkerNodeEntity } from '@/types/cluster';
+import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
 
 /* ========================================================================== */
 /* 常量                                                                       */
@@ -305,6 +306,17 @@ const RADAR_SECTOR_FRAGMENT_SHADER = `
 
     float alpha = angular * radialMask * radialFade * echoGain * uIntensity;
     gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
   }
 `;
 const GUIDE_RAIL_LENGTH = 0.62;
@@ -981,6 +993,17 @@ void main() {
   float alpha = (core * 0.95 + halo * 0.35) * vGlow;
 
   gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
 }
 `;
 
@@ -1448,6 +1471,7 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.006, 0]} raycast={(): void => undefined}>
         <planeGeometry args={[RADAR_SECTOR_OUTER * 2, RADAR_SECTOR_OUTER * 2]} />
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           uniforms={radarSweepUniforms}
           vertexShader={RADAR_SECTOR_VERTEX_SHADER}
           fragmentShader={RADAR_SECTOR_FRAGMENT_SHADER}
@@ -1561,6 +1585,7 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
         raycast={(): void => undefined}
       >
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           uniforms={dataCityUniforms}
           vertexShader={DATA_CITY_VERTEX_SHADER}
           fragmentShader={DATA_CITY_FRAGMENT_SHADER}

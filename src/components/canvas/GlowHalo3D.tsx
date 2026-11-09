@@ -49,6 +49,7 @@ import { useMemo, useRef } from 'react';
 import { Billboard } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
 
 /* ========================================================================== */
 /* 类型契约                                                                    */
@@ -130,6 +131,17 @@ const FRAGMENT_SHADER = /* glsl */ `
 
     /* 预乘 alpha 输出（rgb 已乘 alpha），配合 premultipliedAlpha 标记 */
     gl_FragColor = vec4(clamp(finalColor * alpha, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
   }
 `;
 
@@ -194,6 +206,7 @@ export default function GlowHalo3D({
       <mesh raycast={noRaycast} scale={scale}>
         <planeGeometry args={[1, 1]} />
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           ref={materialRef}
           uniforms={uniforms}
           vertexShader={VERTEX_SHADER}

@@ -38,6 +38,7 @@ import * as THREE from 'three';
 import { useClusterStore } from '@/store/useClusterStore';
 import { getRackTransform } from '@/utils/spatialLayout';
 import type { RackErrorRingProps } from '@/types/canvas';
+import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
 
 /* ========================================================================== */
 /* 着色器源码（模块级常量：编译一次，多实例共享 program 缓存）                      */
@@ -136,6 +137,17 @@ const FRAGMENT_SHADER = /* glsl */ `
 
     // 5. 加色混合下 alpha 恒为 1.0，保证 rgb 线性叠加（详见上方第 5 点）
     gl_FragColor = vec4(clamp(rgb * uOpacity, 0.0, 8.0), 1.0);
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
   }
 `;
 
@@ -268,6 +280,7 @@ export function RackErrorRing({ rackIndex }: RackErrorRingProps) {
     <mesh position={[rackTransform.position[0], RING_Y, rackTransform.position[2]]} rotation={[-Math.PI / 2, 0, 0]}>
       <planeGeometry args={[RING_PLANE_SIZE, RING_PLANE_SIZE]} />
       <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
         ref={materialRef}
         vertexShader={VERTEX_SHADER}
         fragmentShader={FRAGMENT_SHADER}

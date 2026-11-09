@@ -27,6 +27,7 @@ import { useFrame } from '@react-three/fiber';
 import { useClusterStore } from '@/store/useClusterStore';
 import { useMemo } from 'react';
 import * as THREE from 'three';
+import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
 
 /* ========================================================================== */
 /* 常量                                                                       */
@@ -162,6 +163,17 @@ void main() {
   vec3 color = mix(tailColor, headColor, trail);
 
   gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
 }
 `;
 
@@ -219,6 +231,7 @@ export default function CyberMatrixRain3D(): React.ReactElement {
         args={[RAIN_RADIUS, RAIN_RADIUS, RAIN_HEIGHT, RAIN_RADIAL_SEGMENTS, 1, true]}
       />
       <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
         uniforms={uniforms}
         vertexShader={RAIN_VERTEX_SHADER}
         fragmentShader={RAIN_FRAGMENT_SHADER}

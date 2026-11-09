@@ -68,6 +68,7 @@ import { shallow } from 'zustand/shallow';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
 import {
   MASTER_POSITION,
   RACK_BODY_SIZE,
@@ -443,6 +444,17 @@ void main() {
 
   float alpha = edgeFade * wave * rim * uIntensity;
   gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
 }
 `;
 
@@ -591,6 +603,17 @@ void main() {
   float alpha = (core * 0.9 + halo * 0.32) * vTwinkle * (1.0 + vExcite * 0.8);
 
   gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
 }
 `;
 
@@ -1297,6 +1320,7 @@ export default function NetworkStream3D() {
       {ribbonSheath.map((layer, k): ReactNode => (
         <mesh key={`sheath-${k}`} geometry={layer.geometry} raycast={(): void => undefined}>
           <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
             uniforms={layer.uniforms}
             vertexShader={RIBBON_VERTEX_SHADER}
             fragmentShader={RIBBON_FRAGMENT_SHADER}
@@ -1311,6 +1335,7 @@ export default function NetworkStream3D() {
       {ribbonCore.map((layer, k): ReactNode => (
         <mesh key={`core-${k}`} geometry={layer.geometry} raycast={(): void => undefined}>
           <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
             uniforms={layer.uniforms}
             vertexShader={RIBBON_VERTEX_SHADER}
             fragmentShader={RIBBON_FRAGMENT_SHADER}
@@ -1357,6 +1382,7 @@ export default function NetworkStream3D() {
        */}
       <points geometry={SPARKLE_GEOMETRY} raycast={(): void => undefined}>
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           uniforms={sparkleUniforms}
           vertexShader={SPARKLE_VERTEX_SHADER}
           fragmentShader={SPARKLE_FRAGMENT_SHADER}

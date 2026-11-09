@@ -51,6 +51,7 @@ import { MASTER_POSITION } from '@/utils/spatialLayout';
 import GlowHalo3D from '@/components/canvas/GlowHalo3D';
 import { HoloCorners, HoloMicroRuler, HoloRefractionEdges, HoloSpecularSheen } from '@/components/canvas/HoloHud';
 import type { SelectedEntityType } from '@/types/store';
+import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
 
 /* ========================================================================== */
 /* 模型几何常量（模块级，集中定义防漂移）                                          */
@@ -208,6 +209,17 @@ void main() {
   alpha *= 1.0 - smoothstep(0.85, 1.0, d);
 
   gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
 }
 `;
 
@@ -316,6 +328,17 @@ void main() {
   float alpha = lateral * vertical * uPulse * 0.9;
   vec3 color = mix(uColor, vec3(1.0, 1.0, 1.0), lateral * 0.55);
   gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
 }
 `;
 
@@ -478,6 +501,17 @@ void main() {
   alpha *= smoothstep(0.0, 0.02, viewDot);
 
   gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
 }
 `;
 
@@ -693,6 +727,17 @@ const GODRAY_FRAGMENT_SHADER = `
     float intensity = angularEnvelope * fade * edgeFade * uPulse * 0.55;
 
     gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(intensity, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
   }
 `;
 
@@ -827,6 +872,17 @@ const FLARE_FRAGMENT_SHADER = `
     alpha *= vignette;
 
     gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
   }
 `;
 
@@ -1984,6 +2040,7 @@ export default function MasterNode3D() {
       <mesh raycast={(): void => undefined}>
         <sphereGeometry args={[NUCLEUS_RADIUS, 48, 48]} />
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           uniforms={plasmaUniforms}
           vertexShader={PLASMA_VERTEX_SHADER}
           fragmentShader={PLASMA_FRAGMENT_SHADER}
@@ -2072,6 +2129,7 @@ export default function MasterNode3D() {
         raycast={(): void => undefined}
       >
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           uniforms={constellationUniforms}
           vertexShader={CONSTELLATION_VERTEX_SHADER}
           fragmentShader={CONSTELLATION_FRAGMENT_SHADER}
@@ -2122,6 +2180,7 @@ export default function MasterNode3D() {
         raycast={(): void => undefined}
       >
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           uniforms={pillarUniforms}
           vertexShader={PILLAR_VERTEX_SHADER}
           fragmentShader={PILLAR_FRAGMENT_SHADER}
@@ -2285,6 +2344,7 @@ export default function MasterNode3D() {
           args={[GODRAY_TOP_RADIUS, 0.12, GODRAY_TOP_HEIGHT, 32, 1, true]}
         />
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           uniforms={godRayTopUniforms}
           vertexShader={GODRAY_VERTEX_SHADER}
           fragmentShader={GODRAY_FRAGMENT_SHADER}
@@ -2305,6 +2365,7 @@ export default function MasterNode3D() {
           args={[0.12, GODRAY_BOTTOM_RADIUS, GODRAY_BOTTOM_HEIGHT, 32, 1, true]}
         />
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           uniforms={godRayBottomUniforms}
           vertexShader={GODRAY_VERTEX_SHADER}
           fragmentShader={GODRAY_FRAGMENT_SHADER}
@@ -2364,6 +2425,7 @@ export default function MasterNode3D() {
       >
         <planeGeometry args={[FLARE_WIDTH, FLARE_HEIGHT]} />
         <shaderMaterial
+          defines={KV_DEBUG_NAN_DEFINES}
           uniforms={flareUniforms}
           vertexShader={FLARE_VERTEX_SHADER}
           fragmentShader={FLARE_FRAGMENT_SHADER}

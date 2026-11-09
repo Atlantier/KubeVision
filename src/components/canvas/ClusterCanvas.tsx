@@ -224,6 +224,21 @@ const GL_DEBUG_SAMPLE_MS = 500;
 /** 黑屏哨兵：连续多少次接近 0 才告警 */
 const GL_DEBUG_BLACK_LIMIT = 3;
 
+/**
+ * 兜底背景色（与 3D 场景 VOID_COLOR 同色系但略深）。
+ *
+ * 【为什么需要它】WebGL 上下文丢失后，canvas 的绘制缓冲变为空白。
+ * 若容器本身没有背景色，用户看到的是**页面底下的纯黑**——与"渲染卡死"
+ * 无法区分。垫一层同色 CSS 背景，至少让画面看起来仍是那个深空场景。
+ */
+const VOID_FALLBACK_COLOR = '#020611';
+
+/** 首帧静态快照的体积上限（字节）。超过则放弃缓存，避免占用内存 */
+const SNAPSHOT_MAX_BYTES = 200 * 1024;
+
+/** 抓取首帧快照前等待的帧数（等场景稳定，避免拍到相机飞行中） */
+const SNAPSHOT_SETTLE_FRAMES = 12;
+
 /** 黑屏哨兵亮度阈值（0~255） */
 const GL_DEBUG_LUMA_THRESHOLD = 2.0;
 
@@ -352,6 +367,21 @@ export default function ClusterCanvas() {
 
   /** glDebug 哨兵定时器 */
   const glDebugTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  /**
+   * 首帧静态快照（dataURL）。
+   *
+   * 【用途】上下文丢失时把这张图贴在 canvas 位置，让评委看到的是
+   * "冻结的最后一帧 + 提示条"，而不是一块空白。
+   *
+   * 【只存内存、不落盘】它是纯展示兜底：刷新页面即失效，也不该进
+   * localStorage —— 一张 200KB 的 base64 塞进持久化会撑爆配额，
+   * 且它没有跨会话价值。
+   */
+  const [snapshotDataUrl, setSnapshotDataUrl] = useState<string | null>(null);
+
+  /** 快照是否已尝试抓取（只抓一次，避免每次 onCreated 重复开销） */
+  const snapshotCapturedRef = useRef<boolean>(false);
 
 
   /**
@@ -532,7 +562,15 @@ export default function ClusterCanvas() {
   }, []);
 
   return (
-    <div className="absolute inset-0" ref={containerRef}>
+    /*
+     * 【兜底背景】容器自带一层与场景同色的 CSS 背景。
+     * canvas 透明/丢失/首帧未到时，用户看到的是深空色而不是纯黑。
+     */
+    <div
+      className="absolute inset-0"
+      ref={containerRef}
+      style={{ background: VOID_FALLBACK_COLOR }}
+    >
       <Canvas
         key={`canvas-${canvasRemountKey}`}
         /**
@@ -678,6 +716,42 @@ export default function ClusterCanvas() {
                 }
               }, GL_DEBUG_SAMPLE_MS);
             }
+          }
+
+          /*
+           * ---- 首帧静态快照（兜底展示）----
+           *
+           * 【为什么延迟 12 帧】onCreated 触发时场景刚装配完，相机可能还在
+           * 初始飞行动画里。此时 toDataURL 会拍到一张"斜的/空的"画面，
+           * 作为兜底反而更糟。等 12 帧后画面基本稳定。
+           *
+           * 【为什么能 toDataURL】Canvas 的 gl 配置里已有
+           * preserveDrawingBuffer: true（多模态快照的前提），因此任何时刻
+           * 都能读到绘制缓冲。
+           *
+           * 【体积闸门】超过 200KB 直接放弃：兜底图不值得为它冒内存风险。
+           */
+          if (!snapshotCapturedRef.current) {
+            snapshotCapturedRef.current = true;
+            let framesLeft = SNAPSHOT_SETTLE_FRAMES;
+            const captureOnFrame = (): void => {
+              framesLeft -= 1;
+              if (framesLeft > 0) {
+                requestAnimationFrame(captureOnFrame);
+                return;
+              }
+              try {
+                const dataUrl = state.gl.domElement.toDataURL('image/png');
+                /* base64 膨胀约 4/3，用长度反推原始字节数 */
+                const approxBytes = Math.floor((dataUrl.length * 3) / 4);
+                if (dataUrl.startsWith('data:image/png') && approxBytes <= SNAPSHOT_MAX_BYTES) {
+                  setSnapshotDataUrl(dataUrl);
+                }
+              } catch {
+                /* toDataURL 失败不影响渲染，只是没有兜底图 */
+              }
+            };
+            requestAnimationFrame(captureOnFrame);
           }
 
           handleCanvasCreated(state);
@@ -980,6 +1054,22 @@ export default function ClusterCanvas() {
        * 与光学暗角同层。pointer-events-none 保证不拦截任何交互——
        * 上下文丢了也要能继续操作 2D HUD 与右侧抽屉，这是演示兜底的前提。
        */}
+      {/*
+       * ---- 上下文丢失时的静态快照 ----
+       *
+       * z-[3]：在兜底背景之上、提示条（z-[5]）与遮罩（z-[4]）之下。
+       * 用 object-cover 铺满容器，视觉上等同于"画面冻结"。
+       */}
+      {contextLost && snapshotDataUrl !== null ? (
+        <img
+          src={snapshotDataUrl}
+          alt=""
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-[3] h-full w-full object-cover"
+          style={{ opacity: 0.9 }}
+        />
+      ) : null}
+
       {contextLost ? (
         <div
           className="pointer-events-none absolute inset-x-0 top-3 z-[5] flex justify-center"
