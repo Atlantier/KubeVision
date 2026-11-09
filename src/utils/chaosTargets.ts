@@ -19,20 +19,35 @@
  * - 输出：该场景的受灾机架序号、受灾节点 ID、预期异常 Pod 状态、
  *   以及**应当执行的自愈动作类型**（OOM→重启 Pod、网络→驱逐节点、CPU→扩缩容）
  *
- * 【与 syntheticEngine 的一致性如何保证】
- * rackIndex 在此声明，同时 `demoDirector` 在注入故障后会**运行时轮询断言**
- * 该机架名下确实出现了异常 Pod；断言失败即降级旁白，绝不宣称"已锁定告警机架"。
- * 因此即便本表与引擎行为意外漂移，也不会在评委面前说谎。
+ * 【与 syntheticEngine 的一致性如何保证（三层）】
+ * 1. **同源**：rackIndex 不在本文件写常量，直接 import `syntheticEngine` 导出的
+ *    `OOM_RACK_INDEX` / `SPIKE_RACK_INDEX` / `PARTITION_RACK_INDEX`。
+ *    两处各写一份字面量正是 P0-1（镜头锁错机架）的成因，物理上消除之。
+ * 2. **派生**：nodeId 由 rackIndex 反查 `INITIAL_CLUSTER_SNAPSHOT.nodes` 得出，
+ *    不出现 'node-worker-alpha' 之类字面量。
+ * 3. **运行期断言**：demoDirector 注入后轮询快照，确认该机架名下真的出现异常 Pod；
+ *    断言失败即降级旁白，绝不宣称"已锁定告警机架"。
  */
 
-import type { ChaosScenario } from '@/types/cluster';
+import type { ChaosScenario, TelemetrySnapshot } from '@/types/cluster';
 import { INITIAL_CLUSTER_SNAPSHOT } from '@/types/cluster';
+import {
+  OOM_RACK_INDEX,
+  PARTITION_RACK_INDEX,
+  SPIKE_RACK_INDEX,
+} from '@/utils/syntheticEngine';
+import {
+  CHAOS_REMEDIATION_ACTION,
+  type ActiveChaosScenario,
+  type ChaosRemediationAction,
+} from '@/utils/chaosFacts';
 
-/** 除 'NONE' 外的混沌场景（有实际受灾目标的三种） */
-export type ActiveChaosScenario = Exclude<ChaosScenario, 'NONE'>;
-
-/** 自愈动作类型（与 `src/types/store.ts` 的 RemediationDiff.actionType 同一开放口径） */
-export type ChaosRemediationAction = 'restart_pod' | 'scale_deployment' | 'drain_node';
+/*
+ * 【类型单一来源】ActiveChaosScenario / ChaosRemediationAction 定义在
+ * `utils/chaosFacts.ts`（跨端纯函数层），此处再导出是为了保持
+ * "chaos 域类型统一从 @/utils/chaosTargets 取用"的既有消费习惯。
+ */
+export type { ActiveChaosScenario, ChaosRemediationAction };
 
 /** 单个混沌场景的受灾事实 */
 export interface ChaosTarget {
@@ -78,24 +93,24 @@ export function resolveNodeIdByRack(rackIndex: number): string {
  */
 export const CHAOS_TARGETS: Readonly<Record<ActiveChaosScenario, ChaosTarget>> = {
   POD_OOM_SWARM: {
-    rackIndex: 1,
-    nodeId: resolveNodeIdByRack(1),
+    rackIndex: OOM_RACK_INDEX,
+    nodeId: resolveNodeIdByRack(OOM_RACK_INDEX),
     expectedPodStatus: 'OOMKilled',
-    remediationAction: 'restart_pod',
+    remediationAction: CHAOS_REMEDIATION_ACTION.POD_OOM_SWARM,
     label: 'OOM 内存溢出',
   },
   NODE_CPU_SPIKE: {
-    rackIndex: 0,
-    nodeId: resolveNodeIdByRack(0),
+    rackIndex: SPIKE_RACK_INDEX,
+    nodeId: resolveNodeIdByRack(SPIKE_RACK_INDEX),
     expectedPodStatus: 'CrashLoopBackOff',
-    remediationAction: 'scale_deployment',
+    remediationAction: CHAOS_REMEDIATION_ACTION.NODE_CPU_SPIKE,
     label: '节点 CPU 尖刺',
   },
   NET_PACKET_LOSS: {
-    rackIndex: 2,
-    nodeId: resolveNodeIdByRack(2),
+    rackIndex: PARTITION_RACK_INDEX,
+    nodeId: resolveNodeIdByRack(PARTITION_RACK_INDEX),
     expectedPodStatus: 'Pending',
-    remediationAction: 'drain_node',
+    remediationAction: CHAOS_REMEDIATION_ACTION.NET_PACKET_LOSS,
     label: 'CNI 网络丢包',
   },
 };
@@ -112,20 +127,8 @@ export function getChaosTarget(scenario: ChaosScenario): ChaosTarget | null {
   return target === undefined ? null : target;
 }
 
-/**
- * isActionAllowedForPod —— Pod 粒度自愈的动作白名单。
- *
- * 【为何需要】`drain_node` 语义是"驱逐整个节点"，作用在单个 Pod 上毫无意义：
- * 它既不重启容器，也不会改善 Pod 状态，却会让 MCP 回执看起来"执行成功"。
- * 修复前的 P0-2 正是因为兜底把 `drain_node` 打到 Pod/节点上，
- * 造成"回执说自愈了，实际受害者一个没修"。
- *
- * @param action 待校验动作
- * @returns 该动作能否作用于 Pod
- */
-export function isActionAllowedForPod(action: ChaosRemediationAction): boolean {
-  return action === 'restart_pod' || action === 'scale_deployment';
-}
+/* isActionAllowedForPod 的实现收敛在 chaosFacts（跨端纯函数），此处再导出 */
+export { isActionAllowedForPod } from '@/utils/chaosFacts';
 
 /**
  * resolveVictimPods —— 从快照中解析「真实受害 Pod」。
@@ -170,4 +173,104 @@ export function resolveVictimPods(
   }
 
   return [...picked.values()].slice(0, maxVictims);
+}
+
+/**
+ * resolveVictims —— 解析某混沌场景的受害 Pod（规格 A 项导出面）。
+ *
+ * 【设计意图】把"谁受害了"从**镜头焦点**上解耦。修复前的 P0-2 按
+ * `pod.nodeId === selectedEntityId` 过滤，一旦镜头锁错节点就解析不到受害者，
+ * 随后兜底对健康节点执行 drain_node —— 宣称闭环而实际一个没修。
+ *
+ * 【解析顺序（两段式）】
+ * 1. **本场景受灾机架上的异常 Pod 优先**：`pod.nodeId === target.nodeId`
+ *    且 `status !== 'Running'`。这是最可信的一层，因为它同时满足
+ *    "引擎说该机架受灾"与"快照确有异常"。
+ * 2. **不足则补全量异常 Pod**：不依赖机架，任何非 Running 的 Pod 都算，
+ *    填满 maxVictims 为止。用于 SSE 降级/告警未及回传时的兜底。
+ *
+ * 【稳定排序】第 2 段按 `pod.id` 字典序取，保证同一快照多次调用得到同一结果——
+ * 否则"先修哪个"会随数组顺序漂移，截图与日志无法复现。
+ *
+ * @param snapshot 集群快照（含 pods / nodes）
+ * @param scenario 混沌场景
+ * @param maxVictims 最多返回数量（与既有"最多自愈 3 个"口径一致）
+ * @returns 受害 Pod id 列表与本场景受灾节点 id；无受害者时 podIds 为空数组
+ */
+export function resolveVictims(
+  snapshot: Pick<TelemetrySnapshot, 'pods' | 'nodes'>,
+  scenario: ActiveChaosScenario,
+  maxVictims = 3,
+): { podIds: string[]; nodeId: string } {
+  const target = CHAOS_TARGETS[scenario];
+  const nodeId = target === undefined ? '' : target.nodeId;
+
+  /* ---- 第 1 段：受灾机架上的异常 Pod ---- */
+  const onTargetRack = snapshot.pods
+    .filter(
+      (pod): boolean => pod.nodeId === nodeId && pod.status !== 'Running',
+    )
+    .map((pod): string => pod.id)
+    .sort((a, b): number => (a < b ? -1 : a > b ? 1 : 0));
+
+  const picked: string[] = onTargetRack.slice(0, maxVictims);
+  if (picked.length >= maxVictims) return { podIds: picked, nodeId };
+
+  /* ---- 第 2 段：全量异常 Pod 补全（稳定排序） ---- */
+  const rest = snapshot.pods
+    .filter((pod): boolean => pod.status !== 'Running' && !picked.includes(pod.id))
+    .map((pod): string => pod.id)
+    .sort((a, b): number => (a < b ? -1 : a > b ? 1 : 0));
+
+  for (const id of rest) {
+    if (picked.length >= maxVictims) break;
+    picked.push(id);
+  }
+
+  return { podIds: picked, nodeId };
+}
+
+/**
+ * assertChaosTargets —— 启动前自检：每个受灾 nodeId 必须真实存在于快照。
+ *
+ * 【为什么需要】nodeId 是从 rackIndex 反查派生的。如果未来有人调整了
+ * `INITIAL_CLUSTER_SNAPSHOT.nodes` 的 rackIndex 分配、或增删机架，
+ * 反查可能返回空串——那样 `selectEntity('')` 会被 store 的幽灵 ID 守卫
+ * 拒绝，镜头纹丝不动，而旁白照样宣称"已锁定"。属于静默失败，最难查。
+ *
+ * 【为何抛错而不是返回 false】这是**启动前**自检，属于开发者级别的配置错误。
+ * 返回 false 容易被调用方忽略；抛错带上下文能立刻定位是哪一项映射坏了。
+ *
+ * @param snapshot 集群快照
+ * @throws Error 当任一场景的 nodeId 为空、或在 nodes 中找不到时
+ */
+export function assertChaosTargets(
+  snapshot: Pick<TelemetrySnapshot, 'nodes'>,
+): void {
+  const scenarios: readonly ActiveChaosScenario[] = [
+    'POD_OOM_SWARM',
+    'NODE_CPU_SPIKE',
+    'NET_PACKET_LOSS',
+  ];
+
+  for (const scenario of scenarios) {
+    const target = CHAOS_TARGETS[scenario];
+    if (target === undefined) {
+      throw new Error(`[chaosTargets] CHAOS_TARGETS 缺少场景 ${scenario}`);
+    }
+    if (target.nodeId === '') {
+      throw new Error(
+        `[chaosTargets] 场景 ${scenario} 的 rackIndex=${target.rackIndex} 反查不到节点；` +
+          '请检查 INITIAL_CLUSTER_SNAPSHOT.nodes 的 rackIndex 分配是否覆盖 0/1/2。',
+      );
+    }
+    const exists = snapshot.nodes.some((node): boolean => node.id === target.nodeId);
+    if (!exists) {
+      throw new Error(
+        `[chaosTargets] 场景 ${scenario} 派生的 nodeId='${target.nodeId}'` +
+          `（rackIndex=${target.rackIndex}）不在快照 nodes 中；` +
+          `现有节点: ${snapshot.nodes.map((node): string => node.id).join(', ')}`,
+      );
+    }
+  }
 }

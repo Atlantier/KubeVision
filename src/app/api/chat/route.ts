@@ -55,6 +55,12 @@ import type {
 } from '@/types/ai';
 import type { ChaosScenario } from '@/types/cluster';
 import { retrieveSreRunbooks } from '@/utils/sreRagEngine';
+/*
+ * 【为何从这里引】pickRemediationActionType 的动作映射与前端 chaosTargets 共享同一份
+ * 事实。若各自维护一份，就会出现"前端说 restart_pod、回执说 drain_node"的矛盾。
+ * chaosFacts 是纯函数模块（只 import type），不会把前端快照字典打进服务端 bundle。
+ */
+import { pickRemediationActionType } from '@/utils/chaosFacts';
 
 /* ---- Next.js Route Segment 配置 ---- */
 export const dynamic = 'force-dynamic';
@@ -1848,41 +1854,11 @@ function buildRootCauseArgs(
   };
 }
 
-/**
- * pickRemediationActionType —— 按故障形态选择最合适的自愈动作。
- *
- * 【修复 drain_node 滥用】`drain_node`（驱逐节点）是所有动作里**代价最大**的：
- * 它会把节点上全部工作负载迁移走，引发连带抖动。旧实现把它当默认选项，
- * 于是"集群 100 分健康"和"OOM 内存溢出"都可能弹出一张红色驱逐卡。
- *
- * 现在的映射（与 buildSystemPrompt 中的规则严格一致）：
- * - POD_OOM_SWARM  → restart_pod       （重启单个 Pod，代价最小）
- * - NODE_CPU_SPIKE → scale_deployment  （扩容分摊压力，而非迁移负载）
- * - NET_PACKET_LOSS→ drain_node        （网络分区下确实需要把负载迁走）
- * - 无演练但有节点级异常 → 沿用 node.status 判断：
- *     NetworkPartition → drain_node；其余（HighLoad）→ scale_deployment
- * - 其余 → restart_pod（Pod 级默认）
- *
- * @param chaos        当前混沌场景
- * @param targetIsNode 目标是否为节点级
- * @param nodeStatus   节点状态（目标为节点时提供）
- * @returns 动作类型
+/*
+ * pickRemediationActionType 的实现已上移到 utils/chaosFacts.ts（跨端纯函数），
+ * 由上方 import 引入。此处不再保留本地副本 —— 两处各写一份正是
+ * "AI 卡片动作与 MCP 回执动作不一致"的成因。
  */
-function pickRemediationActionType(
-  chaos: ChaosScenario,
-  targetIsNode: boolean,
-  nodeStatus: string | null,
-): RemediationActionType {
-  if (chaos === 'NET_PACKET_LOSS') return 'drain_node';
-  if (chaos === 'NODE_CPU_SPIKE') return 'scale_deployment';
-  if (chaos === 'POD_OOM_SWARM') return 'restart_pod';
-
-  if (targetIsNode) {
-    /* 无演练上下文时按节点自身状态判断：只有网络分区才值得迁移 */
-    return nodeStatus === 'NetworkPartition' ? 'drain_node' : 'scale_deployment';
-  }
-  return 'restart_pod';
-}
 
 /**
  * buildActionArgs —— 构造自愈动作卡载荷（Pod 优先，节点次之，皆无则不产卡）。

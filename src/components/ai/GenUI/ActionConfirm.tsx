@@ -418,6 +418,13 @@ export default function ActionConfirm({
         isHighRisk ? 'border-rose-500/60 shadow-glow-rose' : 'border-cyan-500/40',
       )}
       aria-label={`自愈操作确认：${ACTION_LABEL[actionType]} ${targetName}`}
+      /*
+       * 【导演引擎读取口】自动路演需要知道"这张卡要修的是哪个实体"。
+       * aria-label 只含可读名（redis-cluster-shard-0），不含 pod-xxx 的实体 ID，
+       * 从文本反解不稳定；故把真实 ID 作为 data 属性暴露出去。
+       * 仅作机器读取，不影响任何视觉与可访问性语义。
+       */
+      data-target-id={targetId}
     >
       {/* ============ 头部：动作徽标 + 目标 ============ */}
       <div className="flex items-start gap-2 p-2.5 pb-2">

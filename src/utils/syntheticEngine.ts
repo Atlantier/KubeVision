@@ -76,18 +76,25 @@ const OOM_MEM_MIN = 96;
 const OOM_MEM_MAX = 99;
 /** POD_OOM_SWARM：受影响的 Pod 数量（worker-beta 上的 3 个核心业务 Pod） */
 const OOM_VICTIM_COUNT = 3;
+/*
+ * 【对外契约 · 禁止复制】以下三个 `*_RACK_INDEX` 常量是"混沌场景 → 受灾机架"
+ * 的**唯一事实源**。utils/chaosTargets.ts 直接 import 它们来派生 nodeId，
+ * 任何其它文件都不得再写一份 "0/1/2" 的字面量——两处各写一份正是
+ * P0-1（路演镜头锁错机架）的成因。
+ */
+
 /** POD_OOM_SWARM：受影响机架（worker-beta） */
-const OOM_RACK_INDEX = 1;
+export const OOM_RACK_INDEX = 1;
 
 /** NODE_CPU_SPIKE：CPU 推升目标区间下界（%） */
 const SPIKE_CPU_MIN = 92;
 /** NODE_CPU_SPIKE：CPU 推升目标区间上界（%） */
 const SPIKE_CPU_MAX = 99;
 /** NODE_CPU_SPIKE：受影响机架（worker-alpha） */
-const SPIKE_RACK_INDEX = 0;
+export const SPIKE_RACK_INDEX = 0;
 
 /** NET_PACKET_LOSS：受影响机架（worker-gamma） */
-const PARTITION_RACK_INDEX = 2;
+export const PARTITION_RACK_INDEX = 2;
 /** NET_PACKET_LOSS：网络吞吐骤降至基准的该比例（88% 跌幅 → 保留 12%） */
 const PARTITION_THROUGHPUT_RATIO = 0.12;
 /** NET_PACKET_LOSS：转为 Pending 的 Pod 占比（每 3 个中 1 个） */

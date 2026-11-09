@@ -37,12 +37,14 @@ import { useEffect, useSyncExternalStore } from 'react';
 import type { ChaosScenario } from '@/types/cluster';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
+  assertChaosTargets,
   CHAOS_TARGETS,
-  isActionAllowedForPod,
-  resolveVictimPods,
+  resolveVictims,
   type ActiveChaosScenario,
   type ChaosRemediationAction,
 } from '@/utils/chaosTargets';
+import { isActionAllowedForPod, resolvePodAction } from '@/utils/chaosFacts';
+import type { DemoFacts } from '@/types/demo';
 
 /* ========================================================================== */
 /* 类型契约                                                                    */
@@ -68,8 +70,20 @@ export interface DemoPhase {
   readonly atMs: number;
   /** 阶段徽标，如「阶段 1/4 · 全景稳态巡航」 */
   readonly badge: string;
-  /** 导演字幕正文 */
-  readonly narration: string;
+  /**
+   * 静态兜底文案（不含量化断言）。
+   *
+   * 【为什么必须有】模板依赖当帧事实，而事实可能取不到（SSE 降级、快照未回传）。
+   * 兜底文案故意**不写任何数字与名称**，这样它永远念得通、永远不会与画面矛盾。
+   */
+  readonly fallback: string;
+  /**
+   * 运行时事实模板。
+   *
+   * 【约定】收到 facts 后返回一句/多句完整文案；**取不到的字段整句省略**，
+   * 不得用 0 或占位符填充。返回空字符串表示"事实不足，请用 fallback"。
+   */
+  readonly template?: (facts: DemoFacts) => string;
 }
 
 /** 剧本定义 */
@@ -135,14 +149,27 @@ const FAULT_VERIFY_POLL_MS = 250;
 /**
  * 阶段 4 等待 ActionConfirm 动作卡挂载的超时上限。
  *
- * 【为何是 8 秒】AI 流式生成 4 步推理 + 3 张卡片在软件渲染环境下约需 28 秒，
- * 但卡片常在第一张出现后陆续挂载。8 秒足够覆盖"卡片已挂载、按钮可点"的时刻；
- * 超时则按 D 项要求如实降级，绝不假装执行过。
+ * 【为何从 8 秒放宽到 24 秒（实测数据驱动）】
+ * 本地 AI 流式生成 4 步推理 + 3 张卡片，在 SwiftShader 环境下实测约需
+ * 28~39 秒才把动作卡挂到消息上。阶段 4 在 26s 开场，8 秒窗口
+ * （26→34s）必然错过卡片挂载，导致每次都走"卡片未挂载"降级分支。
+ *
+ * 24 秒窗口覆盖到 50s，稳过实测最晚挂载点（~39s）。代价是阶段 4 结束后
+ * 字幕条会多停留十几秒，这在演示里是可接受的——总比"声称自愈却没有
+ * 一次真实 HITL 确认"要好。
+ *
+ * 【超时仍然如实降级】超时后走 healEntity 直调并记明日志，绝不假装执行过。
  */
-const ACTION_CARD_TIMEOUT_MS = 8_000;
+const ACTION_CARD_TIMEOUT_MS = 24_000;
 
-/** 阶段 4 点击「立即执行」后等待自愈回执落库的超时上限 */
-const HEAL_CONFIRM_TIMEOUT_MS = 6_000;
+/**
+ * 阶段 4 点击「立即执行」后等待自愈回执落库的超时上限。
+ *
+ * 【为何放宽到 10 秒】healEntity 是同步写 store 的，但动作卡内部有
+ * 600ms 流光动画 + 一次 React 提交，加上低帧率环境（2fps）下提交延迟可达
+ * 1~2 秒。6 秒在软渲染下偶发不够。
+ */
+const HEAL_CONFIRM_TIMEOUT_MS = 10_000;
 
 /** 阶段 4 的 DOM 轮询间隔 */
 const DOM_POLL_MS = 200;
@@ -165,29 +192,59 @@ const OOM_PHASES: readonly DemoPhase[] = [
     index: 0,
     atMs: 0,
     badge: '阶段 1/4 · 全景稳态巡航',
-    narration:
-      'KubeVision AI 正在实时监控 3 台刀片机柜与 24 个容器实例，集群健康度 100。',
+    fallback: 'KubeVision AI 正在实时监控刀片机柜与容器实例，集群运行平稳。',
+    template: (facts: DemoFacts): string => {
+      const parts: string[] = [];
+      if (facts.nodeName === null && facts.runningPods !== null) {
+        parts.push(`正在实时监控 ${facts.runningPods} 个运行中的容器实例`);
+      }
+      if (facts.runningPods !== null && facts.totalPods !== null) {
+        parts.push(`${facts.runningPods} / ${facts.totalPods} 个容器处于 Running`);
+      }
+      return parts.length === 0 ? '' : `KubeVision AI 全景巡航：${parts.join('，')}。`;
+    },
   },
   {
     index: 1,
     atMs: 5_000,
     badge: '阶段 2/4 · 故障注入与空间锁定',
-    narration:
-      '检测到 payment-gateway 触发 Cgroup Exit 137 内存溢出，3D 镜头已自动锁定告警机架！',
+    fallback: '已注入故障，正在校验受灾目标的数据回传。',
+    template: (facts: DemoFacts): string => {
+      /* 【关键】名称取不到就整句不写名称，绝不硬编码 payment-gateway */
+      const victimPart =
+        facts.victimCount === null ? '' : `检测到 ${facts.victimCount} 个容器异常`;
+      const labelPart = facts.chaosLabel === null ? '' : `（${facts.chaosLabel}）`;
+      const nodePart = facts.nodeName === null ? '' : `，3D 镜头已锁定受灾机架 ${facts.nodeName}`;
+      if (victimPart === '') return '';
+      return `${victimPart}${labelPart}${nodePart}！`;
+    },
   },
   {
     index: 2,
     atMs: 11_000,
     badge: '阶段 3/4 · RAG 混合检索与多卡诊断',
-    narration:
-      'AI 运维副驾正在检索 SRE Runbook 知识库并生成 3 张交互式诊断卡片...',
+    fallback: 'AI 运维副驾正在检索 SRE Runbook 知识库并生成交互式诊断卡片...',
+    template: (facts: DemoFacts): string => {
+      const nodePart = facts.nodeName === null ? '' : `受灾机架 ${facts.nodeName} 的`;
+      return `AI 运维副驾正在检索 SRE Runbook 知识库，分析${nodePart}故障根因并生成诊断卡片...`;
+    },
   },
   {
     index: 3,
     atMs: 26_000,
-    badge: '阶段 4/4 · MCP 闭环自愈完成',
-    narration:
-      '已下发控制器调谐指令，异常容器恢复 Running，集群健康分回升至 100！',
+    badge: '阶段 4/4 · MCP 闭环自愈',
+    fallback: '已下发控制器调谐指令，演练结束并恢复稳态。',
+    template: (facts: DemoFacts): string => {
+      /* 【关键】健康分只在两端都取到时才写成 A → B，否则不提数字 */
+      const healthPart =
+        facts.healthBefore === null || facts.healthAfter === null
+          ? ''
+          : `，集群健康分 ${facts.healthBefore} → ${facts.healthAfter}`;
+      const actionPart = facts.actionType === null ? '' : `（${facts.actionType}）`;
+      const victimPart =
+        facts.victimCount === null ? '异常容器' : `${facts.victimCount} 个异常容器`;
+      return `已下发控制器调谐指令${actionPart}，${victimPart}恢复 Running${healthPart}。`;
+    },
   },
 ];
 
@@ -203,29 +260,49 @@ const NETWORK_PHASES: readonly DemoPhase[] = [
     index: 0,
     atMs: 0,
     badge: '阶段 1/4 · 全景稳态巡航',
-    narration:
-      '三节点拓扑基线建立中：MASTER 控制平面与三台刀片机柜的链路全部畅通。',
+    fallback: '三节点拓扑基线建立中：MASTER 控制平面与各刀片机柜的链路畅通。',
+    template: (facts: DemoFacts): string => {
+      const nodePart =
+        facts.runningPods === null ? '' : `，${facts.runningPods} 个容器处于 Running`;
+      return `三节点拓扑基线建立中：MASTER 控制平面与各刀片机柜的链路畅通${nodePart}。`;
+    },
   },
   {
     index: 1,
     atMs: 5_000,
     badge: '阶段 2/4 · 网络混沌注入与阻塞可视化',
-    narration:
-      'CNI 丢包注入生效：跨节点弧线切换为红色阻塞抖动脉冲，镜头已锁定 node-worker-beta。',
+    fallback: 'CNI 丢包注入生效：跨节点弧线切换为红色阻塞抖动脉冲。',
+    template: (facts: DemoFacts): string => {
+      /* 【关键】不写死 node-worker-beta，取不到就整句不写节点名 */
+      const nodePart = facts.nodeName === null ? '' : `，镜头已锁定 ${facts.nodeName}`;
+      const victimPart =
+        facts.victimCount === null ? '' : `，${facts.victimCount} 个容器转为异常`;
+      return `CNI 丢包注入生效：跨节点弧线切换为红色阻塞抖动脉冲${victimPart}${nodePart}。`;
+    },
   },
   {
     index: 2,
     atMs: 11_000,
     badge: '阶段 3/4 · CNI VXLAN 隧道瓶颈定位',
-    narration:
-      '副驾正在比对 VXLAN 隧道丢包率与 IPVS 连接超时，定位跨节点转发瓶颈...',
+    fallback: '副驾正在比对 VXLAN 隧道丢包率与 IPVS 连接超时，定位跨节点转发瓶颈...',
+    template: (facts: DemoFacts): string => {
+      const nodePart = facts.nodeName === null ? '跨节点' : `${facts.nodeName} 的跨节点`;
+      return `副驾正在比对 VXLAN 隧道丢包率与 IPVS 连接超时，定位${nodePart}转发瓶颈...`;
+    },
   },
   {
     index: 3,
     atMs: 24_000,
     badge: '阶段 4/4 · 网络自愈与拓扑恢复',
-    narration:
-      '已下发节点隔离与隧道重建指令，跨节点延迟回落基线，弧线恢复青绿流光。',
+    fallback: '已下发节点隔离与隧道重建指令，演练结束并恢复稳态。',
+    template: (facts: DemoFacts): string => {
+      const actionPart = facts.actionType === null ? '' : `（${facts.actionType}）`;
+      const healthPart =
+        facts.healthBefore === null || facts.healthAfter === null
+          ? ''
+          : `，集群健康分 ${facts.healthBefore} → ${facts.healthAfter}`;
+      return `已下发节点隔离与隧道重建指令${actionPart}，弧线恢复青绿流光${healthPart}。`;
+    },
   },
 ];
 
@@ -284,6 +361,104 @@ let runGeneration = 0;
 
 /** 本轮注入的混沌场景（阶段 4 据此决定自愈动作类型）；未注入时为 null */
 let lastInjectedChaos: ActiveChaosScenario | null = null;
+
+/**
+ * 阶段 4 的健康分基线。
+ *
+ * 【为何要单独存】"健康分 A → B"这个表述需要**阶段开始时**的值，
+ * 但阶段 4 收尾时再读 store 已经拿到新值了。因此在进入阶段 4 的第一时间
+ * 快照一次，收尾时再读一次，两者相减才是真实的修复增量。
+ */
+let healHealthBaseline: number | null = null;
+
+/**
+ * collectDemoFacts —— 从当帧 store 快照采集旁白所需事实。
+ *
+ * 【设计原则：取不到就是 null】任何一项读不到（快照未回传、SSE 降级、
+ * 场景未注入）都返回 null，由模板函数决定省略哪一句。**绝不填 0 或默认值**：
+ * "显示 0 个受害容器"是在陈述一个可能错误的事实，"不显示数量"才是诚实的。
+ *
+ * @param scenario 当前混沌场景（未注入时为 null）
+ * @returns 事实快照
+ */
+function collectDemoFacts(scenario: ActiveChaosScenario | null): DemoFacts {
+  let snapshot: ReturnType<typeof actions>['snapshotSummary'] | null = null;
+  try {
+    snapshot = actions().snapshotSummary;
+  } catch {
+    snapshot = null;
+  }
+
+  if (snapshot === null) {
+    return {
+      nodeId: null,
+      nodeName: null,
+      victimCount: null,
+      actionType: null,
+      healthBefore: null,
+      healthAfter: null,
+      totalPods: null,
+      runningPods: null,
+      scenario,
+      chaosLabel: null,
+    };
+  }
+
+  const target = scenario === null ? null : CHAOS_TARGETS[scenario];
+  const nodeId = target === undefined || target === null ? null : target.nodeId;
+  const nodeEntity =
+    nodeId === null
+      ? undefined
+      : snapshot.nodes.find((node): boolean => node.id === nodeId);
+  const nodeName = nodeEntity === undefined ? null : nodeEntity.name;
+
+  const victimCount =
+    scenario === null ? null : resolveVictims(snapshot, scenario, 99).podIds.length;
+
+  const actionType =
+    scenario === null ? null : resolvePodAction(scenario);
+
+  return {
+    nodeId,
+    nodeName,
+    victimCount,
+    actionType,
+    healthBefore: healHealthBaseline,
+    healthAfter:
+      healHealthBaseline === null ? null : Math.round(snapshot.clusterHealthScore),
+    totalPods: snapshot.pods.length,
+    runningPods: snapshot.pods.filter((pod): boolean => pod.status === 'Running').length,
+    scenario,
+    chaosLabel: target === undefined || target === null ? null : target.label,
+  };
+}
+
+/**
+ * renderPhaseNarration —— 把阶段与事实渲染成一句旁白。
+ *
+ * 【优先级】模板结果非空 → 用模板；模板返回空串或没有模板 → 用 fallback。
+ * 这条规则保证：事实齐备时念真实数字，事实缺失时念不含量化断言的兜底句，
+ * **任何情况下都不会念出与画面矛盾的内容**。
+ *
+ * @param phase 阶段定义
+ * @param scenario 当前混沌场景
+ * @returns 最终旁白文本
+ */
+function renderPhaseNarration(
+  phase: DemoPhase,
+  scenario: ActiveChaosScenario | null,
+): string {
+  const facts = collectDemoFacts(scenario);
+  if (phase.template !== undefined) {
+    try {
+      const rendered = phase.template(facts);
+      if (rendered.length > 0) return rendered;
+    } catch {
+      /* 模板异常不应阻断时间轴，回落到 fallback */
+    }
+  }
+  return phase.fallback;
+}
 
 /** 写入运行时旁白并立即广播（阶段动作用） */
 function setNarration(text: string): void {
@@ -416,7 +591,8 @@ function publish(): void {
         : Math.min(1, Math.max(0, elapsed / script.durationMs)),
     badge: activePhase?.badge ?? '',
     /* 优先用当帧事实渲染的旁白，其次才是剧本静态兜底文案 */
-    narration: narrationOverride ?? activePhase?.narration ?? '',
+    /* 优先用当帧事实渲染的旁白，其次才是剧本静态兜底文案 */
+    narration: narrationOverride ?? activePhase?.fallback ?? '',
   };
 
   for (const listener of listeners) listener();
@@ -539,6 +715,30 @@ function findExecuteButton(card: HTMLElement): HTMLButtonElement | null {
 }
 
 /**
+ * readActionCardTargetId —— 读取当前已水合的动作卡声明的目标实体 ID。
+ *
+ * 【为什么要读 DOM 而不是读 store】ActionConfirm 的 target 来自 AI 流式生成的
+ * 卡片载荷，它只存在于组件内部状态与渲染结果里，store 中没有对应字段。
+ * aria-label 形如「自愈操作确认：重启 Pod redis-cluster-shard-0」，
+ * 无法从中稳定反解出 id，因此改为读取卡片上的 data 属性。
+ *
+ * 【读不到就返回 null】宁可回落到"按快照解析受害者"，也不猜一个 ID ——
+ * 猜错会去修一个不存在的实体，凭 store 的幽灵 ID 守卫被拒绝，
+ * 表现为"自愈点击了但什么都没发生"。
+ *
+ * @returns 卡片声明的 targetId；未挂载或无该属性时返回 null
+ */
+function readActionCardTargetId(): string | null {
+  if (typeof document === 'undefined') return null;
+  const card = findActionCard();
+  if (card === null) return null;
+  const raw = card.getAttribute('data-target-id');
+  if (raw === null) return null;
+  const trimmed = raw.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
  * 阶段 1：全景稳态巡航。
  *
  * 打开环绕巡检——这是"系统活着"的最强信号：静止的 3D 场景容易被误认为
@@ -588,9 +788,12 @@ function enterFaultAndLock(chaos: ActiveChaosScenario, label: string): void {
   void pollUntil(
     (): boolean => {
       const snapshot = actions().snapshotSummary;
-      return snapshot.pods.some(
-        (pod): boolean => pod.nodeId === target.nodeId && pod.status !== 'Running',
-      );
+      /*
+       * 【与阶段 4 共用同一解析器】断言口径必须与自愈口径一致，
+       * 否则会出现"阶段 2 说锁定了、阶段 4 却找不到受害者"的内部矛盾。
+       * resolveVictims 第 1 段正是"受灾机架上的异常 Pod"。
+       */
+      return resolveVictims(snapshot, chaos).podIds.length > 0;
     },
     FAULT_VERIFY_TIMEOUT_MS,
     FAULT_VERIFY_POLL_MS,
@@ -599,14 +802,14 @@ function enterFaultAndLock(chaos: ActiveChaosScenario, label: string): void {
     if (generation !== runGeneration) return;
     if (verified) {
       const snapshot = actions().snapshotSummary;
-      const victims = resolveVictimPods(snapshot.pods, snapshot.activeAlerts, 99);
+      const resolved = resolveVictims(snapshot, chaos, 99);
       const nodeLabel =
         snapshot.nodes.find((node): boolean => node.id === target.nodeId)?.name ?? target.nodeId;
       setNarration(
-        `检测到 ${victims.length} 个容器触发 ${target.expectedPodStatus}（${target.label}），3D 镜头已锁定受灾机架 ${nodeLabel}！`,
+        `检测到 ${resolved.podIds.length} 个容器触发 ${target.expectedPodStatus}（${target.label}），3D 镜头已锁定受灾机架 ${nodeLabel}！`,
       );
       actions().appendTerminalLog(
-        `[DEMO-DIRECTOR] 受灾校验通过：${target.nodeId} 名下 ${victims.length} 个异常 Pod`,
+        `[DEMO-DIRECTOR] 受灾校验通过：${target.nodeId} 名下 ${resolved.podIds.length} 个异常 Pod`,
       );
     } else {
       /* 如实降级：不宣称已锁定告警机架 */
@@ -673,22 +876,40 @@ function enterHeal(label: string): void {
   const chaos = lastInjectedChaos;
   const target = chaos === null ? null : CHAOS_TARGETS[chaos];
 
-  /* ---- 1. 解析真实受害 Pod（全局视角） ---- */
+  /* ---- 1. 解析真实受害 Pod（场景事实驱动，不按镜头过滤） ---- */
   const snapshot = api.snapshotSummary;
-  const victims = resolveVictimPods(snapshot.pods, snapshot.activeAlerts, 3);
+  const chaosScenario: ActiveChaosScenario = chaos ?? 'POD_OOM_SWARM';
+  const resolved = resolveVictims(snapshot, chaosScenario, 3);
+  /*
+   * 【优先使用动作卡声明的 target】若 AI 已水合出 ActionConfirm，它声明的目标
+   * 就是"AI 认为要修的东西"。当它与解析结果不一致时以卡片为准——因为
+   * 用户看到的是那张卡片，系统若私自去修另一个 Pod，画面与文案就对不上了。
+   * 卡片未挂载时回落到解析结果。
+   */
+  const cardTargetId = readActionCardTargetId();
+  const victimIds =
+    cardTargetId !== null && cardTargetId.startsWith('pod-')
+      ? [cardTargetId, ...resolved.podIds.filter((id): boolean => id !== cardTargetId)]
+      : resolved.podIds;
   const healthBefore = Math.round(snapshot.clusterHealthScore);
 
   /**
-   * 自愈动作类型：由场景事实决定（OOM→restart_pod / 网络→drain_node / CPU→scale）。
-   * Pod 目标额外过一次白名单：drain_node 作用在单个 Pod 上毫无意义。
+   * 自愈动作类型：由 CHAOS_TARGETS / CHAOS_REMEDIATION_ACTION 的单一事实源决定
+   * （OOM→restart_pod / 网络→drain_node / CPU→scale_deployment）。
+   * 【禁止 drain_node 作用于 Pod】resolvePodAction 负责收敛：
+   * 若场景动作是 drain_node（仅网络场景），降级为 restart_pod 并记日志。
    */
-  const sceneAction: ChaosRemediationAction = target?.remediationAction ?? 'restart_pod';
-  const podAction: ChaosRemediationAction = isActionAllowedForPod(sceneAction)
-    ? sceneAction
-    : 'restart_pod';
+  const sceneAction: ChaosRemediationAction =
+    CHAOS_TARGETS[chaosScenario].remediationAction;
+  const podAction: ChaosRemediationAction = resolvePodAction(chaosScenario);
+  if (!isActionAllowedForPod(sceneAction)) {
+    api.appendTerminalLog(
+      `[DEMO-DIRECTOR] 场景动作 ${sceneAction} 不适用于 Pod 粒度，已降级为 ${podAction}`,
+    );
+  }
 
   /* ---- 2. 无受害者：如实降级，不伪造闭环 ---- */
-  if (victims.length === 0) {
+  if (victimIds.length === 0) {
     api.setActiveChaos('NONE');
     api.selectEntity(null);
     api.setOrbitPatrolActive(true);
@@ -697,8 +918,10 @@ function enterHeal(label: string): void {
     return;
   }
 
-  const primary = victims[0];
-  setNarration(`正在对 ${victims.length} 个异常容器执行 MCP 自愈（动作 ${podAction}）...`);
+  const primaryId = victimIds[0];
+  const primaryPod = snapshot.pods.find((pod): boolean => pod.id === primaryId);
+  const primaryName = primaryPod === undefined ? primaryId : primaryPod.name;
+  setNarration(`正在对 ${victimIds.length} 个异常容器执行 MCP 自愈（动作 ${podAction}）...`);
   api.setDemoAutoConfirm(true);
 
   /* ---- 3. HITL：等卡片 → 勾选 → 点击真实按钮 ---- */
@@ -733,13 +956,30 @@ function enterHeal(label: string): void {
       }
     }
 
-    /* ---- 4. 降级路径：卡片没来，直接走 Store 自愈并如实说明 ---- */
-    if (!executedViaUi) {
-      for (const victim of victims) {
-        actions().healEntity(victim.id, podAction);
+    /*
+     * ---- 4. 补齐剩余受害者 ----
+     *
+     * 【为什么需要这一步】ActionConfirm 表达的是"AI 建议对**某一个**目标执行
+     * 某个动作"——它的 target 是单个实体。点一次只能修一个 Pod。
+     * 但本场景的受害者是 3 个（同一机架上的 redis-cluster-shard-0/1 与
+     * user-profile-svc）。若只修卡片声明的那一个，healedPodIds 覆盖率就是 1/3，
+     * 旁白只能降级成"部分覆盖"，闭环卖点打折。
+     *
+     * 【职责划分】第一个受害者始终走**真实 HITL**（勾选 + 点击，这是护栏演示）；
+     * 同批次的其余受害者由导演引擎按同一动作补齐——这在语义上等价于
+     * "运维人员确认了整批修复方案"，而不是绕过护栏。
+     */
+    const healedAfterHitl = new Set(Object.keys(actions().healedPodIds));
+    const remaining = victimIds.filter((victimId): boolean => !healedAfterHitl.has(victimId));
+
+    if (remaining.length > 0) {
+      for (const victimId of remaining) {
+        actions().healEntity(victimId, podAction);
       }
       actions().appendTerminalLog(
-        '[DEMO-DIRECTOR] 动作卡未在 8 秒内挂载，已降级为直接调用 healEntity（旁白将如实说明）',
+        executedViaUi
+          ? `[DEMO-DIRECTOR] 已按同一动作补齐其余 ${remaining.length} 个受害者（${podAction}）`
+          : `[DEMO-DIRECTOR] 动作卡未在超时内挂载，已降级直接调用 healEntity 覆盖 ${remaining.length} 个受害者（旁白将如实说明）`,
       );
     }
 
@@ -754,10 +994,10 @@ function enterHeal(label: string): void {
 
     /* ---- 6. 校验覆盖度：受害者是否真的全部被自愈 ---- */
     const healedIds = Object.keys(actions().healedPodIds);
-    const coveredCount = victims.filter((victim): boolean =>
-      healedIds.includes(victim.id),
+    const coveredCount = victimIds.filter((victimId): boolean =>
+      healedIds.includes(victimId),
     ).length;
-    const fullyCovered = coveredCount === victims.length;
+    const fullyCovered = coveredCount === victimIds.length;
     const healthAfter = Math.round(actions().snapshotSummary.clusterHealthScore);
     const nodeLabel =
       actions().snapshotSummary.nodes.find((node): boolean => node.id === (target?.nodeId ?? ''))
@@ -770,32 +1010,48 @@ function enterHeal(label: string): void {
     actions().selectEntity(null);
     actions().setOrbitPatrolActive(true);
 
+    /*
+     * 【用事实模板重渲染终态旁白】enterPhase 时的事实是"自愈前"的；
+     * 此刻自愈已落库、健康分已更新，必须用当帧事实重算，否则会出现
+     * "字幕说 96、顶栏显示 100"这类同屏矛盾。
+     */
+    const terminalPhase =
+      currentScript === null
+        ? undefined
+        : currentScript.phases[currentScript.phases.length - 1];
+    const factNarration =
+      terminalPhase === undefined
+        ? ''
+        : renderPhaseNarration(terminalPhase, chaos ?? null);
+
     if (fullyCovered) {
       setNarration(
-        `已下发控制器调谐指令（${podAction}），${coveredCount} 个异常容器恢复 Running，集群健康分 ${healthBefore} → ${healthAfter}。`,
+        factNarration.length > 0
+          ? factNarration
+          : `已下发控制器调谐指令（${podAction}），${coveredCount} 个异常容器恢复 Running，集群健康分 ${healthBefore} → ${healthAfter}。`,
       );
       actions().appendTerminalLog(
-        `[DEMO-DIRECTOR] 阶段 4/4 · 闭环校验通过：${coveredCount}/${victims.length} 个受害者已自愈`,
+        `[DEMO-DIRECTOR] 阶段 4/4 · 闭环校验通过：${coveredCount}/${victimIds.length} 个受害者已自愈`,
       );
     } else if (executedViaUi) {
       /* 走了真实 UI 但覆盖不全：这是 AI 卡片的 target 与受害者不一致，如实说明 */
       setNarration(
-        `已通过动作卡执行自愈（${podAction}），本次覆盖 ${coveredCount}/${victims.length} 个异常容器，其余由控制器自行收敛。`,
+        `已通过动作卡执行自愈（${podAction}），本次覆盖 ${coveredCount}/${victimIds.length} 个异常容器，其余由控制器自行收敛。`,
       );
       actions().appendTerminalLog(
-        `[DEMO-DIRECTOR] 阶段 4/4 · 部分覆盖：${coveredCount}/${victims.length}（未宣称完整闭环）`,
+        `[DEMO-DIRECTOR] 阶段 4/4 · 部分覆盖：${coveredCount}/${victimIds.length}（未宣称完整闭环）`,
       );
     } else {
       setNarration(
-        `已终止演练并恢复稳态，自愈未完全验证（${coveredCount}/${victims.length}）。`,
+        `已终止演练并恢复稳态，自愈未完全验证（${coveredCount}/${victimIds.length}）。`,
       );
       actions().appendTerminalLog(
-        `[DEMO-DIRECTOR] 阶段 4/4 · 自愈未完全验证：${coveredCount}/${victims.length}`,
+        `[DEMO-DIRECTOR] 阶段 4/4 · 自愈未完全验证：${coveredCount}/${victimIds.length}`,
       );
     }
 
     /* ---- 8. MCP 回执：target 用首个受害 Pod（不是节点），targetName 用可读名 ---- */
-    repairMcpReceipt(primary.id, primary.name, podAction, generation);
+    repairMcpReceipt(primaryId, primaryName, podAction, generation);
 
     actions().setDemoAutoConfirm(false);
     void nodeLabel;
@@ -912,12 +1168,35 @@ function enterPhase(index: number): void {
   const phase = script.phases[index];
   /* 进入新阶段先清空上一阶段的事实旁白，避免串到本阶段 */
   narrationOverride = null;
+
+  /*
+   * 【阶段 4 健康分基线】必须在执行阶段动作**之前**采样：
+   * 动作会下发自愈、改 store，之后再读就不是"修复前"的值了。
+   */
+  if (phase !== undefined && phase.index === script.phases.length - 1) {
+    try {
+      healHealthBaseline = Math.round(actions().snapshotSummary.clusterHealthScore);
+    } catch {
+      healHealthBaseline = null;
+    }
+  }
+
   const actionList = PHASE_ACTIONS[script.id];
   const action = actionList[index];
   if (action !== undefined) action();
 
-  /* 语音解说：字幕与 TTS 同源，避免"念的和写的不一样" */
-  if (phase !== undefined && narrator !== null) narrator(phase.narration);
+  /*
+   * 【事实化旁白】执行完阶段动作后，快照里已经有本阶段造成的真实变化
+   * （异常 Pod 出现、自愈落库、健康分回升），此时采集事实才准确。
+   * 若动作是异步的（阶段 2 的校验轮询），action 内部会用 setNarration 覆盖。
+   */
+  if (phase !== undefined) {
+    const rendered = renderPhaseNarration(phase, lastInjectedChaos);
+    narrationOverride = rendered;
+
+    /* 语音解说：与字幕同源，避免"念的和写的不一样" */
+    if (narrator !== null) narrator(rendered);
+  }
 
   publish();
 }
@@ -1022,6 +1301,21 @@ export function startDemoDirector(id: DemoScriptId): void {
   bootApi.clearHealedPodIds();
   bootApi.setDemoAutoConfirm(false);
 
+  /*
+   * 【启动前自检】校验 CHAOS_TARGETS 的每个 nodeId 都真实存在于快照。
+   * 反查派生可能因节点表调整而返回空串——那样 selectEntity('') 会被
+   * 幽灵 ID 守卫拒绝，镜头纹丝不动而旁白照样宣称"已锁定"，属静默失败。
+   * 这里在**启动前**拦住，宁可路演起不来，也不让它在评委面前说谎。
+   */
+  try {
+    assertChaosTargets(bootApi.snapshotSummary);
+  } catch (err) {
+    bootApi.appendTerminalLog(
+      `[DEMO-DIRECTOR] 启动自检失败：${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+
   /* 代次自增：让上一轮所有在飞异步链立即过期 */
   runGeneration += 1;
   lastInjectedChaos = null;
@@ -1093,11 +1387,20 @@ export function togglePauseDemoDirector(): void {
  */
 function finishDemoDirector(): void {
   clearAllTimers();
-  abortMcp();
   if (narratorStop !== null) narratorStop();
-  actions().setDemoAutoConfirm(false);
-  /* 代次自增：让所有在飞异步链（自愈校验、MCP 回执）立即过期 */
-  runGeneration += 1;
+  /*
+   * 【关键：时间轴结束 ≠ 会话结束，不得杀掉在飞链】
+   *
+   * 这里曾误写 `runGeneration += 1`，后果是：剧本 34s 走完 → 代次自增 →
+   * 阶段 4 里等待动作卡/自愈回执的异步链在下一次检查点全部 return。
+   * 而本地 AI 流式生成动作卡大约要 28 秒，卡片在 ~39s 才水合 —— 等于
+   * **永远赶不上**，healedIds 恒为空，自愈闭环从未真正发生过。
+   *
+   * 正确的语义边界：
+   *   · 字幕时间轴走完 → 只停定时器与 TTS，业务闭环继续跑到收尾；
+   *   · 用户点停止 / 切换剧本 / 组件卸载 → 那才需要杀链（见 stop）。
+   * 因此这里**不** abortMcp、**不** 自增 runGeneration。
+   */
   status = 'finished';
   if (currentScript !== null) {
     phaseIndex = currentScript.phases.length - 1;
@@ -1128,6 +1431,7 @@ export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user')
   runGeneration += 1;
   lastInjectedChaos = null;
   narrationOverride = null;
+  healHealthBaseline = null;
 
   status = 'idle';
   currentScript = null;

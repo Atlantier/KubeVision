@@ -1061,6 +1061,7 @@ export default function ClusterCanvas() {
        * 用 object-cover 铺满容器，视觉上等同于"画面冻结"。
        */}
       {contextLost && snapshotDataUrl !== null ? (
+        /* eslint-disable-next-line @next/next/no-img-element -- 运行时内存中的 dataURL 兜底图，无需也無法经 next/image 优化 */
         <img
           src={snapshotDataUrl}
           alt=""
