@@ -30,8 +30,9 @@
  */
 
 import { spawn, execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { basename, extname, join, resolve } from 'node:path';
 
 /* ========================================================================== */
 /* 参数                                                                        */
@@ -43,6 +44,18 @@ const baseUrl = readArg('--base') ?? 'http://127.0.0.1:3000';
 const scene = readArg('--scene') ?? 'overview';
 const sizeArg = readArg('--size') ?? '1920x1080';
 const outDir = readArg('--out') ?? 'docs/summit/shots/v12-baseline';
+/**
+ * 渲染后端：swiftshader（默认，软件光栅化，可复现）| d3d11（走真实独显）
+ *
+ * 【为什么要暴露这个开关】FPS 在软渲染下没有参考价值，但 draw calls 与
+ * frameTime 有——它们是同一套指标在两种后端下的直接对照。把后端做成显式
+ * 参数，A/B 才有可比性，而不是靠人记"上次用的是哪个 GL 参数"。
+ */
+const gpuMode = readArg('--gpu') ?? 'swiftshader';
+if (gpuMode !== 'swiftshader' && gpuMode !== 'd3d11') {
+  console.error(`[FATAL] --gpu 必须是 swiftshader | d3d11，收到 "${gpuMode}"`);
+  process.exit(1);
+}
 const tag = readArg('--tag') ?? outDir.split(/[\\/]/).filter(Boolean).pop() ?? 'untagged';
 
 if (!SCENE_KEYS.includes(scene)) {
@@ -231,6 +244,16 @@ async function evaluate(cdp, expression) {
 /* ========================================================================== */
 
 async function main() {
+  /*
+   * 【--diff 分流】差异模式不需要启动截图流程，也不读 --scene。
+   * 放在最前面，避免 --scene 校验先报错。
+   */
+  const diffRequest = readDiffArgs();
+  if (diffRequest !== null) {
+    await runDiff(diffRequest.baseA, diffRequest.baseB);
+    return;
+  }
+
   console.log('KubeVision AI — 确定性场景截图（shot.mjs）');
   console.log(`  场景: ${scene} — ${SCENES[scene].label}`);
   console.log(`  视口: ${viewportWidth}x${viewportHeight} @ DPR 1`);
@@ -273,9 +296,10 @@ async function main() {
       '--headless=new',
       '--no-first-run',
       '--hide-scrollbars',
-      '--use-gl=angle',
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
+      /* ---- 渲染后端：两种模式互斥参数 ---- */
+      ...(gpuMode === 'swiftshader'
+        ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
+        : ['--use-gl=angle', '--use-angle=d3d11', '--ignore-gpu-blocklist', '--enable-gpu-rasterization']),
       '--autoplay-policy=no-user-gesture-required',
       `--window-size=${viewportWidth},${viewportHeight}`,
       `--remote-debugging-port=${CDP_PORT}`,
@@ -501,6 +525,7 @@ async function main() {
     timestamp,
     commit,
     tag,
+    gpuMode,
     viewport: { width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1 },
     metrics,
     consoleErrors: cdp.consoleErrors.length,
@@ -542,6 +567,7 @@ async function main() {
   console.log(`  截图      : ${filePath}`);
   console.log(`  元数据    : ${metaPath}`);
   console.log(`  commit    : ${commit}`);
+  console.log(`  gpuMode   : ${gpuMode}`);
   console.log(`  Store     : ${JSON.stringify(metrics?.store ?? {})}`);
   console.log(`  glStats   : ${JSON.stringify(metrics?.glStats ?? null)}`);
   console.log(`  DPR       : ${String(metrics?.dpr)} (devicePixelRatio=${metrics?.devicePixelRatio})`);
@@ -564,6 +590,530 @@ async function main() {
   }
   console.log('\n  OK');
   process.exit(0);
+}
+
+/* ========================================================================== */
+/* 差异模式（--diff tagA tagB）：零依赖 PNG 像素差                              */
+/* ========================================================================== */
+
+/**
+ * 解析 `--diff A B` 或 `--diff=A,B`。
+ *
+ * 【为什么单独解析】`--diff` 需要**两个**位置参数，常规 `readArg`
+ * 只能取一个。放在 `main()` 最前面分流，也避开 `--scene` 的合法性校验
+ * （差异模式不需要场景）。
+ *
+ * @returns {{baseA: string, baseB: string} | null}
+ */
+function readDiffArgs() {
+  const inline = process.argv.find((a) => a.startsWith('--diff='));
+  if (inline !== undefined) {
+    const parts = inline
+      .slice('--diff='.length)
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (parts.length !== 2) {
+      console.error('[FATAL] --diff= 需要逗号分隔的两个 tag：--diff=A,B');
+      process.exit(1);
+    }
+    return { baseA: parts[0], baseB: parts[1] };
+  }
+  const idx = process.argv.indexOf('--diff');
+  if (idx < 0) return null;
+  const baseA = process.argv[idx + 1];
+  const baseB = process.argv[idx + 2];
+  if (baseA === undefined || baseB === undefined || baseA.startsWith('--') || baseB.startsWith('--')) {
+    console.error('[FATAL] --diff 需要两个参数：--diff <tagA> <tagB>');
+    process.exit(1);
+  }
+  return { baseA, baseB };
+}
+
+/**
+ * 把 tag 解析成截图目录。
+ *
+ * 【解析顺序】含路径分隔符 → 当路径；已是存在的目录 → 当路径；
+ * 否则按约定拼成 `docs/summit/shots/<tag>`。
+ *
+ * @param {string} tag tag 或路径
+ * @returns {string} 绝对目录路径
+ */
+function resolveShotDir(tag) {
+  if (tag.includes('/') || tag.includes('\\')) return resolve(tag);
+  const direct = resolve(tag);
+  if (existsSync(direct) && statSync(direct).isDirectory()) return direct;
+  return resolve(join('docs/summit/shots', tag));
+}
+
+/**
+ * 收集目录下所有 PNG，返回 `Map<场景键, 绝对路径>`。
+ *
+ * 【键的取法】用去掉扩展名的文件名（如 `overview-1920x1080`）。
+ * 两个 tag 目录里同名文件即视为同一场景的 A/B 两张，按此配对。
+ *
+ * @param {string} dir 目录
+ * @returns {Map<string, string>}
+ */
+function collectPngs(dir) {
+  const map = new Map();
+  for (const name of readdirSync(dir)) {
+    if (extname(name).toLowerCase() !== '.png') continue;
+    map.set(basename(name, extname(name)), join(dir, name));
+  }
+  return map;
+}
+
+/**
+ * 在页面内执行的像素比对函数（注入后由 Node 侧调用）。
+ *
+ * 【为什么把解码放到浏览器里做】PNG 解码在 Node 侧需要 zlib + 滤镜还原
+ * （PAETH/Sub/Up 等），手写极易出错；而浏览器原生 `createImageBitmap`
+ * 就是最权威的解码器。这样**零依赖**且结果可信——正好满足"不引依赖"的约束。
+ *
+ * 【差异如何度量】
+ * 单像素取 RGBA 四通道绝对差之和 `d = |ΔR|+|ΔG|+|ΔB|+|ΔA|`，`d > 阈值`
+ * 记为"有差异"。四通道都要算：一边有内容一边透明（alpha 从 255→0）
+ * 若只看 RGB 会被判成"没变化"。
+ *
+ * 【为什么不用 SSIM】SSIM 需要滑窗统计与多次卷积，实现复杂且对
+ * "截图动画相位不同"这种大量小幅差异反而不如逐像素直观。本工具的用途是
+ * 找"哪里变了"，逐像素 + 热区网格更直接。
+ *
+ * @returns {Promise<object>} 差异结果
+ */
+const DIFF_FN_SCRIPT = `
+(() => {
+  window.__KV_DIFF__ = async (urlA, urlB, gridN, pixelThreshold) => {
+    const load = async (u) => {
+      const res = await fetch(u);
+      if (!res.ok) throw new Error('fetch failed ' + res.status + ' for ' + u);
+      const blob = await res.blob();
+      return await createImageBitmap(blob);
+    };
+    const imgA = await load(urlA);
+    const imgB = await load(urlB);
+
+    const W = Math.max(imgA.width, imgB.width);
+    const H = Math.max(imgA.height, imgB.height);
+
+    const toData = (img) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      /* 先清成全透明：尺寸不一致时缺失区域应体现为 alpha 差异，而非黑块 */
+      ctx.clearRect(0, 0, W, H);
+      ctx.drawImage(img, 0, 0);
+      return ctx.getImageData(0, 0, W, H);
+    };
+
+    const dataA = toData(imgA);
+    const dataB = toData(imgB);
+    const A = dataA.data;
+    const B = dataB.data;
+
+    const total = W * H;
+    let diffPixels = 0;
+    let sumDelta = 0;
+    let minX = W;
+    let minY = H;
+    let maxX = -1;
+    let maxY = -1;
+
+    const cells = new Array(gridN * gridN).fill(0);
+    /* 每格累计差值和，用于"变化最剧烈"的排序 */
+    const cellDelta = new Array(gridN * gridN).fill(0);
+
+    for (let y = 0; y < H; y += 1) {
+      const rowBase = y * W * 4;
+      const gy = Math.min(gridN - 1, Math.floor((y * gridN) / H));
+      for (let x = 0; x < W; x += 1) {
+        const i = rowBase + x * 4;
+        const d =
+          Math.abs(A[i] - B[i]) +
+          Math.abs(A[i + 1] - B[i + 1]) +
+          Math.abs(A[i + 2] - B[i + 2]) +
+          Math.abs(A[i + 3] - B[i + 3]);
+        if (d > pixelThreshold) {
+          diffPixels += 1;
+          sumDelta += d;
+          const gx = Math.min(gridN - 1, Math.floor((x * gridN) / W));
+          cells[gy * gridN + gx] += 1;
+          cellDelta[gy * gridN + gx] += d;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    const hotZones = [];
+    for (let idx = 0; idx < cells.length; idx += 1) {
+      if (cells[idx] === 0) continue;
+      const gx = idx % gridN;
+      const gy = Math.floor(idx / gridN);
+      hotZones.push({
+        gx,
+        gy,
+        diffCount: cells[idx],
+        deltaSum: cellDelta[idx],
+        x: Math.round((gx * W) / gridN),
+        y: Math.round((gy * H) / gridN),
+        w: Math.round(W / gridN),
+        h: Math.round(H / gridN),
+      });
+    }
+    /* 先按差像素数排，数量相同再按差值强度排 */
+    hotZones.sort((p, q) => q.diffCount - p.diffCount || q.deltaSum - p.deltaSum);
+
+    return {
+      width: W,
+      height: H,
+      sizeA: { w: imgA.width, h: imgA.height },
+      sizeB: { w: imgB.width, h: imgB.height },
+      sizeMismatch: imgA.width !== imgB.width || imgA.height !== imgB.height,
+      totalPixels: total,
+      diffPixels,
+      diffPercent: total === 0 ? 0 : (diffPixels / total) * 100,
+      meanDelta: diffPixels === 0 ? 0 : sumDelta / diffPixels,
+      bbox: maxX < 0 ? null : { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 },
+      hotZoneCount: hotZones.length,
+      hotZones: hotZones.slice(0, 12),
+      gridN,
+      pixelThreshold,
+    };
+  };
+  return { ok: true };
+})()
+`;
+
+/* ---- 差异模式的独立浏览器启动（2D canvas 解码不需要 WebGL） ---- */
+const DIFF_CDP_PORT = 9337;
+
+/**
+ * 差异模式主流程。
+ *
+ * 【为何起本地 HTTP 服务】页面要 `fetch` 两张 PNG。若直接把 1MB 图片
+ * base64 塞进 `Runtime.evaluate` 的表达式字符串，单条消息会达到数 MB，
+ * 容易触发 CDP 消息上限并让调试端口卡顿。起一个临时 HTTP 服务让页面自己
+ * 去取，既避开体积问题，也顺带通过 `Access-Control-Allow-Origin: *`
+ * 解决跨源读像素的污染问题（被污染的画布 `getImageData` 会抛 SecurityError）。
+ *
+ * @param {string} baseA 基线 tag
+ * @param {string} baseB 对比 tag
+ */
+async function runDiff(baseA, baseB) {
+  const dirA = resolveShotDir(baseA);
+  const dirB = resolveShotDir(baseB);
+
+  console.log('KubeVision AI — 截图 A/B 差异（shot.mjs --diff）');
+  console.log(`  A(${baseA}): ${dirA}`);
+  console.log(`  B(${baseB}): ${dirB}`);
+
+  if (!existsSync(dirA)) {
+    console.error(`[FATAL] A 目录不存在: ${dirA}`);
+    process.exit(1);
+  }
+  if (!existsSync(dirB)) {
+    console.error(`[FATAL] B 目录不存在: ${dirB}`);
+    process.exit(1);
+  }
+
+  const filesA = collectPngs(dirA);
+  const filesB = collectPngs(dirB);
+  const keys = [...filesA.keys()].filter((k) => filesB.has(k)).sort();
+
+  if (keys.length === 0) {
+    console.error('[FATAL] 两个目录没有同名 PNG，无法配对。');
+    console.error(`  A 含: ${[...filesA.keys()].join(', ') || '(空)'}`);
+    console.error(`  B 含: ${[...filesB.keys()].join(', ') || '(空)'}`);
+    process.exit(1);
+  }
+  console.log(`  配对成功 ${keys.length} 组: ${keys.join(', ')}`);
+
+  /* ---- 临时 HTTP 服务 ---- */
+  const server = createServer((req, res) => {
+    try {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      const key = url.searchParams.get('k');
+      const side = url.searchParams.get('s');
+      const map = side === 'a' ? filesA : side === 'b' ? filesB : null;
+      const filePath = map === null || key === null ? undefined : map.get(key);
+      if (filePath === undefined) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      const buf = readFileSync(filePath);
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'content-length': String(buf.length),
+        'access-control-allow-origin': '*',
+        'cache-control': 'no-store',
+      });
+      res.end(buf);
+    } catch {
+      res.writeHead(500);
+      res.end();
+    }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  console.log(`  临时服务: http://127.0.0.1:${port}`);
+
+  const closeServer = () => {
+    try {
+      server.close();
+    } catch {
+      /* ignore */
+    }
+  };
+  process.on('exit', closeServer);
+
+  /* ---- 启动 headless Edge ---- */
+  const EDGE_PATHS = [
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  ];
+  const edgePath = EDGE_PATHS.find((p) => existsSync(p));
+  if (edgePath === undefined) {
+    console.error('[FATAL] 未找到 Edge 浏览器。');
+    closeServer();
+    process.exit(1);
+  }
+
+  const userDataDir = join(process.env.TEMP ?? '/tmp', `kv-diff-${Date.now()}`);
+  const browser = spawn(
+    edgePath,
+    [
+      '--headless=new',
+      '--no-first-run',
+      '--hide-scrollbars',
+      `--remote-debugging-port=${DIFF_CDP_PORT}`,
+      `--user-data-dir=${userDataDir}`,
+      'about:blank',
+    ],
+    { detached: false, stdio: 'ignore' },
+  );
+  const cleanupBrowser = () => {
+    try {
+      browser.kill('SIGKILL');
+    } catch {
+      /* ignore */
+    }
+  };
+  process.on('exit', cleanupBrowser);
+
+  let target = null;
+  for (let i = 0; i < 60; i += 1) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${DIFF_CDP_PORT}/json/list`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      const list = await res.json();
+      target = list.find((t) => t.type === 'page') ?? null;
+      if (target !== null) break;
+    } catch {
+      /* 继续等 */
+    }
+    await sleep(500);
+  }
+  if (target === null) {
+    console.error('[FATAL] CDP 未就绪。');
+    cleanupBrowser();
+    closeServer();
+    process.exit(1);
+  }
+
+  const cdp = await connectCdp(target.webSocketDebuggerUrl);
+  await cdp.send('Runtime.enable');
+  await cdp.send('Page.enable');
+
+  /* 页面需要同源上下文才能 fetch 本地服务：先导航到该服务的一个稳定 URL */
+  await cdp.send('Page.navigate', { url: `http://127.0.0.1:${port}/?k=&s=` });
+  await sleep(1500);
+
+  const injected = await evaluate(cdp, DIFF_FN_SCRIPT);
+  if (injected?.ok !== true) {
+    console.error(`[FATAL] 差异函数注入失败: ${JSON.stringify(injected)}`);
+    cleanupBrowser();
+    closeServer();
+    process.exit(1);
+  }
+
+  /* ---- 逐组比对 ---- */
+  const GRID_N = 16;
+  const PIXEL_THRESHOLD = 30; /* RGBA 差值和；30 ≈ 每通道平均差 7.5，可滤掉压缩噪声 */
+  const results = [];
+
+  for (const key of keys) {
+    const urlA = `http://127.0.0.1:${port}/?k=${encodeURIComponent(key)}&s=a`;
+    const urlB = `http://127.0.0.1:${port}/?k=${encodeURIComponent(key)}&s=b`;
+    const res = await evaluate(
+      cdp,
+      `window.__KV_DIFF__(${JSON.stringify(urlA)}, ${JSON.stringify(urlB)}, ${GRID_N}, ${PIXEL_THRESHOLD})`,
+    );
+    if (res === null || res === undefined || res.__err !== undefined) {
+      console.error(`  [跳过] ${key}: ${JSON.stringify(res)}`);
+      continue;
+    }
+    results.push({ key, ...res });
+  }
+
+  cdp.close();
+  cleanupBrowser();
+  closeServer();
+
+  if (results.length === 0) {
+    console.error('[FATAL] 没有任何一组比对成功。');
+    process.exit(1);
+  }
+
+  /* ---- 输出 ---- */
+  console.log('');
+  console.log('='.repeat(78));
+  console.log('差异汇总');
+  console.log('='.repeat(78));
+  console.log('  场景                       差异像素     差异%    均值Δ   边界框');
+  console.log('  ' + '-'.repeat(74));
+  for (const r of results) {
+    const name = r.key.padEnd(24).slice(0, 24);
+    const px = String(r.diffPixels).padStart(9);
+    const pct = `${r.diffPercent.toFixed(3)}%`.padStart(8);
+    const mean = r.meanDelta.toFixed(1).padStart(7);
+    const bbox = r.bbox === null ? '—' : `${r.bbox.x},${r.bbox.y} ${r.bbox.w}x${r.bbox.h}`;
+    console.log(`  ${name} ${px} ${pct} ${mean}  ${bbox}`);
+  }
+
+  console.log('');
+  console.log('  热区（Top 6，按差异像素数排序）');
+  for (const r of results) {
+    console.log(`  [${r.key}]  ${r.hotZoneCount} 个热格 / ${r.gridN}x${r.gridN}`);
+    for (const z of r.hotZones.slice(0, 6)) {
+      console.log(
+        `    格(${z.gx},${z.gy}) 像素区 x=${z.x} y=${z.y} ${z.w}x${z.h}  差异像素=${z.diffCount}  Δ和=${z.deltaSum}`,
+      );
+    }
+    if (r.sizeMismatch) {
+      console.log(`    ! 尺寸不一致: A=${r.sizeA.w}x${r.sizeA.h} B=${r.sizeB.w}x${r.sizeB.h}（按较大画布比对，缺失区记为差异）`);
+    }
+  }
+
+  /* ---- 落盘 ---- */
+  const reportPath =
+    readArg('--report') ??
+    join('docs/summit/shots', `diff-${sanitizeTag(baseA)}-vs-${sanitizeTag(baseB)}.json`);
+  const mdPathDiff =
+    readArg('--md') ??
+    join('docs/summit/shots', `diff-${sanitizeTag(baseA)}-vs-${sanitizeTag(baseB)}.md`);
+
+  const payload = {
+    generatedAt: new Date().toISOString(),
+    commit: readCommit(),
+    baseA,
+    baseB,
+    dirA,
+    dirB,
+    gridN: GRID_N,
+    pixelThreshold: PIXEL_THRESHOLD,
+    results,
+    caveat:
+      '同一场景两次截图的动画相位（彗星位置、雷达扫描角、粒子闪烁）天然不同，' +
+      '因此 diffPercent 几乎不会为 0。本工具的用途是定位"结构变化"发生在哪，' +
+      '判断时应看热区坐标是否落在预期区域，而不是只看百分比大小。',
+  };
+
+  try {
+    mkdirSync(dirnameOf(reportPath), { recursive: true });
+    writeFileSync(reportPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+    console.log(`\n[报告] ${reportPath}`);
+  } catch (err) {
+    console.error(`[WARN] JSON 写入失败: ${String(err)}`);
+  }
+
+  const md = renderDiffMarkdown(payload);
+  try {
+    mkdirSync(dirnameOf(mdPathDiff), { recursive: true });
+    writeFileSync(mdPathDiff, md, 'utf8');
+    console.log(`[报告] ${mdPathDiff}`);
+  } catch (err) {
+    console.error(`[WARN] Markdown 写入失败: ${String(err)}`);
+  }
+
+  process.exit(0);
+}
+
+/** 取路径的目录部分（不引 path.dirname 之外的逻辑，保持可读） */
+function dirnameOf(p) {
+  const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return idx < 0 ? '.' : p.slice(0, idx);
+}
+
+/** 把 tag 清洗成安全文件名片段 */
+function sanitizeTag(tag) {
+  return tag.replace(/[\\/:\s]+/g, '_');
+}
+
+/**
+ * 生成差异 markdown 报告。
+ *
+ * @param {object} payload 差异结果
+ * @returns {string} markdown
+ */
+function renderDiffMarkdown(payload) {
+  const rows = payload.results
+    .map((r) => {
+      const bbox = r.bbox === null ? '—' : `(${r.bbox.x}, ${r.bbox.y}) ${r.bbox.w}×${r.bbox.h}`;
+      const top = r.hotZones[0];
+      const hottest = top === undefined ? '—' : `(${top.x}, ${top.y}) ${top.w}×${top.h}`;
+      return `| \`${r.key}\` | ${r.totalPixels} | ${r.diffPixels} | ${r.diffPercent.toFixed(3)}% | ${r.meanDelta.toFixed(1)} | ${bbox} | ${hottest} |`;
+    })
+    .join('\n');
+
+  const detail = payload.results
+    .map((r) => {
+      const cells = r.hotZones
+        .slice(0, 8)
+        .map(
+          (z) =>
+            `| ${z.gx},${z.gy} | ${z.x} | ${z.y} | ${z.w} | ${z.h} | ${z.diffCount} | ${z.deltaSum} |`,
+        )
+        .join('\n');
+      return `### \`${r.key}\`（差异 ${r.diffPercent.toFixed(3)}%，${r.diffPixels} px）\n\n| 格 | x | y | w | h | 差异像素 | Δ和 |\n|---|---|---|---|---|---|---|\n${cells}`;
+    })
+    .join('\n\n');
+
+  return `# 截图 A/B 差异报告
+
+> 由 \`scripts/shot.mjs --diff\` 自动生成，**请勿手改**。
+
+## 元信息
+
+| 项 | 值 |
+|---|---|
+| A | \`${payload.baseA}\` → \`${payload.dirA}\` |
+| B | \`${payload.baseB}\` → \`${payload.dirB}\` |
+| commit | \`${payload.commit}\` |
+| 生成时刻 | ${payload.generatedAt} |
+| 网格 | ${payload.gridN}×${payload.gridN} |
+| 像素阈值 | RGBA 差值和 > ${payload.pixelThreshold} |
+
+## 汇总
+
+| 场景 | 总像素 | 差异像素 | 差异% | 均值Δ | 差异边界框 | 最热格 |
+|---|---|---|---|---|---|---|
+${rows}
+
+## 热区明细（Top 8）
+
+${detail}
+
+## 判读须知
+
+${payload.caveat}
+`;
 }
 
 /**

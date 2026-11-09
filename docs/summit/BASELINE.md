@@ -109,7 +109,10 @@ Next.js `14.2.18` · React `18.3.1` · TypeScript `5.6.3`(strict) · three `r169
 | 工具 | 用途 | 命令 |
 |---|---|---|
 | `scripts/shot.mjs` | 确定性场景截图 + 渲染指标采集 | `pnpm shot --scene overview --size 1920x1080` |
+| `scripts/shot.mjs --gpu` | 切换渲染后端做同场景对照 | `pnpm shot --scene overview --gpu d3d11 --out docs/summit/shots/v12-d3d11` |
+| `scripts/shot.mjs --diff` | 两组截图的逐像素差异与热区坐标 | `pnpm shot --diff v12-baseline v12-r13` |
 | `scripts/probe-blackout.mjs` | WebGL 黑屏探针（16×16 采样点亮度轮询） | `pnpm probe:blackout --action demo --duration 60` |
+| `scripts/probe-blackout.mjs --repeat` | 可重复红绿灯：复现率 x/N + 首次黑屏延迟分布 | `pnpm probe:blackout --action demo --duration 45 --repeat 5 --md docs/summit/blackout-baseline.md` |
 | `scripts/verify-demo.mjs` | 自动路演 6 条验收（需 dev 构建） | `node scripts/verify-demo.mjs --skip-repeat` |
 | `scripts/verify.mjs` | 全站 32 项冒烟 | `pnpm verify` |
 
@@ -119,11 +122,14 @@ Next.js `14.2.18` · React `18.3.1` · TypeScript `5.6.3`(strict) · three `r169
 
 | 证据 | 位置 |
 |---|---|
-| 黑屏探针 · demo 场景 | `docs/summit/logs/probe-blackout-demo.log` |
-| 黑屏探针 · chaos-oom 场景 | `docs/summit/logs/probe-blackout-chaos-oom.log` |
-| 黑屏探针 · dpr-drop 场景（附加） | `docs/summit/logs/probe-blackout-dpr-drop.log` |
-| 基线截图（3 张） | `docs/summit/shots/v12-baseline/` |
-| 截图元数据 | `docs/summit/shots/v12-baseline/meta.json` |
+| 黑屏探针 · demo（单次） | `docs/summit/logs/probe-blackout-demo.log` |
+| 黑屏探针 · chaos-oom（单次） | `docs/summit/logs/probe-blackout-chaos-oom.log` |
+| 黑屏探针 · dpr-drop（单次） | `docs/summit/logs/probe-blackout-dpr-drop.log` |
+| **黑屏复现率基线（5 轮）** | `docs/summit/blackout-baseline.md` |
+| 黑屏探针 · 5 轮分轮日志 | `docs/summit/logs/probe-blackout-demo-r{1..5}of5.log` |
+| 基线截图（软渲染，3 张） | `docs/summit/shots/v12-baseline/` |
+| 对照截图（独显 d3d11，2 张） | `docs/summit/shots/v12-d3d11/` |
+| 跨后端像素差异报告 | `docs/summit/shots/diff-v12-baseline-vs-v12-d3d11.{json,md}` |
 | 路演红灯明细 | 本文件 §1 |
 
 ---
@@ -200,3 +206,96 @@ from 'zustand/traditional'.
 预期告警**，与 AGENTS.md 第 9 条"依赖世代锁"一致，本轮不动它（改成
 `zustand/traditional` 属于 API 迁移，超出本轮范围）。
 
+
+---
+
+## 10. 软渲染（SwiftShader）vs 独显（d3d11）实测对照
+
+本节是追问 3 的落点：把"两种环境"的差异**实测**出来，而不是凭印象描述。
+
+### 10.1 采集方法
+
+`scripts/shot.mjs` 新增 `--gpu swiftshader|d3d11` 开关，同一场景定义、
+同一视口（1920×1080 @ DPR 1）、同一 Store 状态，仅切换 GL 后端：
+
+```bash
+node scripts/shot.mjs --scene overview --gpu swiftshader --out docs/summit/shots/v12-baseline
+node scripts/shot.mjs --scene overview --gpu d3d11      --out docs/summit/shots/v12-d3d11
+```
+
+| 后端 | 启动参数 |
+|---|---|
+| `swiftshader` | `--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader` |
+| `d3d11` | `--use-gl=angle --use-angle=d3d11 --ignore-gpu-blocklist --enable-gpu-rasterization` |
+
+### 10.2 实测结果
+
+| 指标 | SwiftShader（软件） | d3d11（RTX 5070 Laptop） | 倍率 |
+|---|---|---|---|
+| `renderer` 串 | `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)` | `ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Laptop GPU (0x00002D18) Direct3D11 vs_5_0 ps_5_0, D3D11)` | — |
+| `frameTimeMs`（overview） | 568.3 | 4.0 | 约 **142×** |
+| `frameTimeMs`（oom） | 623.5 | 2.1 | 约 **297×** |
+| `fps`（overview） | 2 | 249 | — |
+| `fps`（oom） | 2 | 468 | — |
+| `drawCalls`（overview） | 403 | **1** | 见 §10.3 |
+| `triangles`（overview） | 188,738 | **1** | 见 §10.3 |
+| `ctxLost` | false | false | — |
+| 画面是否正确 | 正确 | 正确 | — |
+
+两边画面均**完整正确渲染**（三机架 + 控制平面晶体 + 光缆弧线 + 地面拓扑环 + 光学玻璃 HUD 全部在位），不存在"软渲染能看、独显黑屏"或反之的情况。`ctxLost` 均为 `false`。
+
+### 10.3 关键修正：`drawCalls` 在当前采样方式下**不可跨后端比较**
+
+独显下 `drawCalls = 1`、`triangles = 1`，而画面明显渲染了全部几何。这不是渲染失败，
+而是**指标采样竞态**：
+
+- `glStats` 由轮询读取 `renderer.info.render.calls`；
+- `renderer.info` 在**每次 render 开始时重置**；
+- SwiftShader 下每秒仅 2 帧，轮询几乎必然落在"一帧已累计完"的时刻 → 读到 403 这一真实值；
+- d3d11 下每秒 249~468 帧，轮询落到的是"下一帧刚开始、只累计了 1 次 draw"的时刻 → 读到 1。
+
+**因此本文件此前的表述需要收窄**：`drawCalls` 在同一后端、低帧率下是有效证据；
+**跨后端不可比**，除非把采样改为"每帧渲染结束后同步累加"（属于业务代码改动，
+不在本轮零改动约束内）。
+
+### 10.4 结论：什么能作为证据，什么不能
+
+| 指标 | 能否作为证据 | 说明 |
+|---|---|---|
+| **FPS** | **否** | SwiftShader 的 2 fps 只反映 CPU 软件光栅化，与产品在真机上的表现无关。任何用 FPS 论证"性能好/差"的说法都不成立。 |
+| **frameTimeMs** | **是（限同后端）** | 142~297× 的差距真实存在且可复现，适合同一后端的前后对比；跨后端只能说明"软渲染慢"，不能评价产品。 |
+| **drawCalls / triangles** | **是（限同后端且低帧率）** | 见 §10.3：当前轮询采样在高帧率下失真。同一后端前后对比有效（如 403 → 396 是真实下降），跨后端无效。 |
+| **ctxLost** | **是（跨后端）** | 直接取自 `WebGLRenderingContext.isContextLost()`，与帧率无关。 |
+| **像素截图 A/B 差异%** | **仅限同后端** | 见 §10.5：两种后端的泛光/曝光不一致，跨后端像素差异不代表回归。 |
+| **Store / DOM 断言** | **是（跨后端）** | 与渲染后端完全无关，是最可靠的证据层。 |
+
+### 10.5 像素级差异：跨后端不可比，同后端可用于找回归
+
+用 `scripts/shot.mjs --diff` 对同一场景的两种后端截图做逐像素比对
+（16×16 热点网格，RGBA 差值和阈值 30）：
+
+| 场景 | 差异像素 | 差异% | 均值 Δ | 差异边界框 | 热格数(/256) |
+|---|---|---|---|---|---|
+| `overview` | 762,970 | **36.794%** | 77.2 | (9, 8) 1886×1063 | 172 |
+| `oom` | 833,446 | **40.193%** | 187.7 | (9, 8) 1886×1063 | 180 |
+
+取景几乎一致（三机架相对位置相同），差异主要来自：
+
+1. **泛光/曝光不一致**——d3d11 下地面拓扑环与光缆明显更亮更蓝，SwiftShader 偏暗；
+   后处理（bloom / tone mapping）在两个后端下的浮点行为与精度不同。
+2. **动画相位不同**——彗星位置、雷达扫描角、粒子闪烁在两帧之间本就不同。
+3. **HUD 文本数值不同**——`req/s` 等实时数字每次截图都在变。
+
+**判读规则**：`--diff` 的正确用法是**同一后端、前后两次提交**的对比（找回归），
+而不是跨后端对比。跨后端的 37%~40% 只能说明"两种渲染器输出本就不一致"，
+不构成任何质量结论。
+
+### 10.6 两条能跨环境站稳的证据线
+
+1. **场景图 + Store + DOM 断言**（`scripts/verify.mjs` 32 项、`scripts/verify-demo.mjs` 的 Store 读取）：
+   与 GPU 无关，软渲染环境下同样是真值。
+2. **`frameTimeMs` 的同后端时序对比**：同一台机器、同一后端，改动前后各取一次，
+   能真实反映"变重了还是变轻了"。
+
+凡是要拿去说服评委的性能数字，都必须同时标注**后端**与**是否同后端对比**，
+否则就是在用一个不可比的口径制造结论。
