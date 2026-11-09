@@ -29,15 +29,19 @@
  * 【响应式】中翼横向滚动适配小屏；左右两翼在窄屏收敛为图标 + 关键数值。
  */
 
-import { useCallback, useMemo, type ReactNode } from 'react';
-import { motion } from 'framer-motion';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
   Boxes,
+  Clapperboard,
   Gauge,
   OctagonAlert,
+  Pause,
+  Play,
   Radar,
   Radio,
   Search,
+  Square,
   Terminal,
   X,
   Zap,
@@ -45,6 +49,17 @@ import {
 
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
+import {
+  DEMO_SCRIPTS,
+  registerDemoNarrator,
+  startDemoDirector,
+  stopDemoDirector,
+  togglePauseDemoDirector,
+  useDemoDirector,
+  type DemoDirectorSnapshot,
+  type DemoScriptId,
+} from '@/utils/demoDirector';
+import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
 import type { ChaosScenario, PodStatus, TelemetrySnapshot } from '@/types/cluster';
 import type { ConnectionMode, StatusFilter } from '@/types/store';
 import type {
@@ -667,6 +682,177 @@ export function ModeToggle({ mode, onChange, disabled = false }: ModeToggleProps
 }
 
 /* ========================================================================== */
+/* 剧本路演：顶栏启动按钮 + 导演字幕条                                            */
+/* ========================================================================== */
+
+/** 单条剧本菜单项（按钮下拉里的一行） */
+function DemoScriptMenuItem({
+  label,
+  title,
+  durationMs,
+  onSelect,
+}: {
+  readonly label: string;
+  readonly title: string;
+  readonly durationMs: number;
+  readonly onSelect: () => void;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        'flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
+        'hover:bg-cyan-400/[0.10] focus-visible:bg-cyan-400/[0.10] focus-visible:outline-none',
+      )}
+      title={title}
+    >
+      <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-cyan-400" aria-hidden />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-mono text-[11px] tracking-tight text-slate-200">
+          {label}
+        </span>
+        <span className="mt-0.5 block font-mono text-[9px] tabular-nums text-slate-500">
+          约 {Math.round(durationMs / 1000)} 秒 · 4 阶段
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/**
+ * DemoDirectorBar —— 全息路演导演字幕条。
+ *
+ * 【为何不居中于全屏而是居中于 3D 视口】阶段 3 的核心看点是右侧抽屉里的
+ * 流式推理链与 GenAI 卡片。若字幕条按全屏居中，它会正好压在抽屉标题栏上，
+ * 把最该展示的内容挡住。因此定位交给调用方用「视口矩形」约束，
+ * 本组件只负责排版。
+ *
+ * 【信息层级】徽标（第几阶段）→ 字幕正文（最重）→ 进度 → 操作。
+ * 评委的视线落点是字幕正文，所以它占据唯一的可伸缩空间并加粗提亮。
+ */
+function DemoDirectorBar({
+  demo,
+  onStop,
+  onTogglePause,
+}: {
+  readonly demo: DemoDirectorSnapshot;
+  readonly onStop: () => void;
+  readonly onTogglePause: () => void;
+}): React.ReactElement {
+  const elapsedSec = (demo.elapsedMs / 1000).toFixed(1);
+  const totalSec = Math.round(demo.durationMs / 1000);
+  const progressPct = Math.round(demo.progress * 100);
+  const isPaused = demo.status === 'paused';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.28, ease: 'easeOut' }}
+      className="pointer-events-auto w-full max-w-[54rem] overflow-hidden rounded-md border border-cyan-400/25 bg-slate-950/72 backdrop-blur-xl"
+      style={{ boxShadow: '0 10px 34px rgba(2,6,23,0.72), inset 0 0 24px rgba(34,211,238,0.06)' }}
+      role="status"
+      aria-live="polite"
+      aria-label={`剧本路演进行中：${demo.badge}`}
+    >
+      {/* 顶缘 1px 折射亮边（与 3D HUD 同一套玻璃语言） */}
+      <span
+        aria-hidden
+        className="block h-px w-full"
+        style={{
+          background:
+            'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.55) 30%, rgba(165,243,252,0.9) 50%, rgba(34,211,238,0.55) 70%, transparent 100%)',
+        }}
+      />
+
+      <div className="flex items-center gap-2.5 px-3 py-2">
+        {/* ---- 左：剧本标识 + 4 阶段进度点 ---- */}
+        <div className="flex shrink-0 items-center gap-2">
+          <Clapperboard
+            className={cn(
+              'h-3.5 w-3.5 shrink-0',
+              isPaused ? 'text-amber-300' : 'text-cyan-300 animate-glow-pulse',
+            )}
+            aria-hidden
+          />
+          <span className="flex items-center gap-1" aria-hidden>
+            {demo.phases.map((phase): React.ReactNode => {
+              const reached = demo.phaseIndex >= phase.index;
+              const isCurrent = demo.phaseIndex === phase.index;
+              return (
+                <span
+                  key={`demo-dot-${phase.index}`}
+                  className={cn(
+                    'block rounded-full transition-all duration-200',
+                    isCurrent ? 'h-1.5 w-3.5' : 'h-1.5 w-1.5',
+                    reached ? 'bg-cyan-300' : 'bg-white/[0.14]',
+                  )}
+                  style={isCurrent ? { boxShadow: '0 0 6px rgba(34,211,238,0.9)' } : undefined}
+                />
+              );
+            })}
+          </span>
+        </div>
+
+        {/* ---- 中：徽标 + 字幕正文 ---- */}
+        <div className="flex min-w-0 flex-1 flex-col leading-tight">
+          <span className="truncate font-mono text-[9px] tracking-[0.14em] text-cyan-300/80">
+            {demo.badge}
+          </span>
+          <span className="mt-0.5 truncate text-[11px] font-medium tracking-tight text-slate-100">
+            {demo.narration}
+          </span>
+        </div>
+
+        {/* ---- 右：计时 + 进度 + 操作 ---- */}
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="font-mono text-[9px] tabular-nums text-slate-500">
+            {elapsedSec}s / {totalSec}s
+          </span>
+
+          <span
+            aria-hidden
+            className="relative h-1 w-20 overflow-hidden rounded-full bg-white/[0.08]"
+            title={`路演进度 ${progressPct}%`}
+          >
+            <span
+              className="absolute inset-y-0 left-0 rounded-full bg-cyan-300 transition-[width] duration-200"
+              style={{ width: `${progressPct}%`, boxShadow: '0 0 6px rgba(34,211,238,0.8)' }}
+            />
+          </span>
+
+          <button
+            type="button"
+            onClick={onTogglePause}
+            aria-label={isPaused ? '继续剧本路演' : '暂停剧本路演'}
+            title={isPaused ? '继续' : '暂停'}
+            className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200"
+          >
+            {isPaused ? (
+              <Play className="h-2.5 w-2.5" aria-hidden />
+            ) : (
+              <Pause className="h-2.5 w-2.5" aria-hidden />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={onStop}
+            aria-label="停止剧本路演并复位集群"
+            title="停止并复位"
+            className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
+          >
+            <Square className="h-2.5 w-2.5" aria-hidden />
+          </button>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/* ========================================================================== */
 /* TopBar 主体                                                                 */
 /* ========================================================================== */
 
@@ -763,12 +949,105 @@ export default function TopBar() {
     setPerfHudOpen(!isPerfHudOpen);
   }, [isPerfHudOpen, setPerfHudOpen]);
 
+  /* ---- 剧本路演（Auto-Play Demo Director）---- */
+
+  /** 订阅路演状态机（模块级单例，按钮与字幕条共享同一份状态） */
+  const demo = useDemoDirector();
+
+  /** 剧本选择菜单的开合（仅 idle 时需要） */
+  const [isDemoMenuOpen, setIsDemoMenuOpen] = useState(false);
+
+  /**
+   * 字幕条的定位矩形（相对 3D 视口的 left 与 width）。
+   *
+   * 【为何要运行时测量】drawer 宽度由 `--drawer-w` 百分比驱动且可拖拽，
+   * 纯 CSS 无法让"居中于左侧视口"与"避开右侧抽屉"同时成立。
+   * 直接量视口的 getBoundingClientRect 是最可靠的做法：
+   * 拖拽分栏 / 窗口缩放时用 ResizeObserver 跟随。
+   */
+  const [sceneRect, setSceneRect] = useState<{ left: number; width: number } | null>(null);
+
+  /** 语音解说（若环境支持则随字幕同步朗读） */
+  const tts = useSpeechSynthesis();
+
+  /**
+   * 注册解说员：把路演引擎的字幕交给 TTS。
+   *
+   * 【为何按需注册而非恒定注册】语音合成依赖浏览器能力与用户偏好；
+   * 引擎侧只持有回调，不反向依赖 React Hook。dispose 时注销，
+   * 避免顶栏卸载后仍向已销毁的 speechSynthesis 派发。
+   */
+  useEffect((): (() => void) | undefined => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return undefined;
+    return registerDemoNarrator((text: string): void => {
+      tts.speak(text, 'demo-director');
+    });
+  }, [tts]);
+
+  /**
+   * 路演进行中：跟随 3D 视口尺寸变化更新字幕条定位。
+   *
+   * 【为何用 ResizeObserver 而不只监听 window.resize】拖拽左右分栏时
+   * 窗口尺寸不变、只有视口元素变窄；只监听 resize 会让字幕条在拖拽后
+   * 停在错误位置、重新压住抽屉。
+   */
+  useEffect((): (() => void) | undefined => {
+    if (demo.status === 'idle') {
+      setSceneRect(null);
+      return undefined;
+    }
+    const measure = (): void => {
+      const el = document.querySelector('[aria-label="3D 集群拓扑视口"]');
+      if (el === null) return;
+      const rect = el.getBoundingClientRect();
+      setSceneRect({ left: rect.left, width: rect.width });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    const target = document.querySelector('[aria-label="3D 集群拓扑视口"]');
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (observer !== null && target !== null) observer.observe(target);
+    return (): void => {
+      window.removeEventListener('resize', measure);
+      if (observer !== null) observer.disconnect();
+    };
+  }, [demo.status]);
+
+  /* 卸载即停由 useDemoDirector 钩子内部负责（见 demoDirector.ts），此处不重复注册 */
+
+
+  const handleStartDemo = useCallback((scriptId: DemoScriptId): void => {
+    setIsDemoMenuOpen(false);
+    startDemoDirector(scriptId);
+  }, []);
+
+  const handleStopDemo = useCallback((): void => {
+    setIsDemoMenuOpen(false);
+    stopDemoDirector('user');
+  }, []);
+
+  const handleToggleDemoPause = useCallback((): void => {
+    togglePauseDemoDirector();
+  }, []);
+
+  const handleToggleDemoMenu = useCallback((): void => {
+    /* 路演进行中时按钮语义是"停止"，不展开菜单 */
+    if (demo.status === 'running' || demo.status === 'paused' || demo.status === 'finished') {
+      handleStopDemo();
+      return;
+    }
+    setIsDemoMenuOpen((open): boolean => !open);
+  }, [demo.status, handleStopDemo]);
+
+  const isDemoActive = demo.status !== 'idle';
+
   const healthScore = snapshot.clusterHealthScore;
   const healthTier = resolveHealthTier(
     Number.isNaN(healthScore) ? 0 : Math.min(100, Math.max(0, Math.round(healthScore))),
   );
 
   return (
+    <>
     <header className="kv-panel relative z-30 flex h-12 shrink-0 items-center gap-3 rounded-none border-x-0 border-t-0 border-b border-white/[0.07] px-3 sm:px-4">
       {/* ============ 左翼：品牌 + 竖分割线 + 紧凑健康环 ============ */}
       <div className="flex shrink-0 items-center gap-2.5">
@@ -847,8 +1126,72 @@ export default function TopBar() {
         ) : null}
       </div>
 
-      {/* ============ 右翼：双模拨片 + 混沌二合一 + 性能 HUD ============ */}
+      {/* ============ 右翼：剧本路演 + 双模拨片 + 混沌二合一 + 性能 HUD ============ */}
       <div className="flex shrink-0 items-center gap-2">
+        {/*
+         * 剧本路演按钮（Auto-Play Demo Director）。
+         *
+         * 【为何是最醒目的一个】答辩场景里这是**唯一一个评委自己会想点的按钮**：
+         * 它承诺"点下去就能看完整场演示"。因此给它唯一的实心青色底，
+         * 与其他描边式控件区分开——顶栏里只能有一个"主角按钮"。
+         *
+         * 【三态语义】
+         * · idle    → 点击展开剧本菜单（两套剧本）
+         * · running → 按钮变红语义，点击即停止并复位
+         * · paused  → 同上（停止优先于暂停，暂停按钮在字幕条上）
+         */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={handleToggleDemoMenu}
+            aria-haspopup={isDemoActive ? undefined : 'menu'}
+            aria-expanded={isDemoActive ? undefined : isDemoMenuOpen}
+            aria-label={
+              isDemoActive
+                ? '停止剧本路演并复位集群'
+                : '启动全自动剧本路演（OOM 全链路自愈 / CNI 网络延迟追踪）'
+            }
+            aria-pressed={isDemoActive}
+            title={isDemoActive ? '停止剧本路演' : '一键全自动剧本路演（评委演示模式）'}
+            className={cn(
+              'flex items-center gap-1.5 rounded-lg border px-2 py-1.5',
+              'font-mono text-[11px] tracking-tight transition-colors duration-150',
+              isDemoActive
+                ? 'border-rose-400/45 bg-rose-500/[0.12] text-rose-200 hover:border-rose-400/70 hover:bg-rose-500/20'
+                : 'border-cyan-400/45 bg-cyan-400/[0.14] text-cyan-200 hover:border-cyan-300/70 hover:bg-cyan-400/25',
+            )}
+          >
+            <Clapperboard
+              className={cn('h-3.5 w-3.5', isDemoActive ? 'text-rose-300' : 'text-cyan-300')}
+              aria-hidden
+            />
+            {/* 文案在 < xl 隐藏，故 aria-label 承担完整可访问名称 */}
+            <span className="hidden xl:inline">{isDemoActive ? '停止路演' : '剧本路演'}</span>
+          </button>
+
+          {/* 剧本选择菜单：只在 idle 且展开时出现 */}
+          {!isDemoActive && isDemoMenuOpen ? (
+            <div
+              role="menu"
+              aria-label="选择路演剧本"
+              className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/92 p-1 shadow-[0_16px_40px_rgba(2,6,23,0.85)] backdrop-blur-xl"
+            >
+              <p className="px-2 pb-1 pt-1 font-mono text-[9px] uppercase tracking-[0.16em] text-slate-500">
+                自动路演剧本
+              </p>
+              {DEMO_SCRIPTS.map((script): ReactNode => (
+                <DemoScriptMenuItem
+                  key={script.id}
+                  label={script.label}
+                  title={script.title}
+                  durationMs={script.durationMs}
+                  onSelect={(): void => handleStartDemo(script.id)}
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
+
         <ModeToggle mode={connectionMode} onChange={setMode} />
 
         {/* 混沌演练二合一控件：未激活是按钮，激活后原地变为告警胶囊 */}
@@ -885,5 +1228,44 @@ export default function TopBar() {
         </button>
       </div>
     </header>
+
+    {/*
+     * ---- 全息路演导演字幕条 ----
+     *
+     * 【定位】fixed + 运行时测量的视口矩形（left / width）。
+     * 只居中于 3D 视口、不跨到右侧抽屉——阶段 3 的看点是抽屉里的
+     * 流式推理链，字幕条压上去就把主角挡住了。
+     *
+     * 【层级】z-40：高于顶栏（z-30）与 3D 画布，低于混沌弹窗（z-50）。
+     * 与 PerfHUD 同级——两者都是"演示期叠加层"，不该互相遮挡（它们分处
+     * 画面不同角落）。
+     *
+     * 【pointer-events】外层 none、内层 auto：字幕条未覆盖的区域
+     * 不吞掉 3D 视口的鼠标事件，用户仍可拖动旋转视角。
+     */}
+    <AnimatePresence>
+      {isDemoActive ? (
+        <div
+          /*
+           * lg:pl-[23rem]：左上角检视面板宽 320~340px + 左边距，共约 352px。
+           * 字幕条是"居中于视口"的，若不做这个左内边距，它会横跨到视口左缘，
+           * 正好盖住检视面板的标尺行与节点名——而那恰是演示中要展示的内容。
+           * 加内边距后，居中区变成"检视面板右侧的剩余空间"，两者互不遮挡。
+           */
+          className="pointer-events-none fixed top-14 z-40 flex justify-center px-4 lg:pl-[23rem]"
+          style={{
+            left: sceneRect?.left ?? 0,
+            width: sceneRect?.width ?? '100vw',
+          }}
+        >
+          <DemoDirectorBar
+            demo={demo}
+            onStop={handleStopDemo}
+            onTogglePause={handleToggleDemoPause}
+          />
+        </div>
+      ) : null}
+    </AnimatePresence>
+    </>
   );
 }
