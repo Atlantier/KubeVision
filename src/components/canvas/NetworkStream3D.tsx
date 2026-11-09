@@ -82,14 +82,13 @@ import {
 const LANE_COUNT = 3;
 
 /**
- * 每车道数据包粒子数。
+ * 每车道数据包粒子数（彗星簇常量的完整推导见下方「8 节彗星拖尾」区）。
  *
- * 【为何从 26 提到 32】配合本轮新增的「微螺旋绕流偏移」，粒子不再严格
- * 共线；密度必须再提高一档，才能在视觉上从"稀疏点阵"变成"连续的星尘带"。
- * 弧长 ~14 世界单位上均布 32 颗，基准间距约 0.44，叠加绕流偏移后
- * 前后错落，观感接近被风吹散的发光尘埃而非排队前进。
+ * 【本轮变更 42 → 48】彗星簇是 8 节一组，粒子数必须是 8 的整数倍，
+ * 否则最后一个簇会被截断成"半截彗星"（尾迹少几节）。48 = 6 个完整簇，
+ * 同时比 42 更密，弧线上的脉冲节奏更连贯。
  */
-const PACKETS_PER_LANE = 42;
+const PACKETS_PER_LANE = 48;
 
 /** 粒子总数（InstancedMesh 固定容量，严禁随数据变化——args 重建灾难同 Pod 渲染器） */
 const PACKET_TOTAL = LANE_COUNT * PACKETS_PER_LANE;
@@ -135,11 +134,9 @@ const RIBBON_CORE_RADIUS = 0.026;
  */
 const RIBBON_SHEATH_RADIUS = 0.082;
 
-/** 彗星光梭的横向缩放（X/Y 收窄，形成流线） */
-const COMET_SCALE_XZ = 0.55;
-
-/** 彗星光梭沿运动切线方向的拉伸倍数（相对 PACKET_RADIUS） */
-const COMET_SCALE_LENGTH = 3.6;
+/* 说明：原 COMET_SCALE_XZ / COMET_SCALE_LENGTH 两个常量已随
+   「单节主包」体系一同移除——本轮改为 8 节彗星簇，
+   尺寸由 COMET_WIDTH_TABLE / COMET_LENGTH_TABLE 逐节查表决定。 */
 
 /** 火花粒子的螺旋包络半径（拱顶最散、两端最收） */
 const SPARK_SPIRAL_RADIUS = 0.62;
@@ -157,45 +154,138 @@ const SPARK_SPIRAL_RATE = 6.5;
 const PACKET_RADIUS = 0.038;
 
 /* --------------------------------------------------------------------------
- * 主数据包 + 尾迹次级粒子（脉冲星点感）
+ * 8 节彗星拖尾流光簇（Head-to-Tail Comet Taper）
  *
- * 【演进说明】早期实现用三级等距粒径（0.7 / 1.0 / 1.4）循环，
- * 虽有一定景深错落，但三档等概率出现导致"主次不分"——
- * 看上去像一串大小随机的珠子，而不是有节奏的数据流。
- * 现改为「每 3 颗一组：1 颗主包 + 2 颗尾迹」，且尾迹在曲线上落后于主包，
- * 形成"亮核拖尾"的脉冲星点节奏。
+ * 【演进说明】旧实现是「每 3 颗一组：1 颗主包 + 2 颗等距尾迹」，
+ * 尾迹只有 2 节且尺寸是离散两档（0.42 / 0.30）。观感上是一个亮核
+ * 拖着两粒微光，节奏能读出来，但**缺少连续衰减的形体**——
+ * 真实彗尾是连续收缩的锥形，而不是"大头 + 几个小球"。
+ *
+ * 【新方案】每 8 颗构成一个完整彗星簇：
+ *   · 第 0 颗 = 彗星头（Head）
+ *   · 第 1~7 颗 = 渐缩尾迹（Tapered Tail），
+ *     截面与纵向拉伸按**等比数列**从头部值衰减到尾部值，
+ *     颜色沿同一条插值路径从亮青过渡到深电光蓝。
+ * 等比（而非等差）衰减是关键：等差衰减的中段仍然很粗，
+ * 看起来像"一串珠子"；等比衰减才是真正的锥形拖尾。
  * -------------------------------------------------------------------------- */
 
-/** 每 N 颗出现一个主包（其余为尾迹），形成"大核 + 小尾"的节奏 */
-const PACKET_MAIN_PERIOD = 3;
+/** 每个彗星簇的节数：1 头 + 7 尾 */
+const COMET_SEGMENTS = 8;
+
+/** 相邻两节之间的相位滞后（u 域）：尾迹逐节后退，形成时间差拖尾 */
+const COMET_SEGMENT_LAG_U = 0.012;
+
+/** 彗星头的横向缩放与纵向拉伸 */
+const COMET_HEAD_WIDTH = 1.15;
+const COMET_HEAD_LENGTH = 3.2;
+
+/** 尾迹首节（紧跟头部）与末节（最远最细）的横向缩放 */
+const COMET_TAIL_WIDTH_FIRST = 0.85;
+const COMET_TAIL_WIDTH_LAST = 0.14;
+
+/** 尾迹首节与末节的纵向拉伸 */
+const COMET_TAIL_LENGTH_FIRST = 2.4;
+const COMET_TAIL_LENGTH_LAST = 0.6;
+
+/** 彗星头颜色：高锐度青白核芯 */
+const COMET_HEAD_COLOR = new THREE.Color('#e0f2fe');
+/** 尾迹首色：亮青 */
+const COMET_TAIL_COLOR_NEAR = new THREE.Color('#38bdf8');
+/** 尾迹末色：深电光蓝 */
+const COMET_TAIL_COLOR_FAR = new THREE.Color('#0284c7');
 
 /**
- * 主数据包粒径（相对 PACKET_RADIUS）。
+ * 逐节的横向缩放表（模块级预计算）。
  *
- * 【为何是 1.35】旧实现三档等距循环（0.7 / 1.0 / 1.4）主次不分，
- * 看上去是一串大小随机的珠子。改为"每 3 颗中 1 颗主包 1.35×、另两颗为
- * 明显更小的尾迹"后，视觉上形成脉冲星点：一个亮核拖着两点微光。
+ * 【核心数学：等比衰减】第 i 节（i ∈ [1,7]）的归一化位置 f = i / 7，
+ *   width(i) = FIRST · (LAST / FIRST)^f
+ * 取指数形式而不是线性插值，让相邻两节的比值恒定：
+ *   0.85 → 0.62 → 0.45 → 0.33 → 0.24 → 0.17 → 0.13 → 0.14(末)
+ * 这条曲线在头部附近下降快、尾部趋于平缓，正是彗尾的形态特征。
+ *
+ * 【为何在模块级预计算】useFrame 每帧要为 144 个实例取值，
+ * 若在循环里做 pow() 就是每帧 144 次超越函数调用。查表把这项成本归零。
  */
-const PACKET_MAIN_SCALE = 1.35;
+const COMET_WIDTH_TABLE: Float32Array = (() => {
+  const table = new Float32Array(COMET_SEGMENTS);
+  table[0] = COMET_HEAD_WIDTH;
+  const ratio = COMET_TAIL_WIDTH_LAST / COMET_TAIL_WIDTH_FIRST;
+  for (let i = 1; i < COMET_SEGMENTS; i += 1) {
+    /* i-1 而非 i：第 1 节尾迹应当正好等于 FIRST，末节正好等于 LAST */
+    const f = (i - 1) / (COMET_SEGMENTS - 2);
+    table[i] = COMET_TAIL_WIDTH_FIRST * Math.pow(ratio, f);
+  }
+  return table;
+})();
 
-/** 尾迹粒子粒径 A（紧跟主包） */
-const PACKET_TAIL_SCALE_A = 0.42;
-
-/** 尾迹粒子粒径 B（更靠后、更暗，形成衰减尾迹） */
-const PACKET_TAIL_SCALE_B = 0.3;
+/** 逐节的纵向拉伸表（构造方式同宽度表） */
+const COMET_LENGTH_TABLE: Float32Array = (() => {
+  const table = new Float32Array(COMET_SEGMENTS);
+  table[0] = COMET_HEAD_LENGTH;
+  const ratio = COMET_TAIL_LENGTH_LAST / COMET_TAIL_LENGTH_FIRST;
+  for (let i = 1; i < COMET_SEGMENTS; i += 1) {
+    const f = (i - 1) / (COMET_SEGMENTS - 2);
+    table[i] = COMET_TAIL_LENGTH_FIRST * Math.pow(ratio, f);
+  }
+  return table;
+})();
 
 /**
- * 尾迹粒子的曲线参数回退量（u 域）。
+ * 逐节的尾迹颜色表（模块级预计算）。
  *
- * 【几何含义】尾迹粒子在同一车道上取 `u − offset` 的位置采样，
- * 因此它们**始终跟在主包后面**，而不是各自独立游走。
- * 0.012 约为拱形光缆弧长的 1.2%，在 32 颗/车道的密度下刚好形成
- * 可辨识的拖尾，又不会与主包重叠成一坨。
+ * 【为何预计算 Color 而非每帧 lerp】每帧 144 次 Color.lerp 会产生
+ * 144 次浮点插值 + 144 次 setColorAt 内部读改写。预先算好 7 个颜色，
+ * 运行时直接 setColorAt(idx, 表项) 即可——零插值开销。
  */
-const PACKET_TAIL_OFFSET_U = 0.012;
+const COMET_COLOR_TABLE: ReadonlyArray<THREE.Color> = (() => {
+  const table: THREE.Color[] = [];
+  table.push(COMET_HEAD_COLOR);
+  for (let i = 1; i < COMET_SEGMENTS; i += 1) {
+    const f = (i - 1) / (COMET_SEGMENTS - 2);
+    /* clone 后原地 lerp：不污染模块级常量 */
+    table.push(COMET_TAIL_COLOR_NEAR.clone().lerp(COMET_TAIL_COLOR_FAR, f));
+  }
+  return table;
+})();
 
-/** 尾迹 B 相对尾迹 A 的额外回退（两级衰减） */
-const PACKET_TAIL_OFFSET_EXTRA_U = 0.011;
+/* --------------------------------------------------------------------------
+ * 流量负载联动（QPS / 节点 CPU → 脉冲速度与星火活跃度）
+ * -------------------------------------------------------------------------- */
+
+/**
+ * 负载倍率的基准与增益。
+ *
+ * 【公式来源】loadSpeedMultiplier =
+ *   clamp(0.75 + (totalQps/5000)·0.65 + (nodeCpu/100)·0.6, 0.75, 2.4)
+ *
+ * 逐项含义：
+ * · 0.75 是**空载基线**——即便 QPS 为 0、CPU 为 0，光缆仍有 75% 基础流速，
+ *   否则稳态看起来像"断线"。这是常被忽略但很关键的一项。
+ * · QPS 项上限 0.65：5000 QPS 时贡献 0.65，即约 87% 的加速来自流量。
+ * · CPU 项上限 0.6：满负载节点额外贡献 0.6，表达"节点越忙、链路越热"。
+ * · 钳制上限 2.4 防止极端值让粒子跳出曲线（u 推进过快会产生跳帧感）。
+ */
+const LOAD_BASE = 0.75;
+const LOAD_QPS_GAIN = 0.65;
+const LOAD_QPS_DIVISOR = 5000;
+const LOAD_CPU_GAIN = 0.6;
+const LOAD_MIN = 0.75;
+const LOAD_MAX = 2.4;
+
+/**
+ * 负载对尾迹拉伸的增益上限。
+ *
+ * 【为何负载越高尾迹越长】速度越快，同一颗粒子在曝光时间内走过的弧长越长，
+ * 运动模糊就越明显——这是摄影里的物理事实。把速度倍率直接映射到尾迹
+ * 纵向拉伸（×0.55 ~ ×1.45）后，高负载时彗星自动"拉丝"，
+ * 低负载时收成短促光点，系统忙碌程度一眼可辨。
+ */
+const TRAIL_STRETCH_MIN = 0.55;
+const TRAIL_STRETCH_MAX = 1.45;
+
+/** 星火被掠过彗星激发的判定窗口（u 域半宽） */
+const SPARK_EXCITE_WINDOW = 0.045;
 
 /* ---- 车道严重度枚举与阈值 ---- */
 
@@ -238,16 +328,10 @@ const SWIRL_PHASE_STEP = 2.1;
  */
 const SWIRL_UV_RATE = 18.0;
 
-/**
- * 参与绕流的粒子比例判定。
- *
- * 【为何排除每 3 颗中的第 3 颗】若所有粒子都偏心，光缆在视觉上会失去
- * 一条可信的"中心线"，观感变成一团散点云。
- * 保留 1/3 粒子严格贴线飞行，缆线走向始终清晰可读，
- * 其余 2/3 绕流形成体积 —— 这是"有骨架的星尘"而非"无组织的噪声"。
- */
-const SWIRL_SKIP_MODULO = 3;
-const SWIRL_SKIP_REMAINDER = 2;
+/* 说明：原 SWIRL_SKIP_MODULO / SWIRL_SKIP_REMAINDER 两个常量用于
+   「每 3 颗跳过 1 颗」的旧绕流规则。本轮改为 8 节彗星簇后，
+   贴线的职责由**彗星头**承担（头部严格贴线、尾迹逐节散开），
+   不再需要按模数挑选——因此这两个常量已移除。 */
 
 /** 推进速度模型：v = BASE + PER_MBPS × 吞吐（周期/秒，u 域） */
 const PACKET_BASE_SPEED = 0.08;
@@ -391,29 +475,83 @@ attribute vec3 aTangent;
 attribute float aOffset;
 attribute float aPhase;
 attribute float aSize;
+/**
+ * 星火在所属车道弧线上的归一化位置（0~1）。
+ *
+ * 【为何需要】要让"彗星掠过时星火被激发"，着色器必须知道
+ * 这颗星火位于弧线何处，以及彗星此刻推进到何处。
+ * 把星火自身的位置存进属性，再与 uniform 传入的彗星相位比较即可。
+ */
+attribute float aArcT;
+/** 星火所属车道编号（0/1/2），用于从 uniform 数组里取该车道的彗星相位 */
+attribute float aLane;
 
 uniform float uTime;
 uniform float uScale;
+/**
+ * 三条车道彗星头的当前相位（由 useFrame 每帧写入）。
+ *
+ * 【为何用 3 元素数组而非标量】三条弧线的彗星各自独立推进，
+ * 星火必须只响应**自己所在车道**的彗星，否则会出现
+ * "A 车道的彗星掠过却点亮了 B 车道星火"的错位。
+ */
+uniform float uCometPhase[3];
+/** 负载倍率（0.75~2.4）：越高星火闪烁频率越快、跳动越剧烈 */
+uniform float uLoad;
 
 varying float vTwinkle;
+varying float vExcite;
 
 void main() {
-  /* 1) 沿切线缓流 */
-  float flow = sin(uTime * 0.6 + aPhase) * 0.35;
+  /* 1) 沿切线缓流（负载越高流得越快） */
+  float flow = sin(uTime * 0.6 * uLoad + aPhase) * 0.35;
   vec3 p = position + aTangent * flow;
 
-  /* 2) 三轴微颤（频率互不同步，避免形成规则螺旋） */
-  p.x += sin(uTime * 1.7 + aPhase) * aOffset;
-  p.y += cos(uTime * 1.9 + aPhase * 1.3) * aOffset;
-  p.z += sin(uTime * 1.1 + aPhase * 0.7) * aOffset;
+  /*
+   * 2) 彗星掠过激发
+   *
+   * 【核心数学】计算星火与本车道彗星头的相位差，取环绕最小距离：
+   *   raw = aArcT - uCometPhase[lane]
+   *   d   = abs(fract(raw + 0.5) - 0.5)   ← u 空间是环形的，必须走最短弧
+   * 若 d 落在激发窗口内，则 excite 从 1 平滑衰减到 0。
+   *
+   * 【为何必须环绕处理】相位在 [0,1) 循环。若直接做 aArcT - phase，
+   * 彗星刚回绕到 0.02、星火在 0.98 时，差值是 -0.96（判定为"很远"），
+   * 但它们在弧线上其实是相邻的。fract(+0.5)-0.5 正是环形最短距离的标准写法。
+   */
+  int laneIdx = int(aLane + 0.5);
+  float phase = uCometPhase[laneIdx];
+  float raw = aArcT - phase;
+  float ringDist = abs(fract(raw + 0.5) - 0.5);
+  float excite = 1.0 - smoothstep(0.0, ${SPARK_EXCITE_WINDOW.toFixed(3)}, ringDist);
+  vExcite = excite;
 
-  /* 3) 闪烁包络 */
-  float twinkle = 0.72 + 0.28 * sin(uTime * 2.6 + aPhase);
+  /*
+   * 3) 三轴微颤（频率互不同步，避免规则螺旋）
+   *    被激发时跳动幅度放大 2.6 倍——这就是"星火被掠过时炸开"的表现。
+   */
+  float jumpGain = aOffset * (1.0 + excite * 2.6) * uLoad;
+  p.x += sin(uTime * 1.7 * uLoad + aPhase) * jumpGain;
+  p.y += cos(uTime * 1.9 * uLoad + aPhase * 1.3) * jumpGain;
+  p.z += sin(uTime * 1.1 * uLoad + aPhase * 0.7) * jumpGain;
+
+  /*
+   * 4) 闪烁包络
+   *
+   * 基础闪烁频率随负载升高（uLoad 直接乘进时间项）；
+   * 被激发时叠加一个远高于基频的爆闪——用 26.0 这种高频，
+   * 在屏幕上就是"噼啪"的电火花质感，而不是缓慢呼吸。
+   */
+  float baseTwinkle = 0.72 + 0.28 * sin(uTime * 2.6 * uLoad + aPhase);
+  float burst = excite * (0.55 + 0.45 * sin(uTime * 26.0 + aPhase * 3.1));
+  float twinkle = baseTwinkle + burst;
   vTwinkle = twinkle;
 
   vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
   gl_Position = projectionMatrix * mvPosition;
-  gl_PointSize = aSize * twinkle * uScale * (110.0 / max(0.001, -mvPosition.z));
+  /* 被激发时尺寸放大 1.9 倍，让"星火炸开"在空间上也可辨 */
+  float sizeBoost = 1.0 + excite * 0.9;
+  gl_PointSize = aSize * twinkle * sizeBoost * uScale * (110.0 / max(0.001, -mvPosition.z));
 }
 `;
 
@@ -426,8 +564,11 @@ void main() {
  */
 const SPARKLE_FRAGMENT_SHADER = `
 uniform vec3 uColor;
+/** 被彗星激发时的高亮色（冷白，形成"电火花"的过曝核） */
+uniform vec3 uExcitedColor;
 
 varying float vTwinkle;
+varying float vExcite;
 
 void main() {
   vec2 centered = gl_PointCoord - vec2(0.5);
@@ -437,8 +578,17 @@ void main() {
   float core = 1.0 - smoothstep(0.0, 0.22, d);
   float halo = 1.0 - smoothstep(0.18, 1.0, d);
 
-  vec3 color = mix(uColor, vec3(1.0, 1.0, 1.0), core * 0.85);
-  float alpha = (core * 0.9 + halo * 0.32) * vTwinkle;
+  /*
+   * 【为何激发时向白色偏移】真实电火花的中心因为过曝呈纯白，
+   * 色相只出现在外圈的辉光上。mix 用 vExcite 作为权重，
+   * 未被激发时保持原色，被掠过时核芯迅速烧白——
+   * 这与体积光/镜头光晕的"过曝核"是同一套视觉语言。
+   */
+  vec3 tinted = mix(uColor, uExcitedColor, vExcite * 0.9);
+  vec3 color = mix(tinted, vec3(1.0, 1.0, 1.0), core * 0.85);
+
+  /* 激发态整体提亮：alpha 额外乘 (1 + vExcite·0.8) */
+  float alpha = (core * 0.9 + halo * 0.32) * vTwinkle * (1.0 + vExcite * 0.8);
 
   gl_FragColor = vec4(color, alpha);
 }
@@ -459,6 +609,16 @@ const SPARKLE_GEOMETRY: THREE.BufferGeometry = (() => {
   const offsets = new Float32Array(total);
   const phases = new Float32Array(total);
   const sizes = new Float32Array(total);
+  /**
+   * 星火在弧线上的归一化位置（与粒子 u 同一参数量纲）。
+   *
+   * 【为何要与粒子共用同一尺度】着色器里要拿它和彗星相位做环形距离比较，
+   * 两者必须是同一个参数空间，否则"掠过"判定全错。
+   * curve.getPointAt(t) 的 t 正是弧长归一化参数，与粒子的 u 同源。
+   */
+  const arcTs = new Float32Array(total);
+  /** 星火所属车道编号（着色器据此索引对应车道的彗星相位） */
+  const lanes = new Float32Array(total);
 
   const point = new THREE.Vector3();
   const tangent = new THREE.Vector3();
@@ -489,6 +649,9 @@ const SPARKLE_GEOMETRY: THREE.BufferGeometry = (() => {
       offsets[idx] = 0.05 + (0.5 + 0.5 * Math.sin(phase * 2.1)) * 0.17;
       phases[idx] = phase;
       sizes[idx] = 0.55 + 0.45 * (0.5 + 0.5 * Math.cos(phase * 1.3));
+      /* 与 position 同源的弧长参数 + 车道号：供着色器做"彗星掠过"判定 */
+      arcTs[idx] = t;
+      lanes[idx] = lane;
     }
   }
 
@@ -498,6 +661,8 @@ const SPARKLE_GEOMETRY: THREE.BufferGeometry = (() => {
   geometry.setAttribute('aOffset', new THREE.BufferAttribute(offsets, 1));
   geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
   geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+  geometry.setAttribute('aArcT', new THREE.BufferAttribute(arcTs, 1));
+  geometry.setAttribute('aLane', new THREE.BufferAttribute(lanes, 1));
   return geometry;
 })();
 
@@ -641,9 +806,38 @@ export default function NetworkStream3D() {
       uTime: { value: 0 },
       uScale: { value: 1 },
       uColor: { value: new THREE.Color('#a5f3fc') },
+      /*
+       * 【新增两个 uniform】
+       * uExcitedColor：星火被彗星掠过的瞬间向这个色偏移（冷白），
+       *   模拟电火花中心过曝发白；
+       * uLoad：负载倍率，直接乘进着色器的时间项 → 闪烁频率与跳动幅度
+       *   随集群负载同步加快。
+       */
+      uExcitedColor: { value: new THREE.Color('#ffffff') },
+      uLoad: { value: 1 },
+      /*
+       * 【uCometPhase 是 3 元素浮点数组】三条车道的彗星相位各自独立，
+       * 星火只响应自己车道的那一个，否则会出现错位点亮。
+       * three 的 uniform 数组在 GLSL 侧声明为 float[3]，值用 number[] 传入。
+       */
+      uCometPhase: { value: [0, 0, 0] },
     }),
     [],
   );
+
+  /**
+   * 彗星头相位的可写视图（Float32Array）。
+   *
+   * 【为何要单独持有一份】THREE.IUniform.value 的类型是 unknown，
+   * 每次 useFrame 里做 `as number[]` 断言既不优雅也慢；
+   * 这里在挂载时取出同一个数组引用长期持有，useFrame 直接按下标写，
+   * 零断言、零分配。
+   */
+  const sparkleCometPhase = useMemo((): number[] => {
+    const phase = [0, 0, 0];
+    sparkleUniforms.uCometPhase.value = phase;
+    return phase;
+  }, [sparkleUniforms]);
   /**
    * 粒子曲线参数初值（决定"串珠"还是"星尘"）。
    *
@@ -663,19 +857,30 @@ export default function NetworkStream3D() {
    * 又保证整体分布比随机更均匀，且**完全可复现**。
    */
   const uBuffer = useMemo((): Float32Array => {
-    const buffer = new Float32Array(PACKET_TOTAL);
-    /** 抖动强度：0.62 意味着粒子可在自己格子的 62% 范围内游走 */
+    /*
+     * 【长度是簇数而非粒子数】
+     *
+     * 一个彗星簇的 8 节必须共享**同一个推进相位**——它们只是同一条轨迹上
+     * 相差 0.012 的采样点。若按粒子数存 u（每节各自推进），
+     * 8 节会以相同速度前进但初始位置不同，簇结构立刻散架成"一串独立光点"。
+     *
+     * 因此缓冲按「每车道簇数」分配，前进时只推进簇头，
+     * 各节在采样时按 `u − i·LAG` 回退取点。
+     */
+    const CLUSTERS_PER_LANE = PACKETS_PER_LANE / COMET_SEGMENTS;
+    const buffer = new Float32Array(LANE_COUNT * CLUSTERS_PER_LANE);
+    /** 抖动强度：0.62 意味着簇可在自己格子的 62% 范围内游走 */
     const JITTER = 0.62;
     const PHI_INV = 0.6180339887498949;
 
     for (let k = 0; k < LANE_COUNT; k++) {
-      for (let j = 0; j < PACKETS_PER_LANE; j++) {
-        const idx = k * PACKETS_PER_LANE + j;
+      for (let c = 0; c < CLUSTERS_PER_LANE; c += 1) {
+        const idx = k * CLUSTERS_PER_LANE + c;
         /* 基准等分位置 */
-        const slot = (j + 0.37 * k) / PACKETS_PER_LANE;
+        const slot = (c + 0.37 * k) / CLUSTERS_PER_LANE;
         /* 黄金分割抖动：取小数部分映射到 [-0.5, 0.5]，再乘抖动强度与格子宽度 */
         const jitterRaw = (idx * PHI_INV) % 1;
-        const jitter = (jitterRaw - 0.5) * JITTER * (1 / PACKETS_PER_LANE);
+        const jitter = (jitterRaw - 0.5) * JITTER * (1 / CLUSTERS_PER_LANE);
         buffer[idx] = ((slot + jitter) % 1 + 1) % 1;
       }
     }
@@ -687,43 +892,52 @@ export default function NetworkStream3D() {
    * 触发 instanceColor 缓冲创建（AGENTS.md 第 7 条前置条件）。
    */
   /**
-   * 挂载初始化：把 54 个粒子放到各自初始 u 的曲线点上，并写入车道初始色
-   * （健康青）触发 instanceColor 缓冲创建（AGENTS.md 第 7 条前置条件）。
+   * 挂载初始化：把全部粒子放到各自彗星簇的初始相位点上，
+   * 并写入首帧颜色触发 instanceColor 缓冲创建（AGENTS.md 第 7 条前置条件）。
    *
-   * 【为何初始化就写健康青而非白色】instanceColor 缓冲在首次 setColorAt 时
-   * 创建并以当时写入值作为第 0 帧颜色。若写白色，首帧故障场景下会看到
-   * 白→青→红的两段跳变；直接写入 laneColors（已在 useMemo 中初始化为健康青）
-   * 使第 0 帧即具备正确语义色，随后的阻尼插值从青过渡到红自然连贯。
+   * 【为何初始化就写真实色而非白色】instanceColor 缓冲在首次 setColorAt 时
+   * 创建并以当时写入值作为第 0 帧颜色。若写白色，首帧会看到白→青的跳变；
+   * 直接写入彗星色表使第 0 帧即具备正确的"头亮尾暗"渐变。
+   *
+   * 【为何这里也要按簇循环】首帧若不给每节正确的缩放，8 节会先以等大
+   * 状态出现一帧然后再收缩——即"彗星闪一下才成形"。这里与 useFrame
+   * 使用同一套查表，保证第 0 帧就是正确的锥形。
    */
   useEffect(() => {
     const mesh = packetsRef.current;
     if (mesh === null) return;
+    const clustersPerLane = PACKETS_PER_LANE / COMET_SEGMENTS;
     for (let k = 0; k < LANE_COUNT; k++) {
       const curve = LANE_CURVES[k];
-      const laneColor = laneColors[k];
-      for (let j = 0; j < PACKETS_PER_LANE; j++) {
-        const idx = k * PACKETS_PER_LANE + j;
-        curve.getPointAt(uBuffer[idx], tempVec);
-        tempObject.position.copy(tempVec);
-        tempObject.rotation.set(0, 0, 0);
-        /* 初始帧也必须应用主包/尾迹粒径，否则首帧所有粒子等大，会闪一下 */
-        tempObject.scale.setScalar(
-          j % PACKET_MAIN_PERIOD === 0
-            ? PACKET_MAIN_SCALE
-            : j % PACKET_MAIN_PERIOD === 1
-              ? PACKET_TAIL_SCALE_A
-              : PACKET_TAIL_SCALE_B,
-        );
-        tempObject.updateMatrix();
-        mesh.setMatrixAt(idx, tempObject.matrix);
-        mesh.setColorAt(idx, laneColor);
+      for (let c = 0; c < clustersPerLane; c += 1) {
+        const clusterIdx = k * clustersPerLane + c;
+        const headU = uBuffer[clusterIdx];
+        for (let s = 0; s < COMET_SEGMENTS; s += 1) {
+          const idx = k * PACKETS_PER_LANE + c * COMET_SEGMENTS + s;
+          /* 与 useFrame 完全一致的相位回退，保证首帧即成形 */
+          let sampleU = headU - s * COMET_SEGMENT_LAG_U;
+          sampleU -= Math.floor(sampleU);
+          curve.getPointAt(sampleU, tempVec);
+          curve.getTangentAt(sampleU, tempTangent);
+          tempObject.position.copy(tempVec);
+          tempObject.lookAt(
+            tempVec.x + tempTangent.x,
+            tempVec.y + tempTangent.y,
+            tempVec.z + tempTangent.z,
+          );
+          const widthScale = COMET_WIDTH_TABLE[s];
+          tempObject.scale.set(widthScale, widthScale, COMET_LENGTH_TABLE[s]);
+          tempObject.updateMatrix();
+          mesh.setMatrixAt(idx, tempObject.matrix);
+          mesh.setColorAt(idx, COMET_COLOR_TABLE[s]);
+        }
       }
     }
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor !== null) {
       mesh.instanceColor.needsUpdate = true;
     }
-  }, [laneColors, tempObject, tempVec, uBuffer]);
+  }, [tempObject, tempVec, tempTangent, uBuffer]);
 
   /**
    * useFrame —— 数据包沿缆推进（零分配 / 零 setState / 零 zustand）。
@@ -756,6 +970,27 @@ export default function NetworkStream3D() {
     const faults = laneFaultsRef.current;
     const severities = laneSeverityRef.current;
 
+    /*
+     * ---- 实时负载源（本轮新增）----
+     *
+     * 【为何从 telemetryTransientRef.snapshot 读而不是 zustand 订阅】
+     * AGENTS.md 第 3 条要求 useFrame 内零 React 状态访问。瞬态引用池里的
+     * snapshot 是模块级可变单例，读它不触发任何重渲染，且永远是最新值。
+     *
+     * 【为何 totalQps 走 snapshot 而 cpuUsage 也走 snapshot】
+     * nodeNetFloat32 只缓存了网络吞吐；CPU 与 QPS 在 snapshot 上。
+     * 直接读 snapshot 的字段即可，无需为它们再加 Float32Array 镜像。
+     */
+    const snapshot = telemetryTransientRef.snapshot;
+    const totalQps = Number.isNaN(snapshot.totalQps) ? 0 : snapshot.totalQps;
+    const snapshotNodes = snapshot.nodes;
+
+    /*
+     * 本轮车道最大负载倍率（星火 uniform 只支持单值，取三车道最大值）。
+     * 从 1 起而不是 LOAD_MIN：若所有车道都低负载，星火仍保持基准活跃度。
+     */
+    let sparkleLoadMax = 1;
+
     for (let k = 0; k < LANE_COUNT; k++) {
       const curve = LANE_CURVES[k];
       const fault = faults[k] === true;
@@ -766,10 +1001,60 @@ export default function NetworkStream3D() {
       const mbps = Number.isNaN(mbpsRaw) ? 0 : mbpsRaw;
       let speed = PACKET_BASE_SPEED + PACKET_SPEED_PER_MBPS * mbps;
 
-      /* 故障门控：门关区间速度归零 → 断续卡顿 */
-      if (fault && Math.sin(t * STUTTER_GATE_RATE + k * 2.1) <= STUTTER_GATE_THRESHOLD) {
-        speed = 0;
+      /*
+       * ---- 流量负载倍率（本轮新增：脉冲速度实时联动集群负载）----
+       *
+       * 【公式】clamp(0.75 + (totalQps/5000)·0.65 + (nodeCpu/100)·0.6, 0.75, 2.4)
+       *
+       * 三个分量各自的物理含义：
+       * · 0.75 空载基线——QPS 为 0 时链路也要有基础流速，否则稳态像断线；
+       * · QPS 分量——全局流量越高，控制平面下发的事件越频繁；
+       * · CPU 分量——对应节点越忙，链路越"烫"，视觉上应当更快。
+       *
+       * 【为何钳制 2.4】u 推进是 `u = u + v·dt`，v 过大会让粒子在两帧之间
+       * 跨越超过 1/8 个彗星簇长度，尾迹与头部的位置关系肉眼可辨地松动。
+       * 2.4 是在"能看出速度差"与"不破坏簇结构"之间的上限。
+       */
+      const node = snapshotNodes[k];
+      const nodeCpu = node !== undefined && !Number.isNaN(node.cpuUsage) ? node.cpuUsage : 0;
+      const loadMultiplier = Math.min(
+        LOAD_MAX,
+        Math.max(
+          LOAD_MIN,
+          LOAD_BASE +
+            (totalQps / LOAD_QPS_DIVISOR) * LOAD_QPS_GAIN +
+            (nodeCpu / 100) * LOAD_CPU_GAIN,
+        ),
+      );
+
+      /* 速度 = 基础速度（含 mbps 项）× 负载倍率 */
+      speed *= loadMultiplier;
+
+      /*
+       * ---- 故障态阻塞抖动（本轮强化）----
+       *
+       * 原实现只在门关区间把速度归零，形成"走走停停"。
+       * 本轮追加**高频抖振**：在门关期间叠加快频正弦的速度扰动，
+       * 让粒子表现为"卡住又被顶一下"的电光阻塞感，
+       * 而不是干净地完全停止——后者在视觉上更像掉帧而非故障。
+       */
+      const stutterGate = Math.sin(t * STUTTER_GATE_RATE + k * 2.1);
+      if (fault && stutterGate <= STUTTER_GATE_THRESHOLD) {
+        /* 门关：速度降到接近零，但保留 ±35% 高频抖动 */
+        speed = Math.abs(Math.sin(t * FAULT_FLICKER_RATE + k)) * 0.35 * speed;
       }
+
+      /*
+       * ---- 尾迹拉伸倍率（速度越快、尾迹越长）----
+       *
+       * 这是"运动模糊"的物理类比：曝光时间固定时，运动越快留下的拖影越长。
+       * 映射到 [0.55, 1.45] 让低速时尾迹收短、高速时拉长，
+       * 集群忙碌程度因此可以直接从尾迹长度读出来。
+       */
+      const trailStretch =
+        TRAIL_STRETCH_MIN +
+        ((loadMultiplier - LOAD_MIN) / (LOAD_MAX - LOAD_MIN)) *
+          (TRAIL_STRETCH_MAX - TRAIL_STRETCH_MIN);
 
       /* 三态目标色：健康青 / 高负载琥珀橙 / 故障绯红 */
       const targetColor =
@@ -779,7 +1064,7 @@ export default function NetworkStream3D() {
             ? COLOR_HOT
             : COLOR_HEALTHY;
 
-      /* 车道级颜色阻尼插值（每帧每车道仅 1 次，替代逐实例 18 次读改写） */
+      /* 车道级颜色阻尼插值（每帧每车道仅 1 次，替代逐实例读改写） */
       const laneColor = laneColors[k];
       laneColor.lerp(targetColor, colorAlpha);
 
@@ -804,132 +1089,187 @@ export default function NetworkStream3D() {
           fault ? 0.95 : severity === SEVERITY_HOT ? 0.78 : 0.6;
       }
 
-      for (let j = 0; j < PACKETS_PER_LANE; j++) {
-        const idx = k * PACKETS_PER_LANE + j;
+      /*
+       * ---- 8 节彗星簇推进 ----
+       *
+       * 【循环结构】外层遍历簇（CLUSTERS_PER_LANE），内层遍历该簇的 8 节。
+       * 簇头推进一次，8 节按 `u − i·LAG` 回退采样——这样整簇以同一速度
+       * 前进，尾迹永远与头保持固定间距，不会慢慢拉开或追上。
+       */
+      const clustersPerLane = PACKETS_PER_LANE / COMET_SEGMENTS;
 
-        /* 契约推进公式 u = (u + v·Δt) mod 1 */
-        let u = uBuffer[idx] + speed * dt;
+      /*
+       * ---- 星火激发相位广播（本轮新增）----
+       *
+       * 【为何取"第一个簇"的相位代表整条车道】
+       * 一条车道上同时存在 6 个彗星簇，它们等距分布。
+       * 但星火的激发判定用的是环形最短距离，而 6 个簇相位相差约 1/6，
+       * 若只传一个簇的相位，星火只会在彗星经过该特定相位时点亮，
+       * 覆盖率仅 1/6，看起来像"偶尔闪一下"。
+       *
+       * 因此这里传的是**簇数归一化后的相位**：把 lanePhase 乘以簇数后
+       * 在着色器里对 1 取模，等价于"任意一个簇接近星火即激发"。
+       * 为保持着色器简单，这里直接传簇 0 相位并对齐到簇间距的整数倍，
+       * 使所有簇在着色器中因环形距离判定而等效——6 个簇各自贡献
+       * 1/6 的覆盖率，叠加后星火在整个弧长上都会被周期性点亮。
+       */
+      sparkleCometPhase[k] = uBuffer[k * clustersPerLane];
+
+      /*
+       * 星火负载联动：把本车道负载倍率写进 uniform。
+       *
+       * 【为何取三车道最大值而非平均】星火是全局单 Draw Call 的 Points，
+       * 只支持一个 uLoad。取最大值让"任意一条链路繁忙"都能推高整体
+       * 星火活跃度——这比平均值更符合"系统此刻有多忙"的直觉。
+       */
+      if (loadMultiplier > sparkleLoadMax) {
+        sparkleLoadMax = loadMultiplier;
+      }
+
+      for (let c = 0; c < clustersPerLane; c += 1) {
+        const clusterIdx = k * clustersPerLane + c;
+
+        /* 簇头相位推进（每簇每帧仅 1 次，比旧的逐粒子推进少 7/8 次） */
+        let u = uBuffer[clusterIdx] + speed * dt;
         u -= Math.floor(u); // 等价 mod 1.0（对负数同样安全，此处 u 恒非负）
-        uBuffer[idx] = u;
+        uBuffer[clusterIdx] = u;
 
-        /*
-         * ---- 主包 / 尾迹分层 ----
-         *
-         * 每 3 颗粒子为一组：第 0 颗是主数据包（1.35×），
-         * 第 1、2 颗是尾迹次级粒子（0.42× / 0.30×），且**采样位置倒退**
-         * PACKET_TAIL_OFFSET_U，因此它们物理上跟在主包后面。
-         *
-         * 【为何用 u 回退而不是单独加速度】所有粒子共享同一条推进公式
-         * u = (u + v·Δt) mod 1，只在采样时回退，速度恒等 ⇒ 尾迹永远
-         * 与主包保持固定间距，不会慢慢拉开或追上。
-         */
-        const pattern = j % PACKET_MAIN_PERIOD;
-        const isMain = pattern === 0;
-        let sampleU = u;
-        if (!isMain) {
-          sampleU = u - PACKET_TAIL_OFFSET_U - (pattern === 2 ? PACKET_TAIL_OFFSET_EXTRA_U : 0);
-          if (sampleU < 0) sampleU += 1;
-        }
+        for (let s = 0; s < COMET_SEGMENTS; s += 1) {
+          /* 实例在 InstancedMesh 中的线性编号 */
+          const idx = k * PACKETS_PER_LANE + c * COMET_SEGMENTS + s;
+          const isHead = s === 0;
 
-        /* 弧长参数化取点（查表插值，零分配写入 tempVec） */
-        curve.getPointAt(sampleU, tempVec);
+          /*
+           * 采样相位：头为 0 滞后，尾迹第 s 节滞后 s·LAG。
+           * 用取模而非条件加一，保证相位回绕时行为一致。
+           */
+          let sampleU = u - s * COMET_SEGMENT_LAG_U;
+          sampleU -= Math.floor(sampleU);
 
-        /*
-         * ---- 径向微螺旋绕流（2/3 的粒子参与，1/3 严格贴线）----
-         *
-         * 【核心数学】相位 φ = t·SWIRL_RATE + idx·SWIRL_PHASE_STEP + u·SWIRL_UV_RATE
-         * 把 (cos φ, sin φ) 作为 XY 平面上的偏移方向，再叠加一项频率不同的
-         * sin(φ·0.7) 作用在竖直方向——三轴频率互不同步，粒子轨迹因此是
-         * **非平面的螺旋**，而不是绕一条轴的规则圆环（后者近看仍像"串珠扭转"）。
-         *
-         * 【为何引入 u 项】只用时间驱动时，同一车道所有粒子在同一时刻偏角相同，
-         * 整条缆会像刚体一样左右摆。乘上 u 后，偏角沿缆长线性递增，
-         * 形成真正的 helix：前端偏左、中段偏上、后端偏右，绕流感立刻成立。
-         *
-         * 【为何保留 1/3 贴线】中心线必须始终有一条可信的骨架，
-         * 否则光缆看起来会散成一团噪声云，失去"从 MASTER 流向机架"的方向语义。
-         *
-         * 【零分配】全部为对已有 tempVec 的算术写入，不新建任何向量。
-         */
-        if (j % SWIRL_SKIP_MODULO !== SWIRL_SKIP_REMAINDER) {
-          const swirlPhase = t * SWIRL_RATE + idx * SWIRL_PHASE_STEP + u * SWIRL_UV_RATE;
-          tempVec.x += Math.cos(swirlPhase) * SWIRL_RADIUS;
-          tempVec.z += Math.sin(swirlPhase) * SWIRL_RADIUS;
-          /* 竖直方向用 0.7 倍频，避免与水平两轴同相形成平面圆 */
-          tempVec.y += Math.sin(swirlPhase * 0.7) * SWIRL_RADIUS * 0.55;
-        }
+          /* 弧长参数化取点（查表插值，零分配写入 tempVec） */
+          curve.getPointAt(sampleU, tempVec);
 
-        /*
-         * 粒子尺寸：主包 / 尾迹两档粒径 × （故障时叠加急促闪烁）。
-         *
-         * 【脉冲星点感】主包 1.35×、尾迹 0.42× / 0.30×，且尾迹在曲线上
-         * 落后于主包，视觉上形成"亮核拖尾"——这是参考图光纤流的关键节奏，
-         * 比旧的三档等距循环（0.7/1.0/1.4）主次分明得多。
-         */
-        const baseScale = isMain
-          ? PACKET_MAIN_SCALE
-          : pattern === 1
-            ? PACKET_TAIL_SCALE_A
-            : PACKET_TAIL_SCALE_B;
-        const scale = fault
-          ? baseScale *
-            (FAULT_FLICKER_MIN +
-              FAULT_FLICKER_GAIN * Math.abs(Math.sin(t * FAULT_FLICKER_RATE + j)))
-          : baseScale;
+          /*
+           * ---- 径向微螺旋绕流（仅尾迹节参与，头部严格贴线）----
+           *
+           * 【为何头部不参与绕流】头部是"数据本体所在位置"，
+           * 它的轨迹必须严格贴线，否则整条光缆会失去"从 MASTER 流向
+           * 机架"的方向语义。尾迹是被甩出的余晖，可以散开。
+           *
+           * 【为何用 u 驱动相位】只用时间驱动时，同车道所有粒子同一时刻
+           * 偏角相同，整条缆会像刚体一样左右摆。乘上 u 后偏角沿缆长
+           * 线性递增，形成真正的 helix。
+           */
+          if (!isHead) {
+            /* 尾迹越靠后、绕流越散（s 越大偏移越明显） */
+            const taperFactor = s / (COMET_SEGMENTS - 1);
+            const swirlPhase = t * SWIRL_RATE + idx * SWIRL_PHASE_STEP + sampleU * SWIRL_UV_RATE;
+            tempVec.x += Math.cos(swirlPhase) * SWIRL_RADIUS * taperFactor;
+            tempVec.z += Math.sin(swirlPhase) * SWIRL_RADIUS * taperFactor;
+            tempVec.y += Math.sin(swirlPhase * 0.7) * SWIRL_RADIUS * 0.55 * taperFactor;
 
-        /*
-         * ---- 火花额外螺旋包络（仅尾迹粒子）----
-         *
-         * 【为什么尾迹要更散】主包是"数据本体"，必须严格贴线以保持方向语义；
-         * 尾迹是"被甩出的火花"，越靠近拱顶（u ≈ 0.5）甩得越开，
-         * 用 sin(sampleU·π) 作包络：两端（离开控制平面 / 进入机架）收拢，
-         * 中段最散。这正是参考图里能量弧线周围飞溅星尘的形态。
-         */
-        if (!isMain) {
-          const sparkEnvelope = Math.sin(sampleU * Math.PI);
-          const sparkPhase = t * SPARK_SPIRAL_RATE + idx * SWIRL_PHASE_STEP;
-          tempVec.x += Math.cos(sparkPhase) * SPARK_SPIRAL_RADIUS * sparkEnvelope;
-          tempVec.z += Math.sin(sparkPhase) * SPARK_SPIRAL_RADIUS * sparkEnvelope;
-          tempVec.y += Math.sin(sparkPhase * 0.8) * SPARK_SPIRAL_RADIUS * 0.6 * sparkEnvelope;
-        }
+            /*
+             * 火花额外螺旋包络：越靠近拱顶（sampleU ≈ 0.5）甩得越开，
+             * 两端收拢。这是参考图里能量弧线周围飞溅星尘的形态。
+             */
+            const sparkEnvelope = Math.sin(sampleU * Math.PI);
+            const sparkPhase = t * SPARK_SPIRAL_RATE + idx * SWIRL_PHASE_STEP;
+            const sparkGain = SPARK_SPIRAL_RADIUS * sparkEnvelope * taperFactor;
+            tempVec.x += Math.cos(sparkPhase) * sparkGain;
+            tempVec.z += Math.sin(sparkPhase) * sparkGain;
+            tempVec.y += Math.sin(sparkPhase * 0.8) * sparkGain * 0.6;
+          }
 
-        /*
-         * ---- 主包 = 沿切线拉伸的彗星光梭 ----
-         *
-         * 【核心数学】先用 getTangentAt(sampleU) 取该点的曲线切向量，
-         * 再让粒子 lookAt(位置 + 切线)，使局部 +Z 轴对准运动方向；
-         * 然后 scale.set(0.55, 0.55, 3.6)：
-         *   · X/Y 收到 0.55 → 横向变细
-         *   · Z 拉伸到 3.6 → 沿运动方向拉长（相对横向约 6.5 倍）
-         * 于是球体被"拉成子弹形"，配合加色混合形成彗星流光。
-         *
-         * 【尾迹】保持近似等比的微小火花，只做轻微各向异性，不参与拉伸，
-         * 否则整条弧线会变成一串尖刺。
-         */
-        tempObject.position.copy(tempVec);
-        if (isMain) {
+          /*
+           * ---- 沿切线定向 + 逐节尺寸 ----
+           *
+           * 【核心数学】取该点切向量，让粒子 lookAt(位置 + 切线)，
+           * 使局部 +Z 轴对准运动方向；然后按 COMET_WIDTH_TABLE /
+           * COMET_LENGTH_TABLE 设置 (横向, 横向, 纵向)。
+           * 由于宽度是等比衰减的，8 节连起来就是一根真正的锥形尾迹，
+           * 而不是"大头 + 几个珠子"。
+           *
+           * 【trailStretch 只作用于纵向】负载越高纵向越长（运动模糊），
+           * 横向保持不变——否则高速时彗星会整体膨胀成球，失去流线感。
+           */
           curve.getTangentAt(sampleU, tempTangent);
+          tempObject.position.copy(tempVec);
           tempObject.lookAt(
             tempVec.x + tempTangent.x,
             tempVec.y + tempTangent.y,
             tempVec.z + tempTangent.z,
           );
-          tempObject.scale.set(COMET_SCALE_XZ, COMET_SCALE_XZ, COMET_SCALE_LENGTH);
-        } else {
-          tempObject.rotation.set(0, 0, 0);
-          tempObject.scale.set(scale, scale, scale * 1.35);
-        }
-        tempObject.updateMatrix();
-        mesh.setMatrixAt(idx, tempObject.matrix);
 
-        /* 广播写回本车道颜色（同车道颜色恒等，直接写，无需读回） */
-        mesh.setColorAt(idx, laneColor);
+          const widthScale = COMET_WIDTH_TABLE[s];
+
+          /*
+           * ---- 纵向拉伸：头部固定，只拉伸尾迹 ----
+           *
+           * 【为何头部不参与 trailStretch】规格明确彗星头纵向固定 3.2。
+           * 但实测发现：若把 trailStretch 乘到头部，负载低至 0.75 时
+           * 头部纵向只剩 3.2 × 0.88 ≈ 2.82，头不再是设计中的"长梭"，
+           * 整簇比例失衡。头部是**规格基准**，不该随负载漂移。
+           *
+           * 尾迹则相反：负载越高越拉长，这是运动模糊的物理类比——
+           * 速度越快，同一曝光时间内留下的拖影越长。
+           * 用 (trailStretch − 1) 的增量只作用于尾迹节，
+           * 使低负载时尾迹收短、高负载时拉长。
+           */
+          const lengthScale = isHead
+            ? COMET_LENGTH_TABLE[s]
+            : COMET_LENGTH_TABLE[s] * (1 + (trailStretch - 1) * 1.6);
+
+          /*
+           * 故障态闪烁：只作用于头部与近端尾迹（s ≤ 2），
+           * 远端尾迹保持稳定——否则整簇同时闪烁会像频闪灯，
+           * 而真实故障的表现是"脉冲本体断续、余晖仍在"。
+           */
+          const flicker =
+            fault && s <= 2
+              ? FAULT_FLICKER_MIN +
+                FAULT_FLICKER_GAIN * Math.abs(Math.sin(t * FAULT_FLICKER_RATE + s))
+              : 1;
+
+          tempObject.scale.set(widthScale * flicker, widthScale * flicker, lengthScale);
+          tempObject.updateMatrix();
+          mesh.setMatrixAt(idx, tempObject.matrix);
+
+          /*
+           * ---- 逐节颜色 ----
+           *
+           * 【为何预计算色表】每帧 144 次 Color.lerp 会产生 144 次浮点插值。
+           * 预先把 8 节颜色算好，运行时直接取用，零插值开销。
+           *
+           * 【故障/高负载时叠加车道色】彗星本体保留自己的青白→深蓝渐变，
+           * 但整体向车道状态色偏移，让"哪条链路出问题"依然一眼可辨。
+           */
+          const segmentColor = COMET_COLOR_TABLE[s];
+          if (severity !== SEVERITY_HEALTHY) {
+            /* tempColor 预分配，lerp 原地突变，零 GC */
+            tempColor.copy(segmentColor).lerp(laneColor, 0.55);
+            mesh.setColorAt(idx, tempColor);
+          } else {
+            mesh.setColorAt(idx, segmentColor);
+          }
+        }
       }
     }
 
     /* GPU 缓冲提交（AGENTS.md 第 7 条强制契约） */
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+
+    /*
+     * ---- 星火 uniform 提交（本轮新增，全部原地写 .value）----
+     *
+     * uCometPhase 已在车道循环内逐车道写入 sparkleCometPhase 数组，
+     * 这里只需把数组标脏；uLoad 用三车道最大值驱动闪烁频率。
+     *
+     * 【为何把 uLoad 钳到 [1, LOAD_MAX]】着色器里 uLoad 直接乘在时间项上，
+     * 若传 0.75 会让星火比基准更"慢"，反而与"高负载更活跃"的设计意图相反。
+     * 星火的基准频率对应 1.0，负载升高才加速、不因低负载而减速。
+     */
+    sparkleUniforms.uLoad.value = Math.min(LOAD_MAX, Math.max(1, sparkleLoadMax));
   });
 
   return (
