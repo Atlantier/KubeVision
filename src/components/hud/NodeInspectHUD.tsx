@@ -159,19 +159,30 @@ const TONE_RING_CLASS: Readonly<Record<InspectTone, string>> = {
 
 /** 语义色 → 辉光阴影类 */
 /**
- * 卡片外框（本轮重做）。
+ * 卡片外框（本轮改为光学玻璃拟态）。
  *
- * 【修复什么】此前外框使用 shadow-glow-emerald / amber / rose 这类大面积彩色
- * 模糊阴影。在深色画布上，那不是"发光"，而是一团脏兮兮的荧光雾：
- * 边界糊掉、颜色发闷、还随状态在三色间跳变，整张卡片看起来像廉价霓虹贴纸。
+ * 【修复什么 · 历史】更早的版本用 shadow-glow-emerald / amber / rose
+ * 这类大面积彩色模糊阴影：在深色画布上那不是"发光"，而是一团脏荧光雾，
+ * 边界糊掉、颜色发闷、还随状态在三色间跳变。
  *
- * 【改为】军工级冷峻边框：单像素 slate-700 描边 + 近黑的深空底色 +
- * 中性冷阴影（0 12px 36px rgba(2,6,23,0.85)）。
- * 状态语义不再靠"整块泛光"表达，而是交给呼吸点、状态徽标与外环色——
- * 一处信息只说一次，这才是仪表该有的克制。
+ * 【修复什么 · 本轮】上一版改成"单像素 slate-700 描边 + 88% 不透明深底"，
+ * 边框问题解决了，但它和 3D 视口里的机架/控制平面铭牌**不是同一套语言**：
+ *   · 3D HUD：border 0px · radius 0px · 底色 50% 通透
+ *   · 本卡片：border 1px · radius 8px · 底色 88% 近乎不透明
+ * 两者在同一个视口里紧邻出现，观感上像两套 UI 拼在一起。
+ *
+ * 【本版】对齐 3D HUD 的光学玻璃语言：
+ *   · 移除闭合边框（border-0）与圆角（rounded-none）——
+ *     结构改由 HoloCorners 四角靶标 + HoloRefractionEdges 上下折射亮边表达；
+ *   · 底色降到 50% 通透 + blur(24px)，与 HoloFrame 完全同源；
+ *   · 保留一层中性冷投影（悬浮层级仍需与 3D 场景区分）。
+ *
+ * 【为何不改 .kv-panel 全局类】那套"黑曜石高定玻璃"是应用外壳
+ * （TopBar / 抽屉 / 其他 DOM 面板）的统一语言，改动它会波及全站；
+ * 而本卡片是浮在 3D 视口上的仪表，应当跟随 3D HUD 而非应用外壳。
  */
 const CARD_SHELL_CLASS =
-  'border border-slate-700/80 bg-slate-950/88 backdrop-blur-xl shadow-[0_12px_36px_rgba(2,6,23,0.85)]';
+  'rounded-none border-0 bg-slate-950/50 backdrop-blur-xl shadow-[0_12px_36px_rgba(2,6,23,0.7)]';
 
 /* ========================================================================== */
 /* 空态静态表                                                                  */
@@ -886,7 +897,7 @@ function EntityProbeCard({
   return (
     <div
       className={cn(
-        'kv-panel pointer-events-auto relative w-[320px] sm:w-[340px] max-w-full overflow-hidden p-3',
+        'pointer-events-auto relative w-[320px] sm:w-[340px] max-w-full overflow-hidden p-3',
         CARD_SHELL_CLASS,
       )}
     >
