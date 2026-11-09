@@ -49,6 +49,7 @@ import { useClusterStore } from '@/store/useClusterStore';
 import { MASTER_ENTITY_ID } from '@/types/canvas';
 import { MASTER_POSITION } from '@/utils/spatialLayout';
 import GlowHalo3D from '@/components/canvas/GlowHalo3D';
+import { HoloCorners, HoloMicroRuler, HoloRefractionEdges, HoloSpecularSheen } from '@/components/canvas/HoloHud';
 import type { SelectedEntityType } from '@/types/store';
 
 /* ========================================================================== */
@@ -2368,27 +2369,43 @@ export default function MasterNode3D() {
         zIndexRange={[10, 0]}
         className="pointer-events-none"
       >
-        <div className="relative flex flex-col items-center gap-1 overflow-hidden whitespace-nowrap bg-slate-950/90 px-3 py-1 font-mono backdrop-blur-md border border-cyan-400/35 shadow-[0_8px_28px_rgba(6,182,212,0.22)]">
+        {/*
+         * ---- 光学玻璃拟态控制平面铭牌（本轮重构）----
+         *
+         * 【废除闭合边框】上一版是 `border border-cyan-400/35` 的完整闭合框 +
+         * `bg-slate-950/90` 近不透明深底，观感是"贴在场景上的一块黑牌"。
+         * 本版改为与机架铭牌统一的光学玻璃语言：
+         *   · 基底 `bg-slate-950/50 backdrop-blur-xl`——半通透，
+         *     背后的墨色晶体与光纤总线仍隐约可见；
+         *   · 无闭合边，结构由上下 1px 折射亮边 + 四角发光靶标表达；
+         *   · 斜向折射高光 + 顶部毫米微标尺，把面板从"标题牌"升级为"仪表台"。
+         */}
+        <div className="relative flex flex-col items-center gap-1 overflow-hidden whitespace-nowrap bg-slate-950/50 px-3 py-1 backdrop-blur-xl">
+          <HoloSpecularSheen />
+          <HoloRefractionEdges accent="#22d3ee" />
+          <HoloCorners color="#22d3ee" />
+
           {/*
-           * ── 顶部 1px 渐变青色扫描高光 ──
-           *
-           * 真实仪器面板的上缘会捕捉一道极细的镜面高光（暗示面板有厚度）。
-           * 两端透明、中间最亮：光仿佛在边缘上"游走"，
-           * 比一条均匀白线更像玻璃/金属，也把铭牌与身后水平射入的
-           * 青色地面光纤总线在视觉上区分开。
+           * ── 顶部毫米级微标尺 ──
+           * 上一版的"七道渐变刻度"是纯装饰，没有读数语义。
+           * 换成 HoloMicroRuler 后，刻度长短交替 + 游标三角 + 等宽编号，
+           * 读者会本能地把它当作"量程"，这是展陈级仪表的通用语言。
            */}
-          <span
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 top-0 block h-px"
-            style={{
-              background:
-                'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.85) 25%, rgba(224,242,254,0.98) 50%, rgba(34,211,238,0.85) 75%, transparent 100%)',
-            }}
+          <HoloMicroRuler
+            label="SYS // CONTROL-PLANE"
+            accent="#22d3ee"
+            tickCount={28}
+            cursorAt={0.62}
+            className="w-full"
           />
           {/*
            * ── 左右对称水平发光翼线 ──
            * 从标题两侧向外延伸的细横线，是 HUD 铭牌的"翼展"：
            * 它把孤立的文字锚进视野，暗示这是一块被标定的系统面板。
+           *
+           * 说明：原先紧邻其上还有一条「顶部 1px 渐变青色扫描高光」，
+           * 它的职责已由 HoloRefractionEdges 统一接管（上沿折射亮边），
+           * 两条叠在一起会形成双亮线，反而削弱玻璃质感，故移除。
            */}
           <span
             aria-hidden
@@ -2427,7 +2444,7 @@ export default function MasterNode3D() {
             />
             <span className="flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_6px_#22d3ee] animate-glow-pulse" />
-              <span className="text-[11px] font-bold tracking-[0.18em] text-cyan-100 drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]">
+              <span className="text-[11px] font-semibold tracking-wider text-cyan-50 drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]">
                 控制平面 · API-SERVER
               </span>
             </span>

@@ -2312,39 +2312,50 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         className="pointer-events-none"
       >
         {/*
-         * ---- 紧凑深色半透明 HUD 标牌（对齐参考图左下/右下角样式）----
+         * ---- 光学玻璃拟态节点 HUD（本轮重构）----
          *
-         * 【本轮微调】distanceFactor 15 → 17：铭牌在屏幕上再缩小约 12%，
-         * 与参考图中"信息密度高但体积克制"的角标一致；
-         * 字号 10px → 9px、徽标 8px → 7px、间距同步收紧，
-         * 整体从"一块面板"收敛为"一枚标牌"。
+         * 【排版升级的三个要点】
+         * 1. **顶部微标尺** `NODE // RACK-0X`——把面板从"信息卡片"
+         *    变成"测量仪表"。rackIndex + 1 补零成两位数，
+         *    与真实机柜的 01/02/03 编号习惯一致。
+         * 2. **节点名改用现代无衬线**：`font-semibold tracking-wider text-white`。
+         *    上一版用 font-mono 加粗，等宽字体在标题位置会显得"机器打字机"，
+         *    缺少展陈级设备那种克制的现代感。等宽只留给**数字**。
+         * 3. **数值严格等宽**：MiniBar 内部已是 `font-mono tabular-nums`，
+         *    外层不再包 font-mono（否则会污染标题的正文字体）。
          *
-         * 结构保持不变：第一行身份（呼吸灯 / 节点名 / 状态徽标 / 容器数），
-         * 第二行 CPU / MEM 双微型发光进度条。
+         * 【在线呼吸点】紧贴节点名左侧——它是"活着的系统"最轻量的信号，
+         * 比任何文字都更快被余光捕捉到；放在名字左侧而非标尺行，
+         * 是为了让它与"这个节点"语义绑定，而不是与"这块面板"绑定。
          */}
-        <HoloFrame accent={statusColor} glow={emphasized} className="font-mono">
+        <HoloFrame
+          accent={statusColor}
+          glow={emphasized}
+          rulerLabel={`NODE // RACK-${String(node.rackIndex + 1).padStart(2, '0')}`}
+        >
           {/* 第一行：身份 + 状态徽标 + 容器数 */}
           <div className="flex items-center gap-1 whitespace-nowrap">
+            {/* 在线呼吸点：紧贴节点名左侧，颜色 = 状态色 */}
             <span
               className="h-1 w-1 shrink-0 rounded-full animate-glow-pulse"
               style={{ backgroundColor: statusColor, boxShadow: `0 0 5px ${statusColor}` }}
             />
-            <span className="text-[9px] font-bold tracking-[0.12em] text-slate-100">
+            <span className="text-[9.5px] font-semibold tracking-wider text-white">
               {node.name}
             </span>
             <span
-              className="ml-auto rounded-sm border px-1 text-[7px] font-bold tracking-[0.10em]"
+              className="ml-auto rounded-[1px] border px-1 text-[7px] font-semibold tracking-[0.10em]"
               style={{ borderColor: `${statusColor}66`, color: statusColor }}
             >
               {statusBadgeLabel}
             </span>
-            <span className="text-[7px] tracking-[0.10em] text-slate-500">
+            <span className="font-mono text-[7px] tabular-nums tracking-[0.10em] text-slate-500">
               {node.podIds.length} PODS
             </span>
           </div>
 
-          {/* 第二行：CPU / MEM 微型发光双进度条 */}
-          <div className="mt-0.5 flex items-center gap-2">
+          {/* 第二行：CPU / MEM 分段微米级进度条（含发光游标） */}
+          <div className="mt-1 flex items-center gap-2">
             <MiniBar label="CPU" value={node.cpuUsage} />
             <MiniBar label="MEM" value={node.memUsage} tone="#38bdf8" />
           </div>

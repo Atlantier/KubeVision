@@ -60,7 +60,13 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
-import { HoloCorners, HoloScanlines } from '@/components/canvas/HoloHud';
+import {
+  HoloCorners,
+  HoloMicroRuler,
+  HoloRefractionEdges,
+  HoloScanlines,
+  HoloSpecularSheen,
+} from '@/components/canvas/HoloHud';
 import { useClusterStore } from '@/store/useClusterStore';
 import { MASTER_ENTITY_ID } from '@/types/canvas';
 import { dispatchViewPreset } from '@/utils/viewPresetBus';
@@ -717,15 +723,14 @@ function TopologyLegendPanel() {
        * 恰好强化"这是一块被标定的仪表"的印象。
        */}
       <HoloScanlines />
+      <HoloSpecularSheen />
       <HoloCorners color="#22d3ee" />
-      <span
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 block h-px"
-        style={{
-          background:
-            'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.6) 30%, rgba(165,243,252,0.8) 50%, rgba(34,211,238,0.6) 70%, transparent 100%)',
-        }}
-      />
+      {/*
+       * 光学折射亮边：上下沿各一条 1px 渐变（中段最亮、两端消融）。
+       * 原先这里只手工画了顶边，改成统一原语后上下都有——
+       * 玻璃板是被光"穿"过的，只有一条边的玻璃看起来仍像贴纸。
+       */}
+      <HoloRefractionEdges accent="#22d3ee" />
       {/* ---- 常态：一行紧凑胶囊（点击切换展开） ---- */}
       <button
         type="button"
@@ -906,20 +911,28 @@ function EntityProbeCard({
       <HoloCorners color="#22d3ee" />
 
       {/*
-       * ---- 顶部激光高光边线 ----
+       * ---- 光学折射亮边 + 斜向折射高光 ----
        *
-       * 【设计意图】真实仪表面板顶部常有一道极细的镜面高光（暗示是
-       * 一块有厚度的玻璃/金属面板而非平面贴纸）。用一条 1px 渐变线实现：
-       * 两端透明、中间最亮，因此看起来是"光在一道边上游走"，
-       * 而不是一条均匀的白边。
+       * 【本轮修正】上一版只手工画了「顶部激光高光边线」一条。
+       * 单边高光暗示的是"一块被照亮的平面"，而玻璃板是被光**穿过**的——
+       * 上下沿都必须有折射亮边，才能读作"有厚度的光学基板"。
+       * 同时补一层 135° 斜向折射高光：这是玻璃与塑料的分野。
        */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 block h-px"
-        style={{
-          background:
-            'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.75) 22%, rgba(165,243,252,0.95) 50%, rgba(34,211,238,0.75) 78%, transparent 100%)',
-        }}
+      <HoloSpecularSheen />
+      <HoloRefractionEdges accent="#22d3ee" />
+
+      {/*
+       * ---- 顶部毫米级微标尺装饰条 ----
+       *
+       * 检视舱是"查看单个实体"的面板，语义上最接近仪表的"读数面"。
+       * 加一条 `SYS // INSPECT` 微标尺后，面板从信息卡片变成仪表读数窗。
+       */}
+      <HoloMicroRuler
+        label="SYS // INSPECT"
+        accent="#22d3ee"
+        tickCount={20}
+        cursorAt={0.42}
+        className="mb-0.5"
       />
 
       {/* ============ 第 1 行：状态点 + 名称 + 状态徽标 + 重启徽标 + 关闭 ============ */}
