@@ -235,7 +235,12 @@ const RADAR_SECTOR_FRAGMENT_SHADER = `
     /* 极坐标重建 */
     vec2 p = (vUv - 0.5) * 2.0;
     float radius = length(p);
-    float theta = atan(p.y, p.x);
+    /*
+     * 【稳定性改写】atan(0, 0) 在 GLSL 中结果未定义。
+     * 圆心那一列像素的 p 恰好为 (0,0)，会产出 NaN 并沿后续
+     * 角度归一（fract / 除法）扩散成整片黑。此处显式兜底为 0。
+     */
+    float theta = (abs(p.x) + abs(p.y) > 1.0e-4) ? atan(p.y, p.x) : 0.0;
 
     /*
      * 把片元角度换算成"相对扫描前沿的角向偏移"。
@@ -280,8 +285,9 @@ const RADAR_SECTOR_FRAGMENT_SHADER = `
      * 【径向衰减】距圆心越远越淡（能量从中心向外扩散）
      * 同时内外边界各留 12% 软化带，避免硬圆边。
      */
-    float radialNorm = (radius - uInner) / (uOuter - uInner);
-    float radialMask = smoothstep(0.0, 0.12, radialNorm) * smoothstep(1.0, 0.88, radialNorm);
+    /* 分母为 uniform 差值，外部配置异常时会变 0 → 除法得到 Inf */
+    float radialNorm = (radius - uInner) / max(uOuter - uInner, 1.0e-4);
+    float radialMask = smoothstep(0.0, 0.12, radialNorm) * (1.0 - smoothstep(0.88, 1.0, radialNorm));
     /* 沿半径方向再叠一层由内向外递减的强度 */
     float radialFade = 1.0 - 0.45 * clamp(radialNorm, 0.0, 1.0);
 
@@ -908,7 +914,13 @@ float sectorFault(float ang) {
     float target = uFaultAngles[i];
     float delta = abs(ang - target);
     float dist = min(delta, 6.2831853 - delta);
-    float falloff = 1.0 - smoothstep(uFaultSectorHalf * 0.6, uFaultSectorHalf, dist);
+    /*
+   * 【稳定性改写】两个边界都来自同一 uniform：uFaultSectorHalf 若被置 0，
+   * edge0 与 edge1 同时为 0，smoothstep 结果未定义。
+   * 用 max 保证 edge1 >= edge0 + 1e-4 恒成立。
+   */
+   float sectorHalfSafe = max(uFaultSectorHalf, 1.0e-4);
+   float falloff = 1.0 - smoothstep(sectorHalfSafe * 0.6, max(sectorHalfSafe, sectorHalfSafe * 0.6 + 1.0e-4), dist);
     maxLevel = max(maxLevel, falloff * uFaultLevels[i]);
   }
   return maxLevel;
@@ -920,7 +932,7 @@ void main() {
   vGlow = 0.35 + 0.75 * wave;
 
   /* 故障扇区染红：状态色向绯红 #f43f5e 混合，并叠加 6Hz 告警脉冲 */
-  float ang = atan(position.z, position.x);
+  float ang = (abs(position.x) + abs(position.z) > 1.0e-4) ? atan(position.z, position.x) : 0.0;
   float fault = sectorFault(ang);
   if (fault > 0.001) {
     vec3 alertColor = vec3(0.957, 0.247, 0.369);
@@ -968,7 +980,7 @@ void main() {
   vec3 color = mix(vColor, vec3(1.0), core * 0.8);
   float alpha = (core * 0.95 + halo * 0.35) * vGlow;
 
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
 }
 `;
 

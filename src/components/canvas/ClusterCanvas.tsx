@@ -41,6 +41,8 @@ import MasterNode3D from '@/components/canvas/MasterNode3D';
 import NetworkStream3D from '@/components/canvas/NetworkStream3D';
 import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
 import ClusterTopologyFloor3D from '@/components/canvas/ClusterTopologyFloor3D';
+import { HalfFloatType } from 'three';
+import { getDemoDirectorSnapshot } from '@/utils/demoDirector';
 import SelectionBeacon3D from '@/components/canvas/SelectionBeacon3D';
 import ViewportToolbar from '@/components/canvas/ViewportToolbar';
 import WorkerRack3D from '@/components/canvas/WorkerRack3D';
@@ -161,6 +163,70 @@ const CAMERA_FOV = 40;
  * 整个分支被 webpack 常量折叠 + DCE 移除（产物零调试面、零体积开销）。
  */
 
+/* ========================================================================== */
+/* 渲染质量档位（挂载期常量 · 运行期不可变）                                       */
+/* ========================================================================== */
+
+/**
+ * 质量档位。
+ *
+ * 【为什么必须是挂载期常量】`MeshReflectorMaterial` 的 resolution 决定它内部
+ * RenderTarget 的尺寸。运行期改这个值会让 drei 销毁并重建 FBO，并触发后处理链
+ * 尺寸重算；这条重建路径在部分驱动上会留下未释放的纹理，表现为"越跑越卡，
+ * 最后一次黑屏"。因此档位在首次渲染前一次定死，换档只能靠 key 整体重挂载。
+ */
+type RenderQualityTier = 'high' | 'balanced';
+
+/** 反射 RT 分辨率（像素）——按档位固定，与 DPR 完全解耦 */
+const REFLECTOR_RESOLUTION: Readonly<Record<RenderQualityTier, number>> = {
+  high: 512,
+  balanced: 256,
+};
+
+/**
+ * resolveQualityTier —— 首次渲染前解析质量档位。
+ *
+ * 【解析顺序】URL `?quality=high|balanced` 显式覆盖 → 否则默认 high。
+ * 不在此处读 GPU：模块加载期还没有 WebGL 上下文；软件光栅化探测在 onCreated
+ * 里做，它只决定"是否启用重后处理链"，不影响本函数的返回值。
+ *
+ * @returns 质量档位
+ */
+function resolveQualityTier(): RenderQualityTier {
+  if (typeof window === 'undefined') return 'high';
+  try {
+    const param = new URLSearchParams(window.location.search).get('quality');
+    if (param === 'balanced' || param === 'low') return 'balanced';
+  } catch {
+    /* URL 解析异常不影响默认档位 */
+  }
+  return 'high';
+}
+
+/** 【模块级单例】档位只解析一次，保证反射 RT 尺寸恒为同一个数 */
+const RENDER_QUALITY_TIER: RenderQualityTier = resolveQualityTier();
+
+/** DPR 下调的最小间隔（毫秒） */
+const DPR_ADJUST_COOLDOWN_MS = 8_000;
+
+/** 会话内允许的 DPR 下调次数上限 */
+const DPR_ADJUST_MAX_TIMES = 2;
+
+/** 上下文丢失后等待自动恢复的上限（毫秒） */
+const CONTEXT_RESTORE_TIMEOUT_MS = 15_000;
+
+/** 档位重挂载遮罩时长（毫秒） */
+const TIER_REMOUNT_MASK_MS = 200;
+
+/** `?glDebug=1` 黑屏哨兵的采样间隔（毫秒） */
+const GL_DEBUG_SAMPLE_MS = 500;
+
+/** 黑屏哨兵：连续多少次接近 0 才告警 */
+const GL_DEBUG_BLACK_LIMIT = 3;
+
+/** 黑屏哨兵亮度阈值（0~255） */
+const GL_DEBUG_LUMA_THRESHOLD = 2.0;
+
 /** window 全局调试句柄的形状声明（避免污染全局 Window 接口，用局部索引签名窄化） */
 type DebuggableWindow = Window & {
   __KUBEVISION_R3F__?: unknown;
@@ -242,6 +308,53 @@ export default function ClusterCanvas() {
   const [adaptiveDpr, setAdaptiveDpr] = useState<number>(2);
 
   /**
+   * 自适应 dpr 的稳定性约束。
+   *
+   * dpr 改变会改变整个绘制缓冲的像素数，牵动 MeshReflectorMaterial 与
+   * EffectComposer 的 RT 尺寸。频繁抖动是"跑着跑着黑屏"的高发原因，
+   * 因此降级链被严格限制为：
+   *   1. 只降不升（回升会再次重建 RT，收益远小于风险）；
+   *   2. 会话内最多降 DPR_ADJUST_MAX_TIMES 次；
+   *   3. 每次间隔 >= DPR_ADJUST_COOLDOWN_MS；
+   *   4. 路演期间冻结（demoDirector 非 idle 时绝不调整）。
+   */
+  const dprAdjustRef = useRef<{ count: number; lastAt: number }>({ count: 0, lastAt: 0 });
+
+  /**
+   * 装饰层开关（非 FBO 参数）。
+   *
+   * 关闭星尘/矩阵雨这类不影响 RenderTarget 尺寸的装饰物，能实打实省下
+   * draw call 与透明混合带宽，且不触发任何 GPU 资源重建——这是安全的降级。
+   */
+  const [decorativeEnabled, setDecorativeEnabled] = useState<boolean>(true);
+
+  /** 档位重挂载遮罩：把重建期间的空白藏进一次"呼吸" */
+  const [tierMaskVisible, setTierMaskVisible] = useState<boolean>(false);
+
+  /** WebGL 上下文是否已丢失 */
+  const [contextLost, setContextLost] = useState<boolean>(false);
+
+  /** 上下文丢失后 15s 仍未恢复 */
+  const [contextRestoreFailed, setContextRestoreFailed] = useState<boolean>(false);
+
+  /** 上下文恢复计数：自增作为 Canvas 的 key 触发重挂载 */
+  const [canvasRemountKey, setCanvasRemountKey] = useState<number>(0);
+
+  /** 上下文丢失超时计时器 */
+  const contextLostTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** 上下文丢失/恢复事件处理器（供卸载时精确移除） */
+  const glContextHandlersRef = useRef<{
+    canvas: HTMLCanvasElement | null;
+    onLost: ((event: Event) => void) | null;
+    onRestored: (() => void) | null;
+  }>({ canvas: null, onLost: null, onRestored: null });
+
+  /** glDebug 哨兵定时器 */
+  const glDebugTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+
+  /**
    * 是否启用「重后处理链路」（EffectComposer Bloom + 镜面反射地面）。
    *
    * 【为什么必须做能力探测】实测在软件光栅化（SwiftShader / llvmpipe）环境下，
@@ -257,29 +370,66 @@ export default function ClusterCanvas() {
    */
   const [heavyRenderEnabled, setHeavyRenderEnabled] = useState<boolean>(true);
 
-  /** 帧率走低：下调 dpr（下限 1.0） */
+  /**
+   * 帧率走低：只关装饰层，不动 dpr。
+   *
+   * dpr 变化会重建 RT；关装饰层不会。在还不确定是否持续性问题之前，
+   * 优先选代价最小的手段。
+   */
   const handlePerfDecline = useCallback((): void => {
+    setDecorativeEnabled(false);
+  }, []);
+
+  /**
+   * 帧率恢复：只恢复装饰层。
+   *
+   * 刻意不回升 dpr——回升意味着又一次 RT 重建，且"刚降就升"会在性能临界点
+   * 形成每分钟两次的抖动，正是本轮要消灭的稳定性问题。
+   */
+  const handlePerfIncline = useCallback((): void => {
+    setDecorativeEnabled(true);
+  }, []);
+
+  /**
+   * 设备能力兜底：把 dpr 锁到 1.0（只降一次）。
+   *
+   * 【三重闸门】路演期间冻结 / 次数上限 / 冷却窗口。
+   *
+   * 【为何用 getDemoDirectorSnapshot 而非 useDemoDirector】这里只需要"当下这一刻"
+   * 的值。订阅会让画布在每次路演进度心跳（约 8Hz）时重渲染，带来真实的 R3F
+   * 树比对开销。取值而非订阅，是性能与正确性的正确取舍。
+   */
+  const handlePerfFallback = useCallback((): void => {
+    if (getDemoDirectorSnapshot().status !== 'idle') return;
+
+    const now = Date.now();
+    const state = dprAdjustRef.current;
+    if (state.count >= DPR_ADJUST_MAX_TIMES) return;
+    if (now - state.lastAt < DPR_ADJUST_COOLDOWN_MS) return;
+
+    dprAdjustRef.current = { count: state.count + 1, lastAt: now };
     setAdaptiveDpr((prev): number => {
       const next = Math.max(1, Math.round((prev - 0.25) * 100) / 100);
       return next;
     });
   }, []);
 
-  /** 帧率恢复：上调 dpr（上限 2.0） */
-  const handlePerfIncline = useCallback((): void => {
-    setAdaptiveDpr((prev): number => {
-      const next = Math.min(2, Math.round((prev + 0.25) * 100) / 100);
-      return next;
-    });
-  }, []);
-
   /**
-   * 设备能力兜底：明显撑不住高分屏的设备（如低端集显）直接锁到 1.0。
-   * drei 会在设备性能评级过低时调用本回调。
+   * 档位重挂载遮罩。
+   *
+   * 重挂载会销毁并重建 WebGL 资源，中间有 1~2 帧空白；200ms 淡入淡出把它
+   * 藏成一次"呼吸"，而不是一次可见的闪烁。
    */
-  const handlePerfFallback = useCallback((): void => {
-    setAdaptiveDpr(1);
-  }, []);
+  useEffect((): (() => void) => {
+    setTierMaskVisible(true);
+    const timer = setTimeout((): void => {
+      setTierMaskVisible(false);
+    }, TIER_REMOUNT_MASK_MS);
+    return (): void => {
+      clearTimeout(timer);
+    };
+  }, [heavyRenderEnabled]);
+
 
   /**
    * 当前视角预设高亮跟踪（本地 UI 状态）。
@@ -353,9 +503,38 @@ export default function ClusterCanvas() {
      WorkerRack3D 是纯展示层，数据获取职责收敛在本父级，保持单向数据流） ---- */
   const nodes = useClusterStore((s): readonly WorkerNodeEntity[] => s.snapshotSummary.nodes);
 
+  /**
+   * 卸载清理：移除 WebGL 上下文监听与所有探针定时器。
+   *
+   * 【为什么必须显式移除】canvas 元素可能被子组件复用于新挂载；若旧监听
+   * 仍在，重挂载后会同时存在两套处理器，contextrestored 会触发两次
+   * canvasRemountKey 自增，导致无限重挂载。
+   */
+  useEffect((): (() => void) => {
+    return (): void => {
+      const handlers = glContextHandlersRef.current;
+      if (handlers.canvas !== null && handlers.onLost !== null) {
+        handlers.canvas.removeEventListener('webglcontextlost', handlers.onLost, false);
+      }
+      if (handlers.canvas !== null && handlers.onRestored !== null) {
+        handlers.canvas.removeEventListener('webglcontextrestored', handlers.onRestored, false);
+      }
+      glContextHandlersRef.current = { canvas: null, onLost: null, onRestored: null };
+      if (contextLostTimerRef.current !== null) {
+        clearTimeout(contextLostTimerRef.current);
+        contextLostTimerRef.current = null;
+      }
+      if (glDebugTimerRef.current !== null) {
+        clearInterval(glDebugTimerRef.current);
+        glDebugTimerRef.current = null;
+      }
+    };
+  }, []);
+
   return (
     <div className="absolute inset-0" ref={containerRef}>
       <Canvas
+        key={`canvas-${canvasRemountKey}`}
         /**
          * 【自适应 DPR 契约】dpr 由状态驱动而非写死：
          * - 正常态 [1, 2]：高分屏享受 2x 清晰度；
@@ -405,7 +584,104 @@ export default function ClusterCanvas() {
           if (isSoftware) {
             setHeavyRenderEnabled(false);
           }
+          /*
+           * ---- WebGL 上下文丢失恢复 ----
+           *
+           * 【为什么不只是显示提示】上下文丢失后 three 的所有 GPU 资源（纹理、
+           * FBO、program）都已失效，即便 contextrestored 事件到来，R3F 内部的
+           * 资源缓存也不会自动重建。可靠做法是**整体重挂载** Canvas：
+           * 通过 canvasRemountKey 自增改变 key，让 React 抛掉整棵 3D 树重建。
+           *
+           * 【为什么必须 preventDefault】默认行为下浏览器不会尝试恢复上下文。
+           * 只有显式 preventDefault，才会在后续派发 webglcontextrestored。
+           */
+          const canvasEl = state.gl.domElement;
+          const onContextLost = (event: Event): void => {
+            event.preventDefault();
+            setContextLost(true);
+            setContextRestoreFailed(false);
+            if (contextLostTimerRef.current !== null) {
+              clearTimeout(contextLostTimerRef.current);
+            }
+            contextLostTimerRef.current = setTimeout((): void => {
+              setContextRestoreFailed(true);
+            }, CONTEXT_RESTORE_TIMEOUT_MS);
+          };
+          const onContextRestored = (): void => {
+            if (contextLostTimerRef.current !== null) {
+              clearTimeout(contextLostTimerRef.current);
+              contextLostTimerRef.current = null;
+            }
+            setContextLost(false);
+            setContextRestoreFailed(false);
+            setCanvasRemountKey((prev): number => prev + 1);
+            useClusterStore.getState().appendTerminalLog('[GL] context restored');
+          };
+          canvasEl.addEventListener('webglcontextlost', onContextLost, false);
+          canvasEl.addEventListener('webglcontextrestored', onContextRestored, false);
+          glContextHandlersRef.current = { canvas: canvasEl, onLost: onContextLost, onRestored: onContextRestored };
+
+          /*
+           * ---- ?glDebug=1 NaN / 黑屏哨兵（开发探针，不进生产默认路径）----
+           *
+           * 【为什么放在 setInterval 而不是 useFrame】useFrame 内做 readPixels
+           * 会强制同步等待 GPU 管线刷新，等于把帧率打回个位数。500ms 一次
+           * 的旁路采样对渲染几乎无影响，且足以捕获"稳定黑屏"这种持续性故障。
+           *
+           * 【为什么只有 1×1】readPixels 是 GPU→CPU 同步读取，面积越大越慢。
+           * 取画布中心 1 像素：那里是控制平面晶体，正常情况下必然有亮度，
+           * 一旦长期为 0 就说明整条渲染链已经失效。
+           */
+          if (typeof window !== 'undefined') {
+            const glDebugOn = new URLSearchParams(window.location.search).get('glDebug') === '1';
+            if (glDebugOn && glDebugTimerRef.current === null) {
+              let blackStreak = 0;
+              const probeGl = state.gl;
+              glDebugTimerRef.current = setInterval((): void => {
+                try {
+                  const ctx = probeGl.getContext();
+                  if (ctx.isContextLost()) return;
+                  const w = probeGl.domElement.width;
+                  const h = probeGl.domElement.height;
+                  if (w === 0 || h === 0) return;
+                  const px = new Uint8Array(4);
+                  ctx.readPixels(
+                    Math.floor(w / 2),
+                    Math.floor(h / 2),
+                    1,
+                    1,
+                    ctx.RGBA,
+                    ctx.UNSIGNED_BYTE,
+                    px,
+                  );
+                  const luma = 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
+                  if (luma < GL_DEBUG_LUMA_THRESHOLD) {
+                    blackStreak += 1;
+                    if (blackStreak >= GL_DEBUG_BLACK_LIMIT) {
+                      const snapshot = useClusterStore.getState();
+                      console.error('[GL-BLACKOUT]', {
+                        luma,
+                        streak: blackStreak,
+                        activeChaos: snapshot.activeChaos,
+                        selectedEntityId: snapshot.selectedEntityId,
+                        connectionMode: snapshot.connectionMode,
+                        health: snapshot.snapshotSummary.clusterHealthScore,
+                        ctxLost: ctx.isContextLost(),
+                      });
+                      blackStreak = 0;
+                    }
+                  } else {
+                    blackStreak = 0;
+                  }
+                } catch {
+                  /* 探针自身异常不应影响渲染 */
+                }
+              }, GL_DEBUG_SAMPLE_MS);
+            }
+          }
+
           handleCanvasCreated(state);
+
         }}
         onPointerMissed={(): void => {
           selectEntity(null);
@@ -514,7 +790,12 @@ export default function ClusterCanvas() {
          * 【Y = −0.025】低于两层 Grid（−0.02 / +0.01），
          * 于是网格像蚀刻在镜面上层的坐标网，而非浮在反射之上。
          */}
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.025, 0]} receiveShadow>
+        <mesh
+          key={`reflector-${canvasRemountKey}`}
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[0, -0.025, 0]}
+          receiveShadow
+        >
           <circleGeometry args={[32, 64]} />
           <MeshReflectorMaterial
             blur={[320, 90]}
@@ -532,7 +813,7 @@ export default function ClusterCanvas() {
              * 反射本来就是模糊柔化的（blur 320×90），降采样后观感损失极小，
              * 但填充率开销直接降到四分之一。
              */
-            resolution={adaptiveDpr >= 1.5 ? 512 : 256}
+            resolution={REFLECTOR_RESOLUTION[RENDER_QUALITY_TIER]}
             mixBlur={0.85}
             mixStrength={15}
             roughness={0.62}
@@ -582,8 +863,12 @@ export default function ClusterCanvas() {
           第一层贴地环绕（粗亮、快）复刻光圈周围飞散的星尘；
           第二层中空光束区（细小、慢、绿）表现能量逸散。
           两层尺度/速度/颜色都不同，才有"近亮远淡"的景深层次。 */}
-        <Sparkles count={140} scale={[24, 2.5, 24]} size={1.6} speed={0.35} color="#38bdf8" position={[0, 1.2, 0]} opacity={0.75} />
-        <Sparkles count={90} scale={[22, 10, 22]} size={1.1} speed={0.2} color="#10b981" position={[0, 5.0, 0]} opacity={0.45} />
+        {decorativeEnabled ? (
+          <Sparkles count={140} scale={[24, 2.5, 24]} size={1.6} speed={0.35} color="#38bdf8" position={[0, 1.2, 0]} opacity={0.75} />
+        ) : null}
+        {decorativeEnabled ? (
+          <Sparkles count={90} scale={[22, 10, 22]} size={1.1} speed={0.2} color="#10b981" position={[0, 5.0, 0]} opacity={0.45} />
+        ) : null}
 
         {/*
          * ---- 远景深空数字矩阵雨光幕 ----
@@ -598,7 +883,7 @@ export default function ClusterCanvas() {
          * 【不透明度】着色器末端统一乘 uOpacity（常态 0.075 / 故障态 0.115），
          * 保证它永远是氛围层而不是与主体争视觉权重的第二主角。
          */}
-        <CyberMatrixRain3D />
+        {decorativeEnabled ? <CyberMatrixRain3D /> : null}
 
         {/*
          * ---- 程序化 PBR 环境反射（零外链 HDR）----
@@ -672,7 +957,11 @@ export default function ClusterCanvas() {
          * canvas 的 antialias 与 DPR 控制画质，后处理链不重复 MSAA；
          * 本版本 EffectComposer 无 disableNormalPass 选项，法线通道关闭由上游 npm 版本决定。
          */}
-        {heavyRenderEnabled ? (<EffectComposer multisampling={0}>
+        {heavyRenderEnabled ? (<EffectComposer
+          key={`composer-${canvasRemountKey}`}
+          multisampling={0}
+          frameBufferType={HalfFloatType}
+        >
           <Bloom
             intensity={0.55}
             luminanceThreshold={0.62}
@@ -683,6 +972,48 @@ export default function ClusterCanvas() {
           <Vignette eskil={false} offset={0.18} darkness={0.35} />
         </EffectComposer>) : null}
       </Canvas>
+
+      {/*
+       * ---- 上下文丢失提示条 ----
+       *
+       * 【层级】z-[5]：在 Canvas（z-0）之上、巡检 HUD / 抽屉（z-20 起）之下，
+       * 与光学暗角同层。pointer-events-none 保证不拦截任何交互——
+       * 上下文丢了也要能继续操作 2D HUD 与右侧抽屉，这是演示兜底的前提。
+       */}
+      {contextLost ? (
+        <div
+          className="pointer-events-none absolute inset-x-0 top-3 z-[5] flex justify-center"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex items-center gap-2 rounded px-3 py-1.5 font-mono text-[11px] tracking-tight backdrop-blur-md"
+            style={{
+              background: contextRestoreFailed ? 'rgba(76,5,25,0.86)' : 'rgba(69,26,3,0.86)',
+              border: `1px solid ${contextRestoreFailed ? 'rgba(244,63,94,0.5)' : 'rgba(251,191,36,0.45)'}`,
+              color: contextRestoreFailed ? '#fecdd3' : '#fde68a',
+            }}
+          >
+            <span
+              className="block h-1.5 w-1.5 rounded-full"
+              style={{ background: contextRestoreFailed ? '#f43f5e' : '#fbbf24' }}
+              aria-hidden
+            />
+            {contextRestoreFailed
+              ? '图形上下文已丢失且未能自动恢复，请刷新页面（2D 面板仍可用）'
+              : '图形上下文已丢失，正在恢复…'}
+          </div>
+        </div>
+      ) : null}
+
+      {/* ---- 档位重挂载遮罩：200ms 淡入淡出，把 FBO 重建的空白藏起来 ---- */}
+      <div
+        className="pointer-events-none absolute inset-0 z-[4] transition-opacity duration-200"
+        style={{
+          background: '#020815',
+          opacity: tierMaskVisible ? 1 : 0,
+        }}
+        aria-hidden
+      />
 
       {/*
        * ---- 电影级光学暗角遮罩（DOM 层，Canvas 之上、HUD 之下）----

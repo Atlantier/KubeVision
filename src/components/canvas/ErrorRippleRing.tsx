@@ -114,17 +114,18 @@ const FRAGMENT_SHADER = /* glsl */ `
       float dist = abs(r - progress);
 
       // ---- 3a. 锐利亮红波峰（窄带） ----
-      float peak = smoothstep(uPeakWidth, 0.0, dist);
+      float peak = 1.0 - smoothstep(0.0, max(uPeakWidth, 1.0e-4), dist);
 
       // ---- 3b. 柔和绯红尾迹（宽带 × 内侧方向因子） ----
-      float trailBand = smoothstep(uTrailWidth, 0.0, dist);
+      float trailBand = 1.0 - smoothstep(0.0, max(uTrailWidth, 1.0e-4), dist);
       // r < progress（波前内侧）→ 1；r > progress（外侧）→ 迅速 0
-      float behind = 1.0 - smoothstep(0.0, uBeamWidth, r - progress);
+      float behind = 1.0 - smoothstep(0.0, max(uBeamWidth, 1.0e-4), r - progress);
       // 扣掉与波峰重合的部分，避免中心叠加过曝
       float trail = trailBand * behind * (1.0 - peak);
 
       // ---- 3c. 由内向外平方衰减 ----
-      float fade = pow(1.0 - progress, 2.0);
+      float fadeBase = max(1.0 - progress, 0.0);
+      float fade = fadeBase * fadeBase;
 
       totalPeak  += peak  * fade;
       totalTrail += trail * fade;
@@ -134,7 +135,7 @@ const FRAGMENT_SHADER = /* glsl */ `
     vec3 rgb = uPeakColor * totalPeak + uColor * totalTrail * uTrailGain;
 
     // 5. 加色混合下 alpha 恒为 1.0，保证 rgb 线性叠加（详见上方第 5 点）
-    gl_FragColor = vec4(rgb * uOpacity, 1.0);
+    gl_FragColor = vec4(clamp(rgb * uOpacity, 0.0, 8.0), 1.0);
   }
 `;
 

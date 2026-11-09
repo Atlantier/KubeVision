@@ -534,7 +534,7 @@ function injectCrystalShader(shader: THREE.WebGLProgramParametersWithUniforms): 
          diffuseColor.rgb = mix(panelArmor, vec3(0.045, 0.055, 0.065) * (0.7 + 0.3 * brush), isCap);
 
          vec3 viewDir = normalize(-vViewPosition);
-         float fresnel = pow(1.0 - clamp(dot(normalize(vViewNormal), viewDir), 0.0, 1.0), 2.8);
+         float fresnel = pow(max(1.0 - clamp(dot(normalize(vViewNormal), viewDir), 0.0, 1.0), 1.0e-4), 2.8);
 
          totalEmissiveRadiance += faceGlow + diffuseColor.rgb * fresnel * 0.22;
        }`,

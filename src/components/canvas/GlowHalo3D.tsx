@@ -129,7 +129,7 @@ const FRAGMENT_SHADER = /* glsl */ `
     float alpha = clamp((outerBloom * 0.75 + whiteCore * 0.9) * uOpacity, 0.0, 1.0);
 
     /* 预乘 alpha 输出（rgb 已乘 alpha），配合 premultipliedAlpha 标记 */
-    gl_FragColor = vec4(finalColor * alpha, alpha);
+    gl_FragColor = vec4(clamp(finalColor * alpha, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
   }
 `;
 

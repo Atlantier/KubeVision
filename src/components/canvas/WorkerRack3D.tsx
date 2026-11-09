@@ -516,12 +516,19 @@ varying vec2 vUv;
 
 void main() {
   float r = length(vUv - vec2(0.5)) * 2.0;
-  float glow = pow(1.0 - smoothstep(0.0, 1.0, r), 2.2);
-  float ringA = exp(-pow((r - 0.34) / 0.075, 2.0));
-  float ringB = exp(-pow((r - (0.62 * uPulse)) / 0.055, 2.0));
+  float glow = pow(max(1.0 - smoothstep(0.0, 1.0, r), 1.0e-4), 2.2);
+  /*
+   * 【稳定性改写】原写法 pow((r - 0.34) / 0.075, 2.0)：
+   * 底数在环内、环外两侧符号相反，负底数的 pow 在 GLSL 中未定义。
+   * 改为先算线性偏差再做乘法（平方），数学等价且定义域安全。
+   */
+  float ringAd = (r - 0.34) / 0.075;
+  float ringBd = (r - (0.62 * uPulse)) / 0.055;
+  float ringA = exp(-(ringAd * ringAd));
+  float ringB = exp(-(ringBd * ringBd));
 
   float alpha = (glow * 1.05 + ringA * 0.62 + ringB * 0.42) * uPulse;
-  gl_FragColor = vec4(uColor, alpha);
+  gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
 }
 `;
 
@@ -709,7 +716,7 @@ void main() {
   /* 孔洞通透（0.10）、网骨半透明（uOpacity）——网格既挡住杂乱又不遮死内部 */
   float alpha = mix(0.10, uOpacity, bone) * verticalFade;
 
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
 }
 `;
 
@@ -810,7 +817,7 @@ void main() {
   float base = 0.30 + 0.10 * sin(vUv.x * 18.0 + uTime * 2.0);
   float alpha = (base + pulse * 0.95) * uIntensity;
 
-  gl_FragColor = vec4(uColor, alpha);
+  gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
 }
 `;
 

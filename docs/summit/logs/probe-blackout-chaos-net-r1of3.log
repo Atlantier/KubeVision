@@ -1,0 +1,40 @@
+
+##############################################################################
+# 第 1/3 轮  ·  action=chaos-net  ·  45s
+##############################################################################
+[自检] 读取 3 次基线亮度…
+  基线 1: avg=30.767 max=224 min=8 1086x934 lost=false
+  基线 2: avg=29.291 max=216 min=8 1086x934 lost=false
+  基线 3: avg=31.597 max=230 min=8 1086x934 lost=false
+  基线均值: 30.552
+[自检] 通过
+[动作] setActiveChaos('NET_PACKET_LOSS') → {"ok":true,"chaos":"NET_PACKET_LOSS","orbit":true}
+[动作] 触发时刻 = T0
+
+  时间(s) | 距T0(ms) | 状态   | 平均亮度 | 最大 | 最小 | 混沌
+  --------------------------------------------------------------------------
+      0.0 |     1433 | OK     |   32.130 |  255 |    8 | NET_PACKET_LOSS
+      2.0 |     3353 | OK     |   29.203 |  195 |    8 | NET_PACKET_LOSS
+      3.9 |     6210 | OK     |   31.045 |  218 |    8 | NET_PACKET_LOSS
+      6.7 |     8684 | OK     |   30.047 |  254 |    0 | NET_PACKET_LOSS
+      9.2 |    10975 | OK     |   34.060 |  255 |    8 | NET_PACKET_LOSS
+     11.5 |    12996 | OK     |   31.428 |  211 |    8 | NET_PACKET_LOSS
+     13.5 |    15026 | OK     |   29.364 |  195 |    8 | NET_PACKET_LOSS
+     15.5 |    17016 | OK     |   29.398 |  253 |    8 | NET_PACKET_LOSS
+     17.5 |    19014 | OK     |   28.645 |  203 |    8 | NET_PACKET_LOSS
+     19.5 |    21043 | OK     |   29.600 |  222 |    8 | NET_PACKET_LOSS
+     21.6 |    22967 | OK     |   31.613 |  223 |    8 | NET_PACKET_LOSS
+     23.5 |    24938 | OK     |   29.885 |  193 |    8 | NET_PACKET_LOSS
+     25.4 |    26875 | OK     |   30.694 |  255 |    8 | NET_PACKET_LOSS
+     27.4 |    28772 | OK     |   32.039 |  197 |    8 | NET_PACKET_LOSS
+     29.3 |    30730 | OK     |   30.499 |  224 |    8 | NET_PACKET_LOSS
+     31.3 |    32578 | OK     |   30.190 |  192 |    8 | NET_PACKET_LOSS
+     33.1 |    34445 | OK     |   29.952 |  255 |    8 | NET_PACKET_LOSS
+     35.0 |    36321 | OK     |   29.542 |  201 |    8 | NET_PACKET_LOSS
+     36.8 |    38280 | OK     |   31.799 |  253 |    8 | NET_PACKET_LOSS
+     38.8 |    40203 | OK     |   28.632 |  230 |    0 | NET_PACKET_LOSS
+     40.7 |    42115 | OK     |   29.768 |  192 |    8 | NET_PACKET_LOSS
+     42.6 |    44011 | OK     |   32.216 |  252 |    8 | NET_PACKET_LOSS
+     44.5 |    45899 | OK     |   34.099 |  242 |    8 | NET_PACKET_LOSS
+
+[结论] 第 1 轮：GREEN（黑屏事件 0，采样 23，错误 0）

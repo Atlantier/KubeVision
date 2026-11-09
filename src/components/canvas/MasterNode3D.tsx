@@ -207,7 +207,7 @@ void main() {
   float alpha = (core * 0.95 + mid * 0.55 + outer * 0.25) * flicker * uOpacity;
   alpha *= 1.0 - smoothstep(0.85, 1.0, d);
 
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
 }
 `;
 
@@ -315,7 +315,7 @@ void main() {
 
   float alpha = lateral * vertical * uPulse * 0.9;
   vec3 color = mix(uColor, vec3(1.0, 1.0, 1.0), lateral * 0.55);
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
 }
 `;
 
@@ -468,8 +468,8 @@ void main() {
   vec3 v = normalize(vViewPosition);
   float viewDot = max(0.0, dot(n, v));
 
-  float core = pow(viewDot, 3.2);
-  float corona = pow(viewDot, 1.35);
+  float core = pow(max(viewDot, 1.0e-4), 3.2);
+  float corona = pow(max(viewDot, 1.0e-4), 1.35);
 
   vec3 color = mix(uDeepColor, uCoronaColor, corona);
   color = mix(color, uCoreColor, core);
@@ -477,7 +477,7 @@ void main() {
   float alpha = corona * uPulse;
   alpha *= smoothstep(0.0, 0.02, viewDot);
 
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
 }
 `;
 
@@ -683,7 +683,7 @@ const GODRAY_FRAGMENT_SHADER = `
      * 【边缘消融】上下两端都必须归零，否则会看到圆柱的硬切边。
      * 用 smoothstep 在两端各留 6% 的过渡带。
      */
-    float edgeFade = smoothstep(0.0, 0.06, h) * smoothstep(1.0, 0.94, h);
+    float edgeFade = smoothstep(0.0, 0.06, h) * (1.0 - smoothstep(0.94, 1.0, h));
 
     /*
      * 【合成】三因子相乘后乘以脉动。
@@ -692,7 +692,7 @@ const GODRAY_FRAGMENT_SHADER = `
      */
     float intensity = angularEnvelope * fade * edgeFade * uPulse * 0.55;
 
-    gl_FragColor = vec4(uColor, intensity);
+    gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(intensity, 0.0, 1.0));
   }
 `;
 
@@ -771,7 +771,14 @@ const FLARE_FRAGMENT_SHADER = `
      */
     float coreRadius = length(vec2(centered.x, centered.y / uAspect));
     float coreSigma = 0.010;
-    float core = exp(-pow(coreRadius / coreSigma, 2.0));
+    /*
+     * 【稳定性改写】原写法 pow(x, 2.0) 有两个隐患：
+     *   1) GLSL 的 pow(x,y) 在 x<0 时为 undefined；
+     *   2) coreSigma 为 uniform，若被外部置 0 则 x 为 Inf。
+     * 数学等价改写：先做除法零保护，再用乘法代整数幂。
+     */
+    float coreRatio = coreRadius / max(coreSigma, 1.0e-4);
+    float core = exp(-(coreRatio * coreRatio));
 
     /*
      * 【水平流光翼】
@@ -787,7 +794,13 @@ const FLARE_FRAGMENT_SHADER = `
      * 光晕纵向约 8~10px 高——既保持宽银幕的"细线"特征，
      * 又足以在画面上被辨识为一道光带。
      */
-    float wing = exp(-abs(dx) * 1.3) * exp(-pow(centered.y, 2.0) * 36.0);
+    /*
+     * 【稳定性改写·真实缺陷】centered.y 在中心上下两侧符号相反，
+     * pow(负数, 2.0) 在 GLSL 中结果未定义（大量驱动直接产出 NaN）。
+     * NaN 一旦进入 bloom 会把整条光晕扩散成黑/白块。
+     * y² = (−y)²，故用乘法完全等价且无定义域问题。
+     */
+    float wing = exp(-abs(dx) * 1.3) * exp(-(centered.y * centered.y) * 36.0);
 
     /*
      * 【光圈叶片衍射条纹】对 |dx| 做周期调制。
@@ -810,10 +823,10 @@ const FLARE_FRAGMENT_SHADER = `
      * 【边缘裁切】只在最外侧收边，避免 plane 的方形边界透出，
      * 同时不砍掉翼部本体。
      */
-    float vignette = smoothstep(0.56, 0.50, length(centered * vec2(0.92, 1.0)));
+    float vignette = 1.0 - smoothstep(0.50, 0.56, length(centered * vec2(0.92, 1.0)));
     alpha *= vignette;
 
-    gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
+    gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
   }
 `;
 

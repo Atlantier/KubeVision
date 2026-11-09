@@ -178,6 +178,39 @@ async function phaseStatic() {
   /* ---- 构建产物：确认 dynamic import 生效（首屏不应含 3D/AI 代码） ---- */
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
   ok('依赖版本锁定', `next ${pkg.dependencies.next} / r3f ${pkg.dependencies['@react-three/fiber']} / ai ${pkg.dependencies.ai}`);
+
+  /*
+   * ---- GLSL 静态高危检查 ----
+   *
+   * 【为何放进 phaseStatic】GLSL 的 NaN 隐患（倒置 smoothstep、负底数 pow、
+   * atan(0,0)、未 clamp 的片元输出）在多数输入下画面"看起来正常"，
+   * 只在特定角度/特定帧爆出一个片元，然后被 bloom 扩散成整块黑或白。
+   * 这类问题无法靠肉眼回归发现，必须静态扫描。
+   *
+   * 【为何在 --quick 也跑】它只读源码、不启浏览器，单次约 200ms，
+   * 是提交前最低成本的守门员。
+   */
+  const glsl = await run('node', ['scripts/lint-glsl.mjs', '--json']);
+  if (glsl.code === 0) {
+    let glslSummary = '';
+    try {
+      const parsed = JSON.parse(glsl.stdout);
+      glslSummary = `扫描 ${parsed.scanned} 个文件，0 处 HIGH`;
+    } catch {
+      glslSummary = '0 处 HIGH';
+    }
+    ok('GLSL 静态高危检查', glslSummary);
+  } else {
+    let detail = 'exit ' + glsl.code;
+    try {
+      const parsed = JSON.parse(glsl.stdout);
+      const first = parsed.high[0];
+      detail = `${parsed.high.length} 处 HIGH，例: ${first.file}:${first.line} [${first.rule}]`;
+    } catch {
+      /* 保留 exit code 描述 */
+    }
+    bad('GLSL 静态高危检查', detail);
+  }
 }
 
 /* ========================================================================== */

@@ -145,7 +145,7 @@ void main() {
   float bitMask = step(0.28, fract(vUv.y * 110.0 + columnHash * 17.0));
 
   /* ---- 横向纤细束缚：列中心 1、列缘 0 → 一根细光丝 ---- */
-  float xMask = smoothstep(0.38, 0.12, abs(cellUv.x - 0.5));
+  float xMask = 1.0 - smoothstep(0.12, 0.38, abs(cellUv.x - 0.5));
 
   /* ---- 环向呼吸遮罩：3 个波瓣缓慢起伏，避免整圈亮度均匀 ---- */
   float breathMask = 0.55 + 0.45 * sin(vUv.x * 6.28318 * 3.0);
@@ -161,7 +161,7 @@ void main() {
   vec3 headColor = vec3(0.878, 0.996, 0.980);
   vec3 color = mix(tailColor, headColor, trail);
 
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
 }
 `;
 

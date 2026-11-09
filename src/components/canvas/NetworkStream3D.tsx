@@ -442,7 +442,7 @@ void main() {
   float rim = 0.55 + 0.45 * abs(normalize(vViewNormal).z);
 
   float alpha = edgeFade * wave * rim * uIntensity;
-  gl_FragColor = vec4(uColor, alpha);
+  gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
 }
 `;
 
@@ -590,7 +590,7 @@ void main() {
   /* 激发态整体提亮：alpha 额外乘 (1 + vExcite·0.8) */
   float alpha = (core * 0.9 + halo * 0.32) * vTwinkle * (1.0 + vExcite * 0.8);
 
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
 }
 `;
 
