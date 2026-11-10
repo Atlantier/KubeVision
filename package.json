@@ -47,6 +47,7 @@
     "check:a11y": "node scripts/check-a11y.mjs",
     "check:emoji": "node scripts/check-emoji.mjs",
     "visual:diff": "node scripts/visual-diff.mjs",
+    "mcp:smoke": "node scripts/mcp-smoke.mjs",
     "opening:frames": "node scripts/opening-frames.mjs",
     "soak": "node scripts/soak.mjs",
     "strictmode:audit": "node scripts/strictmode-audit.mjs",
