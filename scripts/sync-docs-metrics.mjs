@@ -127,6 +127,30 @@ function renderMetrics(report) {
 }
 
 /**
+ * 由 rag-eval.json 生成 RAG 评测行（R42 · Phase 2）。
+ *
+ * @param rag 评测结果（缺失时为 null）
+ * @returns Markdown 表格文本
+ */
+function renderRagEval(rag) {
+  if (rag === null) return '未采集（先运行 `node scripts/eval-rag.mjs`）';
+  const pct = (value) => (value * 100).toFixed(1) + '%';
+  const num = (value, digits = 3) => Number(value).toFixed(digits);
+  const modes = rag.modes;
+  const lines = [
+    '| RAG 召回方案（真实评测） | Recall@1 | Recall@3 | MRR@5 | NDCG@5 |',
+    '|---|---|---|---|---|',
+    '| 两路 RRF（现行） | ' + pct(modes.twoWayRrf.recallAt1) + ' | ' + pct(modes.twoWayRrf.recallAt3) + ' | ' + num(modes.twoWayRrf.mrrAt5) + ' | ' + num(modes.twoWayRrf.ndcgAt5) + ' |',
+    '| bm25-only（消融） | ' + pct(modes.bm25Only.recallAt1) + ' | ' + pct(modes.bm25Only.recallAt3) + ' | ' + num(modes.bm25Only.mrrAt5) + ' | ' + num(modes.bm25Only.ndcgAt5) + ' |',
+    '| lexical-only（消融） | ' + pct(modes.lexicalOnly.recallAt1) + ' | ' + pct(modes.lexicalOnly.recallAt3) + ' | ' + num(modes.lexicalOnly.mrrAt5) + ' | ' + num(modes.lexicalOnly.ndcgAt5) + ' |',
+    '| 负例拒答率 / 误拒率（目标 <5%） | ' + pct(rag.negativeRejectionRate) + ' | ' + pct(rag.falseRejectRate) + ' | — | — |',
+    '| 检索延迟 P50 / P95 | ' + num(rag.latencyMs.p50, 2) + 'ms | ' + num(rag.latencyMs.p95, 2) + 'ms | — | — |',
+    '',
+    '> RAG 评测：' + rag.caseCount + ' 条用例（正例 ' + rag.counts.positive + ' / 负例 ' + rag.counts.negative + '），两次运行指标一致=' + (rag.determinism?.identical === true ? '是' : '否') + '。',
+  ];
+  return lines.join('\n');
+}
+/**
  * 由 verify-summary.json 生成 VERIFY 区块内容（单行，可嵌入表格/正文）。
  *
  * @param summary 验收汇总
@@ -230,12 +254,16 @@ const summary = existsSync(verifyPath) ? JSON.parse(readFileSync(verifyPath, 'ut
 const parityPath = join(ROOT, 'docs/mode-parity.json');
 const parity = existsSync(parityPath) ? JSON.parse(readFileSync(parityPath, 'utf8')) : null;
 
-const metricsBlock = renderMetrics(report);
+const ragEvalPath = join(ROOT, 'docs/rag-eval.json');
+const ragEval = existsSync(ragEvalPath) ? JSON.parse(readFileSync(ragEvalPath, 'utf8')) : null;
+
+const metricsBlock = renderMetrics(report) + '\n\n' + renderRagEval(ragEval);
 const verifyBlock = renderVerify(summary);
 
 console.log('KubeVision AI — 文档指标同步');
 console.log(`  数据源: docs/performance.json（采集于 ${formatTime(report.generatedAt)}）`);
 console.log(`  验收源: ${summary === null ? '（缺失，使用占位）' : `docs/verify-summary.json（通过 ${summary.pass} / 共 ${summary.total}）`}`);
+console.log(`  RAG 评测源: ${ragEval === null ? '（缺失，使用占位）' : `docs/rag-eval.json（${ragEval.caseCount} 条用例）`}`);
 console.log('');
 
 let changed = 0;
