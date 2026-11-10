@@ -30,7 +30,7 @@ import type { RagRunbookDoc } from '@/types/ai';
  * 单独展示输入能让用户看到"证据构成"，单独展示输出能给"最终结论"。
  * 二者对照才能发现「三路都弱却融合分高」这类异常（说明校准段位偏高）。
  */
-export type RagSignalKey = 'bm25' | 'dense' | 'topology';
+export type RagSignalKey = 'bm25' | 'dense' | 'topology' | 'semantic';
 
 /**
  * RagSignal —— 单路检索信号的展示契约。
@@ -60,6 +60,12 @@ export interface RagSignal {
   readonly dotClass: string;
   /** 面向用户的解释（tooltip） */
   readonly description: string;
+  /**
+   * R44：该路信号本次是否真正参与打分。
+   * false 表示"不可用"（如句向量模型/查询向量未就绪），界面应显示"未就绪"，
+   * 绝不能画成 0 分条——"没有这一路"和"这一路得了 0 分"语义完全不同。
+   */
+  readonly available?: boolean;
 }
 
 /**
@@ -133,10 +139,19 @@ const SIGNAL_VISUALS: Readonly<
     dotClass: 'bg-amber-400',
     description: '故障场景 / 受影响 Pod / 3D 空间归属的上下文加权',
   },
+  /* R44：第四路句向量（MiniLM） */
+  semantic: {
+    label: '句向量',
+    term: 'MiniLM',
+    barClass: 'bg-violet-400',
+    textClass: 'text-violet-300',
+    dotClass: 'bg-violet-400',
+    description: 'MiniLM 384 维句向量余弦：模型或查询向量未就绪时显示“未就绪”，不填 0 冒充',
+  },
 };
 
 /** 各信号的展示顺序（固定顺序，避免排序变化导致图例跳动） */
-const SIGNAL_ORDER: readonly RagSignalKey[] = ['bm25', 'dense', 'topology'];
+const SIGNAL_ORDER: readonly RagSignalKey[] = ['bm25', 'dense', 'topology', 'semantic'];
 
 /* ========================================================================== */
 /* 核心：从 Runbook 列表推导信号拆解                                            */
@@ -178,18 +193,25 @@ export function buildRagSignalBreakdown(docs: readonly RagRunbookDoc[]): RagSign
   const breakdown = topDoc.scoreBreakdown;
 
   /* ---- 2. 三路原始分（clamp 到 [0,1] 防御异常值画出超宽条） ---- */
+  const semanticAvailable = breakdown.semanticAvailable === true;
   const rawScores: Record<RagSignalKey, number> = {
     bm25: clamp01(breakdown.bm25Score),
-    dense: clamp01(breakdown.vectorScore),
+    dense: clamp01(breakdown.lexicalCosine ?? breakdown.vectorScore),
     topology: clamp01(breakdown.contextBoost),
+    semantic: semanticAvailable ? clamp01(breakdown.semanticScore ?? 0) : 0,
   };
 
-  /* ---- 3. 归一化为份额 ---- */
-  const total = rawScores.bm25 + rawScores.dense + rawScores.topology;
+  /* ---- 3. 归一化为份额（不可用的一路不计入分母） ---- */
+  const total =
+    rawScores.bm25 +
+    rawScores.dense +
+    rawScores.topology +
+    (semanticAvailable ? rawScores.semantic : 0);
 
   const signals: RagSignal[] = SIGNAL_ORDER.map((key): RagSignal => {
     const visual = SIGNAL_VISUALS[key];
     const score = rawScores[key];
+    const available = key === 'semantic' ? semanticAvailable : true;
     /**
      * total 为 0 时三路均无证据：此时份额全部置 0（而非各占 1/3）。
      * 各占 1/3 会画出"三等分满条"，暗示三路都有贡献，是误导。
@@ -201,6 +223,7 @@ export function buildRagSignalBreakdown(docs: readonly RagRunbookDoc[]): RagSign
       term: visual.term,
       score,
       share,
+      available,
       barClass: visual.barClass,
       textClass: visual.textClass,
       dotClass: visual.dotClass,
@@ -213,6 +236,7 @@ export function buildRagSignalBreakdown(docs: readonly RagRunbookDoc[]): RagSign
   if (total > 0) {
     let bestShare = -1;
     for (const signal of signals) {
+      if (signal.available === false) continue;
       if (signal.share > bestShare) {
         bestShare = signal.share;
         dominantKey = signal.key;

@@ -104,6 +104,12 @@ export interface RagRunbookDoc {
     readonly rrfScore: number;
     /** 原始融合分（C5：排序依据，未被舍入/校准污染） */
     readonly fusedScore?: number;
+    /** R44：词法余弦（原 vectorScore 的新名字；保留 vectorScore 作为兼容字段） */
+    readonly lexicalCosine?: number;
+    /** R44：句向量（MiniLM 384 维）余弦，[0,1] */
+    readonly semanticScore?: number;
+    /** R44：本次检索是否真正使用了句向量路（false 表示模型/查询向量未就绪） */
+    readonly semanticAvailable?: boolean;
   };
 
   /**

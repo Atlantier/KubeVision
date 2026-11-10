@@ -74,10 +74,17 @@ const second = await fetchEval();
 const deterministic = JSON.stringify(stableMetrics(first)) === JSON.stringify(stableMetrics(second));
 
 const modes = first.modes;
+const gainR1 = (modes.threeWayRrf.recallAt1 - modes.twoWayRrf.recallAt1) * 100;
+const gainR3 = (modes.threeWayRrf.recallAt3 - modes.twoWayRrf.recallAt3) * 100;
+const gainMrr = modes.threeWayRrf.mrrAt5 - modes.twoWayRrf.mrrAt5;
+const gainNdcg = modes.threeWayRrf.ndcgAt5 - modes.twoWayRrf.ndcgAt5;
+const fmtGain = (value, digits = 1) => (value >= 0 ? '+' : '') + value.toFixed(digits);
 const rows = [
   '| 召回方案 | Recall@1 | Recall@3 | MRR@5 | NDCG@5 |',
   '|---|---|---|---|---|',
   `| 两路 RRF（现行） | ${pct(modes.twoWayRrf.recallAt1)} | ${pct(modes.twoWayRrf.recallAt3)} | ${fixed(modes.twoWayRrf.mrrAt5)} | ${fixed(modes.twoWayRrf.ndcgAt5)} |`,
+  `| 三路 RRF（+MiniLM 句向量） | ${pct(modes.threeWayRrf.recallAt1)} | ${pct(modes.threeWayRrf.recallAt3)} | ${fixed(modes.threeWayRrf.mrrAt5)} | ${fixed(modes.threeWayRrf.ndcgAt5)} |`,
+  `| 增益（三路 − 两路） | ${fmtGain(gainR1)}pp | ${fmtGain(gainR3)}pp | ${fmtGain(gainMrr, 3)} | ${fmtGain(gainNdcg, 3)} |`,
   `| bm25-only（消融） | ${pct(modes.bm25Only.recallAt1)} | ${pct(modes.bm25Only.recallAt3)} | ${fixed(modes.bm25Only.mrrAt5)} | ${fixed(modes.bm25Only.ndcgAt5)} |`,
   `| lexical-only（消融） | ${pct(modes.lexicalOnly.recallAt1)} | ${pct(modes.lexicalOnly.recallAt3)} | ${fixed(modes.lexicalOnly.mrrAt5)} | ${fixed(modes.lexicalOnly.ndcgAt5)} |`,
 ];
@@ -95,9 +102,11 @@ ${rows.join('\n')}
 
 | 指标 | 值 | 目标 |
 |---|---|---|
-| 负例拒答率 | **${pct(first.negativeRejectionRate)}** | 越高越好（理想 100%） |
-| 应命中却被拒答（误拒率） | **${pct(first.falseRejectRate)}** | **< 5%** |
-| 检索延迟 P50 / P95 | ${fixed(first.latencyMs.p50, 2)}ms / ${fixed(first.latencyMs.p95, 2)}ms | 记录用 |
+| 负例拒答率（两路 / 三路） | **${pct(first.negativeRejectionRate.twoWay)} / ${pct(first.negativeRejectionRate.threeWay)}** | 越高越好（理想 100%） |
+| 应命中却被拒答（两路 / 三路） | **${pct(first.falseRejectRate.twoWay)} / ${pct(first.falseRejectRate.threeWay)}** | **< 5%** |
+| 检索延迟 P50 / P95（两路） | ${fixed(first.latencyMs.twoWay.p50, 2)}ms / ${fixed(first.latencyMs.twoWay.p95, 2)}ms | 记录用 |
+| 检索延迟 P50 / P95（三路） | ${fixed(first.latencyMs.threeWay.p50, 2)}ms / ${fixed(first.latencyMs.threeWay.p95, 2)}ms | 记录用 |
+| 三路查询向量 | ${first.threeWay.available ? '已加载 ' + first.threeWay.queryVectors + ' 条' : '未采集（先运行 build-eval-query-embeddings）'} | — |
 
 ## 2. 置信度校准（R09）
 
@@ -147,10 +156,13 @@ writeFileSync(join(ROOT, 'docs/rag-eval.md'), md, 'utf8');
 console.log('KubeVision AI — RAG 评测');
 console.log(`  用例 ${first.caseCount} 条 · 确定性=${deterministic ? 'PASS' : 'FAIL'}`);
 console.log(`  两路 RRF : R@1 ${pct(modes.twoWayRrf.recallAt1)} · R@3 ${pct(modes.twoWayRrf.recallAt3)} · MRR ${fixed(modes.twoWayRrf.mrrAt5)} · NDCG ${fixed(modes.twoWayRrf.ndcgAt5)}`);
+console.log(`  三路 RRF : R@1 ${pct(modes.threeWayRrf.recallAt1)} · R@3 ${pct(modes.threeWayRrf.recallAt3)} · MRR ${fixed(modes.threeWayRrf.mrrAt5)} · NDCG ${fixed(modes.threeWayRrf.ndcgAt5)}（查询向量 ${first.threeWay.queryVectors} 条）`);
+console.log(`  增益     : R@1 ${fmtGain(gainR1)}pp · R@3 ${fmtGain(gainR3)}pp · MRR ${fmtGain(gainMrr, 3)} · NDCG ${fmtGain(gainNdcg, 3)}`);
 console.log(`  bm25-only: R@1 ${pct(modes.bm25Only.recallAt1)} · R@3 ${pct(modes.bm25Only.recallAt3)} · MRR ${fixed(modes.bm25Only.mrrAt5)}`);
 console.log(`  lexical  : R@1 ${pct(modes.lexicalOnly.recallAt1)} · R@3 ${pct(modes.lexicalOnly.recallAt3)} · MRR ${fixed(modes.lexicalOnly.mrrAt5)}`);
-console.log(`  负例拒答 ${pct(first.negativeRejectionRate)} · 误拒率 ${pct(first.falseRejectRate)}（目标 <5%）`);
-console.log(`  延迟 P50/P95 ${fixed(first.latencyMs.p50, 2)}/${fixed(first.latencyMs.p95, 2)}ms`);
+console.log(`  负例拒答 两路 ${pct(first.negativeRejectionRate.twoWay)} · 三路 ${pct(first.negativeRejectionRate.threeWay)}`);
+console.log(`  误拒率   两路 ${pct(first.falseRejectRate.twoWay)} · 三路 ${pct(first.falseRejectRate.threeWay)}（目标 <5%）`);
+console.log(`  延迟      两路 P95 ${fixed(first.latencyMs.twoWay.p95, 2)}ms · 三路 P95 ${fixed(first.latencyMs.threeWay.p95, 2)}ms`);
 console.log('  报告: docs/rag-eval.md / docs/rag-eval.json');
 
 /* 同步 README 的 METRICS 区块（RAG 行） */

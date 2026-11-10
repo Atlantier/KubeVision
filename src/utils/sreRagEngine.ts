@@ -41,6 +41,7 @@
  */
 
 import { z } from 'zod';
+import { RUNBOOK_EMBEDDING_DIM, getAllRunbookVectors } from '@/utils/runbookEmbeddings';
 
 import type { RagRunbookDoc } from '@/types/ai';
 import type { ChaosScenario } from '@/types/cluster';
@@ -1173,6 +1174,14 @@ export function retrieveSreRunbooks(
   faultyPods: string[],
   topK = 2,
   extraRunbooks: readonly RagRunbookDoc[] = [],
+  /**
+   * R44：可选的查询句向量（MiniLM 384 维）。
+   *
+   * 【契约】长度必须等于 RUNBOOK_EMBEDDING_DIM，所有分量有限，且 L2 范数 > 0；
+   * 任何一项不满足都**退回两路召回**（不抛错、不填 0 冒充）。
+   * 传入后会做 L2 归一化，再与预计算的手册向量做余弦。
+   */
+  queryEmbedding?: readonly number[] | Float32Array,
 ): RagRunbookDoc[] {
   /* 防御：topK 非正时返回空数组（避免 slice 语义歧义） */
   const limit = Math.max(0, Math.floor(topK));
@@ -1188,6 +1197,29 @@ export function retrieveSreRunbooks(
    * 直接返回 [] 比让它靠先验挤进 Top-K 更诚实。
    */
   if (queryVector.size === 0) return [];
+
+  /* ---- 1b. 查询句向量校验 + L2 归一化（失败则两路回退） ---- */
+  let semanticQuery: Float32Array | null = null;
+  if (queryEmbedding !== undefined && queryEmbedding.length === RUNBOOK_EMBEDDING_DIM) {
+    const candidate = Float32Array.from(queryEmbedding);
+    let normSquared = 0;
+    let valid = true;
+    for (let i = 0; i < candidate.length; i += 1) {
+      const value = candidate[i] as number;
+      if (!Number.isFinite(value)) {
+        valid = false;
+        break;
+      }
+      normSquared += value * value;
+    }
+    if (valid && normSquared > 1e-12) {
+      const inverseNorm = 1 / Math.sqrt(normSquared);
+      for (let i = 0; i < candidate.length; i += 1) {
+        candidate[i] = (candidate[i] as number) * inverseNorm;
+      }
+      semanticQuery = candidate;
+    }
+  }
 
   /* 查询词元去重（BM25 与特征词提取都只需要唯一词集合） */
   const uniqueQueryTerms = [...new Set(queryTokens)];
@@ -1239,9 +1271,32 @@ export function retrieveSreRunbooks(
     readonly bm25Raw: number;
     readonly bm25Normalized: number;
     readonly contextBoost: number;
-    /** 是否具备语义证据（稠密或稀疏任一路非零） */
+    /** 是否具备语义证据（稠密/稀疏/句向量任一路非零） */
     readonly hasSemanticEvidence: boolean;
+    /** R44：句向量余弦（0 表示不可用或不相交） */
+    readonly semanticScore: number;
   }
+
+  /* 预计算向量表（模块级惰性解码，一次） */
+  const precomputedVectors: ReadonlyMap<string, Float32Array> | null =
+    semanticQuery === null
+      ? null
+      : new Map(getAllRunbookVectors().map((record) => [record.id, record.vector]));
+
+  /**
+   * semanticCosine —— 查询向量与文档向量的点积（两者都已 L2 归一化）。
+   *
+   * @param query 归一化查询向量
+   * @param doc 归一化文档向量
+   * @returns 余弦相似度，clamp 到 [0,1]
+   */
+  const semanticCosine = (query: Float32Array, doc: Float32Array): number => {
+    let dot = 0;
+    for (let i = 0; i < query.length; i += 1) {
+      dot += (query[i] as number) * (doc[i] as number);
+    }
+    return Math.max(0, Math.min(1, dot));
+  };
 
   const entries: RouteEntry[] = corpus.map((doc): RouteEntry => {
     /* 稠密路：TF-IDF 加权向量余弦 */
@@ -1259,14 +1314,24 @@ export function retrieveSreRunbooks(
     /* 先验路：上下文 */
     const contextBoost = contextScore(doc, chaos, faultyPods);
 
+    /* 句向量路：仅内置手册有预计算向量，自定义语料自动跳过 */
+    const docSemanticVector = precomputedVectors?.get(doc.id) ?? null;
+    const semanticScore =
+      semanticQuery !== null && docSemanticVector !== null
+        ? semanticCosine(semanticQuery, docSemanticVector)
+        : 0;
+
     return {
       doc,
       vectorScore,
       bm25Raw,
       bm25Normalized,
       contextBoost,
+      semanticScore,
       hasSemanticEvidence:
-        vectorScore > SEMANTIC_EVIDENCE_EPSILON || bm25Raw > SEMANTIC_EVIDENCE_EPSILON,
+        vectorScore > SEMANTIC_EVIDENCE_EPSILON ||
+        bm25Raw > SEMANTIC_EVIDENCE_EPSILON ||
+        semanticScore > SEMANTIC_EVIDENCE_EPSILON,
     };
   });
 
@@ -1286,6 +1351,10 @@ export function retrieveSreRunbooks(
   /* ---- 4. 各路由分别排名（RRF 只用名次，故先独立排序） ---- */
   const byVector = [...candidates].sort((a, b): number => b.vectorScore - a.vectorScore);
   const byBm25 = [...candidates].sort((a, b): number => b.bm25Raw - a.bm25Raw);
+  const bySemantic =
+    semanticQuery === null
+      ? []
+      : [...candidates].sort((a, b): number => b.semanticScore - a.semanticScore);
 
   const vectorRankOf = new Map<string, number>();
   byVector.forEach((entry, index): void => {
@@ -1294,6 +1363,10 @@ export function retrieveSreRunbooks(
   const bm25RankOf = new Map<string, number>();
   byBm25.forEach((entry, index): void => {
     bm25RankOf.set(entry.doc.id, index + 1);
+  });
+  const semanticRankOf = new Map<string, number>();
+  bySemantic.forEach((entry, index): void => {
+    semanticRankOf.set(entry.doc.id, index + 1);
   });
 
 
@@ -1312,23 +1385,34 @@ export function retrieveSreRunbooks(
     readonly vectorScore: number;
     readonly bm25Score: number;
     readonly contextBoost: number;
+    readonly semanticScore: number;
     readonly rrfScore: number;
     readonly fused: number;
   }
 
   const fused: Fused[] = candidates.map((entry): Fused => {
-    const ranks = [vectorRankOf.get(entry.doc.id) ?? Infinity, bm25RankOf.get(entry.doc.id) ?? Infinity];
-    const rrf = rrfFuse(ranks, 2);
+    const ranks =
+      semanticQuery === null
+        ? [vectorRankOf.get(entry.doc.id) ?? Infinity, bm25RankOf.get(entry.doc.id) ?? Infinity]
+        : [
+            vectorRankOf.get(entry.doc.id) ?? Infinity,
+            bm25RankOf.get(entry.doc.id) ?? Infinity,
+            semanticRankOf.get(entry.doc.id) ?? Infinity,
+          ];
+    const rrf = rrfFuse(ranks, semanticQuery === null ? 2 : 3);
 
     /*
      * 终值 = 加权三路。
      * 注意权重分配：BM25 占 0.45 最高——因为在本语料库上，
      * 精确术语命中（oom_score_adj / vxlan）比整体词分布更具决定性。
      */
-    const combined =
+    const baseCombined =
       CONFIDENCE_WEIGHT_VECTOR * entry.vectorScore +
       CONFIDENCE_WEIGHT_BM25 * entry.bm25Normalized +
       CONFIDENCE_WEIGHT_CONTEXT * entry.contextBoost;
+    /* 句向量可用时给 25% 权重，其余三路等比让位（总权重仍为 1） */
+    const combined =
+      semanticQuery === null ? baseCombined : baseCombined * 0.75 + entry.semanticScore * 0.25;
     /* RRF 作为独立证据再融合一半权重，防止单路异常主导 */
     const finalScore = combined * 0.6 + rrf * 0.4;
 
@@ -1337,6 +1421,7 @@ export function retrieveSreRunbooks(
       vectorScore: entry.vectorScore,
       bm25Score: entry.bm25Normalized,
       contextBoost: entry.contextBoost,
+      semanticScore: entry.semanticScore,
       rrfScore: rrf,
       fused: finalScore,
     };
@@ -1369,10 +1454,13 @@ export function retrieveSreRunbooks(
       matchedTerms: collectMatchedTerms(uniqueQueryTerms, entry.doc),
       scoreBreakdown: {
         vectorScore: Math.round(entry.vectorScore * 10000) / 10000,
+        lexicalCosine: Math.round(entry.vectorScore * 10000) / 10000,
         bm25Score: Math.round(entry.bm25Score * 10000) / 10000,
         contextBoost: Math.round(entry.contextBoost * 10000) / 10000,
         rrfScore: Math.round(entry.rrfScore * 10000) / 10000,
         fusedScore: Math.round(entry.fused * 10000) / 10000,
+        semanticScore: Math.round(entry.semanticScore * 10000) / 10000,
+        semanticAvailable: semanticQuery !== null,
       },
       isCustom: entry.doc.isCustom === true,
     }),

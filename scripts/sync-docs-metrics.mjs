@@ -137,16 +137,24 @@ function renderRagEval(rag) {
   const pct = (value) => (value * 100).toFixed(1) + '%';
   const num = (value, digits = 3) => Number(value).toFixed(digits);
   const modes = rag.modes;
+  const gainR1 = (modes.threeWayRrf.recallAt1 - modes.twoWayRrf.recallAt1) * 100;
+  const gainR3 = (modes.threeWayRrf.recallAt3 - modes.twoWayRrf.recallAt3) * 100;
+  const gainMrr = modes.threeWayRrf.mrrAt5 - modes.twoWayRrf.mrrAt5;
+  const gainNdcg = modes.threeWayRrf.ndcgAt5 - modes.twoWayRrf.ndcgAt5;
+  const signed = (value, digits = 1) => (value >= 0 ? '+' : '') + Number(value).toFixed(digits);
   const lines = [
     '| RAG 召回方案（真实评测） | Recall@1 | Recall@3 | MRR@5 | NDCG@5 |',
     '|---|---|---|---|---|',
     '| 两路 RRF（现行） | ' + pct(modes.twoWayRrf.recallAt1) + ' | ' + pct(modes.twoWayRrf.recallAt3) + ' | ' + num(modes.twoWayRrf.mrrAt5) + ' | ' + num(modes.twoWayRrf.ndcgAt5) + ' |',
+    '| 三路 RRF（+MiniLM 句向量） | ' + pct(modes.threeWayRrf.recallAt1) + ' | ' + pct(modes.threeWayRrf.recallAt3) + ' | ' + num(modes.threeWayRrf.mrrAt5) + ' | ' + num(modes.threeWayRrf.ndcgAt5) + ' |',
+    '| 增益（三路 − 两路） | ' + signed(gainR1) + 'pp | ' + signed(gainR3) + 'pp | ' + signed(gainMrr, 3) + ' | ' + signed(gainNdcg, 3) + ' |',
     '| bm25-only（消融） | ' + pct(modes.bm25Only.recallAt1) + ' | ' + pct(modes.bm25Only.recallAt3) + ' | ' + num(modes.bm25Only.mrrAt5) + ' | ' + num(modes.bm25Only.ndcgAt5) + ' |',
     '| lexical-only（消融） | ' + pct(modes.lexicalOnly.recallAt1) + ' | ' + pct(modes.lexicalOnly.recallAt3) + ' | ' + num(modes.lexicalOnly.mrrAt5) + ' | ' + num(modes.lexicalOnly.ndcgAt5) + ' |',
-    '| 负例拒答率 / 误拒率（目标 <5%） | ' + pct(rag.negativeRejectionRate) + ' | ' + pct(rag.falseRejectRate) + ' | — | — |',
-    '| 检索延迟 P50 / P95 | ' + num(rag.latencyMs.p50, 2) + 'ms | ' + num(rag.latencyMs.p95, 2) + 'ms | — | — |',
+    '| 负例拒答率（两路 / 三路） | ' + pct(rag.negativeRejectionRate.twoWay) + ' | ' + pct(rag.negativeRejectionRate.threeWay) + ' | — | — |',
+    '| 误拒率（两路 / 三路，目标 <5%） | ' + pct(rag.falseRejectRate.twoWay) + ' | ' + pct(rag.falseRejectRate.threeWay) + ' | — | — |',
+    '| 检索延迟 P95（两路 / 三路） | ' + num(rag.latencyMs.twoWay.p95, 2) + 'ms | ' + num(rag.latencyMs.threeWay.p95, 2) + 'ms | — | — |',
     '',
-    '> RAG 评测：' + rag.caseCount + ' 条用例（正例 ' + rag.counts.positive + ' / 负例 ' + rag.counts.negative + '），两次运行指标一致=' + (rag.determinism?.identical === true ? '是' : '否') + '。',
+    '> RAG 评测：' + rag.caseCount + ' 条用例（正例 ' + rag.counts.positive + ' / 负例 ' + rag.counts.negative + '），两次运行指标一致=' + (rag.determinism?.identical === true ? '是' : '否') + '；三路查询向量 ' + (rag.threeWay?.queryVectors ?? 0) + ' 条。',
   ];
   return lines.join('\n');
 }
