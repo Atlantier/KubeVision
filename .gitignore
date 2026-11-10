@@ -51,3 +51,6 @@ kubevision_championship_blueprint.md
 
 # 单测编译产物（scripts/run-demo-tests.mjs 生成）
 tmp-demo-test/
+
+# 验收失败证据（运行时生成，不入库）
+docs/summit/failures/

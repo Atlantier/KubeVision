@@ -69,6 +69,7 @@ import {
 } from '@/utils/demoDirector';
 import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
 import DemoReplayTimeline from '@/components/hud/DemoReplayTimeline';
+import DemoDebugPanel from '@/components/hud/DemoDebugPanel';
 import type { ChaosScenario, PodStatus, TelemetrySnapshot } from '@/types/cluster';
 import type { ConnectionMode, StatusFilter } from '@/types/store';
 import type {
@@ -1440,6 +1441,13 @@ export default function TopBar() {
     <div className="pointer-events-none fixed bottom-6 left-1/2 z-40 flex w-full max-w-[54rem] -translate-x-1/2 justify-center px-4">
       <DemoReplayTimeline />
     </div>
+
+    {/*
+      * 追问 3：可观测性自检面板。
+      * 组件内部自行判断 ?demoDebug=1，非调试模式返回 null，
+      * 因此这里常驻挂载不会产生任何视觉与性能开销。
+      */}
+    <DemoDebugPanel />
     </>
   );
 }

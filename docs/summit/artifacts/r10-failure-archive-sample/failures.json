@@ -1,0 +1,16 @@
+{
+  "at": "2026-11-10T04:20:06.575Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "passCount": 19,
+  "failCount": 1,
+  "failures": [
+    {
+      "name": "INJECTED 测试装置自检（--inject-failure）",
+      "actual": {
+        "note": "这条失败是刻意注入的，用于验证失败证据归档",
+        "at": "2026-11-10T04:20:01.881Z"
+      },
+      "detail": ""
+    }
+  ]
+}

@@ -43,6 +43,15 @@ const BASE_URL = readArg('--base') ?? 'http://127.0.0.1:3000';
  */
 const STRESS = process.argv.includes('--stress');
 
+/**
+ * 失败注入开关（测试装置自检用）。
+ *
+ * 【为什么保留它】"失败时自动归档证据"这条能力本身也需要被验证：
+ * 若从不触发失败，就无法证明 store 快照 / console / 末帧截图真的会落盘。
+ * 打开后会在汇总前主动记一条失败断言，用来验证归档链路。
+ */
+const INJECT_FAILURE = process.argv.includes('--inject-failure');
+
 /** 是否跳过"连跑两遍"（第二遍耗时约 40s）；--stress 模式默认跳过以控制总时长 */
 const SKIP_REPEAT =
   process.argv.includes('--skip-repeat') || (STRESS && !process.argv.includes('--with-repeat'));
@@ -250,11 +259,26 @@ async function connectCdp(wsUrl) {
   const pending = new Map();
   const consoleErrors = [];
   const pageErrors = [];
+  /*
+   * 【全量 console 缓冲】失败归档时只留 error 是不够的：很多卡顿是
+   * warn（如 React 警告、资源 404）先出现。这里保留全部类型，
+   * 上限 300 条防止长跑把内存撑大。
+   */
+  const consoleAll = [];
   /** 事件钩子（同一时刻只允许一个消费者，够用且避免多路抢答） */
   let eventHandler = null;
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
+    if (msg.method === 'Runtime.consoleAPICalled') {
+      const type = msg.params?.type ?? 'log';
+      const text = (msg.params?.args ?? [])
+        .map((a) => String(a.value ?? a.description ?? ''))
+        .join(' ')
+        .slice(0, 400);
+      consoleAll.push({ type, text });
+      if (consoleAll.length > 300) consoleAll.shift();
+    }
     if (msg.method === 'Runtime.consoleAPICalled' && msg.params?.type === 'error') {
       const text = (msg.params.args ?? [])
         .map((a) => String(a.value ?? a.description ?? ''))
@@ -295,6 +319,7 @@ async function connectCdp(wsUrl) {
     close: () => ws.close(),
     consoleErrors,
     pageErrors,
+    consoleAll,
     /**
      * 注册事件钩子（用于 Fetch.requestPaused 等需要应答的 CDP 事件）。
      *
@@ -400,6 +425,112 @@ const READ_CARDS = `(() => {
 /* ========================================================================== */
 /* 主流程                                                                      */
 /* ========================================================================== */
+
+/* ========================================================================== */
+/* 失败证据归档（追问 1）                                                       */
+/* ========================================================================== */
+
+/** 失败证据根目录 */
+const FAILURE_ROOT = join(process.cwd(), 'docs', 'summit', 'failures');
+
+/**
+ * 把当次现场的完整证据落盘。
+ *
+ * 【为什么必须自动做】路演失败往往是**时序性**的：刷新一次就复现不了。
+ * 只打印"哪条断言失败"没有价值，必须同时留下：
+ *   · store 快照（当时的混沌/选中/自愈/告警到底是什么）；
+ *   · 全量 console（很多卡顿先是 warn）；
+ *   · 最后一帧截图（画面黑没黑、卡片在不在、字幕写的是什么）；
+ *   · 导演追踪（effects 停在哪个调用上）。
+ * 这四样凑齐，才能在不复现的情况下定位问题。
+ *
+ * @param {object} cdp CDP 会话
+ * @returns {Promise<string|null>} 归档目录；失败返回 null
+ */
+async function saveFailureArtifacts(cdp) {
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const dir = join(FAILURE_ROOT, stamp);
+    mkdirSync(dir, { recursive: true });
+
+    /* ---- 1. store + 引擎快照 ---- */
+    const storeDump = await evaluate(
+      cdp,
+      `(() => {
+        const store = window.__KUBEVISION_STORE__;
+        if (!store) return { __noStore: true };
+        const s = store.getState();
+        const logs = s.terminalLogs ?? [];
+        return {
+          activeChaos: s.activeChaos,
+          selectedEntityId: s.selectedEntityId,
+          selectedEntityType: s.selectedEntityType,
+          connectionMode: s.connectionMode,
+          healedPodIds: s.healedPodIds,
+          pendingRemediations: s.pendingRemediations,
+          lastRemediationDiff: s.lastRemediationDiff,
+          demoAutoConfirm: s.demoAutoConfirm,
+          isOrbitPatrolActive: s.isOrbitPatrolActive,
+          isGlContextLost: s.isGlContextLost,
+          statusFilter: s.statusFilter,
+          snapshotSummary: s.snapshotSummary,
+          directorDebug: window.__demoDirectorDebug__ === undefined ? null : {
+            timerCount: window.__demoDirectorDebug__.timerCount,
+            status: window.__demoDirectorDebug__.status,
+            pacing: window.__demoDirectorDebug__.pacing,
+            phaseIndex: window.__demoDirectorDebug__.phaseIndex,
+            awaitingNarratorAdvance: window.__demoDirectorDebug__.awaitingNarratorAdvance,
+          },
+          terminalLogsTail: logs.slice(-80),
+        };
+      })()`,
+    );
+    writeFileSync(join(dir, 'store-snapshot.json'), JSON.stringify(storeDump, null, 2), 'utf8');
+
+    /* ---- 2. 全量 console + 页面异常 ---- */
+    const consoleLines = [
+      '# console 全量（按时间顺序）',
+      ...cdp.consoleAll.map((c) => `[${c.type}] ${c.text}`),
+      '',
+      '# 未捕获异常',
+      ...(cdp.pageErrors.length === 0 ? ['(none)'] : cdp.pageErrors),
+    ];
+    writeFileSync(join(dir, 'console.log'), consoleLines.join(String.fromCharCode(10)), 'utf8');
+
+    /* ---- 3. 最后一帧截图 ---- */
+    try {
+      const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+      const base64 = shot?.result?.data;
+      if (typeof base64 === 'string' && base64.length > 0) {
+        writeFileSync(join(dir, 'last-frame.png'), Buffer.from(base64, 'base64'));
+      }
+    } catch {
+      /* 截图失败不阻断归档 */
+    }
+
+    /* ---- 4. 失败清单 ---- */
+    writeFileSync(
+      join(dir, 'failures.json'),
+      JSON.stringify(
+        {
+          at: new Date().toISOString(),
+          baseUrl: BASE_URL,
+          passCount,
+          failCount,
+          failures: failureDetails,
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    return dir;
+  } catch (err) {
+    console.log(`  [warn] 失败证据归档未完成: ${err?.message ?? err}`);
+    return null;
+  }
+}
 
 /* ========================================================================== */
 /* 压力场景矩阵（--stress）                                                     */
@@ -1456,6 +1587,22 @@ async function main() {
     await runStressMatrix(cdp);
   }
 
+  /* 测试装置自检：主动制造一条失败，用于验证归档链路 */
+  if (INJECT_FAILURE) {
+    bad('INJECTED 测试装置自检（--inject-failure）', {
+      note: '这条失败是刻意注入的，用于验证失败证据归档',
+      at: new Date().toISOString(),
+    });
+  }
+
+  /* ====================================================================== */
+  /* 失败证据归档（追问 1）                                                    */
+  /* ====================================================================== */
+  let artifactDir = null;
+  if (failCount > 0) {
+    artifactDir = await saveFailureArtifacts(cdp);
+  }
+
   /* ====================================================================== */
   /* 汇总                                                                    */
   /* ====================================================================== */
@@ -1466,6 +1613,10 @@ async function main() {
   console.log(`  通过 ${passCount} · 失败 ${failCount}`);
 
   if (failCount > 0) {
+    if (artifactDir !== null) {
+      console.log(`\n  失败证据已归档: ${artifactDir}`);
+      console.log('    · store-snapshot.json / console.log / last-frame.png / failures.json');
+    }
     console.log('\n  失败明细（实际值）：');
     for (const item of failureDetails) {
       console.log(`    · ${item.name}`);

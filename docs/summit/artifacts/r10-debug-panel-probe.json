@@ -1,0 +1,21 @@
+{
+  "withoutParam": false,
+  "withParam": true,
+  "panelAt7s": "DEMO · OBSERVErunning阶段2/4 · 阶段 2/4 · 故障注入与空间锁定节奏标准 · 34s进度6.6s (19%)阶段已过1.6sdeadline—（无硬截止）断点否effects 调用序列（新→旧）5.0seffectphase-1-action5.0sonPhaseEnter#1 阶段 2/4 · 故障注入与空间锁定0.0seffectphase-0-action0.0sonPhaseEnter#0 阶段 1/4 · 全景稳态巡航0.0spreflightpassed",
+  "panelAt16s": "DEMO · OBSERVErunning阶段3/4 · 阶段 3/4 · RAG 混合检索与多卡诊断节奏标准 · 34s进度17.2s (51%)阶段已过6.2sdeadline剩 21s断点否effects 调用序列（新→旧）12.4sarmGatetarget=#3 timeout=25000ms12.4striggerDiagnosis阶段 3/4 · node=worker-beta11.0seffectphase-2-action11.0sonPhaseEnter#2 阶段 3/4 · RAG 混合检索与多卡诊断5.0seffectphase-1-action5.0sonPhaseEnter#1 阶段 2/4 · 故障注入与空间锁定0.0seffectphase-0-action0.0sonPhaseEnter#0 阶段 1/4 · 全景稳态巡航0.0spreflightpassed",
+  "hasPhaseField": true,
+  "hasDeadlineField": true,
+  "hasTraceSection": true,
+  "traceGrew": true,
+  "traceEntries": [
+    "effect",
+    "armGate",
+    "triggerDiagnosis",
+    "effect",
+    "onPhaseEnter",
+    "effect",
+    "onPhaseEnter",
+    "effect",
+    "onPhaseEnter"
+  ]
+}

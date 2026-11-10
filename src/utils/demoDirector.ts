@@ -186,6 +186,72 @@ export interface DemoDirectorSnapshot {
 }
 
 /* ========================================================================== */
+/* effects 调用追踪（追问 3：可观测性自检面板）                                  */
+/* ========================================================================== */
+
+/**
+ * 一条 effects 调用记录。
+ *
+ * 【为什么需要它】排练时最常见的问题是"卡在某个阶段不动"，但日志只写
+ * "进入阶段 X"，看不出**进入之后到底调用了什么、卡在哪一步**。
+ * 记录 effects 的调用序列（何时进阶段、何时注入混沌、何时等卡片、
+ * 何时收到回执），排练者一眼就能看出"最后一条是 awaitCard，说明卡在等卡片"。
+ */
+export interface DemoEffectTraceEntry {
+  /** 相对路演开始的毫秒数（未开始路演时为相对页面加载） */
+  readonly atMs: number;
+  /** effects 名称 */
+  readonly name: string;
+  /** 补充说明（阶段徽标、目标 id、耗时等） */
+  readonly detail: string;
+}
+
+/**
+ * 追踪缓冲上限。
+ *
+ * 【为什么是环形缓冲】一场路演 effects 调用约 20~40 次，留 80 条足够回看，
+ * 超出后丢弃最旧的——避免长时间排练把内存撑大。
+ */
+const EFFECT_TRACE_CAP = 80;
+
+/** effects 调用追踪环形缓冲 */
+const effectTrace: DemoEffectTraceEntry[] = [];
+
+/** 追踪起始时间（用于计算相对毫秒） */
+let effectTraceEpoch = 0;
+
+/**
+ * 记录一次 effects 调用。
+ *
+ * @param name effects 名称
+ * @param detail 补充说明
+ */
+export function recordDemoEffect(name: string, detail = ''): void {
+  if (effectTraceEpoch === 0) effectTraceEpoch = Date.now();
+  effectTrace.push({
+    atMs: Date.now() - effectTraceEpoch,
+    name,
+    detail,
+  });
+  if (effectTrace.length > EFFECT_TRACE_CAP) effectTrace.shift();
+}
+
+/**
+ * 读取 effects 调用序列（只读快照）。
+ *
+ * @returns 按时间升序的调用记录
+ */
+export function getDemoEffectTrace(): readonly DemoEffectTraceEntry[] {
+  return effectTrace;
+}
+
+/** 清空追踪（start / stop 时调用） */
+export function clearDemoEffectTrace(): void {
+  effectTrace.length = 0;
+  effectTraceEpoch = 0;
+}
+
+/* ========================================================================== */
 /* 常量                                                                        */
 /* ========================================================================== */
 
@@ -1243,6 +1309,7 @@ function enterAiDiagnosis(
    */
   const facts = collectDemoFacts(lastInjectedChaos);
   const prompt = buildDiagnosisPrompt(buildPrompt, facts);
+  recordDemoEffect('triggerDiagnosis', `${label} · node=${facts.nodeName ?? 'n/a'}`);
   api.triggerQuickPrompt(prompt);
   api.appendTerminalLog(`[DEMO-DIRECTOR] ${label} · 已唤醒 AI 运维副驾`);
   api.appendTerminalLog(`[DEMO-DIRECTOR] 诊断提示词：${prompt}`);
@@ -1357,6 +1424,8 @@ function enterHeal(label: string): void {
   api.appendTerminalLog(
     `[DEMO-DIRECTOR] 阶段 4/4 · 目标受害者 ${victimIds.length} 个`,
   );
+
+  recordDemoEffect('awaitCard', `victims=${victimIds.length}`);
 
   const primaryId = victimIds[0];
   const primaryPod = snapshot.pods.find((pod): boolean => pod.id === primaryId);
@@ -1681,6 +1750,7 @@ function armPhaseAdvanceGate(generation: number): void {
   cancelScheduledPhase(nextIndex);
 
   phaseDeadline = Date.now() + PHASE3_EVENT_GATE_TIMEOUT_MS;
+  recordDemoEffect('armGate', `target=#${nextIndex} timeout=${PHASE3_EVENT_GATE_TIMEOUT_MS}ms`);
 
   let advanced = false;
 
@@ -1704,6 +1774,8 @@ function armPhaseAdvanceGate(generation: number): void {
 
     const targetIndex = phaseIndex + 1;
     if (targetIndex >= activeScript.phases.length) return;
+
+    recordDemoEffect('advanceGate', `reason=${reason} → #${targetIndex}`);
 
     if (reason === 'timeout') {
       /*
@@ -1833,6 +1905,7 @@ function runPreflight(): string | null {
  * @param reason 失败原因
  */
 function applyPreflightFailure(reason: string): void {
+  recordDemoEffect('preflight', `failed: ${reason}`);
   preflightError = reason;
   status = 'idle';
   const api = actions();
@@ -1871,9 +1944,14 @@ function enterPhase(index: number): void {
     }
   }
 
+  recordDemoEffect('onPhaseEnter', `#${index} ${phase?.badge ?? ''}`);
+
   const actionList = PHASE_ACTIONS[script.id];
   const action = actionList[index];
-  if (action !== undefined) action();
+  if (action !== undefined) {
+    recordDemoEffect('effect', `phase-${index}-action`);
+    action();
+  }
 
   /*
    * 【事实化旁白】执行完阶段动作后，快照里已经有本阶段造成的真实变化
@@ -2047,6 +2125,7 @@ export function setDemoPacing(mode: DemoPacingKind): void {
     startTick();
   }
 
+  recordDemoEffect('setPacing', `${mode} (${Math.round(newTotal / 1000)}s)`);
   actions().appendTerminalLog(
     `[DEMO-DIRECTOR] 节奏切换为 ${PACING_LABEL[mode]}（总时长 ${Math.round(newTotal / 1000)} 秒）`,
   );
@@ -2251,6 +2330,9 @@ export function startDemoDirector(id: DemoScriptId): void {
     applyPreflightFailure(preflightReason);
     return;
   }
+
+  clearDemoEffectTrace();
+  recordDemoEffect('preflight', 'passed');
 
   /* 绑定可见性守卫（幂等，只会真正注册一次） */
   bindVisibilityGuard();
@@ -2473,6 +2555,7 @@ function finishDemoDirector(): void {
   finishApi.setActiveChaos('NONE');
   finishApi.selectEntity(null);
   finishApi.setOrbitPatrolActive(true, 'programmatic');
+  recordDemoEffect('onFinish', `phase=${phaseIndex}`);
   finishApi.appendTerminalLog('[DEMO-DIRECTOR] ■ 剧本已完整跑完');
 
   /* 追问 2：收尾帧单独补录——完成时刻的健康分与卡片状态最有讲解价值 */
@@ -2529,6 +2612,7 @@ export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user')
    *
    * 顺序要求：必须在 status 置 idle 之前发起中止，因为中止链路会读当前状态。
    */
+  recordDemoEffect('stop', `reason=${reason}`);
   /* 追问 2：停止即清空录像并解除上下文提供者，避免上一轮帧混入下一轮 */
   clearDemoRecording();
   setDemoFrameContextProvider(null);

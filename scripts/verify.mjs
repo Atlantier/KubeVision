@@ -19,6 +19,11 @@
  *   node scripts/verify.mjs --quick    # 跳过浏览器，只跑静态检查
  *
  * 【前置】需已安装依赖（pnpm install）与 Edge 浏览器。
+ *
+ * 【用法】
+ *   node scripts/verify.mjs            # 静态 + 接口 + 浏览器
+ *   node scripts/verify.mjs --quick    # 只跑静态
+ *   node scripts/verify.mjs --full     # 上面全部 + 路演回归（verify-demo）
  */
 
 import { spawn } from 'node:child_process';
@@ -29,6 +34,16 @@ import { fileURLToPath } from 'node:url';
 const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const args = new Set(process.argv.slice(2));
 const QUICK = args.has('--quick');
+
+/**
+ * 全量模式：在静态/接口/浏览器阶段之后，再串跑一遍路演回归
+ * （scripts/verify-demo.mjs）。
+ *
+ * 【为什么用子进程而不是 import】verify-demo 自带 CDP 会话、自己的
+ * 断言计数与退出码，且必须在 dev server 存活期间运行。子进程能完整切断
+ * 状态（端口、浏览器实例、全局变量），失败也不会污染主进程的断言统计。
+ */
+const FULL = args.has('--full');
 
 /* ========================================================================== */
 /* 结果收集                                                                    */
@@ -848,6 +863,7 @@ async function main() {
   console.log('\x1b[1m║  KubeVision AI — 完整验收回归                        ║\x1b[0m');
   console.log('\x1b[1m╚══════════════════════════════════════════════════════╝\x1b[0m');
   if (QUICK) console.log('\x1b[90m  模式: --quick（跳过 API 与浏览器阶段）\x1b[0m');
+  if (FULL) console.log('\x1b[90m  模式: --full（追加路演回归 verify-demo）\x1b[0m');
 
   await phaseStatic();
 
@@ -907,6 +923,31 @@ async function main() {
       await phaseUnit(baseUrl);
       await phaseApi(baseUrl);
       await phaseBrowser(baseUrl);
+
+      /*
+       * ---- 追问 1：把路演回归并入 --full ----
+       *
+       * 必须在 killDev() 之前跑：verify-demo 需要活着的 dev server
+       * 与 Store 调试钩子（dev-only）。
+       * 失败时 verify-demo 自己会把 store 快照 / console / 末帧截图写入
+       * docs/summit/failures/<时间戳>/，这里只负责报告退出码与目录位置。
+       */
+      if (FULL) {
+        section('路演回归（verify-demo）');
+        const demoExit = await new Promise((resolve) => {
+          const child = spawn(process.execPath, ['scripts/verify-demo.mjs'], {
+            cwd: ROOT,
+            stdio: 'inherit',
+          });
+          child.on('exit', (code) => resolve(code ?? 1));
+          child.on('error', () => resolve(1));
+        });
+        if (demoExit === 0) {
+          ok('路演回归 verify-demo', '退出码 0');
+        } else {
+          bad('路演回归 verify-demo', '退出码 ' + demoExit + '，证据见 docs/summit/failures/');
+        }
+      }
     }
     killDev();
   }
