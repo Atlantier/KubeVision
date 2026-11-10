@@ -67,8 +67,13 @@ import PodMetricsCard from '@/components/ai/GenUI/PodMetricsCard';
 import RootCauseAlert from '@/components/ai/GenUI/RootCauseAlert';
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
+import {
+  CHAT_ERROR_COPY,
+  classifyToolName,
+} from '@/types/ai';
 import type {
   ActionConfirmProps,
+  ChatErrorCategory,
   ChatStreamEvent,
   ClusterContext,
   CopilotMessage,
@@ -84,6 +89,7 @@ import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
 import RagKnowledgeModal from '@/components/ai/RagKnowledgeModal';
 import PostMortemModal from '@/components/ai/PostMortemModal';
 import { buildPostMortemFilename, buildPostMortemMarkdown } from '@/utils/postMortemReport';
+import { renderIncidentTimelineMarkdown } from '@/utils/snapshotRingBuffer';
 import { getCustomRunbooks } from '@/utils/sreRagEngine';
 import { buildRagSignalBreakdown, type RagSignalBreakdown } from '@/utils/ragSignals';
 
@@ -202,6 +208,15 @@ const CAPTURE_QUALITY = 0.8;
 /** 消息列表自动滚动阈值（距底部小于此值才跟随，避免打断用户阅读历史） */
 const STICKY_SCROLL_THRESHOLD_PX = 80;
 
+/**
+ * 骨架屏看门狗超时（毫秒）。
+ *
+ * 【为什么是 8 秒】服务端最慢路径是引擎 A 失败后回落引擎 B：
+ * 引擎 A 可能已经跑了数秒，回落补卡再花约 1.5 秒（三卡各 450ms）。
+ * 8 秒足以覆盖正常最慢链路，又不会让用户对着骨架干等太久。
+ */
+const SKELETON_WATCHDOG_MS = 8000;
+
 /* ========================================================================== */
 /* 工具名 → 卡片组件映射（工具名兼容两套命名）                                     */
 /* ========================================================================== */
@@ -215,13 +230,13 @@ const STICKY_SCROLL_THRESHOLD_PX = 80;
  * 同时兼容两种命名，避免任一侧改名就静默不渲染卡片。
  */
 function isPodMetricsTool(name: string): boolean {
-  return name === 'renderPodMetrics' || name.includes('PodMetrics');
+  return classifyToolName(name) === 'metrics';
 }
 function isRootCauseTool(name: string): boolean {
-  return name === 'reportRootCause' || name.includes('RootCause');
+  return classifyToolName(name) === 'rootCause';
 }
 function isActionTool(name: string): boolean {
-  return name === 'confirmAction' || name.includes('Remediation') || name.includes('Action');
+  return classifyToolName(name) === 'remediation';
 }
 
 /** 生成消息 id（时间戳 + 随机后缀，避免同毫秒碰撞） */
@@ -480,7 +495,7 @@ function summarizeToolCardsForHistory(cards: readonly CopilotToolCard[]): string
           `置信度=${(args.confidence * 100).toFixed(0)}%, ` +
           `引用知识库=${citationIds.length > 0 ? citationIds : '无'}]`,
       );
-    } else if (card.toolName === 'renderActionCard') {
+    } else if (isActionTool(card.toolName)) {
       const args = card.args as ActionConfirmProps;
       lines.push(
         `[已生成自愈审批卡: 动作=${args.actionType}, 目标=${args.targetName}, ` +
@@ -521,6 +536,7 @@ function ToolCardSlot({
         <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" aria-hidden />
         <span className="font-mono text-[12px] text-amber-300">
           {card.toolName} 返回的载荷无法渲染
+          {card.errorMessage !== undefined ? `（${card.errorMessage}）` : ''}
         </span>
       </div>
     );
@@ -914,7 +930,14 @@ function MessageBubble({
         <div className="rounded-md border border-amber-500/40 bg-amber-500/8 p-2">
           <p className="flex items-start gap-1 text-[10px] leading-relaxed text-amber-200">
             <AlertTriangle className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
-            <span>诊断流意外中断，可能是网络波动或服务端繁忙。你可以直接重试，已输入的上下文会保留。</span>
+            <span>
+              {(() => {
+                const copy = message.errorCategory !== undefined ? CHAT_ERROR_COPY[message.errorCategory] : null;
+                if (copy !== null) return `${copy.title}：${copy.hint}`;
+                return '诊断流意外中断，可能是网络波动或服务端繁忙。你可以直接重试，已输入的上下文会保留。';
+              })()}
+              {message.requestId !== undefined ? `（请求 id：${message.requestId}）` : ''}
+            </span>
           </p>
           <button
             type="button"
@@ -1043,6 +1066,43 @@ export default function CopilotDrawer() {
   /* ---- Refs ---- */
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  /**
+   * 骨架屏看门狗定时器（toolCallId → timer）。
+   *
+   * 【解决什么】服务端保证 start/result 配对，但网络中断、代理截断、
+   * 服务端异常退出都可能让某张卡收不到 result。旧实现只在"整条流结束"时
+   * 兜底清理——若流一直不结束（长连接挂住），骨架屏就永久转圈。
+   * 现在每张骨架屏独立计时 8 秒：超时即转"生成失败，点击重试"。
+   */
+  const skeletonWatchdogRef = useRef<Map<string, number>>(new Map());
+
+  /**
+   * 排队中的 prompt（A5）。
+   *
+   * 【解决什么】流式期间用户点"快照诊断"等操作会调用 sendMessage，
+   * 旧实现直接 return——请求被静默丢弃，用户以为点了没反应。
+   * 现在记下来，当前流结束后自动发送，并给出"已排队"提示。
+   */
+  const queuedPromptRef = useRef<string | null>(null);
+  /**
+   * sendMessage 的最新引用（A5 排队重发用）。
+   *
+   * 【为什么用 ref】finalize 在流结束的闭包里执行，此时直接递归调用
+   * sendMessage 会命中旧的闭包（messages 为空），排队的请求会丢上下文。
+   * 用 ref 指向最新一次渲染的 sendMessage 实例，保证重发用的是最新状态。
+   */
+  const sendMessageRef = useRef<((prompt: string) => void) | null>(null);
+  const [queuedPromptNotice, setQueuedPromptNotice] = useState<string | null>(null);
+
+  /**
+   * TTS 播报请求（A6）。
+   *
+   * 【解决什么】旧实现把 speakMessage 写在 setMessages 的 updater 里，
+   * React StrictMode 会双调用 updater，导致同一段文本播两遍。
+   * 现在 updater 保持纯函数，播报请求走 ref + state，由 effect 执行。
+   */
+  const [speechRequest, setSpeechRequest] = useState<{ readonly messageId: string; readonly nonce: number } | null>(null);
   /** 是否应贴底滚动（用户手动上滑查看历史时置 false） */
   const stickToBottomRef = useRef<boolean>(true);
 
@@ -1190,6 +1250,26 @@ export default function CopilotDrawer() {
   );
 
   /**
+   * A6：TTS 播报 effect —— 播报副作用移出 setMessages updater。
+   *
+   * 【StrictMode 双播根因】旧实现把 speakMessage 写在 setMessages 的
+   * updater 函数里。React 在开发模式会**双调用** updater 以检测副作用，
+   * 于是同一段文本播两遍；生产模式虽不双调，但 updater 里做副作用本身
+   * 就是错误用法（可能在渲染阶段被丢弃/重放）。
+   *
+   * 现在 updater 保持纯函数，finalize 只设置 speechRequest；本 effect
+   * 在 messages 提交后读取最新消息并播报，天然只执行一次。
+   */
+  useEffect((): void => {
+    if (speechRequest === null) return;
+    const latest = messages.find((m): boolean => m.id === speechRequest.messageId);
+    if (latest !== undefined && !latest.isStreaming && latest.text.trim().length > 0) {
+      speakMessage(latest);
+    }
+    setSpeechRequest(null);
+  }, [speechRequest, messages, speakMessage]);
+
+  /**
    * toggleMessageSpeaking —— 单条消息的朗读/停止切换。
    *
    * 【为何以 speakingMessageId 为判据而非全局状态】用户可能正在听消息 A，
@@ -1299,12 +1379,35 @@ export default function CopilotDrawer() {
    */
   const handleExportPostMortem = useCallback((): void => {
     const nowMs = Date.now();
+
+    /*
+     * 【A7 修复：用事故发生时刻的快照，而不是导出时刻的实时值】
+     *
+     * 用户自愈完成后集群已恢复健康，若此时导出，旧实现写的是
+     * "当前健康分 100"——与事故经过完全对不上。
+     * 这里从最近一次自愈记录里取 beforeHealth（事故当时的健康分），
+     * 异常 Pod 数按当前上下文与自愈目标数反推（至少 1 个）。
+     */
+    const diff = useClusterStore.getState().lastRemediationDiff;
+    const incidentBefore =
+      diff === null
+        ? null
+        : {
+            healthScore: diff.beforeHealth,
+            anomalyCount: Math.max(1, useClusterStore.getState().snapshotSummary.pods.filter(
+              (p): boolean => p.status !== 'Running',
+            ).length + 1),
+            chaos: useClusterStore.getState().activeChaos,
+          };
+
     setPostMortemMarkdown(
       buildPostMortemMarkdown({
         messages,
         clusterContext: buildClusterContext(),
         startedAtMs: sessionStartedAtRef.current,
         nowMs,
+        incidentBefore,
+        incidentTimelineMarkdown: renderIncidentTimelineMarkdown(),
       }),
     );
     setPostMortemFilename(buildPostMortemFilename(nowMs));
@@ -1334,7 +1437,19 @@ export default function CopilotDrawer() {
   const sendMessage = useCallback(
     async (rawText: string): Promise<void> => {
       const text = rawText.trim();
-      if (text.length === 0 || isStreaming) return;
+      if (text.length === 0) return;
+
+      /*
+       * 【A5 修复：流式期间不丢弃请求，改为排队】
+       * 旧实现 `if (isStreaming) return` 会让"快照诊断/主动诊断"在
+       * AI 正在回答时被静默吞掉——用户点了按钮，什么也没发生。
+       * 现在记入队列并在当前流结束后自动发送，同时明确提示"已排队"。
+       */
+      if (isStreaming) {
+        queuedPromptRef.current = text;
+        setQueuedPromptNotice('已排队：当前回答结束后自动发送本次请求');
+        return;
+      }
 
       /* ---- 输入安全校验（发送前拦截，防注入/超长/空内容） ---- */
       const guard = validatePrompt(text);
@@ -1398,11 +1513,21 @@ export default function CopilotDrawer() {
       setMessages((prev) => [...prev, userMessage, assistantMessage]);
       setInputValue('');
       setIsStreaming(true);
+      setQueuedPromptNotice(null);
 
       /* A 项：流开始 → 写入活动状态（事件回调处，非渲染期） */
       setCopilotStreaming(true);
       setLastAssistantMessageId(assistantId);
       stickToBottomRef.current = true;
+
+      /**
+       * finalize —— 流收尾函数（在 try 内赋值，供 catch/finally 共用）。
+       *
+       * 【为什么提升到 try 之外】A3 要求 abort 与正常结束统一收尾，
+       * 而 catch/finally 在 try 块的作用域之外，看不到块内 const。
+       * 这里先占位，进入流读取后赋值为真正的实现。
+       */
+      let finalize: () => void = (): void => {};
 
       try {
         const response = await fetch('/api/chat', {
@@ -1437,6 +1562,80 @@ export default function CopilotDrawer() {
         /* ---- 3. NDJSON 逐行解析 ---- */
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
+        /**
+         * clearAllSkeletonWatchdogs —— 清空所有骨架屏看门狗。
+         *
+         * 【必须清】流结束/中断后若定时器还在跑，8 秒后会对已经结束的消息
+         * 再 patch 一次（无用状态更新），且 StrictMode 下可能重复。
+         */
+        const clearAllSkeletonWatchdogs = (): void => {
+          for (const timer of skeletonWatchdogRef.current.values()) {
+            window.clearTimeout(timer);
+          }
+          skeletonWatchdogRef.current.clear();
+        };
+
+        /**
+         * finalize —— 流收尾唯一入口（正常结束 / 异常 / abort 三条路径共用）。
+         *
+         * 【A3 修复】旧实现只在正常结束分支把消息级 isStreaming 置 false；
+         * abort 分支什么都不做，于是"停止生成"后打字光标不消失、
+         * 朗读按钮也不出现（它依赖 !isStreaming）。现在三条路径统一收尾。
+         *
+         * 【幂等】catch 与 finally 都会调用，用 finalized 标记保证只执行一次。
+         */
+        let finalized = false;
+        finalize = (): void => {
+          if (finalized) return;
+          finalized = true;
+
+          clearAllSkeletonWatchdogs();
+
+          /* 消息级状态复位 + 骨架屏兜底（服务端未及补发 result 时） */
+          patchMessage(assistantId, (m): CopilotMessage => {
+            const hasOrphan = m.toolCards.some((card): boolean => card.state === 'skeleton');
+            return {
+              ...m,
+              isStreaming: false,
+              ...(hasOrphan
+                ? {
+                    toolCards: m.toolCards.map((card): CopilotToolCard =>
+                      card.state === 'skeleton'
+                        ? { ...card, state: 'error', errorMessage: '流已结束但未收到该卡片的渲染结果' }
+                        : card,
+                    ),
+                  }
+                : {}),
+            };
+          });
+
+          setIsStreaming(false);
+          abortRef.current = null;
+          setCopilotStreaming(false);
+
+          /*
+           * ---- A5：排队请求自动发送 ----
+           * 先清提示再发送；真正发送放到下一帧，确保本次状态已提交。
+           */
+          const queued = queuedPromptRef.current;
+          if (queued !== null) {
+            queuedPromptRef.current = null;
+            setQueuedPromptNotice(null);
+            window.setTimeout((): void => {
+              sendMessageRef.current?.(queued);
+            }, 0);
+          }
+
+          /*
+           * ---- A6：TTS 播报请求 ----
+           * 这里只发"请求"，真正播报由 effect 在 messages 提交后执行。
+           * 绝不把 speakMessage 写进 setMessages 的 updater（StrictMode 双播）。
+           */
+          if (ttsEnabled) {
+            setSpeechRequest({ messageId: assistantId, nonce: Date.now() });
+          }
+        };
+
         let buffer = '';
 
         for (;;) {
@@ -1479,50 +1678,98 @@ export default function CopilotDrawer() {
               }
 
               case 'tool-start': {
+                /*
+                 * 【A1 修复：按 toolCallId 去重】
+                 * 回落引擎可能重发同一张卡（旧服务端行为），或代理重放同一帧。
+                 * 同 id 只挂一次，杜绝"两张指标卡"。
+                 */
                 const card: CopilotToolCard = {
                   toolCallId: event.toolCallId,
                   toolName: event.toolName,
                   mcpUri: event.mcpUri,
                   state: 'skeleton',
                 };
-                patchMessage(assistantId, (m): CopilotMessage => ({
-                  ...m,
-                  toolCards: [...m.toolCards, card],
-                }));
+                patchMessage(assistantId, (m): CopilotMessage => {
+                  if (m.toolCards.some((c): boolean => c.toolCallId === event.toolCallId)) return m;
+                  return { ...m, toolCards: [...m.toolCards, card] };
+                });
+
+                /*
+                 * 【A2 修复：骨架屏 8 秒看门狗】
+                 * 服务端保证 start/result 配对，但网络中断/代理截断仍可能丢 result。
+                 * 旧实现只在"整条流结束"时兜底——流若挂住，卡片永久转圈。
+                 * 现在每张骨架独立计时：超时即转失败态，用户可点重试。
+                 */
+                const watchdogTimer = window.setTimeout((): void => {
+                  skeletonWatchdogRef.current.delete(event.toolCallId);
+                  patchMessage(assistantId, (m): CopilotMessage => ({
+                    ...m,
+                    toolCards: m.toolCards.map((c): CopilotToolCard =>
+                      c.toolCallId === event.toolCallId && c.state === 'skeleton'
+                        ? { ...c, state: 'error', errorMessage: '超过 8 秒未收到渲染结果，已终止等待' }
+                        : c,
+                    ),
+                  }));
+                }, SKELETON_WATCHDOG_MS);
+                skeletonWatchdogRef.current.set(event.toolCallId, watchdogTimer);
                 break;
               }
 
               case 'tool-result': {
-                /* 原地升级对应槽位（按 toolCallId 配对） */
-                patchMessage(assistantId, (m): CopilotMessage => ({
-                  ...m,
-                  toolCards: m.toolCards.map((c): CopilotToolCard =>
-                    c.toolCallId === event.toolCallId
-                      ? {
-                          ...c,
-                          state: 'ready',
-                          args: event.args,
-                          /**
-                           * 透传「服务端补全」标记：卡片上方会据此显示角标。
-                           * 缺省（undefined）即模型原生调用，不显示任何标记。
-                           */
-                          synthesized: event.synthesized === true,
-                        }
-                      : c,
-                  ),
-                }));
+                /* 收到结果即撤销该卡的看门狗 */
+                const pendingTimer = skeletonWatchdogRef.current.get(event.toolCallId);
+                if (pendingTimer !== undefined) {
+                  window.clearTimeout(pendingTimer);
+                  skeletonWatchdogRef.current.delete(event.toolCallId);
+                }
 
-                /*
-                 * 【改造：移除"仅根因卡才播报"的限制】
-                 *
-                 * 旧实现在这里调用 speakAlert，只有收到根因卡才出声。
-                 * 结果是普通问答、巡检结论、寒暄全都没有声音——用户点了喇叭，
-                 * 问一句"集群怎么样"，AI 回了整屏文字却一声不吭，
-                 * 在他看来就是"喇叭坏了"。
-                 *
-                 * 现在改为：整轮流结束后统一播报正文（见下方流结束处理）。
-                 * 此处不再触发任何播报。
-                 */
+                const failed = event.status === 'error';
+                patchMessage(assistantId, (m): CopilotMessage => {
+                  const exists = m.toolCards.some((c): boolean => c.toolCallId === event.toolCallId);
+                  /* 重复 result（旧服务端/重放）：已有 ready 卡片则忽略 */
+                  const alreadyReady = m.toolCards.some(
+                    (c): boolean => c.toolCallId === event.toolCallId && c.state === 'ready',
+                  );
+                  if (alreadyReady) return m;
+
+                  if (!exists) {
+                    /* 孤儿 result：补一张卡（而非丢弃，避免用户永远等不到） */
+                    const created: CopilotToolCard =
+                      failed || event.args === null
+                        ? {
+                            toolCallId: event.toolCallId,
+                            toolName: event.toolName,
+                            mcpUri: `mcp://k8s-cluster/tools/${event.toolName}`,
+                            state: 'error',
+                            errorMessage: event.errorMessage ?? '工具调用失败',
+                          }
+                        : {
+                            toolCallId: event.toolCallId,
+                            toolName: event.toolName,
+                            mcpUri: `mcp://k8s-cluster/tools/${event.toolName}`,
+                            state: 'ready',
+                            args: event.args,
+                            synthesized: event.synthesized === true,
+                          };
+                    return { ...m, toolCards: [...m.toolCards, created] };
+                  }
+
+                  return {
+                    ...m,
+                    toolCards: m.toolCards.map((c): CopilotToolCard => {
+                      if (c.toolCallId !== event.toolCallId) return c;
+                      if (failed || event.args === null) {
+                        return { ...c, state: 'error', errorMessage: event.errorMessage ?? '工具调用失败' };
+                      }
+                      return {
+                        ...c,
+                        state: 'ready',
+                        args: event.args,
+                        synthesized: event.synthesized === true,
+                      };
+                    }),
+                  };
+                });
                 break;
               }
 
@@ -1534,42 +1781,32 @@ export default function CopilotDrawer() {
                 break;
               }
 
+              case 'error': {
+                /* A9：结构化错误 → 分类文案 + requestId + 可重试标记 */
+                patchMessage(assistantId, (m): CopilotMessage => ({
+                  ...m,
+                  failed: true,
+                  failedPrompt: text,
+                  errorCategory: event.category,
+                  requestId: event.requestId,
+                }));
+                break;
+              }
+
+              case 'done': {
+                /* 终止事件由循环结束后的 finalize 统一处理，这里无需动作 */
+                break;
+              }
+
               default:
+                /* 未知事件类型：向前兼容，直接忽略（协议扩展不影响旧前端） */
                 break;
             }
           }
         }
 
-        /* 流正常结束 */
-        patchMessage(assistantId, (m): CopilotMessage => ({ ...m, isStreaming: false }));
-
-        /**
-         * ============ 全场景自动播报 ============
-         *
-         * 【改造缘由】旧实现只在收到根因卡时播报，普通问答、巡检结论、
-         * 寒暄全都没有声音。用户点开喇叭后问一句"集群怎么样"，
-         * AI 回了整屏文字却一声不吭——在他看来就是"喇叭坏了"。
-         *
-         * 现在改为：**任何一轮回复流式结束**都尝试播报。
-         * 播报内容由 speakMessage 从最新消息状态中提取（正文优先，
-         * 无正文时退到根因卡摘要），并自动剥离 Markdown 语法。
-         *
-         * 【为何延迟到下一帧】patchMessage 是异步的 setState，
-         * 此刻直接读 messages 闭包拿到的是**流开始前**的旧值（正文为空）。
-         * 用 setTimeout(0) 让 React 先提交本次状态更新，
-         * 再从 store 快照里取真正的最新消息。
-         */
-        if (ttsEnabled) {
-          window.setTimeout((): void => {
-            setMessages((current) => {
-              const latest = current.find((m): boolean => m.id === assistantId);
-              if (latest !== undefined && latest.text.trim().length > 0) {
-                speakMessage(latest);
-              }
-              return current;
-            });
-          }, 0);
-        }
+        /* 流正常结束（done 事件或连接关闭）→ 统一收尾 */
+        finalize();
       } catch (error) {
         const aborted = error instanceof Error && error.name === 'AbortError';
         if (!aborted) {
@@ -1582,57 +1819,36 @@ export default function CopilotDrawer() {
           const reason = error instanceof Error ? error.message : '未知错误';
           patchMessage(assistantId, (m): CopilotMessage => ({
             ...m,
-            isStreaming: false,
             text:
               m.text.length > 0
                 ? `${m.text}\n\n> [WARN] 诊断流意外中断：${reason}`
                 : `> [ERR] 诊断请求失败：${reason}`,
-            /* 标记失败态，气泡底部渲染"一键重试" */
             failed: true,
             failedPrompt: text,
+            errorCategory: 'network',
           }));
         }
-      } finally {
-        setIsStreaming(false);
-        abortRef.current = null;
-
         /*
-         * A 项：流结束（正常 / 出错 / abort 三条路径都汇聚到这里）→ 置 false。
-         * 这是阶段 3→4 事件门的一个判定条件，漏掉任何一条路径都会让导演卡在 3/4。
+         * 【A3 修复：abort 与正常结束统一走 finalize】
+         * 旧实现 abort 分支什么都不做，消息级 isStreaming 永远为 true，
+         * 表现为"停止生成后还显示打字光标、朗读按钮不出现"。
+         * 现在两条路径汇聚到同一个收尾函数，内容保留、状态复位。
          */
-        setCopilotStreaming(false);
-
-        /**
-         * ============ 骨架屏兜底清理（前端防卡死第二道保险）============
-         *
-         * 【为何前端还要再清理一次】服务端已经保证 tool-start 必有配对
-         * tool-result（见 /api/chat 的事件顺序修复）。但前端不该把
-         * "服务端行为正确"当作前提——网络中断、代理截断响应、
-         * 服务端异常退出，任何一种都可能让骨架屏悬空。
-         *
-         * 这里在流读取结束时（无论成功、失败还是中断）扫描一遍：
-         * 任何仍处于 'skeleton' 态的卡片就地标记为 'error'，
-         * 让 UI 渲染出「载荷无法渲染」而不是永远转圈。
-         * 用 'error' 而非删除：删除会让卡片突然消失（用户困惑），
-         * 标记失败态则如实告诉用户"这张卡没能完成"。
-         */
-        patchMessage(assistantId, (m): CopilotMessage => {
-          const hasOrphan = m.toolCards.some((card): boolean => card.state === 'skeleton');
-          if (!hasOrphan) return m;
-          return {
-            ...m,
-            toolCards: m.toolCards.map((card): CopilotToolCard =>
-              card.state === 'skeleton' ? { ...card, state: 'error' } : card,
-            ),
-          };
-        });
-      }
-    },
+        finalize();
+      } finally {
+        /* 兜底：任何异常路径都在这里收尾一次（finalize 幂等） */
+        finalize();
+      }    },
     [buildClusterContext, capturedViewportDataUrl, isStreaming, messages, patchMessage, setCapturedViewport,
       setCopilotStreaming,
       setLastAssistantMessageId,
-      speakMessage, ttsEnabled],
+      ttsEnabled],
   );
+
+  /* 排队请求重发用：始终指向最新一次渲染的 sendMessage 闭包 */
+  sendMessageRef.current = (prompt: string): void => {
+    void sendMessage(prompt);
+  };
 
   /**
    * retryLastRequest —— 一键重试上一次失败的请求。
@@ -2583,6 +2799,17 @@ export default function CopilotDrawer() {
                   </motion.div>
                 ) : null}
               </AnimatePresence>
+
+              {/* ---- A5：排队提示（流式期间用户点了诊断，请求已排队） ---- */}
+              {queuedPromptNotice !== null ? (
+                <p
+                  className="mb-1 rounded border border-cyan-400/25 bg-cyan-400/8 px-1.5 py-1 font-mono text-[10px] text-cyan-300"
+                  role="status"
+                  aria-label="排队提示"
+                >
+                  {queuedPromptNotice}
+                </p>
+              ) : null}
 
               {/* ---- 中部：无边框 textarea（焦点态由容器统一表达） ---- */}
               <textarea

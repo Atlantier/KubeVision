@@ -300,6 +300,45 @@ export interface ChatStreamTextEvent {
   readonly content: string;
 }
 
+/**
+ * 工具名单一事实源（Single Source of Truth）。
+ *
+ * 【解决的缺陷】前端历史上按 'renderActionCard' 判断动作卡，而服务端实际发送
+ * 'proposeRemediationAction'——两边各写一份工具名，任何一次改名都会让卡片
+ * 静默不渲染（第三张卡永远骨架屏的直接原因之一）。
+ * 现在服务端、前端、复盘摘要、测试断言全部引用本常量表，禁止再写裸字符串。
+ */
+export const TOOL_NAME = {
+  /** 指标卡 */
+  POD_METRICS: 'renderPodMetrics',
+  /** 根因分析卡 */
+  ROOT_CAUSE: 'renderRootCauseAnalysis',
+  /** 自愈动作卡（历史别名 renderActionCard / confirmAction 均已废弃） */
+  REMEDIATION: 'proposeRemediationAction',
+} as const;
+
+/** 工具名联合类型 */
+export type ChatToolName = (typeof TOOL_NAME)[keyof typeof TOOL_NAME];
+
+/**
+ * 判定工具名归属（兼容历史别名，但判定结果唯一）。
+ *
+ * @param name 事件里的 toolName
+ * @returns 归一化后的工具种类；无法识别返回 'unknown'
+ */
+export function classifyToolName(name: string): 'metrics' | 'rootCause' | 'remediation' | 'unknown' {
+  if (name === TOOL_NAME.POD_METRICS || name.includes('PodMetrics')) return 'metrics';
+  if (name === TOOL_NAME.ROOT_CAUSE || name.includes('RootCause')) return 'rootCause';
+  if (
+    name === TOOL_NAME.REMEDIATION ||
+    name.includes('Remediation') ||
+    name.includes('Action')
+  ) {
+    return 'remediation';
+  }
+  return 'unknown';
+}
+
 /** 工具调用开始事件：MCP 工具进入执行态（渲染 loading 占位卡） */
 export interface ChatStreamToolStartEvent {
   readonly type: 'tool-start';
@@ -325,8 +364,22 @@ export interface ChatStreamToolResultEvent {
   readonly toolCallId: string;
   /** 工具名（卡片类型判别依据） */
   readonly toolName: string;
-  /** 生成式 UI 卡片载荷（三选一，按 toolName 窄化） */
-  readonly args: PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps;
+  /**
+   * 生成式 UI 卡片载荷（三选一，按 toolName 窄化）。
+   *
+   * 【失败态为 null】当引擎中途失败/取消时，服务端会为悬空的 tool-start
+   * 补发一条 `status:'error'` 的 result，此时没有可渲染载荷，args 为 null。
+   * 前端据此渲染"生成失败，点击重试"，而不是无限骨架屏。
+   */
+  readonly args: PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps | null;
+  /**
+   * 本次调用的终态（缺省 'ok'，向后兼容旧服务端）。
+   * - 'ok'：载荷可用；
+   * - 'error'：失败/取消，args 为 null，前端展示失败态并可重试。
+   */
+  readonly status?: 'ok' | 'error';
+  /** 失败原因（仅 status='error' 时有值，便于排查） */
+  readonly errorMessage?: string;
   /**
    * 是否为**服务端补全**（缺省 false 表示模型原生调用）。
    *
@@ -358,6 +411,68 @@ export interface ChatStreamEngineEvent {
 }
 
 /**
+ * ChatErrorCategory —— 统一错误分类（任务书 A9）。
+ *
+ * 【为什么必须分类】旧实现所有失败都折成一条 "诊断请求失败" 文本，
+ * 用户不知道是网络断了、模型限流、工具参数不合法、还是服务端 5xx，
+ * 也不知道该重试还是改问法。分类之后每类都有确定的文案与重试动作。
+ */
+export const CHAT_ERROR_CATEGORY = {
+  NETWORK: 'network',
+  MODEL: 'model',
+  TOOL_ARGS: 'tool_args',
+  SERVER: 'server',
+  ABORT: 'abort',
+} as const;
+
+/** 错误分类联合类型 */
+export type ChatErrorCategory = (typeof CHAT_ERROR_CATEGORY)[keyof typeof CHAT_ERROR_CATEGORY];
+
+/**
+ * 各错误分类的展示文案与可重试性（前端唯一文案来源）。
+ *
+ * 【约束】不在这里塞视觉样式；只给"标题 + 建议动作"的纯文本。
+ */
+export const CHAT_ERROR_COPY: Readonly<
+  Record<ChatErrorCategory, { readonly title: string; readonly hint: string; readonly retryable: boolean }>
+> = {
+  network: { title: '网络连接中断', hint: '检查网络后重试，已生成的内容会保留', retryable: true },
+  model: { title: '模型服务异常', hint: '上游模型限流或不可用，可稍后重试', retryable: true },
+  tool_args: { title: '工具参数不合法', hint: '模型给出的工具参数无效，重试可让服务端重新生成', retryable: true },
+  server: { title: '服务端内部错误', hint: '服务端 5xx，请稍后重试', retryable: true },
+  abort: { title: '已停止生成', hint: '本次回答已中止，可重新发送', retryable: false },
+};
+
+/**
+ * ChatStreamErrorEvent —— 结构化错误事件（向后兼容：旧前端忽略未知 type）。
+ */
+export interface ChatStreamErrorEvent {
+  readonly type: 'error';
+  /** 错误分类 */
+  readonly category: ChatErrorCategory;
+  /** 人类可读原因（服务端日志同源，便于对照） */
+  readonly message: string;
+  /** 请求 id（服务端生成，贯穿日志与前端提示） */
+  readonly requestId: string;
+  /** 是否建议重试 */
+  readonly retryable: boolean;
+}
+
+/**
+ * ChatStreamDoneEvent —— 流终止事件（任务书 A8：流末必达 done）。
+ *
+ * 【为什么需要】旧协议没有显式终止事件：前端只能靠 socket 关闭猜测结束，
+ * 遇到代理截断会误判为"正常结束"，骨架屏清理与 TTS 都失去可靠触发点。
+ */
+export interface ChatStreamDoneEvent {
+  readonly type: 'done';
+  /** 本次请求的 id（与 error 事件同源） */
+  readonly requestId: string;
+  /** 实际生效引擎（便于一条事件拿到全部事实） */
+  readonly engine: 'llm' | 'simulator';
+}
+
+/**
  * ChatStreamEvent —— NDJSON 流式协议行级事件判别联合。
  *
  * 【解析契约】每行一个 JSON 对象，前端 ReadableStreamDefaultReader +
@@ -369,7 +484,9 @@ export type ChatStreamEvent =
   | ChatStreamTextEvent
   | ChatStreamToolStartEvent
   | ChatStreamToolResultEvent
-  | ChatStreamEngineEvent;
+  | ChatStreamEngineEvent
+  | ChatStreamErrorEvent
+  | ChatStreamDoneEvent;
 
 /* ========================================================================== */
 /* GenUI 组件 Props（思考链 / 骨架屏）                                           */
@@ -571,6 +688,8 @@ export interface CopilotToolCard {
   readonly state: 'skeleton' | 'ready' | 'error';
   /** 卡片载荷（仅 ready 态存在） */
   readonly args?: PodMetricsCardProps | RootCauseAlertProps | ActionConfirmProps;
+  /** 失败原因（仅 error 态存在；骨架超时 / 服务端终止时展示可读说明） */
+  readonly errorMessage?: string;
   /**
    * 是否为服务端补全的卡片（见 ChatStreamToolResultEvent.synthesized）。
    * UI 据此显示「服务端补全」角标，诚实标注卡片来源。
@@ -612,6 +731,10 @@ export interface CopilotMessage {
   readonly failed?: boolean;
   /** 失败消息对应的原始 prompt（重试时复用，避免用户重打） */
   readonly failedPrompt?: string;
+  /** 失败分类（A9：决定展示文案与重试动作） */
+  readonly errorCategory?: ChatErrorCategory;
+  /** 服务端请求 id（A9：错误提示与日志对号） */
+  readonly requestId?: string;
   /**
    * 是否为自愈验证摘要消息（绿色系统级消息）。
    *

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * KubeVision AI — NDJSON 事件流完整性回归测试
  *
@@ -25,6 +25,41 @@
  *   0 = 全部场景通过；1 = 存在孤儿 tool-start 或缺卡
  */
 const BASE = process.env.KV_BASE_URL ?? 'http://127.0.0.1:3000';
+
+/* ========================================================================== */
+/* 协议模块（TS 单文件转译，供金样 / mock 断言共用）                             */
+/* ========================================================================== */
+
+import { createRequire } from 'node:module';
+import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const ts = require('typescript');
+const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
+const PROTOCOL_OUT = join(ROOT, 'tmp-stream-protocol');
+
+if (existsSync(PROTOCOL_OUT)) rmSync(PROTOCOL_OUT, { recursive: true, force: true });
+mkdirSync(PROTOCOL_OUT, { recursive: true });
+{
+  const source = readFileSync(join(ROOT, 'src/utils/chatStreamProtocol.ts'), 'utf8');
+  const result = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+    fileName: 'chatStreamProtocol.ts',
+  });
+  writeFileSync(join(PROTOCOL_OUT, 'chatStreamProtocol.cjs'), result.outputText, 'utf8');
+}
+const protocol = require(join(PROTOCOL_OUT, 'chatStreamProtocol.cjs'));
+
+/** 是否录制金样（--record 写入 tests/fixtures/engine-b-stream.jsonl） */
+const RECORD = process.argv.includes('--record');
+/** 复现模式：只验证"旧行为确实会破坏不变量"（红），用于缺陷复现证据 */
+const REPRO = process.argv.includes('--repro');
 
 /** 探针：先确认服务在线，避免把"连不上"误报成"流有问题" */
 try {
@@ -169,11 +204,11 @@ function isPlaceholder(value) {
 }
 
 const VALID_ACTIONS = ['restart_pod', 'scale_deployment', 'drain_node'];
-const ALL_TOOLS = ['renderPodMetrics', 'renderRootCauseAnalysis', 'proposeRemediationAction'];
-
 /* ========================================================================== */
 /* 执行                                                                        */
 /* ========================================================================== */
+
+const ALL_TOOLS = ['renderPodMetrics', 'renderRootCauseAnalysis', 'proposeRemediationAction'];
 
 let failures = 0;
 
@@ -184,6 +219,15 @@ for (const scenario of SCENARIOS) {
 
   const { status, events, engine } = await collectEvents(scenario.prompt, scenario.context);
   console.log(`  HTTP ${status} · engine=${engine ?? '(none)'}`);
+
+  /* ---- 金样录制：只在故障场景、且显式 --record 时写入 ---- */
+  if (RECORD && scenario.expectAllCards && status === 200) {
+    const fixtureDir = join(ROOT, 'tests/fixtures');
+    mkdirSync(fixtureDir, { recursive: true });
+    const lines = events.map((event) => JSON.stringify(event)).join(String.fromCharCode(10));
+    writeFileSync(join(fixtureDir, 'engine-b-stream.jsonl'), lines + String.fromCharCode(10), 'utf8');
+    console.log('  → 已录制金样 tests/fixtures/engine-b-stream.jsonl');
+  }
 
   if (status !== 200) {
     console.log('  ✗ 请求失败');
@@ -197,6 +241,16 @@ for (const scenario of SCENARIOS) {
   const orphanStarts = starts.filter((e) => !resultIds.has(e.toolCallId));
 
   console.log(`  tool-start=${starts.length}  tool-result=${results.length}  孤儿=${orphanStarts.length}`);
+
+  /* ---- 断言 0（新增）：全局协议校验 ---- */
+  const violations = protocol.validateStreamEvents(events);
+  if (violations.length === 0) {
+    console.log('  ✓ 协议全局校验通过（无重复 id / 无孤儿 result / 无未配对 start / 流末有终止）');
+  } else {
+    failures += 1;
+    console.log(`  ✗ 协议校验发现 ${violations.length} 处违例`);
+    for (const v of violations.slice(0, 5)) console.log(`      [${v.kind}] ${v.detail}`);
+  }
 
   /* ---- 断言 1（核心）：无孤儿 tool-start ---- */
   if (orphanStarts.length === 0) {
@@ -262,6 +316,185 @@ for (const scenario of SCENARIOS) {
     }
   }
 }
+
+
+/* ========================================================================== */
+/* A8-1 · 引擎 B 事件契约金样（只读 fixture）                                    */
+/* ========================================================================== */
+
+const FIXTURE_PATH = join(ROOT, 'tests/fixtures/engine-b-stream.jsonl');
+/* 金样契约：三卡必须有 start/result 各 3；reasoning 至少 3 步（意图/RAG/MCP） */
+const FIXTURE_EXPECT = { minReasoning: 3, starts: 3, results: 3 };
+
+if (!REPRO) {
+  console.log(`\n${'='.repeat(72)}`);
+  console.log('A8-1 引擎 B 事件契约金样（只读 fixture，禁止手改）');
+  console.log('='.repeat(72));
+
+  if (!existsSync(FIXTURE_PATH)) {
+    failures += 1;
+    console.log('  ✗ 缺少 tests/fixtures/engine-b-stream.jsonl（先运行 --record 录制）');
+  } else {
+    const fixtureEvents = readFileSync(FIXTURE_PATH, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+
+    const counts = {
+      reasoning: fixtureEvents.filter((e) => e.type === 'reasoning').length,
+      starts: fixtureEvents.filter((e) => e.type === 'tool-start').length,
+      results: fixtureEvents.filter((e) => e.type === 'tool-result').length,
+      done: fixtureEvents.filter((e) => e.type === 'done').length,
+      engine: fixtureEvents.filter((e) => e.type === 'engine').length,
+      text: fixtureEvents.filter((e) => e.type === 'text').length,
+    };
+    console.log(`  事件构成: reasoning=${counts.reasoning} start=${counts.starts} result=${counts.results} text=${counts.text} engine=${counts.engine} done=${counts.done}`);
+
+    const violations = protocol.validateStreamEvents(fixtureEvents);
+    if (violations.length === 0) {
+      console.log('  ✓ 顺序合法 / 无孤儿 result / 无重复 toolCallId / 流末有终止事件');
+    } else {
+      failures += 1;
+      console.log(`  ✗ 金样协议校验失败 ${violations.length} 处`);
+      for (const v of violations.slice(0, 5)) console.log(`      [${v.kind}] ${v.detail}`);
+    }
+
+    if (counts.starts === FIXTURE_EXPECT.starts && counts.results === FIXTURE_EXPECT.results) {
+      console.log(`  ✓ 三卡齐全（start=${counts.starts} result=${counts.results}）`);
+    } else {
+      failures += 1;
+      console.log(`  ✗ 卡数不符：期望 ${FIXTURE_EXPECT.starts}/${FIXTURE_EXPECT.results}，实际 ${counts.starts}/${counts.results}`);
+    }
+
+    if (counts.reasoning >= FIXTURE_EXPECT.minReasoning) {
+      console.log(`  ✓ reasoning 步骤数达标（${counts.reasoning} >= ${FIXTURE_EXPECT.minReasoning}）`);
+    } else {
+      failures += 1;
+      console.log(`  ✗ reasoning 步骤过少：${counts.reasoning} < ${FIXTURE_EXPECT.minReasoning}`);
+    }
+
+    if (counts.done === 1) {
+      console.log('  ✓ 流末必达 done（终止事件唯一）');
+    } else {
+      failures += 1;
+      console.log(`  ✗ done 事件数量异常：${counts.done}`);
+    }
+  }
+}
+
+/* ========================================================================== */
+/* A8-2 · 引擎 A mock：中途失败 → 回落只补缺失卡                                 */
+/* ========================================================================== */
+
+console.log(`\n${'='.repeat(72)}`);
+console.log(REPRO ? 'A1/A2 缺陷复现（旧行为，预期失败）' : 'A8-2 引擎 A mock：中途失败回落（修复后行为）');
+console.log('='.repeat(72));
+
+/** 构造一条事件并记录 */
+const emitInto = (bucket, event) => {
+  bucket.push(event);
+};
+
+
+if (REPRO) {
+  /*
+   * 【复现旧行为】引擎 A 已发指标卡 → 根因卡 tool-start 后失败 →
+   * 回落引擎 B 无条件重发三张卡。断言：确实出现重复卡片与孤儿 start。
+   * 该分支用于证明"缺陷真实存在"，修复后正常模式必须全绿。
+   */
+  const legacy = [];
+  emitInto(legacy, { type: 'reasoning', step: { stepIndex: 0, phase: 'INTENT_PLANNING', title: 't', detail: 'd', latencyMs: 1 } });
+  emitInto(legacy, { type: 'tool-start', toolCallId: 'a-metrics', toolName: 'renderPodMetrics', mcpUri: 'mcp://x' });
+  emitInto(legacy, { type: 'tool-result', toolCallId: 'a-metrics', toolName: 'renderPodMetrics', args: { podId: 'p' } });
+  emitInto(legacy, { type: 'tool-start', toolCallId: 'a-rca', toolName: 'renderRootCauseAnalysis', mcpUri: 'mcp://x' });
+  /* 引擎 A 在此失败，tool-start a-rca 悬空 */
+  /* 旧引擎 B 无条件重发三张 */
+  for (const toolName of ALL_TOOLS) {
+    emitInto(legacy, { type: 'tool-start', toolCallId: `sim-${toolName}`, toolName, mcpUri: 'mcp://x' });
+    emitInto(legacy, { type: 'tool-result', toolCallId: `sim-${toolName}`, toolName, args: { ok: true } });
+  }
+
+  const legacyViolations = protocol.validateStreamEvents(legacy);
+  const duplicateNames = protocol.countDuplicateCardNames(legacy);
+  const hasUnpaired = legacyViolations.some((v) => v.kind === 'unpaired-tool-start');
+  const hasDuplicateCards = duplicateNames.length > 0;
+
+  console.log(`  旧行为事件流: ${legacy.length} 条`);
+  console.log(`  未配对 tool-start: ${hasUnpaired ? '存在（应为存在=缺陷复现）' : '无'}`);
+  console.log(`  重复卡片: ${hasDuplicateCards ? duplicateNames.join(', ') : '无'}`);
+
+  if (hasUnpaired && hasDuplicateCards) {
+    console.log('  ✓ 缺陷已复现（红）：孤儿 start + 重复卡片，正是 A1/A2 的现象');
+    process.exit(0);
+  }
+  console.log('  ✗ 未能复现缺陷（TestCase 失效，请检查构造）');
+  process.exit(1);
+}
+
+{
+  const events = [];
+  const ledger = protocol.createToolCallLedger();
+  const emit = (event) => emitInto(events, event);
+
+  /* 引擎 A：成功产出指标卡 */
+  emit({ type: 'reasoning', step: { stepIndex: 0, phase: 'INTENT_PLANNING', title: 't', detail: 'd', latencyMs: 1 } });
+  emit({ type: 'engine', engine: 'llm', reason: 'model=mock' });
+  emit({ type: 'tool-start', toolCallId: 'a-metrics', toolName: 'renderPodMetrics', mcpUri: 'mcp://x' });
+  protocol.recordToolStart(ledger, 'a-metrics', 'renderPodMetrics');
+  emit({ type: 'tool-result', toolCallId: 'a-metrics', toolName: 'renderPodMetrics', args: { podId: 'p' } });
+  protocol.recordToolResult(ledger, 'a-metrics', true);
+
+  /* 引擎 A：根因卡 tool-start 后失败（悬空） */
+  emit({ type: 'tool-start', toolCallId: 'a-rca', toolName: 'renderRootCauseAnalysis', mcpUri: 'mcp://x' });
+  protocol.recordToolStart(ledger, 'a-rca', 'renderRootCauseAnalysis');
+
+  /* 回落：先修孤儿（A2），再让引擎 B 只补缺失（A1） */
+  const repaired = protocol.repairPendingToolCalls(ledger, emit, 'engine A failed');
+  emit({ type: 'engine', engine: 'simulator', reason: 'fallback' });
+  const missing = protocol.missingToolNames(ledger, ALL_TOOLS);
+  for (const toolName of missing) {
+    const toolCallId = `sim-${toolName}`;
+    emit({ type: 'tool-start', toolCallId, toolName, mcpUri: 'mcp://x' });
+    protocol.recordToolStart(ledger, toolCallId, toolName);
+    emit({ type: 'tool-result', toolCallId, toolName, args: { ok: true } });
+    protocol.recordToolResult(ledger, toolCallId, true);
+  }
+  emit({ type: 'done', requestId: 'req-mock', engine: 'simulator' });
+
+  const violations = protocol.validateStreamEvents(events);
+  const duplicateNames = protocol.countDuplicateCardNames(events);
+  const okCards = events.filter((e) => e.type === 'tool-result' && e.status !== 'error');
+
+  console.log(`  修复后事件流: ${events.length} 条 · 孤儿修复 ${repaired} 条 · 引擎 B 补卡 ${missing.length} 张`);
+  console.log(`  成功卡片: ${okCards.map((e) => e.toolName).join(', ')}`);
+  console.log(`  重复卡片: ${duplicateNames.length === 0 ? '无' : duplicateNames.join(', ')}`);
+
+  if (violations.length === 0) {
+    console.log('  ✓ 协议校验全绿（无重复 id / 无孤儿 result / 无未配对 start / 流末有 done）');
+  } else {
+    failures += 1;
+    console.log(`  ✗ 协议校验失败 ${violations.length} 处`);
+    for (const v of violations.slice(0, 5)) console.log(`      [${v.kind}] ${v.detail}`);
+  }
+
+  if (duplicateNames.length === 0) {
+    console.log('  ✓ 无重复卡片（回落只补缺失，A1 修复生效）');
+  } else {
+    failures += 1;
+    console.log(`  ✗ 出现重复卡片：${duplicateNames.join(', ')}`);
+  }
+
+  const unpaired = violations.filter((v) => v.kind === 'unpaired-tool-start');
+  if (unpaired.length === 0) {
+    console.log('  ✓ 无未配对 tool-start（A2 修复生效）');
+  } else {
+    failures += 1;
+    console.log(`  ✗ 仍有 ${unpaired.length} 个未配对 tool-start`);
+  }
+}
+
+/* 清理转译产物 */
+rmSync(PROTOCOL_OUT, { recursive: true, force: true });
 
 /* ========================================================================== */
 /* 汇总                                                                        */

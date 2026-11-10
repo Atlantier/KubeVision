@@ -1,0 +1,320 @@
+{"type":"reasoning","step":{"stepIndex":0,"phase":"INTENT_PLANNING","title":"解析故障诊断意图与集群上下文","detail":"识别到故障诊断请求：演练场景 POD_OOM_SWARM，集群健康分 58/100，异常 Pod 1 个。用户原话：集群里有 Pod 在 OOM 崩溃，请诊断并给出处置动作","latencyMs":38}}
+{"type":"reasoning","step":{"stepIndex":1,"phase":"RAG_RETRIEVAL","title":"检索 SRE 知识库并计算余弦相似度","detail":"混合检索命中 2 条知识切片：\n· RUNBOOK-K8S-042 — Pod OOMKilled 应急处置手册（Cgroup 内存超限）\n  Similarity: 90.9%\n· RUNBOOK-K8S-043 — CrashLoopBackOff 崩溃循环排障手册\n  Similarity: 83.9%","latencyMs":22}}
+{"type":"text","content":"## 诊断"}
+{"type":"text","content":"结论"}
+{"type":"text","content":"\n\n**主因："}
+{"type":"text","content":"`payment-gate"}
+{"type":"text","content":"way-7"}
+{"type":"text","content":"f8b9"}
+{"type":"text","content":"-x2"}
+{"type":"text","content":"k`（命名"}
+{"type":"text","content":"空间 `kv-pro"}
+{"type":"text","content":"d`）触发"}
+{"type":"text","content":" c"}
+{"type":"text","content":"group "}
+{"type":"text","content":"内存上限，"}
+{"type":"text","content":"被"}
+{"type":"text","content":"内核 OOM Killer"}
+{"type":"text","content":" 反复"}
+{"type":"text","content":"击杀"}
+{"type":"text","content":"，已进入"}
+{"type":"text","content":"「"}
+{"type":"text","content":"OOMK"}
+{"type":"text","content":"illed → 重启"}
+{"type":"text","content":" → 再"}
+{"type":"text","content":" OOM」"}
+{"type":"text","content":"的准"}
+{"type":"text","content":" Crash"}
+{"type":"text","content":"LoopBackOff "}
+{"type":"text","content":"循环。** "}
+{"type":"text","content":"当前内存"}
+{"type":"text","content":"使用率"}
+{"type":"text","content":" **97.0"}
+{"type":"text","content":"%**、累计"}
+{"type":"text","content":"重启 **9 "}
+{"type":"text","content":"次**，命中"}
+{"type":"text","content":" **["}
+{"type":"text","content":"RUNBOOK-K"}
+{"type":"text","content":"8S-042"}
+{"type":"text","content":"] Pod O"}
+{"type":"text","content":"OMKilled "}
+{"type":"text","content":"应急处置手册**"}
+{"type":"text","content":"（相似"}
+{"type":"text","content":"度 90."}
+{"type":"text","content":"9%），同时"}
+{"type":"text","content":"具备"}
+{"type":"text","content":" **["}
+{"type":"text","content":"RUNBOOK-K8"}
+{"type":"text","content":"S-043]**"}
+{"type":"text","content":" 中"}
+{"type":"text","content":"退"}
+{"type":"text","content":"避重启循环的特征"}
+{"type":"text","content":"。\n\n##"}
+{"type":"text","content":" 证据链"}
+{"type":"text","content":"\n\n| 观测"}
+{"type":"text","content":"项 | 实测"}
+{"type":"text","content":"值 | 判"}
+{"type":"text","content":"读"}
+{"type":"text","content":" |\n|---|---|---|"}
+{"type":"text","content":"\n| Pod"}
+{"type":"text","content":" 状态 | `"}
+{"type":"text","content":"status=O"}
+{"type":"text","content":"OMKilled`"}
+{"type":"text","content":" | 内核"}
+{"type":"text","content":"已介入"}
+{"type":"text","content":"，非应用"}
+{"type":"text","content":"主动"}
+{"type":"text","content":"退出 |\n| "}
+{"type":"text","content":"内存使用率 |"}
+{"type":"text","content":" 97.0"}
+{"type":"text","content":"%（贴近 limit"}
+{"type":"text","content":"） | 工作"}
+{"type":"text","content":"集已顶"}
+{"type":"text","content":"到容器"}
+{"type":"text","content":" c"}
+{"type":"text","content":"group 的 `"}
+{"type":"text","content":"memory.max` |"}
+{"type":"text","content":"\n| 重启次数"}
+{"type":"text","content":" | 9 "}
+{"type":"text","content":"次，"}
+{"type":"text","content":"node"}
+{"type":"text","content":"=node-worker"}
+{"type":"text","content":"-beta | 反复"}
+{"type":"text","content":"重启，"}
+{"type":"text","content":"kubelet "}
+{"type":"text","content":"退"}
+{"type":"text","content":"避间隔"}
+{"type":"text","content":"已被"}
+{"type":"text","content":"拉长 |\n|"}
+{"type":"text","content":" CPU |"}
+{"type":"text","content":" 66.0"}
+{"type":"text","content":"% | 非"}
+{"type":"text","content":" CPU 瓶颈，"}
+{"type":"text","content":"可"}
+{"type":"text","content":"排除算"}
+{"type":"text","content":"力类故障"}
+{"type":"text","content":" |\n| 节点"}
+{"type":"text","content":"水位 | worker"}
+{"type":"text","content":"-beta cpu"}
+{"type":"text","content":"=42"}
+{"type":"text","content":"% / mem="}
+{"type":"text","content":"51%"}
+{"type":"text","content":" | **"}
+{"type":"text","content":"节点内存"}
+{"type":"text","content":"充裕"}
+{"type":"text","content":"，"}
+{"type":"text","content":"非"}
+{"type":"text","content":"节点级"}
+{"type":"text","content":"资源"}
+{"type":"text","content":"耗尽"}
+{"type":"text","content":"** |\n\n关键"}
+{"type":"text","content":"推理"}
+{"type":"text","content":"：节点"}
+{"type":"text","content":" mem"}
+{"type":"text","content":" 仅 51"}
+{"type":"text","content":"%，说明"}
+{"type":"text","content":"**不是 node"}
+{"type":"text","content":" 驱逐（"}
+{"type":"text","content":"Ev"}
+{"type":"text","content":"iction"}
+{"type":"text","content":"）**"}
+{"type":"text","content":"，而是容器"}
+{"type":"text","content":"自身"}
+{"type":"text","content":" `"}
+{"type":"text","content":"resources.limits"}
+{"type":"text","content":".memory` "}
+{"type":"text","content":"映射的 cgroup"}
+{"type":"text","content":" v"}
+{"type":"text","content":"2 `memory.max"}
+{"type":"text","content":"` 被触及"}
+{"type":"text","content":"。内核在 page"}
+{"type":"text","content":" cache 回收不足以"}
+{"type":"text","content":"满足"}
+{"type":"text","content":"需求后"}
+{"type":"text","content":"遍历 c"}
+{"type":"text","content":"group 内进程"}
+{"type":"text","content":"计算 `oom_score"}
+{"type":"text","content":"`（主要由"}
+{"type":"text","content":" RSS"}
+{"type":"text","content":" + swap 决定"}
+{"type":"text","content":"，可"}
+{"type":"text","content":"被 `oom_score"}
+{"type":"text","content":"_adj` "}
+{"type":"text","content":"偏移），选中最高"}
+{"type":"text","content":"分进程发送 **"}
+{"type":"text","content":"SIGKILL"}
+{"type":"text","content":"**；因"}
+{"type":"text","content":" SIGKILL "}
+{"type":"text","content":"不可捕获，进程"}
+{"type":"text","content":"无优雅退出机会"}
+{"type":"text","content":"，因此 `k"}
+{"type":"text","content":"ubectl describe pod"}
+{"type":"text","content":"` 中必然"}
+{"type":"text","content":"呈现"}
+{"type":"text","content":" `Last State:"}
+{"type":"text","content":" Terminated, Reason"}
+{"type":"text","content":": OOMK"}
+{"type":"text","content":"illed, Exit Code"}
+{"type":"text","content":": 137`"}
+{"type":"text","content":"（128 +"}
+{"type":"text","content":" 9）。按"}
+{"type":"text","content":" RUN"}
+{"type":"text","content":"BOOK-042 "}
+{"type":"text","content":"的判"}
+{"type":"text","content":"据，limit "}
+{"type":"text","content":"若远高于真实"}
+{"type":"text","content":"需求仍 O"}
+{"type":"text","content":"OM，通常"}
+{"type":"text","content":"指向**真实堆"}
+{"type":"text","content":"内存泄漏或"}
+{"type":"text","content":"大对象未释放"}
+{"type":"text","content":"**，"}
+{"type":"text","content":"而非 limit"}
+{"type":"text","content":" 配置"}
+{"type":"text","content":"过低。\n\n##"}
+{"type":"text","content":" 处置建议"}
+{"type":"text","content":"\n\n**①"}
+{"type":"text","content":" 证据"}
+{"type":"text","content":"固化"}
+{"type":"text","content":"（立即"}
+{"type":"text","content":"，只"}
+{"type":"text","content":"读）**"}
+{"type":"text","content":"\n- `kub"}
+{"type":"text","content":"ectl describe pod payment"}
+{"type":"text","content":"-gateway-"}
+{"type":"text","content":"7f8b"}
+{"type":"text","content":"9-x2"}
+{"type":"text","content":"k -n kv"}
+{"type":"text","content":"-prod` "}
+{"type":"text","content":"确认 Exit Code "}
+{"type":"text","content":"137\n- `"}
+{"type":"text","content":"kubectl top"}
+{"type":"text","content":" pod payment"}
+{"type":"text","content":"-gateway-"}
+{"type":"text","content":"7f8b"}
+{"type":"text","content":"9-x2k"}
+{"type":"text","content":" --contain"}
+{"type":"text","content":"ers`"}
+{"type":"text","content":" 记录内存峰值"}
+{"type":"text","content":"\n\n**② 根"}
+{"type":"text","content":"因定位**"}
+{"type":"text","content":"\n- 抓取"}
+{"type":"text","content":" heap profile：`"}
+{"type":"text","content":"/debug/"}
+{"type":"text","content":"pprof/heap"}
+{"type":"text","content":"`（Go）"}
+{"type":"text","content":"或 `jmap"}
+{"type":"text","content":" -dump"}
+{"type":"text","content":"`（J"}
+{"type":"text","content":"VM），对比"}
+{"type":"text","content":"两次"}
+{"type":"text","content":"采样"}
+{"type":"text","content":"定位"}
+{"type":"text","content":"持续"}
+{"type":"text","content":"增长对象\n-"}
+{"type":"text","content":" 若为"}
+{"type":"text","content":"泄漏"}
+{"type":"text","content":" →"}
+{"type":"text","content":" 走"}
+{"type":"text","content":"代码修复；"}
+{"type":"text","content":"若为流量"}
+{"type":"text","content":"型"}
+{"type":"text","content":"峰值"}
+{"type":"text","content":" → 调参"}
+{"type":"text","content":"\n\n**③ "}
+{"type":"text","content":"临时缓解（本次"}
+{"type":"text","content":"自"}
+{"type":"text","content":"愈动作）**"}
+{"type":"text","content":"\n- 将"}
+{"type":"text","content":" `limits.m"}
+{"type":"text","content":"emory` 提升"}
+{"type":"text","content":"至实测"}
+{"type":"text","content":"峰值的 **1"}
+{"type":"text","content":".3 "}
+{"type":"text","content":"倍**，并"}
+{"type":"text","content":"**重启单个 Pod"}
+{"type":"text","content":"** 释放"}
+{"type":"text","content":"已"}
+{"type":"text","content":"泄漏的堆"}
+{"type":"text","content":"内存"}
+{"type":"text","content":"。"}
+{"type":"text","content":"选择"}
+{"type":"text","content":" `restart_p"}
+{"type":"text","content":"od` 而非"}
+{"type":"text","content":"节点"}
+{"type":"text","content":"驱逐"}
+{"type":"text","content":"：节点"}
+{"type":"text","content":"内存水位"}
+{"type":"text","content":"健康"}
+{"type":"text","content":"（"}
+{"type":"text","content":"51%），迁移"}
+{"type":"text","content":"负载"}
+{"type":"text","content":"无"}
+{"type":"text","content":"收益且会"}
+{"type":"text","content":"放大"}
+{"type":"text","content":"爆炸"}
+{"type":"text","content":"半径。\n- "}
+{"type":"text","content":"注意"}
+{"type":"text","content":"：仅"}
+{"type":"text","content":"提升 limit 而不"}
+{"type":"text","content":"重启无法"}
+{"type":"text","content":"回收"}
+{"type":"text","content":"已"}
+{"type":"text","content":"泄漏内存"}
+{"type":"text","content":"，两者"}
+{"type":"text","content":"需"}
+{"type":"text","content":"同时执行"}
+{"type":"text","content":"。\n\n**④ "}
+{"type":"text","content":"长效机制"}
+{"type":"text","content":"**\n- 接入"}
+{"type":"text","content":" **"}
+{"type":"text","content":"VPA**"}
+{"type":"text","content":"（Off"}
+{"type":"text","content":" "}
+{"type":"text","content":"模式先"}
+{"type":"text","content":"观察推荐"}
+{"type":"text","content":"值）"}
+{"type":"text","content":"或基于"}
+{"type":"text","content":" memory"}
+{"type":"text","content":" 的 **"}
+{"type":"text","content":"HPA**；"}
+{"type":"text","content":"\n- 为"}
+{"type":"text","content":" `payment-g"}
+{"type":"text","content":"ateway` "}
+{"type":"text","content":"配置 `oom"}
+{"type":"text","content":"_score"}
+{"type":"text","content":"_adj` "}
+{"type":"text","content":"保护"}
+{"type":"text","content":"与 `Pod"}
+{"type":"text","content":"DisruptionBudget"}
+{"type":"text","content":"`，避免"}
+{"type":"text","content":"单实例 O"}
+{"type":"text","content":"OM 直接"}
+{"type":"text","content":"打穿支付"}
+{"type":"text","content":"链路；\n- "}
+{"type":"text","content":"补充"}
+{"type":"text","content":" l"}
+{"type":"text","content":"ivenessPro"}
+{"type":"text","content":"be 的 `"}
+{"type":"text","content":"initialDelaySeconds`"}
+{"type":"text","content":" "}
+{"type":"text","content":"与 `failureThreshold"}
+{"type":"text","content":"`，防止"}
+{"type":"text","content":"重启"}
+{"type":"text","content":"风暴"}
+{"type":"text","content":"叠加"}
+{"type":"text","content":"探"}
+{"type":"text","content":"针误杀（"}
+{"type":"text","content":"RUNBOOK-043"}
+{"type":"text","content":"）。\n\n现在"}
+{"type":"text","content":"渲染"}
+{"type":"text","content":"三张卡片："}
+{"type":"reasoning","step":{"stepIndex":2,"phase":"MCP_TOOL_INVOKE","title":"路由至 MCP 工具链 · 指标渲染工具（只读）","detail":"本次实际调用 `renderPodMetrics`，经 MCP 协议路由至 mcp://k8s-cluster/tools/renderPodMetrics。所有生产写操作（自愈动作）均不会自动执行，需用户在卡片上二次确认。","mcpUri":"mcp://k8s-cluster/tools/renderPodMetrics","latencyMs":124}}
+{"type":"tool-start","toolCallId":"call_8b0cc2ec8a564eb2aef3364e","toolName":"renderPodMetrics","mcpUri":"mcp://k8s-cluster/tools/renderPodMetrics"}
+{"type":"tool-result","toolCallId":"call_8b0cc2ec8a564eb2aef3364e","toolName":"renderPodMetrics","args":{"podId":"pod-payment-gateway-7f8b9-x2k","podName":"payment-gateway-7f8b9-x2k","namespace":"kv-prod","cpuUsage":66,"memoryUsage":97,"restarts":9,"cpuHistory":[42,51,58,63,69,66],"memHistory":[61,68,74,83,91,97]}}
+{"type":"tool-start","toolCallId":"call_bcb51b847b694e7caae73f09","toolName":"renderRootCauseAnalysis","mcpUri":"mcp://k8s-cluster/tools/renderRootCauseAnalysis"}
+{"type":"tool-result","toolCallId":"call_bcb51b847b694e7caae73f09","toolName":"renderRootCauseAnalysis","args":{"severity":"P1","title":"payment-gateway 容器内存触及 cgroup memory.max，被内核 OOM Killer 反复击杀（Exit Code 137）","confidence":0.92,"rootCauseSummary":"payment-gateway-7f8b9-x2k 的内存使用率在 6 个观测周期内由 61% 单调爬升至 97%，呈现典型的内存泄漏/大对象未释放曲线，而非突发流量毛刺。容器工作集顶到 resources.limits.memory 映射的 cgroup v2 memory.max 后，内核 page cache 回收不足以满足分配需求，OOM Killer 遍历该 cgroup 内进程计算 oom_score（RSS + swap 主导），选中最高分进程发送不可捕获的 SIGKILL，容器退出码固定为 137（128+9）。因 SIGKILL 无优雅退出路径，进程无法 flush 或释放资源，重启后堆内存从基线重新累积，形成 9 次重启的准 CrashLoopBackOff。关键排除项：CPU 仅 66%（非算力瓶颈）；所在节点 worker-beta 内存水位仅 51%（非节点级资源耗尽或 Eviction，故节点驱逐/迁移无收益）。依据 RUNBOOK-K8S-042 判据，limit 若远高于真实需求仍 OOM 通常指向真实泄漏，需 heap profile 定性。","evidenceChain":["T0 内存使用率由基线 61% 开始持续单调上升 → 68% → 74% → 83% → 91% → 97%，无回落平台期，符合堆内存泄漏特征","T1 内存触及容器 cgroup memory.max（由 resources.limits.memory 映射），page cache 回收失效","T2 内核 OOM Killer 计算 oom_score（主要依据 RSS + swap，受 oom_score_adj 偏移）并选中主进程发送 SIGKILL","T3 容器 Last State: Terminated, Reason=OOMKilled, Exit Code=137（128 + 9），SIGKILL 不可捕获故无优雅退出","T4 kubelet 按指数退避重启（10s 起，上限 5 分钟），累计 restarts=9，Pod 呈现 OOMKilled 循环","T5 旁证排除：CPU=66.0% 未饱和；节点 worker-beta mem=51% / cpu=42%，节点侧资源充裕，非节点驱逐场景"],"impactScope":"命名空间 kv-prod 的支付入口服务 payment-gateway 当前仅观测到 1 个异常副本（node-worker-beta），但集群入口 QPS 2400 且集群健康分已降至 58/100。SIGKILL 为硬终止，重启窗口内的在途请求会被直接断连，可能产生支付订单状态不一致与 5xx 抖动；若该 Deployment 副本数较少，OOM 循环将进一步打穿支付链路，属 P1 级需当日闭环故障。","ragReferences":[{"id":"RUNBOOK-K8S-042","title":"Pod OOMKilled 应急处置手册（Cgroup 内存超限）","category":"memory","tags":["oom","oomkilled","memory","cgroup","restart","crashloop"],"symptom":"Pod 频繁重启，kubectl describe pod 显示 Last State: Terminated, Reason: OOMKilled, Exit Code: 137；容器内存使用触及 limit 上限。","remediationSteps":["kubectl describe pod <pod> -n <ns> 确认 OOMKilled 与 Exit Code 137","kubectl top pod <pod> --containers 观察实际内存峰值","比对 resources.limits.memory 与容器真实峰值，判断是 limit 过低还是内存泄漏","若为泄漏：抓取 heap profile（/debug/pprof/heap 或 jmap）定位增长对象","临时缓解：提升 limit 至峰值的 1.3 倍并重启；根因修复后回落","配置 HPA 基于 memory 指标或接入 VPA 自动调优"],"featureVocabulary":["oom","oomkilled","exit code 137","cgroup","memory limit","out of memory","memory leak","rss","rlimit","crashloopbackoff","restart"],"rootCauseMechanism":"Linux 内核 OOM Killer 在 cgroup v2 的 memory.max 被触及时介入：内核遍历该 cgroup 内的进程计算 oom_score（主要由 rss + swap 用量决定，可由 oom_score_adj 偏移），选中最高分进程发送 SIGKILL。因 SIGKILL 不可捕获，进程无机会优雅退出，故容器退出码固定为 137（128 + 9）。在 cgroup v1 下对应 memory.limit_in_bytes 与 memory.oom_control。Kubernetes 将 Pod 的 resources.limits.memory 映射为容器 cgroup 的 memory.max；当容器工作集超过该值且回收（page cache 回收）仍不足以满足需求时必然触发 OOM。若 limit 远高于实际需求而仍 OOM，通常说明存在真实的堆内存泄漏或大对象未释放。","relatedChaos":["POD_OOM_SWARM"],"similarityScore":0.9094,"matchedTerms":["oom","pod"],"scoreBreakdown":{"vectorScore":0.3344,"bm25Score":0.6331,"contextBoost":0.75,"rrfScore":1},"isCustom":false},{"id":"RUNBOOK-K8S-043","title":"CrashLoopBackOff 崩溃循环排障手册","category":"runtime","tags":["crashloop","crashloopbackoff","restart","backoff","probe"],"symptom":"Pod 状态在 Running 与 CrashLoopBackOff 之间反复切换，restarts 计数持续增长，kubelet 按指数退避策略拉长重启间隔。","remediationSteps":["kubectl logs <pod> --previous 查看上一次崩溃前的最后输出","kubectl describe pod <pod> 检查 Events 中的 Back-off restarting failed container","确认启动命令与探针配置：livenessProbe 的 initialDelaySeconds 是否过短","检查 ConfigMap/Secret 挂载与依赖服务可达性","如为探针误杀：放宽 failureThreshold 或调整 timeoutSeconds"],"featureVocabulary":["crashloopbackoff","back-off","restarting failed container","liveness probe","readiness probe","restart","exit code","still running"],"rootCauseMechanism":"kubelet 对反复失败的容器实施指数退避重启（10s 起，上限 5 分钟），退避期间 Pod phase 为 Running 但容器未运行，状态显示为 CrashLoopBackOff。常见触发源：应用启动即崩溃、依赖不可达导致启动超时、livenessProbe 配置过激（initialDelaySeconds 小于真实启动耗时）导致容器被主动杀死。探针失败由 kubelet 发送 SIGTERM 后等待 terminationGracePeriodSeconds，超时再 SIGKILL。","relatedChaos":["POD_OOM_SWARM"],"similarityScore":0.8386,"matchedTerms":["pod"],"scoreBreakdown":{"vectorScore":0.0619,"bm25Score":0.3765,"contextBoost":0.6,"rrfScore":0.9839},"isCustom":false}]}}
+{"type":"tool-start","toolCallId":"call_a473dc553e814784b7b6ba9e","toolName":"proposeRemediationAction","mcpUri":"mcp://k8s-cluster/tools/proposeRemediationAction"}
+{"type":"tool-result","toolCallId":"call_a473dc553e814784b7b6ba9e","toolName":"proposeRemediationAction","args":{"actionType":"restart_pod","targetId":"pod-payment-gateway-7f8b9-x2k","targetName":"payment-gateway-7f8b9-x2k","paramDescription":"对 kv-prod/payment-gateway-7f8b9-x2k 执行滚动重启以释放已泄漏的堆内存；同时按 RUNBOOK-K8S-042 步骤 5 将容器 resources.limits.memory 临时上调至实测内存峰值的 1.3 倍（仅调 limit 不重启无法回收已占用内存，两者需同时执行）。重启前请先执行 kubectl describe pod 留证 Exit Code 137，并采样 /debug/pprof/heap 或 jmap 堆快照用于定位增长对象。刻意不选择 drain_node：节点 worker-beta 内存水位仅 51%、CPU 42%，节点侧资源充裕，迁移负载无收益且会扩大爆炸半径。","isHighRisk":false,"mcpEndpoint":"mcp://k8s-cluster/tools/restart_pod"}}
+{"type":"engine","engine":"llm","reason":"model=deepseek-flash"}
+{"type":"done","requestId":"req-mwachdga-l7q9o0","engine":"llm"}

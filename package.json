@@ -30,6 +30,7 @@
     "verify:telemetry": "node scripts/verify-telemetry.mjs",
     "verify:parity": "node scripts/verify-mode-parity.mjs",
     "probe:health": "node scripts/probe-data-health.mjs",
+    "probe:action-card": "node scripts/probe-action-card.mjs",
     "docs:metrics": "node scripts/sync-docs-metrics.mjs",
     "docs:evidence": "node scripts/capture-evidence.mjs",
     "benchmark:consistency": "node scripts/benchmark-consistency.mjs",

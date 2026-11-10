@@ -55,6 +55,14 @@ import type {
 } from '@/types/ai';
 import type { ChaosScenario } from '@/types/cluster';
 import { retrieveSreRunbooks } from '@/utils/sreRagEngine';
+import {
+  createToolCallLedger,
+  missingToolNames,
+  recordToolResult,
+  recordToolStart,
+  repairPendingToolCalls,
+} from '@/utils/chatStreamProtocol';
+import type { ToolCallLedger } from '@/utils/chatStreamProtocol';
 /*
  * 【为何从这里引】pickRemediationActionType 的动作映射与前端 chaosTargets 共享同一份
  * 事实。若各自维护一份，就会出现"前端说 restart_pod、回执说 drain_node"的矛盾。
@@ -899,17 +907,24 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       reject(new Error('aborted'));
       return;
     }
+
+    let settled = false;
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(new Error('aborted'));
+    };
+
     const timer = setTimeout((): void => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
       resolve();
     }, ms);
-    signal?.addEventListener(
-      'abort',
-      (): void => {
-        clearTimeout(timer);
-        reject(new Error('aborted'));
-      },
-      { once: true },
-    );
+
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -1063,8 +1078,15 @@ async function streamWithLLM(params: {
   readonly onFirstToolCall: (toolName: string) => void;
   readonly emit: (event: ChatStreamEvent) => void;
   readonly signal: AbortSignal;
+  /**
+   * 工具调用账本（跨引擎共享）。
+   *
+   * 【为什么引擎 A 也要记】回落引擎 B 时，B 需要知道"A 已经发过哪几张卡"，
+   * 才能只补缺失的卡而不是三张全重发（A1 重复卡片缺陷的根因）。
+   */
+  readonly ledger: ToolCallLedger;
 }): Promise<boolean> {
-  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, allowedTools, onFirstToolCall, emit, signal } = params;
+  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, allowedTools, onFirstToolCall, emit, signal, ledger } = params;
 
   try {
     const provider = createOpenAI({ apiKey, baseURL });
@@ -1286,6 +1308,7 @@ async function streamWithLLM(params: {
 
         /* 载荷就绪 → 依次发 start 与 result，中间保留骨架可见延迟 */
         emit({ type: 'tool-start', toolCallId, toolName, mcpUri });
+        recordToolStart(ledger, toolCallId, toolName);
         emittedToolNames.add(toolName);
 
         await sleep(TOOL_RESULT_DELAY_MS_A, signal);
@@ -1296,6 +1319,7 @@ async function streamWithLLM(params: {
           toolName,
           args: finalPayload,
         });
+        recordToolResult(ledger, toolCallId, true);
         continue;
       }
 
@@ -1318,6 +1342,7 @@ async function streamWithLLM(params: {
       emitted: emittedToolNames,
       allowedTools,
       emit,
+      ledger,
     });
 
     return true;
@@ -1949,8 +1974,10 @@ function emitMissingCards(params: {
   /** 本意图允许补齐的工具集合（补全不得越过意图边界） */
   readonly allowedTools: readonly string[];
   readonly emit: (event: ChatStreamEvent) => void;
+  /** 工具调用账本（补发的卡片同样要登记，避免回落时重复补） */
+  readonly ledger: ToolCallLedger;
 }): void {
-  const { ctx, runbooks, emitted, allowedTools, emit } = params;
+  const { ctx, runbooks, emitted, allowedTools, emit, ledger } = params;
 
   if (allowedTools.length === 0) return;
 
@@ -1984,7 +2011,9 @@ function emitMissingCards(params: {
 
     const toolCallId = `fill-${toolName}-${Date.now()}`;
     emit({ type: 'tool-start', toolCallId, toolName, mcpUri: `mcp://k8s-cluster/tools/${toolName}` });
+    recordToolStart(ledger, toolCallId, toolName);
     emit({ type: 'tool-result', toolCallId, toolName, args, synthesized: true });
+    recordToolResult(ledger, toolCallId, true);
   }
 }
 
@@ -2016,8 +2045,10 @@ async function streamWithSimulator(params: {
   readonly onFirstToolCall: (toolName: string) => void;
   readonly emit: (event: ChatStreamEvent) => void;
   readonly signal: AbortSignal;
+  /** 工具调用账本（只补缺失卡片，避免回落时重复产出） */
+  readonly ledger: ToolCallLedger;
 }): Promise<void> {
-  const { ctx, runbooks, intent, hasImage, onFirstToolCall, emit, signal } = params;
+  const { ctx, runbooks, intent, hasImage, onFirstToolCall, emit, signal, ledger } = params;
 
   /* ---- 1. 构造报告（按意图选用不同的正文模板） ---- */
   const report =
@@ -2043,7 +2074,13 @@ async function streamWithSimulator(params: {
    * 在 100 分健康时弹出 drain_node。此前它无条件产出三张卡，
    * 正是"问候语也弹高危卡"的主要来源之一。
    */
-  const allowed = toolsAllowedForIntent(intent);
+  /*
+   * 【A1 修复：只补缺失的卡】账本里已经成功产出的工具名直接跳过。
+   * 场景：引擎 A 已发指标卡 → 根因卡阶段失败 → 回落引擎 B。
+   * 旧实现 B 无条件重发三张，用户看到两张指标卡（重复）。
+   * 现在 B 只看差集，理论上不会与 A 的产出重复。
+   */
+  const allowed = missingToolNames(ledger, toolsAllowedForIntent(intent));
   if (allowed.length === 0) return;
 
   /*
@@ -2064,6 +2101,7 @@ async function streamWithSimulator(params: {
       toolName: 'renderPodMetrics',
       mcpUri: 'mcp://k8s-cluster/tools/renderPodMetrics',
     });
+    recordToolStart(ledger, toolCallId, 'renderPodMetrics');
     await sleep(TOOL_RESULT_DELAY_MS_B, signal);
     emit({
       type: 'tool-result',
@@ -2071,6 +2109,7 @@ async function streamWithSimulator(params: {
       toolName: 'renderPodMetrics',
       args: buildMetricsArgs(target),
     });
+    recordToolResult(ledger, toolCallId, true);
     await sleep(120, signal);
   }
 
@@ -2084,6 +2123,7 @@ async function streamWithSimulator(params: {
       toolName: 'renderRootCauseAnalysis',
       mcpUri: 'mcp://k8s-cluster/tools/renderRootCauseAnalysis',
     });
+    recordToolStart(ledger, rcCallId, 'renderRootCauseAnalysis');
     await sleep(TOOL_RESULT_DELAY_MS_B, signal);
     emit({
       type: 'tool-result',
@@ -2091,6 +2131,7 @@ async function streamWithSimulator(params: {
       toolName: 'renderRootCauseAnalysis',
       args: buildRootCauseArgs(ctx, runbooks, resolved),
     });
+    recordToolResult(ledger, rcCallId, true);
     await sleep(120, signal);
   }
 
@@ -2112,6 +2153,7 @@ async function streamWithSimulator(params: {
         toolName: 'proposeRemediationAction',
         mcpUri: 'mcp://k8s-cluster/tools/proposeRemediationAction',
       });
+      recordToolStart(ledger, actionToolCallId, 'proposeRemediationAction');
       await sleep(TOOL_RESULT_DELAY_MS_B, signal);
       emit({
         type: 'tool-result',
@@ -2119,6 +2161,7 @@ async function streamWithSimulator(params: {
         toolName: 'proposeRemediationAction',
         args: actionArgs,
       });
+      recordToolResult(ledger, actionToolCallId, true);
     }
   }
 }
@@ -2523,6 +2566,12 @@ export async function POST(request: Request): Promise<Response> {
 
       const signal = request.signal;
 
+      /*
+       * requestId 必须在 try 之外声明：catch 分支的 error 事件也要带上它，
+       * 否则"用户看到的报错"与"服务端日志"无法对号（A9 的硬性要求）。
+       */
+      const requestId = `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
       try {
         /**
          * ============ 推理链：按意图与阶段渐进推送 ============
@@ -2707,6 +2756,17 @@ export async function POST(request: Request): Promise<Response> {
         };
 
         /* ============ 引擎执行 ============ */
+        /*
+         * ---- 请求级 requestId 与工具调用账本 ----
+         *
+         * requestId：错误事件/日志/前端提示共用一个 id，便于把"用户看到的报错"
+         * 与服务端日志对上号。没有它，用户报"刚才失败了"时无法定位是哪一次。
+         *
+         * ledger：跨引擎共享的工具调用账本，是 A1（重复卡片）与 A2（悬空骨架）
+         * 两个缺陷的共同解药——引擎 B 只补缺失的卡，悬空的 start 会被补终止事件。
+         */
+        const ledger: ToolCallLedger = createToolCallLedger();
+
         if (useLLM) {
           const ok = await streamWithLLM({
             apiKey: apiKey as string,
@@ -2724,9 +2784,23 @@ export async function POST(request: Request): Promise<Response> {
             onFirstToolCall: ensureMcpStep,
             emit,
             signal,
+            ledger,
           });
 
           if (!ok) {
+            /*
+             * 【A2 修复：先修孤儿，再回落】
+             *
+             * 引擎 A 可能已经发出若干 tool-start 后才失败。若直接回落，
+             * 这些 start 永远等不到配对 result —— 前端就是"骨架屏永远转圈"。
+             * 这里先为所有 pending 的调用补发 status:'error' 的 tool-result，
+             * 前端据此渲染"生成失败，点击重试"。
+             */
+            const repaired = repairPendingToolCalls(
+              ledger,
+              emit,
+              'engine A failed before producing this card; fell back to local engine',
+            );
             /* 引擎 A 失败 → 无缝回落引擎 B，并先声明实际引擎（流内事实） */
             emit({
               type: 'engine',
@@ -2746,6 +2820,7 @@ export async function POST(request: Request): Promise<Response> {
               onFirstToolCall: ensureMcpStep,
               emit,
               signal,
+              ledger,
             });
           } else {
             /* 引擎 A 成功：补一条引擎声明，使流内事实完整 */
@@ -2766,20 +2841,48 @@ export async function POST(request: Request): Promise<Response> {
             onFirstToolCall: ensureMcpStep,
             emit,
             signal,
+            ledger,
           });
         }
+
+        /* ---- A8：流末必有 done（前端不再靠 socket 关闭判断结束） ---- */
+        emit({ type: 'done', requestId, engine: useLLM ? 'llm' : 'simulator' });
 
         safeClose();
       } catch (error) {
         /* 客户端取消属正常终止，不记录为错误 */
         const aborted = signal.aborted || (error instanceof Error && error.message === 'aborted');
+        const message = error instanceof Error ? error.message : 'unknown error';
+
+        /*
+         * 【A9 修复：结构化错误事件】
+         * 旧实现只往正文里追加一行 [ENGINE-ERROR] 文本，前端无法据此选择
+         * 文案与重试动作，也拿不到 requestId 对日志。现在推一条 error 事件，
+         * 分类 + requestId + 是否可重试；同时保留正文提示（兼容旧客户端）。
+         */
+        const category: 'network' | 'model' | 'tool_args' | 'server' | 'abort' = aborted
+          ? 'abort'
+          : /401|403|quota|rate.?limit|model/i.test(message)
+            ? 'model'
+            : /fetch|network|ECONN|ENOTFOUND|timeout/i.test(message)
+              ? 'network'
+              : 'server';
+
         if (!aborted) {
           console.error('[kubevision][chat] stream failed:', error);
           emit({
             type: 'text',
-            content: `\n\n> [ ENGINE-ERROR ] 推理中断：${error instanceof Error ? error.message : 'unknown error'}\n\n`,
+            content: `\n\n> [ ENGINE-ERROR ] 推理中断：${message}\n\n`,
           });
         }
+        emit({
+          type: 'error',
+          category,
+          message,
+          requestId,
+          retryable: category !== 'abort',
+        });
+        emit({ type: 'done', requestId, engine: 'simulator' });
         safeClose();
       }
     },

@@ -69,6 +69,20 @@ export interface PostMortemInput {
    * 可以用下面导出的 buildPostMortemMarkdownWithLiveTimeline 包装器。
    */
   readonly incidentTimelineMarkdown?: string;
+  /**
+   * 可选：**事故发生时刻**的现场快照（A7）。
+   *
+   * 【解决什么】旧实现直接用"导出报告那一刻"的 clusterContext 生成报告：
+   * 用户自愈完成、集群恢复健康后再导出，报告里写的是"当前健康 100"，
+   * 与事故经过完全对不上——复盘报告最该保留的恰恰是"事故当时有多糟"。
+   * 现在由调用方传入事故前快照（来自 store.lastRemediationDiff.before*），
+   * 报告按「事故前 / 事故后」分节呈现；无事故时明确写"稳态巡检，无事故"。
+   */
+  readonly incidentBefore?: {
+    readonly healthScore: number;
+    readonly anomalyCount: number;
+    readonly chaos: string;
+  } | null;
 }
 
 /* ========================================================================== */
@@ -1151,6 +1165,35 @@ function buildImpactSection(input: PostMortemInput, model: SessionModel): string
  * @param input 复盘输入
  * @returns 章节行数组；没有时间线时返回空数组（不输出空章节）
  */
+/**
+ * buildIncidentBaselineSection —— 事故前 / 事故后健康分对照章节（A7）。
+ *
+ * @param input 复盘输入
+ * @returns 章节行数组
+ */
+function buildIncidentBaselineSection(input: PostMortemInput): string[] {
+  const before = input.incidentBefore;
+  if (before === undefined || before === null) {
+    return ['## 事故基线', '', '稳态巡检，无事故。本次会话未记录到故障注入或自愈动作。', ''];
+  }
+  const after = input.clusterContext.clusterHealthScore;
+  const delta = after - before.healthScore;
+  return [
+    '## 事故基线（事故发生时刻 vs 报告生成时刻）',
+    '',
+    '| 维度 | 事故发生时 | 报告生成时 | 变化 |',
+    '|---|---|---|---|',
+    `| 集群健康分 | ${before.healthScore} | ${after} | ${delta >= 0 ? '+' : ''}${delta} |`,
+    `| 异常 Pod 数 | ${before.anomalyCount} | ${input.clusterContext.faultyPods.length} | ${
+      input.clusterContext.faultyPods.length - before.anomalyCount
+    } |`,
+    `| 混沌场景 | ${before.chaos} | ${input.clusterContext.activeChaos} | — |`,
+    '',
+    '> 「事故发生时」取自最近一次自愈动作记录的前值快照，而不是导出时刻的实时值。',
+    '',
+  ];
+}
+
 function buildIncidentBufferSection(input: PostMortemInput): string[] {
   const markdown = input.incidentTimelineMarkdown ?? '';
   if (markdown.trim().length === 0) return [];
@@ -1616,6 +1659,7 @@ export function buildPostMortemMarkdown(input: PostMortemInput): string {
     buildHeaderLines(input),
     buildSummarySection(input, model),
     buildImpactSection(input, model),
+    buildIncidentBaselineSection(input),
     buildTimelineSection(model),
     buildIncidentBufferSection(input),
     buildRootCauseSection(model),
