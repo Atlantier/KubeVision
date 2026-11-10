@@ -37,6 +37,7 @@
  */
 
 import { useCallback, useEffect } from 'react';
+import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Cpu, Network, ShieldCheck, Skull, X } from 'lucide-react';
 
@@ -146,19 +147,22 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
   /* ---- Store 订阅（细粒度：仅所需字段） ---- */
   const setActiveChaos = useClusterStore((s): ((scenario: ChaosScenario) => void) => s.setActiveChaos);
   const setChaosModalOpen = useClusterStore((s): ((open: boolean) => void) => s.setChaosModalOpen);
+  /** 弹窗可见性（C1：Esc 层仅在打开时注册） */
+  const isChaosModalOpen = useClusterStore((s): boolean => s.isChaosModalOpen);
   const selectEntity = useClusterStore(
     (s): ((entityId: string | null, entityType?: SelectedEntityType | null) => void) => s.selectEntity,
   );
   const appendTerminalLog = useClusterStore((s): ((line: string) => void) => s.appendTerminalLog);
 
-  /* Escape 关闭（对键盘用户与「我后悔了」场景的必要出口） */
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setChaosModalOpen(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return (): void => window.removeEventListener('keydown', onKeyDown);
-  }, [setChaosModalOpen]);
+  /*
+   * 【C1】Esc 交给页面级分级退出栈（优先级 90：高于 RAG/复盘，低于命令面板）。
+   * 注意：弹窗是否打开由 store 控制，组件常驻挂载，因此这里以 open 状态注册。
+   */
+  useEscapeLayer(
+    isChaosModalOpen
+      ? { id: 'chaos-modal', priority: 90, onEscape: (): void => setChaosModalOpen(false) }
+      : null,
+  );
 
   /**
    * handleCardClick —— 卡片点击的四步联动链路（详见文件头 JSDoc）。

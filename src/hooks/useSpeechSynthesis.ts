@@ -208,6 +208,52 @@ export function selectBestChineseVoice(voices: readonly SpeechSynthesisVoice[]):
 /* Hook                                                                       */
 /* ========================================================================== */
 
+/* ========================================================================== */
+/* 用户偏好持久化（C4：播放速度 / 音色）                                        */
+/* ========================================================================== */
+
+/** localStorage 键名（加版本前缀，未来结构变更时不误读旧值） */
+const STORAGE_RATE_KEY = 'kv-tts-rate-v1';
+const STORAGE_VOICE_KEY = 'kv-tts-voice-v1';
+
+/** 速度合法区间（SpeechSynthesisUtterance.rate 实际有效范围） */
+const MIN_RATE = 0.5;
+const MAX_RATE = 2;
+
+/**
+ * readStoredRate —— 读取持久化速度（SSR 安全）。
+ *
+ * @param fallback 缺省速度
+ * @returns 合法区间内的速度
+ */
+function readStoredRate(fallback: number): number {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_RATE_KEY);
+    if (raw === null) return fallback;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(MAX_RATE, Math.max(MIN_RATE, parsed));
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * readStoredVoiceUri —— 读取持久化音色 URI（SSR 安全）。
+ *
+ * @returns 音色 URI；无记录返回 null
+ */
+function readStoredVoiceUri(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_VOICE_KEY);
+    return raw !== null && raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 /** useSpeechSynthesis 的返回值契约 */
 export interface UseSpeechSynthesisResult {
   /** 播放状态机当前态 */
@@ -227,6 +273,18 @@ export interface UseSpeechSynthesisResult {
   readonly speak: (text: string, messageId: string, onEnd?: () => void) => void;
   /** 立即停止朗读 */
   readonly stop: () => void;
+  /** 播放速度（0.5~2，持久化） */
+  readonly rate: number;
+  /** 修改播放速度（自动持久化） */
+  readonly setRate: (rate: number) => void;
+  /** 当前选择的音色 URI（null = 自动优选中文音色） */
+  readonly voiceUri: string | null;
+  /** 修改音色（自动持久化） */
+  readonly setVoiceUri: (uri: string | null) => void;
+  /** 系统可用音色列表（用于 UI 选择，简化字段避免跨端类型差异） */
+  readonly voices: readonly { readonly uri: string; readonly name: string; readonly lang: string }[];
+  /** 自动播放被浏览器策略拦截时的提示（null = 无） */
+  readonly blockedNotice: string | null;
 }
 
 /**
@@ -248,6 +306,18 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
     source: '尚未加载语音列表',
   });
   const [isSupported, setIsSupported] = useState<boolean>(false);
+  /** C4：播放速度（懒初始化读 localStorage，SSR 期回退默认值） */
+  const [rate, setRateState] = useState<number>(() => readStoredRate(SPEECH_RATE));
+  /** C4：指定音色 URI（null = 自动优选） */
+  const [voiceUri, setVoiceUriState] = useState<string | null>(() => readStoredVoiceUri());
+  /** 系统可用音色（供 UI 下拉） */
+  const [voices, setVoices] = useState<
+    readonly { readonly uri: string; readonly name: string; readonly lang: string }[]
+  >([]);
+  /** blocked 态的用户可操作提示 */
+  const [blockedNotice, setBlockedNotice] = useState<string | null>(null);
+  /** 音色对象缓存：speak 时按 voiceUri 精确解析 */
+  const voiceListRef = useRef<readonly SpeechSynthesisVoice[]>([]);
 
   /** 当前 utterance 引用：用于在停止时精确取消并解绑回调 */
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -282,9 +352,13 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
      */
     const refreshVoices = (): void => {
       if (!mountedRef.current) return;
-      const voices = window.speechSynthesis.getVoices();
-      const selected = selectBestChineseVoice(voices);
+      const available = window.speechSynthesis.getVoices();
+      voiceListRef.current = available;
+      const selected = selectBestChineseVoice(available);
       setVoiceInfo(selected);
+      setVoices(
+        available.map((voice) => ({ uri: voice.voiceURI, name: voice.name, lang: voice.lang })),
+      );
     };
 
     refreshVoices();
@@ -371,11 +445,15 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
       const utter = new SpeechSynthesisUtterance(spoken);
       const selected = selectBestChineseVoice(window.speechSynthesis.getVoices());
       if (selected.voice !== null) {
-        utter.voice = selected.voice;
+        /* C4：用户指定了音色则精确匹配，否则用自动优选结果 */
+      const preferredVoice =
+        voiceUri === null ? undefined : voiceListRef.current.find((voice) => voice.voiceURI === voiceUri);
+      utter.voice = preferredVoice ?? selected.voice;
+      utter.rate = rate;
       }
       /* 即使没选到具体音色也设 lang：部分浏览器会据此挑选匹配引擎 */
       utter.lang = 'zh-CN';
-      utter.rate = SPEECH_RATE;
+
       utter.pitch = SPEECH_PITCH;
       utter.volume = 1;
 
@@ -439,8 +517,70 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
         cb?.();
       }
     },
-    [],
+    [rate, voiceUri],
   );
+
+  /* ---------------------------------------------------------------------- */
+  /* C4：偏好持久化                                                           */
+  /* ---------------------------------------------------------------------- */
+
+  useEffect((): void => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(STORAGE_RATE_KEY, String(rate));
+    } catch {
+      /* 隐私模式/配额耗尽：持久化失败不影响播报本身 */
+    }
+  }, [rate]);
+
+  useEffect((): void => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (voiceUri === null) {
+        window.localStorage.removeItem(STORAGE_VOICE_KEY);
+      } else {
+        window.localStorage.setItem(STORAGE_VOICE_KEY, voiceUri);
+      }
+    } catch {
+      /* 同上 */
+    }
+  }, [voiceUri]);
+
+  /**
+   * C4：blocked 态必须能在用户交互后复位。
+   *
+   * 【修复的缺陷】旧实现把 not-allowed 写成 blocked 后**永不复位**：
+   * 用户明明已经点过页面、浏览器也允许了，界面仍显示"被拦截"，
+   * 再点朗读也没有任何反应。现在监听一次用户手势（pointerdown/keydown），
+   * 一旦发生就复位为 idle 并给出可操作提示。
+   */
+  useEffect((): (() => void) | undefined => {
+    if (playbackState !== 'blocked') return undefined;
+    setBlockedNotice('浏览器拦截了自动播放：已完成一次交互，请再次点击朗读');
+    const reset = (): void => {
+      setPlaybackState('idle');
+      setBlockedNotice(null);
+    };
+    window.addEventListener('pointerdown', reset, { once: true });
+    window.addEventListener('keydown', reset, { once: true });
+    return (): void => {
+      window.removeEventListener('pointerdown', reset);
+      window.removeEventListener('keydown', reset);
+    };
+  }, [playbackState]);
+
+  /**
+   * setRate —— 夹取到合法区间后写入（避免 UI 传入 0 或 5 导致不可读）。
+   *
+   * @param next 目标速度
+   */
+  const setRate = useCallback((next: number): void => {
+    setRateState(Math.min(MAX_RATE, Math.max(MIN_RATE, Math.round(next * 100) / 100)));
+  }, []);
+
+  const setVoiceUri = useCallback((uri: string | null): void => {
+    setVoiceUriState(uri !== null && uri.length > 0 ? uri : null);
+  }, []);
 
   /* ---------------------------------------------------------------------- */
   /* 卸载清理                                                                */
@@ -462,5 +602,11 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
     isSupported,
     speak,
     stop,
+    rate,
+    setRate,
+    voiceUri,
+    setVoiceUri,
+    voices,
+    blockedNotice,
   };
 }

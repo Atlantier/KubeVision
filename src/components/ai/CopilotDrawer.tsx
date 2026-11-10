@@ -1026,6 +1026,13 @@ export default function CopilotDrawer() {
   const [messages, setMessages] = useState<readonly CopilotMessage[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  /**
+   * 浏览器是否支持语音识别（C3：不支持的浏览器要给出可操作提示）。
+   *
+   * 【为何用 state 而非直接读 window】服务端渲染时 window 不存在，
+   * 直接在渲染体里读取会造成 hydration 不一致（服务端 true、客户端 false）。
+   */
+  const [speechAsrSupported, setSpeechAsrSupported] = useState<boolean>(true);
   /** RAG 知识库弹窗开关（低频 UI 态，允许 useState） */
   const [ragModalOpen, setRagModalOpen] = useState<boolean>(false);
 
@@ -1231,6 +1238,19 @@ export default function CopilotDrawer() {
   }, [messages, scrollToBottom]);
 
   /* ========================================================================== */
+  /**
+   * C3：探测浏览器原生语音识别能力（仅客户端执行，避免 hydration 不一致）。
+   */
+  useEffect((): void => {
+    const candidate = window as unknown as {
+      SpeechRecognition?: unknown;
+      webkitSpeechRecognition?: unknown;
+    };
+    setSpeechAsrSupported(
+      candidate.SpeechRecognition !== undefined || candidate.webkitSpeechRecognition !== undefined,
+    );
+  }, []);
+
   /* 语音播报（TTS）—— 全场景自动播报 + 单条消息朗读                            */
   /* ========================================================================== */
 
@@ -2858,6 +2878,18 @@ export default function CopilotDrawer() {
                 aria-label="对话输入框"
                 className="w-full resize-none bg-transparent px-1 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none"
               />
+
+              {/* ---- C3：语音能力说明（原生 Web Speech / 无需 URL 或 Key） ---- */}
+              <p
+                className="mt-1 font-mono text-[10px] leading-relaxed text-slate-500"
+                aria-label="语音能力说明"
+              >
+                语音输入 / 播报使用<b className="text-slate-400">浏览器原生 Web Speech / SpeechSynthesis</b>
+                ，无需配置任何 URL 或 API Key。
+                {speechAsrSupported ? null : (
+                  <span className="text-amber-400/90"> 当前浏览器不支持语音识别：请改用 Chrome / Edge，或直接键盘输入。</span>
+                )}
+              </p>
 
               {/* ---- 底部内嵌工具栏 ---- */}
               <div className="mt-1 flex items-center gap-1">

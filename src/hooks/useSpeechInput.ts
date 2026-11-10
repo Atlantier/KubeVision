@@ -231,6 +231,14 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
   const startedAtRef = useRef<number>(0);
   const activeFramesRef = useRef<number>(0);
   const lastVoiceAtRef = useRef<number>(0);
+  /** C3：上一次向 React 发布频谱的时间戳（限制 ≤8Hz，避免整树 60FPS 重渲染） */
+  const lastPublishAtRef = useRef<number>(0);
+  /** C3：静音自动收尾是否已触发（保证只触发一次） */
+  const silenceStopRequestedRef = useRef<boolean>(false);
+  /** C3：stop 的最新引用，供静音收尾调用 */
+  const stopFnRef = useRef<(() => void) | null>(null);
+  /** C3：start 并发互斥锁（防止连点开两条麦克风管线） */
+  const startingRef = useRef<boolean>(false);
   /** 是否已进入声学兜底模式（判定后不再尝试云端） */
   const acousticModeRef = useRef<boolean>(false);
   /** 组件是否已卸载 */
@@ -377,29 +385,44 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
 
       const elapsedSec = (now - startedAtRef.current) / 1000;
 
-      setSnapshot({
-        bands,
-        elapsedSec,
-        interimText:
-          acousticModeRef.current
-            ? activeFramesRef.current >= MIN_ACTIVE_FRAMES
-              ? '已捕获语音能量 · 端侧模式将在完成时生成指令'
-              : '正在拾音… 请开始说话'
-            : interimRef.current,
-        activeVoiceFrames: activeFramesRef.current,
-        mode: acousticModeRef.current ? 'acoustic' : 'cloud',
-      });
+      /*
+       * 【C3 修复：rAF 每帧 setState → ≤8Hz 低频发布】
+       *
+       * 旧实现每帧都 setSnapshot：60FPS × 每次 setState 触发 CopilotDrawer
+       * 整树协调——语音输入期间整个对话界面被拖进无意义的重渲染。
+       * 现在每帧只更新 ref（零重渲染），最多每 125ms 发布一次视图快照（8Hz），
+       * 频谱动画的观感由 CSS/低频数据足以表达。
+       */
+      if (now - lastPublishAtRef.current >= 125) {
+        lastPublishAtRef.current = now;
+        setSnapshot({
+          bands,
+          elapsedSec,
+          interimText:
+            acousticModeRef.current
+              ? activeFramesRef.current >= MIN_ACTIVE_FRAMES
+                ? '已捕获语音能量 · 端侧模式将在完成时生成指令'
+                : '正在拾音… 请开始说话'
+              : interimRef.current,
+          activeVoiceFrames: activeFramesRef.current,
+          mode: acousticModeRef.current ? 'acoustic' : 'cloud',
+        });
+      }
 
       /**
-       * 静音自动收尾：连续 SILENCE_AUTO_STOP_MS 无有效发声且已说过话，
-       * 认为用户说完了。这一条在两种模式下都生效，避免用户忘记点停止。
+       * 【C3 修复：静音 1.8s 自动收尾】
+       * 旧实现只改一句提示文案"可点击完成录音"，从不真正结束——
+       * 用户讲完话后麦克风一直亮着、识别继续跑。
+       * 现在静音达标即调用 stop()，并保证只触发一次。
        */
       if (
         activeFramesRef.current >= MIN_ACTIVE_FRAMES &&
-        now - lastVoiceAtRef.current > SILENCE_AUTO_STOP_MS
+        now - lastVoiceAtRef.current > SILENCE_AUTO_STOP_MS &&
+        !silenceStopRequestedRef.current
       ) {
-        /* 交给外部 stop 处理：这里只标记，由 controller 层面观察到后调用 */
-        setSnapshot((prev) => ({ ...prev, interimText: '检测到停顿 · 可点击完成录音' }));
+        silenceStopRequestedRef.current = true;
+        setNotice('检测到 1.8 秒静音，已自动结束拾音');
+        stopFnRef.current?.();
       }
 
       rafRef.current = window.requestAnimationFrame(tick);
@@ -524,6 +547,15 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
   /* ---------------------------------------------------------------------- */
 
   const start = useCallback(async (): Promise<void> => {
+    /*
+     * 【C3：并发互斥】连点两次"开始"会开两条 getUserMedia 管线，
+     * 第二条的 setState/stop 会把第一条的状态覆盖掉（幽灵麦克风）。
+     * 用 startingRef 保证同一时刻只有一个启动流程。
+     */
+    if (startingRef.current || isListening) return;
+    startingRef.current = true;
+    silenceStopRequestedRef.current = false;
+
     /* 重置全部状态 */
     transcriptRef.current = '';
     interimRef.current = '';
@@ -536,9 +568,13 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
 
     /* 先启动真实麦克风：这是所有模式的基础 */
     const audioOk = await startAudioMeter();
-    if (!mountedRef.current) return;
+    if (!mountedRef.current) {
+      startingRef.current = false;
+      return;
+    }
 
     if (!audioOk) {
+      startingRef.current = false;
       setNotice('无法访问麦克风，请检查浏览器权限或设备连接');
       setIsListening(false);
       return;
@@ -560,7 +596,8 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
     }
 
     startCloudRecognition();
-  }, [runSpectrumLoop, startAudioMeter, startCloudRecognition]);
+    startingRef.current = false;
+  }, [isListening, runSpectrumLoop, startAudioMeter, startCloudRecognition]);
 
   /* ---------------------------------------------------------------------- */
   /* stop                                                                    */
@@ -599,16 +636,28 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
       return cloudText;
     }
 
-    /* ---- 声学模式（或云端没识别到）：结合上下文推断指令 ---- */
+    /*
+     * ---- 声学模式（或云端没识别到）：结合上下文推断指令 ----
+     *
+     * 【C3 修复：必须标注 [声学推断]】声学兜底是根据能量与上下文"猜"出的
+     * 指令，不是语音识别结果。旧实现把它当普通文本返回，输入框里看起来
+     * 就像用户真的说了这句话——这是对识别能力的虚假陈述。
+     */
     const ctx = getContext();
-    return buildAcousticFallbackPrompt(
+    const inferred = buildAcousticFallbackPrompt(
       hasSpoken,
       elapsedSec,
       ctx.faultyCount,
       ctx.selectedName,
       ctx.chaos,
     );
+    return `[声学推断] ${inferred}`;
   }, [getContext, releaseAudio]);
+
+  /* 供静音自动收尾调用最新 stop（stop 定义在前，此赋值在每次渲染时刷新） */
+  stopFnRef.current = (): void => {
+    void stop();
+  };
 
   /* ---------------------------------------------------------------------- */
   /* abort                                                                   */

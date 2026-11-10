@@ -42,6 +42,7 @@ import { CheckCircle2, CircleAlert, Loader2, ShieldAlert, Terminal, Wrench } fro
 import { cn } from '@/utils/cn';
 import { verifyReceiptDigest } from '@/utils/mcpReceiptDigest';
 import type { McpExecuteReceipt } from '@/types/mcp';
+import type { HealOutcome } from '@/types/store';
 import { useClusterStore } from '@/store/useClusterStore';
 import MarkdownLite from '@/components/ai/MarkdownLite';
 import type { ActionConfirmProps, RemediationActionType } from '@/types/ai';
@@ -158,7 +159,7 @@ export default function ActionConfirm({
   isHighRisk,
   onActionExecuted,
 }: ActionConfirmProps) {
-  const healEntity = useClusterStore((s): ((targetId: string, actionType: string) => void) => s.healEntity);
+  const healEntity = useClusterStore((s): ((targetId: string, actionType: string) => HealOutcome) => s.healEntity);
   const appendTerminalLog = useClusterStore((s): ((line: string) => void) => s.appendTerminalLog);
   const selectEntity = useClusterStore(
     (s): ((entityId: string | null, entityType?: SelectedEntityType | null) => void) => s.selectEntity,
@@ -438,7 +439,18 @@ export default function ActionConfirm({
         /* ---- 步骤 2：服务端已受理 → 落地本地自愈 ---- *
          * healEntity 内部完成：免疫去重 → 派生愈合快照 → 计算前后对比
          * → 双轨分发 → 终端审计。 */
-        healEntity(effectiveTargetId, actionType);
+        /*
+         * 【C2：免疫窗口内必须**明确拒绝**并展示剩余秒数】
+         * healEntity 现在返回 HealOutcome；窗口内重复自愈返回 ok:false，
+         * 卡片必须停在失败态并显示"剩余 N 秒"，而不是假装执行成功。
+         */
+        const healOutcome = healEntity(effectiveTargetId, actionType);
+        if (!healOutcome.ok) {
+          abortRef.current = null;
+          setFailureReason(healOutcome.message);
+          setPhase('failed');
+          return;
+        }
 
         /* ---- 步骤 3：MCP 协议级审计回显 ---- *
          * 与 store 写的 [KUBE-CONTROLLER] 控制器行互补：

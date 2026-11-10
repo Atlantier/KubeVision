@@ -942,7 +942,12 @@ export default function PodInstancedMesh() {
            * 2. 相位改为**对角速度积分** φ += ω(smoothC)·dt（而非 t·ω(c)），
            *    数据帧跳变只改变此后的角速度，历史相位不可变 → 零跳变。
            */
-          const cpuRaw = cpuArray[i];
+          /*
+           * 【C7】按 Pod ID 取稳定槽位读值，而不是按下标：
+           * 快照重排/扩缩容时，下标会指向另一个 Pod，表现为水位串台。
+           */
+          const slotIndex = telemetryTransientRef.podSlotById.get(pods[i].id);
+          const cpuRaw = cpuArray[slotIndex === undefined ? i : slotIndex];
           const cRaw = Number.isNaN(cpuRaw) ? 0 : Math.min(1, Math.max(0, cpuRaw / 100));
           const smoothAlpha = 1 - Math.exp(-CPU_SMOOTH_RATE * dt);
           const prevSmooth = smoothedCpuBuffer[i];

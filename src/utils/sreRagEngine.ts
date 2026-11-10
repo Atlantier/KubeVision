@@ -606,6 +606,45 @@ let idfCacheFingerprint = '';
 let idfCacheAvgLength = 0;
 
 /**
+ * fnv1a32 —— FNV-1a 32 位哈希（用于语料指纹）。
+ *
+ * 【为什么用 FNV-1a 而不是长度拼接】C6 的缺陷是旧指纹只看
+ * 「文档数 + 首末 id」：编辑中间某篇自定义 Runbook 的正文时，
+ * 长度与首末 id 都不变 → 缓存不失效 → 检索继续用旧 IDF。
+ *
+ * @param text 参与指纹的文本
+ * @returns 32 位无符号哈希
+ */
+function fnv1a32(text: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+/**
+ * computeCorpusFingerprint —— 语料库内容指纹（C6）。
+ *
+ * 【纳入范围】与 docSearchTokens 取词范围一致：id / 标题 / 症状 / 分类 /
+ * 根因机理 / 标签 / 特征词。任一篇正文被编辑，指纹必变。
+ *
+ * @param corpus 完整语料
+ * @returns 形如 '12|a1b2c3d4' 的指纹
+ */
+export function computeCorpusFingerprint(corpus: readonly RagRunbookDoc[]): string {
+  const content = corpus
+    .map(
+      (doc): string =>
+        [doc.id, doc.title, doc.symptom, doc.category, doc.rootCauseMechanism, ...doc.tags, ...doc.featureVocabulary].join(
+          '\u0001',
+        ),
+    )
+    .join('\u0002');
+  return `${corpus.length}|${fnv1a32(content).toString(16)}`;
+}
+/**
  * buildBm25Statistics —— 语料库级 IDF 与平均文档长度预计算。
  *
  * 【核心数学：IDF（逆文档频率）】
@@ -628,10 +667,8 @@ let idfCacheAvgLength = 0;
  * @param corpus 完整语料数组
  */
 function buildBm25Statistics(corpus: readonly RagRunbookDoc[]): void {
-  const fingerprint =
-    corpus.length === 0
-      ? '0'
-      : `${corpus.length}|${corpus[0].id}|${corpus[corpus.length - 1].id}`;
+  /* C6：指纹改为「文档数 + 全量内容 FNV-1a」，正文编辑也会失效 */
+  const fingerprint = computeCorpusFingerprint(corpus);
   if (idfCache !== null && fingerprint === idfCacheFingerprint) return;
 
   const docFrequency = new Map<string, number>();
@@ -781,60 +818,32 @@ function rrfFuse(ranks: readonly number[], routeCount: number): number {
 /**
  * calibrateConfidence —— 把融合证据强度映射为**真实校准**的置信度。
  *
- * 【废除旧的 [0.86, 0.98] 线性映射】
- * 旧实现 `FLOOR + (CEILING − FLOOR)·s` 把所有结果压在 0.86~0.98，
- * 无论 s 是 0.1 还是 0.9——这个区间**不携带任何信息**，
- * 是伪装成分数的装饰。评委只要问一句"为什么永远是 96%"
- * 就足以击穿整个可信度体系。
+ * 【C5 修复：分段边界必须连续、单调、无跳变】
+ * 旧实现两处边界直接跳变（实测）：s=0.55 处 0.820→0.570，
+ * s=0.28 处 0.446→0.300 —— "证据略强，置信度反而更低"。
  *
- * 【新方案：分段 Sigmoid】
- * Sigmoid  σ(x) = 1 / (1 + e^(−x)) 的特点是「中间陡、两头平」：
- * 在证据强度接近阈值时对微小变化高度敏感，在极端处饱和。
- * 这正是置信度该有的形状——证据不足时不该给高分，
- * 证据充分时也不该冲到 100%（永远保留不确定性）。
- *
- * 三段映射（把 s ∈ [0,1] 平移到 Sigmoid 的敏感区）：
- *   s ≥ 0.55（强匹配）→ σ((s−0.55)·10 + 1.2) 落在 [0.82, 0.97]
- *   s ≥ 0.28（中等）  → σ((s−0.28)·8 − 0.4)  落在 [0.58, 0.81]
- *   else（弱相关）    → σ((s−0.10)·12 − 1.6) 落在 [0.35, 0.57]
+ * 【本轮：端点约束 + 连续拼接】强段 0.80→0.97、中段 0.50→0.80、
+ * 弱段 0.30→0.50，相邻段在边界取同一目标值 ⇒ 连续；段内 Sigmoid 单调。
  *
  * @param fused 融合证据强度 [0,1]
- * @returns 校准置信度 [0,1]（展示为百分比）
+ * @returns 校准置信度 [0,1]
  */
-function calibrateConfidence(fused: number): number {
+export function calibrateConfidence(fused: number): number {
   const s = Math.max(0, Math.min(1, fused));
-  let raw: number;
+  const logit = (p: number): number => Math.log(p / (1 - p));
 
-  /*
-   * 【分段线性→Sigmoid 的系数推导】
-   * 每段需要满足"区间端点映射到指定置信度"的边界条件。
-   * 设 x = (s − s0)·k + b，要求：
-   *   段起点 s0 → 目标下界 L，段终点 s1 → 目标上界 U
-   * 由 σ(x)=L 解得 x = ln(L/(1−L))，代回即可解出 k 与 b。
-   *
-   * 强匹配段：s=0.55 → 0.82，s=1.00 → 0.97
-   *   ln(0.82/0.18)=1.516，ln(0.97/0.03)=3.476
-   *   k=(3.476−1.516)/0.45=4.36，b=1.516−0.55k=−0.882
-   * 中等段：s=0.28 → 0.58，s=0.55 → 0.81
-   *   ln(0.58/0.42)=0.322，ln(0.81/0.19)=1.450
-   *   k=(1.450−0.322)/0.27=4.18，b=0.322−0.28k=−0.848
-   * 弱相关段：s=0.10 → 0.35，s=0.28 → 0.57
-   *   ln(0.35/0.65)=−0.619，ln(0.57/0.43)=0.282
-   *   k=(0.282+0.619)/0.18=5.00，b=−0.619−0.10k=−1.119
-   *
-   * 最早的系数（k=10, b=1.2）在 s=1 处给出 0.9967——超出规格上界 0.97，
-   * 也会让验收脚本判定"分数仍挤在高位"。现按边界条件重新推导。
-   */
+  let x: number;
   if (s >= 0.55) {
-    raw = 1 / (1 + Math.exp(-((s - 0.55) * 4.36 + 1.516)));
+    x = logit(0.8) + (s - 0.55) * ((logit(0.97) - logit(0.8)) / 0.45);
   } else if (s >= 0.28) {
-    raw = 1 / (1 + Math.exp(-((s - 0.28) * 4.18 - 0.848)));
+    x = logit(0.5) + (s - 0.28) * ((logit(0.8) - logit(0.5)) / 0.27);
   } else {
-    raw = 1 / (1 + Math.exp(-((s - 0.1) * 5.0 - 1.119)));
+    x = logit(0.3) + (s - 0.1) * ((logit(0.5) - logit(0.3)) / 0.18);
   }
+
+  const raw = 1 / (1 + Math.exp(-x));
   return Math.round(raw * 10000) / 10000;
 }
-
 /**
  * collectMatchedTerms —— 提取本次命中的高区分度特征词（Top-5）。
  *
@@ -1337,29 +1346,37 @@ export function retrieveSreRunbooks(
   const relevant = fused.filter((entry): boolean => entry.fused >= MIN_FUSED_THRESHOLD);
   if (relevant.length === 0) return [];
 
-  /* ---- 8. 校准置信度 + 提取命中特征词 + 排序 ---- */
-  const results: RagRunbookDoc[] = relevant
-    .map(
-      (entry): RagRunbookDoc => ({
-        ...entry.doc,
-        similarityScore: calibrateConfidence(entry.fused),
-        matchedTerms: collectMatchedTerms(uniqueQueryTerms, entry.doc),
-        scoreBreakdown: {
-          vectorScore: Math.round(entry.vectorScore * 10000) / 10000,
-          bm25Score: Math.round(entry.bm25Score * 10000) / 10000,
-          contextBoost: Math.round(entry.contextBoost * 10000) / 10000,
-          rrfScore: Math.round(entry.rrfScore * 10000) / 10000,
-        },
-        isCustom: entry.doc.isCustom === true,
-      }),
-    )
+  /*
+   * ---- 8. 校准置信度 + 提取命中特征词 + 排序 ----
+   *
+   * 【C5 修复：排序依据改为**原始融合分**】
+   * 旧实现按四舍五入后的 similarityScore 排序：证据强度不同的文档可能因
+   * 舍入并列，排序退化为 id 字典序。现在先按 fused 降序，再以校准分、id
+   * 作确定性 tie-break，保证"证据更强排名更前"。
+   */
+  const ranked = relevant
+    .map((entry) => ({ entry, similarityScore: calibrateConfidence(entry.fused) }))
     .sort((a, b): number => {
-      const scoreA = a.similarityScore ?? 0;
-      const scoreB = b.similarityScore ?? 0;
-      if (scoreB !== scoreA) return scoreB - scoreA;
-      /* 分数相同 → 按 id 字典序，确保确定性输出 */
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      if (b.entry.fused !== a.entry.fused) return b.entry.fused - a.entry.fused;
+      if (b.similarityScore !== a.similarityScore) return b.similarityScore - a.similarityScore;
+      return a.entry.doc.id < b.entry.doc.id ? -1 : a.entry.doc.id > b.entry.doc.id ? 1 : 0;
     });
+
+  const results: RagRunbookDoc[] = ranked.map(
+    ({ entry, similarityScore }): RagRunbookDoc => ({
+      ...entry.doc,
+      similarityScore,
+      matchedTerms: collectMatchedTerms(uniqueQueryTerms, entry.doc),
+      scoreBreakdown: {
+        vectorScore: Math.round(entry.vectorScore * 10000) / 10000,
+        bm25Score: Math.round(entry.bm25Score * 10000) / 10000,
+        contextBoost: Math.round(entry.contextBoost * 10000) / 10000,
+        rrfScore: Math.round(entry.rrfScore * 10000) / 10000,
+        fusedScore: Math.round(entry.fused * 10000) / 10000,
+      },
+      isCustom: entry.doc.isCustom === true,
+    }),
+  );
 
   /* ---- 9. 取 Top-K ---- */
   return results.slice(0, limit);

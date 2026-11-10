@@ -552,51 +552,28 @@ export const useClusterStore = create<ClusterStore>()(
         const previous = state.healedPodIds[targetId];
 
         /**
-         * ---- 步骤 1：免疫窗口 → 指数退避排队（而非直接丢弃）----
+         * ---- 步骤 1：免疫窗口 → **明确拒绝**（C2）----
          *
-         * 【行为变更缘由】原实现在窗口内只打一行 BLOCKED 就 return，
-         * 用户连续点击时看到的是「点了完全没反应」。这在故障未消除时
-         * 是很自然的用户行为，静默丢弃等于把用户的意图吞掉。
+         * 【修复的缺陷】旧实现承诺"已排队，N 秒后重试"并写入 pendingRemediations，
+         * 但全项目没有任何调度器消费这个队列——任务永不执行。这是对用户的
+         * 不实承诺，比"直接拒绝"更糟（用户会一直等一个不会发生的重试）。
          *
-         * 现在改为入队 pendingRemediations：记录本次请求、算出退避秒数、
-         * 在终端明确告知「已排队，N 秒后重试」。防抖动的初衷保留
-         * （不会立刻重复执行），但用户能看到自己的点击被受理了。
-         *
-         * 【退避公式】backoffSec = min(30, 2^(retryCount + 1))
-         * 2 → 4 → 8 → 16 → 30（封顶）。指数退避让高频连点迅速降频，
-         * 同时避免无限膨胀的等待时间。
+         * 【现在的行为】窗口内重复自愈：终端写 REJECTED 审计行，返回
+         * { ok:false, remainingSec }，由卡片展示"免疫窗口内不可重复自愈，
+         * 剩余 N 秒"。不做任何"稍后自动执行"的暗示。
          */
         if (previous !== undefined && now - previous < HEAL_IMMUNITY_WINDOW_MS) {
-          const remainingMs = HEAL_IMMUNITY_WINDOW_MS - (now - previous);
-          const remainingSec = Math.ceil(remainingMs / 1000);
-
-          /* 同一目标在当前窗口内已有多少条排队 → 作为退避指数 */
-          const retryCount = state.pendingRemediations.filter(
-            (item): boolean => item.targetId === targetId,
-          ).length;
-          const backoffSec = Math.min(30, Math.pow(2, retryCount + 1));
-
-          const targetName = resolveEntityDisplayName(state.snapshotSummary, targetId);
-          const pending: PendingRemediation = {
-            id: `pending-${now}-${remediationSeq++}`,
-            targetId,
-            targetName,
-            actionType,
-            retryCount,
-            backoffSec,
-            scheduledAt: new Date(now).toISOString(),
-          };
-
-          set((current) => ({
-            pendingRemediations: [...current.pendingRemediations, pending],
-          }));
-
+          const remainingSec = Math.ceil((HEAL_IMMUNITY_WINDOW_MS - (now - previous)) / 1000);
           get().appendTerminalLog(
-            `[KUBE-CONTROLLER] QUEUED ${actionType} on ${targetId} -> immunity window active (${remainingSec}s left), retry #${retryCount + 1} scheduled in ${backoffSec}s`,
+            `[KUBE-CONTROLLER] REJECTED ${actionType} on ${targetId} -> immunity window active (${remainingSec}s remaining): duplicate heal suppressed, no automatic retry`,
           );
-          return;
+          return {
+            ok: false,
+            code: 'immunity',
+            remainingSec,
+            message: `免疫窗口内不可重复自愈，剩余 ${remainingSec} 秒`,
+          };
         }
-
         /* ---- 步骤 2：解析修复范围（Pod 粒度 / Node 粒度 / 未知 id） ---- */
         const snapshot = state.snapshotSummary;
         const targetIsNode = snapshot.nodes.some(
@@ -623,7 +600,7 @@ export const useClusterStore = create<ClusterStore>()(
           get().appendTerminalLog(
             `[KUBE-CONTROLLER] REJECTED ${actionType} on ${targetId} -> target not found in cluster snapshot`,
           );
-          return;
+          return { ok: false, code: 'target-missing', message: '目标已不存在于当前快照，请重新诊断后确认' };
         }
 
         const healPodIds = new Set<string>();
@@ -700,10 +677,6 @@ export const useClusterStore = create<ClusterStore>()(
           healedPodIds: { ...current.healedPodIds, ...immunityEntries },
           remediationHistory: [record, ...current.remediationHistory],
           lastRemediationDiff: diff,
-          /* 本次目标已执行 → 清除它此前排队的重试（陈旧意图不应再触发） */
-          pendingRemediations: current.pendingRemediations.filter(
-            (item): boolean => item.targetId !== targetId,
-          ),
           // 混沌注入态复位：修复动作视为本轮演练的终止信号
           ...(chaosWasActive ? { activeChaos: 'NONE' as const } : {}),
         }));
@@ -731,6 +704,8 @@ export const useClusterStore = create<ClusterStore>()(
             `[KUBE-CONTROLLER] Node-scope heal on ${targetId} -> ${healPodIds.size} abnormal pods recovered`,
           );
         }
+
+        return { ok: true };
       },
 
       /**

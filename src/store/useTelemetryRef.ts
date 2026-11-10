@@ -77,6 +77,9 @@ export const telemetryTransientRef: TelemetryTransientRef = {
   /** 节点网络吞吐目标值（Mbps），驱动机架间流量粒子带密度 */
   nodeNetFloat32: new Float32Array(MAX_NODES),
 
+  /** C7：Pod ID → 稳定槽位（首次出现时分配，卸载后回收） */
+  podSlotById: new Map<string, number>(),
+
   /** 性能 HUD 瞬态指标（渲染循环每帧写入，HUD 以 rAF 节流读取） */
   glStats: {
     fps: 0,
@@ -115,6 +118,16 @@ export const telemetryTransientRef: TelemetryTransientRef = {
  * 【调用频率】1Hz（每份快照一次）。本函数自身为 O(MAX_PODS + MAX_NODES)
  * 定长开销，不含任何对象分配，可安全在 Worker 消息回调中调用。
  */
+/**
+ * getPodSlotIndex —— 按 Pod ID 取瞬态槽位（C7：读方唯一入口）。
+ *
+ * @param podId Pod 实体 ID
+ * @returns 槽位下标；未分配返回 -1
+ */
+export function getPodSlotIndex(podId: string): number {
+  return telemetryTransientRef.podSlotById.get(podId) ?? -1;
+}
+
 export function syncSnapshotToTransientRef(snapshot: TelemetrySnapshot): boolean {
   // ---- 1. 整体替换快照引用（轨道交汇点） ----
   telemetryTransientRef.snapshot = snapshot;
@@ -127,27 +140,41 @@ export function syncSnapshotToTransientRef(snapshot: TelemetrySnapshot): boolean
   const nodeCount = nodes.length <= MAX_NODES ? nodes.length : MAX_NODES;
   const truncated = pods.length > MAX_PODS || nodes.length > MAX_NODES;
 
-  // ---- 3. Pod 数值按下标写入目标数组 ----
+  // ---- 3. Pod 数值按**稳定槽位**写入（C7：按 id 映射而非按下标） ----
   // 契约：cpuUsage / memoryUsage ∈ [0,100]（cluster.ts @range 标注）。
-  // 此处不做二次 clamp 以保持热路径零分支开销，区间保证由引擎层 zod schema 承担；
+  // 槽位在 Pod 首次出现时分配，此后即使快照重排也保持不变；
   // 仅对 NaN 做防御（NaN 会污染后续所有插值运算，必须拦截为 0）。
-  for (let i = 0; i < podCount; i++) {
+  const slotMap = telemetryTransientRef.podSlotById;
+  const activeSlots = new Set<number>();
+  let nextSlot = 0;
+  for (const slot of slotMap.values()) {
+    if (slot >= nextSlot) nextSlot = slot + 1;
+  }
+
+  for (let i = 0; i < podCount; i += 1) {
     const pod = pods[i];
+    let slot = slotMap.get(pod.id);
+    if (slot === undefined) {
+      slot = nextSlot;
+      nextSlot += 1;
+      if (slot >= MAX_PODS) break;
+      slotMap.set(pod.id, slot);
+    }
+    activeSlots.add(slot);
     const cpu = pod.cpuUsage;
     const mem = pod.memoryUsage;
-    telemetryTransientRef.podCpuFloat32[i] = Number.isNaN(cpu) ? 0 : cpu;
-    telemetryTransientRef.podMemFloat32[i] = Number.isNaN(mem) ? 0 : mem;
+    telemetryTransientRef.podCpuFloat32[slot] = Number.isNaN(cpu) ? 0 : cpu;
+    telemetryTransientRef.podMemFloat32[slot] = Number.isNaN(mem) ? 0 : mem;
   }
 
-  // ---- 4. Pod 越界槽位清零（防幽灵数据） ----
-  if (podCount < MAX_PODS) {
-    telemetryTransientRef.podCpuFloat32.fill(0, podCount, MAX_PODS);
-    telemetryTransientRef.podMemFloat32.fill(0, podCount, MAX_PODS);
+  // ---- 4. 回收已消失 Pod 的槽位并清零（防幽灵数据） ----
+  for (const [podId, slot] of slotMap) {
+    if (activeSlots.has(slot)) continue;
+    slotMap.delete(podId);
+    telemetryTransientRef.podCpuFloat32[slot] = 0;
+    telemetryTransientRef.podMemFloat32[slot] = 0;
+    telemetryTransientRef.podSmoothCpuFloat32[slot] = 0;
   }
-
-  // 平滑插值数组与目标数组保持同长度语义：缩容区间同样清零，
-  // 否则 useFrame 的指数平滑会持续输出上一轮的残值。
-  telemetryTransientRef.podSmoothCpuFloat32.fill(0, podCount, MAX_PODS);
 
   // ---- 5. 节点网络吞吐按下标写入 + 越界清零 ----
   for (let i = 0; i < nodeCount; i++) {

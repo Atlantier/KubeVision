@@ -22,6 +22,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { motion } from 'framer-motion';
 import {
   ArrowRight,
@@ -313,6 +314,10 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
    * 事件自然冒泡到此处；在 window 上监听会与 ShellLayout 的 Esc 处理
    * 竞争，导致一次按键触发两次关闭。
    */
+  /* 【C1】命令面板由父级按需挂载（打开时才存在），因此注册即代表打开；
+     优先级 100：从页面任意位置按 Esc 都先关它。 */
+  useEscapeLayer({ id: 'command-palette', priority: 100, onEscape: onClose });
+
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>): void => {
       if (event.key === 'ArrowDown') {

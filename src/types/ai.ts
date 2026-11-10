@@ -102,6 +102,8 @@ export interface RagRunbookDoc {
     readonly contextBoost: number;
     /** 倒数秩融合分 RRF，[0,1]（已是融合后的终值口径） */
     readonly rrfScore: number;
+    /** 原始融合分（C5：排序依据，未被舍入/校准污染） */
+    readonly fusedScore?: number;
   };
 
   /**

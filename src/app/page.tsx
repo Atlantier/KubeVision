@@ -28,6 +28,7 @@ import { Radar } from 'lucide-react';
 
 import ShellLayout from '@/components/layout/ShellLayout';
 import { useTelemetryStream } from '@/hooks/useTelemetryStream';
+import { useEscapeDispatcher, useEscapeLayer } from '@/hooks/useEscapeStack';
 import { rehydratePersistedClusterState, useClusterStore } from '@/store/useClusterStore';
 import { dispatchViewPreset } from '@/utils/viewPresetBus';
 
@@ -223,6 +224,28 @@ export default function HomePage() {
    * 【输入焦点让位】在输入框/文本域内按 Esc 不应触发全局退出——
    * 那是用户想取消输入，不是想关面板。
    */
+  /*
+   * 【C1 页面兜底层】优先级 0：只有没有任何弹层打开时才会轮到它。
+   * 行为：先关性能 HUD，再清 3D 选中——分两次 Esc 完成，绝不与弹窗同一次发生。
+   */
+  useEscapeLayer({
+    id: 'page-core',
+    priority: 0,
+    onEscape: (): void => {
+      const state = useClusterStore.getState();
+      if (state.isPerfHudOpen) {
+        state.setPerfHudOpen(false);
+        return;
+      }
+      if (state.selectedEntityId !== null) {
+        state.selectEntity(null);
+        dispatchViewPreset('overview');
+      }
+    },
+  });
+
+  useEscapeDispatcher();
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       const target = event.target;
@@ -238,26 +261,10 @@ export default function HomePage() {
         return;
       }
 
-      /* ---- Esc：逐级退出 ---- */
-      if (event.key === 'Escape' && !inInput) {
-        const state = useClusterStore.getState();
-        if (isCommandOpen) {
-          setCommandOpen(false);
-          return;
-        }
-        if (state.isChaosModalOpen) {
-          state.setChaosModalOpen(false);
-          return;
-        }
-        if (state.isPerfHudOpen) {
-          state.setPerfHudOpen(false);
-          return;
-        }
-        if (state.selectedEntityId !== null) {
-          state.selectEntity(null);
-          dispatchViewPreset('overview');
-        }
-      }
+      /*
+       * 【C1】Esc 已迁移到 useEscapeStack 的分级退出栈（本文件只保留一个派发器）。
+       * 这里不再处理 Escape，避免"多个监听器抢同一个键、一次退多层"。
+       */
     };
 
     window.addEventListener('keydown', onKeyDown);

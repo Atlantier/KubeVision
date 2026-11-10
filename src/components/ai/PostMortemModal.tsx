@@ -23,6 +23,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { createPortal } from 'react-dom';
 import { Check, Copy, Download, FileText, X } from 'lucide-react';
 
@@ -138,21 +139,10 @@ export default function PostMortemModal({
   }, [open, clearFeedbackTimer]);
 
   /**
-   * Escape 关闭（键盘用户与「我后悔点开了」场景的必要出口）。
-   *
-   * 【为何只监听 keydown 且依赖 open】关闭态不挂全局监听，
-   * 避免多个弹窗同时存在时互相抢 Escape。
+   * 【C1】Esc 交给页面级分级退出栈（优先级 70：低于 RAG / 混沌 / 命令面板）。
+   * 关闭态不注册，注册表随 open 变化自动增删。
    */
-  useEffect((): (() => void) | undefined => {
-    if (!open) return undefined;
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return (): void => {
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [open, onClose]);
+  useEscapeLayer(open ? { id: 'post-mortem', priority: 70, onEscape: onClose } : null);
 
   /**
    * handleDownload —— 用 Blob + 临时 `<a download>` 触发 .md 下载。

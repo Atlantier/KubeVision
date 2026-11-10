@@ -73,6 +73,15 @@ export interface TelemetryTransientRef {
   podMemFloat32: Float32Array;
   /** CPU 平滑插值当前值（useFrame 消费/回写）。长度恒为 MAX_PODS(48) */
   podSmoothCpuFloat32: Float32Array;
+  /**
+   * Pod ID → 瞬态槽位映射（C7）。
+   *
+   * 【解决什么】旧实现把 arrays[i] 与 snapshot.pods[i] 按下标直接对齐：
+   * 快照一旦重排（扩容/缩容/排序变化），同一个槽位会在两个 Pod 之间切换，
+   * 3D 上表现为"水位跳到了另一台机器"。改为按 id 分配**稳定槽位**后，
+   * Pod 的身份与数值槽位一一绑定，重排不再造成串台。
+   */
+  podSlotById: Map<string, number>;
   /** 节点网络吞吐目标值（Mbps）。长度恒为 MAX_NODES(3) */
   nodeNetFloat32: Float32Array;
   /** 性能 HUD 瞬态指标（渲染循环每帧写入） */
@@ -169,19 +178,30 @@ export interface RemediationDiff {
 }
 
 /**
- * PendingRemediation —— 等待指数退避后重试的自愈任务。
+ * HealOutcome —— 自愈动作的**显式结果**（C2）。
  *
- * 【解决什么】原有的 30s 免疫窗口采用「直接拒绝」策略：窗口内重复触发
- * 只打一行 BLOCKED 日志就丢弃。问题在于——
- * 用户在故障未消除时往往会**连续点击**几次（这是很自然的反应），
- * 这些点击全部被静默丢弃，用户看到的是「点了没反应」。
+ * 【为什么必须有返回值】旧实现把"免疫窗口内拒绝"写成入队 + 终端提示
+ * "N 秒后重试"，但全项目没有任何消费者：任务永远躺在 pendingRemediations 里，
+ * 既不重试也不清理——这是**对用户的不实承诺**（提示会重试，实际永不执行）。
  *
- * 退避队列把「拒绝」变成「排队」：记录这次请求、给出明确的退避秒数、
- * 让界面能显示「已排队，N 秒后自动重试」。这既保留了防抖动的初衷
- * （不会立刻重复执行），又不让用户的意图凭空消失。
+ * 本轮改为"明确拒绝"：窗口内重复触发返回 { ok:false, code:'immunity',
+ * remainingSec }，UI 直接展示"免疫窗口内不可重复自愈，剩余 N 秒"。
+ */
+export type HealOutcome =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly code: 'immunity' | 'target-missing';
+      readonly message: string;
+      /** 仅 immunity：免疫窗口剩余秒数 */
+      readonly remainingSec?: number;
+    };
+
+/**
+ * PendingRemediation —— 【历史遗留类型，不再写入】。
  *
- * 【延迟公式】backoffSec = min(30, 2^(retryCount + 1))
- * 即 2s → 4s → 8s → 16s → 30s（封顶），指数退避让连续点击迅速降频。
+ * C2 已把"入队等待重试"改为"显式拒绝"：没有任何消费者执行队列，
+ * 保留该类型只为兼容旧快照/调试工具读取，healEntity 不再产生条目。
  */
 export interface PendingRemediation {
   /** 队列条目唯一标识 */
@@ -199,7 +219,6 @@ export interface PendingRemediation {
   /** 入队时刻，ISO 8601 字符串 */
   readonly scheduledAt: string;
 }
-
 /**
  * Cluster 响应式状态切片 —— 仅低频 UI 状态，严禁写入高频遥测数值。
  *
@@ -358,13 +377,13 @@ export interface ClusterActions {
   /**
    * 执行自愈动作回写：登记免疫时间戳 + 追加历史记录 + 计算前后对比 + 终端审计日志。
    *
-   * 【免疫窗口行为变更】窗口内重复触发**不再直接丢弃**，而是入队
-   * `pendingRemediations` 并计算指数退避秒数，让用户看到"已排队"而非"没反应"。
+   * 【C2 行为】窗口内重复触发 → **明确拒绝**并返回剩余秒数，
+   * 不写任何"稍后自动重试"的暗示；调用方据此渲染失败态提示。
    *
    * @param targetId 目标实体 ID
    * @param actionType 动作类型（通常为 RemediationActionType 取值）
    */
-  healEntity: (targetId: string, actionType: string) => void;
+  healEntity: (targetId: string, actionType: string) => HealOutcome;
   /**
    * 清空退避队列（用户可手动取消除已排队但尚未到期的重试）。
    *

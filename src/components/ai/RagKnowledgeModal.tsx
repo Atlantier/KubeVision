@@ -38,6 +38,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -462,17 +463,11 @@ export default function RagKnowledgeModal({
     });
   }, [open]);
 
-  /** Escape 关闭（键盘用户与「我后悔点开了」场景的必要出口） */
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return (): void => {
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [open, onClose]);
+  /*
+   * 【C1】Esc 统一由页面级分级退出栈处理：本组件只注册一层，
+   * 不再向 window 挂自己的 keydown（旧实现多个弹层会同时抢 Esc）。
+   */
+  useEscapeLayer(open ? { id: 'rag-knowledge', priority: 80, onEscape: onClose } : null);
 
   /** 当前选中的 Runbook（null 表示语料池为空或尚无选中项） */
   const selectedDoc = useMemo<RagRunbookDoc | null>(
