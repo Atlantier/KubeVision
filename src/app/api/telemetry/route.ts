@@ -62,6 +62,16 @@ export const runtime = 'nodejs';
 /** 推流间隔（毫秒）：与引擎 TICK_INTERVAL_MS 严格一致，避免快照时间戳与墙钟漂移 */
 const STREAM_INTERVAL_MS = TICK_INTERVAL_MS;
 
+/**
+ * live 采集连续失败阈值。
+ *
+ * 【为什么是 3】单次失败多为瞬时抖动（metrics-server 慢查询、API 限流），
+ * 保留上一帧继续展示即可；连续 3 次（≈3 秒）说明数据源已不可用，
+ * 此时继续推旧帧会让画面"看起来活着但其实是死的"——必须降级到合成数据源
+ * 并留下审计行，让运维知道真实数据链路断了。
+ */
+const LIVE_FAILURE_LIMIT = 3;
+
 /** 合法的混沌场景全集（用于把不可信的查询参数收敛到类型域内） */
 const VALID_CHAOS: readonly ChaosScenario[] = [
   'NONE',
@@ -116,13 +126,37 @@ export function GET(request: Request): Response {
   const sinceRaw = url.searchParams.get('since');
   const since = sinceRaw === null ? Number.NaN : Number.parseInt(sinceRaw, 10);
 
-  /* 每个连接独立的演进状态：多客户端互不干扰 */
-  let snapshot: TelemetrySnapshot = INITIAL_CLUSTER_SNAPSHOT;
+  /*
+   * ===== C · 时间戳契约 =====
+   *
+   * 【SSR 与运行时的分工】
+   * - SEED_TIMESTAMP_MS 仍是 INITIAL_CLUSTER_SNAPSHOT 的编译期常量，
+   *   用于 SSR 首屏渲染与 Store 初始态——那部分必须保持确定性，不能依赖 Date.now()；
+   * - 一旦 SSE 连接建立，时间轴就切到**真实墙钟**：首帧时间戳取 Date.now()。
+   *
+   * 【为什么必须切换】种子时间戳是固定的历史时刻（2026-11-05T08:00Z）。
+   * 若整条流都从它开始累加，运行越久与真实时间偏差越大（可达数天），
+   * 下游任何"按时间戳算新鲜度"的逻辑都会失真。
+   *
+   * 【since 严格单调】重连时客户端会把最后已知时间戳带上来；
+   * 起点取 max(Date.now(), since + 1 tick, 种子时间戳)，三条约束同时满足：
+   *   1. 不早于真实墙钟（除非墙钟回拨，此时以客户端进度为准）；
+   *   2. 严格大于 since（避免"首帧时间戳 ≤ 客户端已知进度"被判为旧帧丢弃）；
+   *   3. 不早于种子时间戳（SSR 首帧 → 首条 SSE 帧之间不出现倒退）。
+   * 因此 live/demo 互切时的时间跳变被限制在"1 tick + 握手时延"量级。
+   */
+  const sinceFloor = Number.isFinite(since) ? since + TICK_INTERVAL_MS : 0;
+  const connectionOriginTs = Math.max(
+    Date.now(),
+    sinceFloor,
+    INITIAL_CLUSTER_SNAPSHOT.timestamp,
+  );
 
-  /* 重连续接：把起始时间戳抬到客户端已见过的位置之后（期间的数据形态仍取种子稳态） */
-  if (Number.isFinite(since) && since > snapshot.timestamp) {
-    snapshot = { ...snapshot, timestamp: since };
-  }
+  /* 每个连接独立的演进状态：多客户端互不干扰 */
+  let snapshot: TelemetrySnapshot = {
+    ...INITIAL_CLUSTER_SNAPSHOT,
+    timestamp: connectionOriginTs,
+  };
 
   /** 文本编码器：SSE 必须以 UTF-8 字节流写入（含中文告警消息） */
   const encoder = new TextEncoder();
@@ -195,6 +229,39 @@ export function GET(request: Request): Response {
          客户端长时间处于"连接中"状态。 */
       safeEnqueue(`: kubevision telemetry stream established (mode=${mode}, chaos=${chaos})\n\n`);
 
+      /**
+       * startDemoTicker —— 合成数据源定时器（demo 模式与 live 降级共用）。
+       *
+       * 【为什么要抽出来】live 采集连续失败时必须能切到合成源；
+       * 若把这段逻辑内联在 demo 分支里，降级路径就得复制一份定时器代码，
+       * 两份实现迟早漂移（状态机、帧格式、异常处理任一处不同都会让
+       * "降级后画面风格突变"）。共用同一个入口是唯一可靠的做法。
+       */
+      const startDemoTicker = (): void => {
+        if (isClosed || timer !== null) return;
+        timer = setInterval((): void => {
+          if (isClosed) {
+            if (timer !== null) {
+              clearInterval(timer);
+              timer = null;
+            }
+            return;
+          }
+          try {
+            /* 推进状态机（纯函数：上一帧 + 混沌场景 → 新帧） */
+            snapshot = stepTelemetrySimulation(snapshot, chaos);
+            const frame = `data: ${JSON.stringify(snapshot)}\n\n`;
+            if (!safeEnqueue(frame) && timer !== null) {
+              clearInterval(timer);
+              timer = null;
+            }
+          } catch {
+            /* 演进或序列化异常：终止推流，避免向客户端发送损坏帧后继续空转 */
+            safeClose();
+          }
+        }, STREAM_INTERVAL_MS);
+      };
+
       /* ---- 2. live 模式：真实遥测（宿主机硬件桥接 / 真实 K8s API） ---- */
       if (mode === 'live') {
         /**
@@ -213,11 +280,43 @@ export function GET(request: Request): Response {
          */
         let liveEnabled = true;
 
+        /**
+         * ---- D1 · 在飞互斥 ----
+         *
+         * 采集是异步的（K8s API 往返可能超过 1 秒），而推流定时器固定 1 秒。
+         * 若不加互斥，上一帧未完成时又发起下一帧，会造成：
+         *   1. 请求堆积（每帧一个 in-flight fetch，堆积后内存与连接数飙升）；
+         *   2. 帧乱序（后发的请求先返回，时间戳回落）。
+         * 这里用简单的布尔锁：上一帧未完成就跳过本 tick，
+         * 宁可在慢采集时降低帧率，也不让画面出现时间倒退。
+         */
+        let liveInFlight = false;
+
+        /** 连续采集失败次数（成功一次即清零） */
+        let liveFailures = 0;
+
+        /**
+         * liveRaw —— 最近一帧**未经混沌叠加**的真实快照。
+         *
+         * 【为什么必须单独保留】采集器会把上一帧作为演进基准（延续宿主机增量）。
+         * 若把叠加后的快照喂回去，叠加系数（如 QPS ×0.82）会每帧再乘一次自身，
+         * 形成与合成引擎同源的"复利漂移"——只不过这次发生在 live 链路上。
+         * 因此采集始终从 liveRaw（纯真实数据）续接，叠加只作用于输出。
+         */
+        let liveRaw: TelemetrySnapshot = snapshot;
+
         const pushLiveFrame = async (): Promise<void> => {
           if (isClosed || !liveEnabled) return;
+          /* 在飞互斥：上一帧未完成则跳过本 tick */
+          if (liveInFlight) return;
+          liveInFlight = true;
           try {
-            const collected = await collectLiveTelemetrySnapshot(snapshot);
+            const collected = await collectLiveTelemetrySnapshot(liveRaw);
             if (isClosed) return;
+
+            /* 采集成功：更新原始基准、清零失败计数 */
+            liveRaw = collected.snapshot;
+            liveFailures = 0;
 
             /**
              * ---- 关键修复：live 模式下的故障演练叠加 ----
@@ -235,8 +334,18 @@ export function GET(request: Request): Response {
              * 这样两种模式下"故障长什么样"是一致的，而 live 模式仍然
              * 是**真实数据驱动**的——叠加层只改故障语义，不改数据来源。
              */
-            snapshot =
-              chaos === 'NONE' ? collected.snapshot : applyLiveChaosOverlay(collected.snapshot, chaos);
+            const overlaid =
+              chaos === 'NONE' ? liveRaw : applyLiveChaosOverlay(liveRaw, chaos);
+
+            /*
+             * ---- C/D2 · 帧时间戳按「完成时刻」单调递增 ----
+             *
+             * live 帧的 timestamp 不用采集开始时刻，而用**采集完成时刻**：
+             * 采集耗时不固定（200ms~2s），用开始时刻会让帧序与实际到达顺序错位。
+             * 再与「上一帧 + 1 tick」取 max，保证严格单调（即便墙钟回拨）。
+             */
+            const frameTs = Math.max(Date.now(), snapshot.timestamp + TICK_INTERVAL_MS);
+            snapshot = { ...overlaid, timestamp: frameTs };
 
             const frame = `data: ${JSON.stringify(snapshot)}\n\n`;
             if (!safeEnqueue(frame) && timer !== null) {
@@ -244,7 +353,28 @@ export function GET(request: Request): Response {
               timer = null;
             }
           } catch {
-            /* 采集异常不能拖垮连接：本轮跳过，下一秒继续重试真实采样 */
+            /*
+             * ---- D3 · 失败保留上一帧并计数，连续 3 次降级 ----
+             *
+             * 单次失败：不更新 snapshot（继续推上一帧），画面保持稳定；
+             * 连续 3 次：数据源已不可用，降级到合成引擎并写审计行。
+             * 【为什么不能无限推旧帧】旧帧画面"看起来活着"，但指标是死的，
+             * 比明确降级更危险——运维会误以为实时链路正常。
+             */
+            liveFailures += 1;
+            if (liveFailures >= LIVE_FAILURE_LIMIT) {
+              liveEnabled = false;
+              console.warn(
+                `[AUDIT][telemetry] live 采集连续 ${liveFailures} 次失败 → 已降级为合成数据源`,
+              );
+              if (timer !== null) {
+                clearInterval(timer);
+                timer = null;
+              }
+              startDemoTicker();
+            }
+          } finally {
+            liveInFlight = false;
           }
         };
 
@@ -271,32 +401,8 @@ export function GET(request: Request): Response {
         return;
       }
 
-      /* ---- 3. demo 模式：每 1000ms 演进一帧并推送 ---- */
-      timer = setInterval((): void => {
-        /* 状态锁首检：连接已关则停止（清理已在 safeClose 完成，此处仅兜底） */
-        if (isClosed) {
-          if (timer !== null) {
-            clearInterval(timer);
-            timer = null;
-          }
-          return;
-        }
-
-        try {
-          /* 推进状态机（纯函数：上一帧 + 混沌场景 → 新帧） */
-          snapshot = stepTelemetrySimulation(snapshot, chaos);
-
-          /* 标准 SSE 分帧：'data: ' + JSON + '\n\n'（双换行表示帧结束） */
-          const frame = `data: ${JSON.stringify(snapshot)}\n\n`;
-          if (!safeEnqueue(frame) && timer !== null) {
-            clearInterval(timer);
-            timer = null;
-          }
-        } catch {
-          /* 演进或序列化异常：终止推流，避免向客户端发送损坏帧后继续空转 */
-          safeClose();
-        }
-      }, STREAM_INTERVAL_MS);
+      /* ---- 3. demo 模式：每 1000ms 演进一帧并推送（与 live 降级共用同一入口） ---- */
+      startDemoTicker();
 
       /* ---- 4. 客户端断开监听（关闭标签页 / 网络中断） ---- */
       request.signal.addEventListener('abort', safeClose, { once: true });

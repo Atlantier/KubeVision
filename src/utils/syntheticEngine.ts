@@ -32,6 +32,7 @@
  *   不会无界漂移，视觉上呈现自然的呼吸感而非乱跳。
  */
 
+import { INITIAL_CLUSTER_SNAPSHOT } from '@/types/cluster';
 import type {
   AlertEvent,
   ChaosScenario,
@@ -67,6 +68,72 @@ const QPS_WAVE_RATE = 0.157;
 
 /** QPS 起伏幅度（相对基准的比例） */
 const QPS_WAVE_RATIO = 0.12;
+
+/**
+ * QPS 噪声幅度（相对基准的比例）。
+ *
+ * 【为什么是常量而不是"读上一帧"】见下方 QPS_BASELINE 的说明。
+ */
+const QPS_NOISE_RATIO = 0.02;
+
+/**
+ * QPS_BASELINE —— **不可变**的 QPS 锚定基准（全集群稳态请求量）。
+ *
+ * 【修复的缺陷：复利漂移（compounding drift）】
+ * 旧实现写作：
+ *   `const qpsBaseline = prevSnapshot.totalQps`   ← 把**上一帧的输出**当基准
+ *   `totalQps = round(qpsBaseline * (1 + wave + noise) * penalty)`
+ * 于是每一 tick 都在上一 tick 的结果上再乘一次 (1 + wave + noise)。
+ * 这是一个**乘性递推**：只要 (1 + wave + noise) 的长期均值偏离 1 一点点，
+ * 结果就会按指数收敛到 0（或发散到上限）。实测 300 tick（36 秒）内
+ * QPS 从 12850 漂到 833，曲线呈典型的指数衰减——这就是"复利漂移"。
+ *
+ * 【正确做法】基准必须是**一次派生、永不变化**的常量：
+ * 从种子快照派生一次，之后每帧直接
+ *   `round(QPS_BASELINE * (1 + wave + noise) * penalty)`
+ * 计算的是"相对基准的瞬时偏离"，而不是"相对上一帧的增量"。
+ * 这样波动永远有界（±QPS_WAVE_RATIO ± QPS_NOISE_RATIO），不会累积。
+ */
+export const QPS_BASELINE: number = INITIAL_CLUSTER_SNAPSHOT.totalQps;
+
+/**
+ * 节点 CPU / 内存的均值回归速率。
+ *
+ * 【修复的缺陷：节点随机游走】
+ * 旧实现写作 `node.cpuUsage + noise * 1.8`（注释却写着"轻度回归"）：
+ * 每一帧都在当前值上加一个零均值噪声，这是标准的**随机游走（random walk）**，
+ * 其方差随 tick 数线性增长，长跑必然漂到 0 或 100 两端并黏住。
+ * Pod 侧有 REVERSION_RATE=0.18 的回归项，节点侧**没有**——两套语义不一致
+ * 正是"三节点 CPU 从 39/34/30 游走到 0/0/0、而健康分仍显示 100"的成因。
+ *
+ * 现在节点与 Pod 使用同一个回归公式：
+ *   next = current + (baseline − current) · NODE_REVERSION_RATE + noise
+ * 稳态下 current ≈ baseline ± noise/RATE，是有界的。
+ */
+const NODE_REVERSION_RATE = 0.18;
+
+/** 节点 CPU 噪声幅度（百分点）——比 Pod 略小：节点是聚合量，理应更平稳 */
+const NODE_CPU_NOISE_AMPLITUDE = 2.2;
+
+/** 节点内存噪声幅度（百分点） */
+const NODE_MEM_NOISE_AMPLITUDE = 1.6;
+
+/** 节点 HighLoad 判定阈值：CPU 或内存任一越线即进入高负载态 */
+const NODE_HIGH_LOAD_CPU = 85;
+const NODE_HIGH_LOAD_MEM = 88;
+
+/**
+ * 无种子节点时的确定性基线区间（live 模式的真实节点名不在种子表里）。
+ *
+ * 【为什么用哈希而不是种子快照】live 采集到的节点是按真实集群映射来的，
+ * 其 id/rackIndex 未必对得上种子表。此时按 nodeId 做确定性哈希，
+ * 把一个稳定值映射进契约区间（CPU 24~38、MEM 42~56），
+ * 既保证每个节点有独立且固定的基准，又不引入 Math.random。
+ */
+const FALLBACK_NODE_CPU_MIN = 24;
+const FALLBACK_NODE_CPU_MAX = 38;
+const FALLBACK_NODE_MEM_MIN = 42;
+const FALLBACK_NODE_MEM_MAX = 56;
 
 /* ---- 混沌故障参数（契约指定的数值域） ---- */
 
@@ -521,6 +588,59 @@ function deriveNodeBaselineMbps(node: WorkerNodeEntity): number {
 }
 
 /**
+ * hashStringSeed —— 把字符串折叠成 32 位整数种子（FNV-1a）。
+ *
+ * 【为什么需要】节的确定性基线要按 nodeId 派生，而 hashNoise 只接受数字。
+ * FNV-1a 只有几行、跨平台一致、且不需要 Math.random。
+ *
+ * @param text 输入字符串（如 node id）
+ * @returns 32 位无符号整数种子
+ */
+function hashStringSeed(text: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+/**
+ * resolveNodeBaseline —— 求某个节点的**不可变** CPU / 内存基准。
+ *
+ * 【取值的优先级】
+ * 1. 种子快照里同 rackIndex 的节点（demo 模式 100% 命中，基准即种子值）；
+ * 2. 按 nodeId 哈希映射进契约区间（live 模式的真实节点名兜底）；
+ *
+ * 【为什么必须"不可变"】若基准取 node 自身的当前值，回归项恒为 0，
+ * 又退化成随机游走；若取上一帧输出，则等价于复利漂移。
+ * 基准必须是"这个节点本来应该处于多少"的先验，与当前观测无关。
+ *
+ * @param node 待求基准的节点
+ * @returns CPU / 内存基准（百分点）
+ */
+function resolveNodeBaseline(node: WorkerNodeEntity): { cpu: number; mem: number } {
+  const seed =
+    INITIAL_CLUSTER_SNAPSHOT.nodes.find((item): boolean => item.rackIndex === node.rackIndex) ??
+    INITIAL_CLUSTER_SNAPSHOT.nodes[0];
+  if (seed !== undefined && node.id === seed.id) {
+    return { cpu: seed.cpuUsage, mem: seed.memUsage };
+  }
+
+  const seedHash = hashStringSeed(node.id);
+  const cpuNoise = hashNoise(seedHash % 100000 + 1);
+  const memNoise = hashNoise((seedHash % 100000) + 733);
+  return {
+    cpu:
+      FALLBACK_NODE_CPU_MIN +
+      ((cpuNoise + 1) / 2) * (FALLBACK_NODE_CPU_MAX - FALLBACK_NODE_CPU_MIN),
+    mem:
+      FALLBACK_NODE_MEM_MIN +
+      ((memNoise + 1) / 2) * (FALLBACK_NODE_MEM_MAX - FALLBACK_NODE_MEM_MIN),
+  };
+}
+
+/**
  * evolveNode —— 节点网络吞吐与状态演进（三场景分支）。
  *
  * 【正常态】吞吐围绕基准做均值回归，并叠加与 QPS 同频的正弦潮汐：
@@ -585,11 +705,36 @@ function evolveNode(
     networkMbps = nodeBaselineMbps * (1 + qpsWave);
     status = 'Ready';
   } else {
-    /* 正常态：CPU/内存轻度回归 + QPS 正弦潮汐（吞吐在基准上浮动，不累乘） */
-    cpuUsage = clamp(node.cpuUsage + noiseNet * 1.8, 0, 100);
-    memUsage = clamp(node.memUsage + noiseNet * 1.2, 0, 100);
+    /*
+     * ---- 正常态：CPU / 内存做**均值回归**（修复随机游走） ----
+     *
+     * 公式与 Pod 侧完全同构：
+     *   next = current + (baseline − current) · RATE + noise · AMPLITUDE
+     *
+     * 【为什么必须有 (baseline − current) 这一项】
+     * 只加零均值噪声是随机游走：方差 ∝ tick 数，长跑必然漂到 0 或 100 并黏住
+     * （实测 300 tick 内三节点 CPU 在 0%~100% 之间来回摆动）。
+     * 引入回归项后，偏离会被按 RATE 拉回基准，稳态波动被限制在
+     * ≈ noise·AMPLITUDE/RATE 的范围内（约 ±2~3 个百分点）。
+     *
+     * 【baseline 从哪来】resolveNodeBaseline() 返回**不可变先验**，
+     * 绝不读 node 自身当前值（那会让回归项恒为 0）。
+     */
+    const baseline = resolveNodeBaseline(node);
+    const noiseMem = hashNoise(tick * 73 + index * 41 + 12);
+    cpuUsage = clamp(
+      node.cpuUsage + (baseline.cpu - node.cpuUsage) * NODE_REVERSION_RATE + noiseNet * NODE_CPU_NOISE_AMPLITUDE,
+      0,
+      100,
+    );
+    memUsage = clamp(
+      node.memUsage + (baseline.mem - node.memUsage) * NODE_REVERSION_RATE + noiseMem * NODE_MEM_NOISE_AMPLITUDE,
+      0,
+      100,
+    );
     networkMbps = nodeBaselineMbps * (1 + qpsWave) * (1 + noiseNet * NET_NOISE_RATIO);
-    status = 'Ready';
+    /* 高负载态由**实际水位**推导，而不是恒定 Ready */
+    status = cpuUsage >= NODE_HIGH_LOAD_CPU || memUsage >= NODE_HIGH_LOAD_MEM ? 'HighLoad' : 'Ready';
   }
 
   return {
@@ -672,20 +817,65 @@ export function stepTelemetrySimulation(
   });
 
   /* ---- 4. 节点逐个演进 ---- */
+  /**
+   * 当前故障场景的受灾机架（'NONE' 时为 -1）。
+   *
+   * 【为什么单独算】故障机架的状态由故障规则决定（HighLoad / NetworkPartition），
+   * 不能被下面的"Pod 全 Running 就 Ready"规则覆盖掉。
+   */
+  const faultRack =
+    activeChaos === 'NODE_CPU_SPIKE'
+      ? SPIKE_RACK_INDEX
+      : activeChaos === 'NET_PACKET_LOSS'
+        ? PARTITION_RACK_INDEX
+        : activeChaos === 'POD_OOM_SWARM'
+          ? OOM_RACK_INDEX
+          : -1;
+
   const nextNodes: WorkerNodeEntity[] = prevSnapshot.nodes.map(
-    (node, index): WorkerNodeEntity => evolveNode(node, activeChaos, tick, index),
+    (node, index): WorkerNodeEntity => {
+      const evolved = evolveNode(node, activeChaos, tick, index);
+
+      /* 受灾机架：状态由故障语义决定，不参与下面的恢复规则 */
+      if (faultRack >= 0 && node.rackIndex === faultRack) return evolved;
+
+      /*
+       * ---- 恢复规则：名下 Pod 全部 Running → 节点回 Ready ----
+       *
+       * 【修复的缺陷】旧实现里 "Ready/HighLoad" 由场景分支硬编码：
+       * 故障解除后节点可能因为水位残留（或 overlay 残留）继续显示 HighLoad，
+       * 出现"Pod 全绿但机架仍是琥珀色"的自相矛盾画面。
+       * 现在以 **Pod 实际状态** 为准：只要该节点名下没有异常 Pod，
+       * 节点就回到 Ready；水位本身已由均值回归拉回基准附近。
+       */
+      const allPodsRunning = nextPods.every(
+        (pod): boolean => pod.nodeId !== node.id || pod.status === 'Running',
+      );
+      if (allPodsRunning && evolved.status !== 'Ready') {
+        return { ...evolved, status: 'Ready' };
+      }
+      return evolved;
+    },
   );
 
-  /* ---- 5. QPS 演进：围绕基准正弦起伏（用首帧 QPS 反映的基准量级） ---- */
-  const qpsBaseline = prevSnapshot.totalQps > 0 ? prevSnapshot.totalQps : 12850;
+  /* ---- 5. QPS 演进：锚定**不可变基准**，只表达相对基准的瞬时偏离 ---- */
+  /*
+   * 【修复：复利漂移】旧实现把 prevSnapshot.totalQps 当基准，
+   * 每一 tick 都在上一帧**输出**上再乘一次 (1 + wave + noise)——乘性递推，
+   * 长期均值只要偏离 1 就会指数收敛到 0（实测 300 tick 从 12850 漂到 833）。
+   *
+   * 现在基准是模块级常量 QPS_BASELINE（从种子快照派生一次），
+   * 每 tick 的输出都是"基准 × 瞬时系数"，与历史无关，因此永远有界。
+   * 这也让降级本地引擎与服务端引擎**同源同幅**，切换时不会出现量级突变。
+   */
   const qpsWave = Math.sin(tick * QPS_WAVE_RATE) * QPS_WAVE_RATIO;
-  const noiseQps = hashNoise(tick * 71 + 13) * 0.02;
-  /* 故障场景下 QPS 整体下挫（请求失败/超时） */
+  const noiseQps = hashNoise(tick * 71 + 13) * QPS_NOISE_RATIO;
+  /* 故障场景下 QPS 整体下挫（请求失败/超时），同样作用在不可变基准上 */
   const chaosQpsPenalty =
     activeChaos === 'NONE' ? 1 : activeChaos === 'POD_OOM_SWARM' ? 0.82 : activeChaos === 'NODE_CPU_SPIKE' ? 0.9 : 0.72;
   const totalQps = Math.max(
     0,
-    Math.round(qpsBaseline * (1 + qpsWave + noiseQps) * chaosQpsPenalty),
+    Math.round(QPS_BASELINE * (1 + qpsWave + noiseQps) * chaosQpsPenalty),
   );
 
   /* ---- 6. 组装中间快照（告警需要读取已演进的实体状态，故先构造再补告警） ---- */

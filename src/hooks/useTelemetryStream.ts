@@ -237,6 +237,27 @@ interface ReconciliationResult {
 }
 
 /**
+ * ImmutablePodLevel —— 免疫期内被强制改写到的展示值（用于窗口到期后的平滑回落）。
+ *
+ * 【为什么需要记住它】免疫窗口一旦到期，Pod 的展示值会从"被改写的健康值"
+ * 切回服务端真实值（可能仍是 96% 内存）。若直接切换就是一帧突跳。
+ * 记住最后一帧的免疫值，到期那一帧做一次插值，视觉上就是"平滑回落"。
+ */
+export interface ImmuneSmoothingEntry {
+  readonly cpuUsage: number;
+  readonly memoryUsage: number;
+}
+
+/**
+ * IMMUNE_EXIT_SMOOTH_FACTOR —— 窗口到期后首帧向真实值靠拢的比例。
+ *
+ * 0.5 的含义：到期第一帧先走一半，第二帧起完全交给服务端真实值。
+ * 取 0.5 而不是 1.0 是为了"不允许突跳"；也不取更小的值，是因为
+ * 免疫窗口本身只有十几秒，拖太久会让人怀疑自愈没有生效。
+ */
+const IMMUNE_EXIT_SMOOTH_FACTOR = 0.5;
+
+/**
  * reconcileSnapshot —— 自愈免疫合并器（State Reconciliation）。
  *
  * 【核心流转】
@@ -268,11 +289,9 @@ export function reconcileSnapshot(
   healedPodIds: Readonly<Record<string, number>>,
   windowMs: number,
   now: number,
+  smoothState?: Map<string, ImmuneSmoothingEntry>,
 ): ReconciliationResult {
   const entries = Object.keys(healedPodIds);
-  if (entries.length === 0) {
-    return { snapshot, reconciledCount: 0 };
-  }
 
   /* ---- 1. 建立「仍处于免疫窗口内」的 Pod ID 集合 ---- */
   const immunePodIds = new Set<string>();
@@ -286,32 +305,95 @@ export function reconcileSnapshot(
     }
   }
 
-  if (immunePodIds.size === 0) {
+  /*
+   * ---- 快路径 ----
+   * 既没有免疫 Pod、也没有待平滑条目时原样返回（零分配）。
+   * 【为什么不能只判断 immunePodIds.size === 0】窗口到期后的那一帧
+   * 仍需要走平滑逻辑：此时 immunePodIds 已为空，但 smoothState 里还留着
+   * 上一帧的展示值，必须再做一次插值才能避免突跳。
+   */
+  if (immunePodIds.size === 0 && (smoothState === undefined || smoothState.size === 0)) {
     return { snapshot, reconciledCount: 0 };
   }
 
-  /* ---- 2. 逐 Pod 修正 ---- */
+  /* ---- 2. 逐 Pod：免疫改写 + 窗口到期后的一帧平滑回落 ---- */
   let reconciledCount = 0;
   const pods: PodEntity[] = snapshot.pods.map((pod, index): PodEntity => {
-    if (!immunePodIds.has(pod.id)) return pod;
-    reconciledCount += 1;
+    if (immunePodIds.has(pod.id)) {
+      reconciledCount += 1;
 
-    const cpu = clampToBand(index + 1, IMMUNE_CPU_MIN, IMMUNE_CPU_MAX);
-    const mem = clampToBand(index + 7, IMMUNE_MEM_MIN, IMMUNE_MEM_MAX);
+      const cpu = clampToBand(index + 1, IMMUNE_CPU_MIN, IMMUNE_CPU_MAX);
+      const mem = clampToBand(index + 7, IMMUNE_MEM_MIN, IMMUNE_MEM_MAX);
 
-    return {
-      ...pod,
-      status: 'Running',
-      cpuUsage: cpu,
-      memoryUsage: mem,
-      restarts: 0,
-      cpuHistory: buildCalmHistory(cpu),
-      memHistory: buildCalmHistory(mem),
-    };
+      /* 记住本帧展示值：窗口到期后要用它做插值起点 */
+      smoothState?.set(pod.id, { cpuUsage: cpu, memoryUsage: mem });
+
+      return {
+        ...pod,
+        status: 'Running',
+        cpuUsage: cpu,
+        memoryUsage: mem,
+        restarts: 0,
+        cpuHistory: buildCalmHistory(cpu),
+        memHistory: buildCalmHistory(mem),
+      };
+    }
+
+    /*
+     * ---- 窗口刚到期：一帧插值平滑回服务端真实值 ----
+     *
+     * 【为什么必须插值】免疫期内展示值被强制改成健康区间（如内存 41%），
+     * 而服务端真实值可能仍是 96%。窗口一到就直接切换，画面上就是一帧突跳
+     * （趋势图出现垂直跳变、3D 柱体高度瞬间翻倍）。
+     * 这里取「上一帧展示值 → 本帧真实值」的中点，只插一帧：
+     * 标记随插值一起删除，下一帧起完全使用服务端数据，不会长期篡改。
+     */
+    const last = smoothState?.get(pod.id);
+    if (last !== undefined) {
+      smoothState?.delete(pod.id);
+
+      const cpu =
+        Math.round(
+          (last.cpuUsage + (pod.cpuUsage - last.cpuUsage) * IMMUNE_EXIT_SMOOTH_FACTOR) * 10,
+        ) / 10;
+      const mem =
+        Math.round(
+          (last.memoryUsage + (pod.memoryUsage - last.memoryUsage) * IMMUNE_EXIT_SMOOTH_FACTOR) * 10,
+        ) / 10;
+
+      return {
+        ...pod,
+        cpuUsage: cpu,
+        memoryUsage: mem,
+        /* 历史序列末位必须等于当前值（PodEntity 契约），故替换末位而不是整段重写 */
+        cpuHistory: [...pod.cpuHistory.slice(0, HISTORY_POINTS - 1), cpu],
+        memHistory: [...pod.memHistory.slice(0, HISTORY_POINTS - 1), mem],
+      };
+    }
+
+    return pod;
   });
 
-  /* ---- 3. 节点状态同步修正（避免「Pod 全绿但机架仍红/高负载」） ---- */
+  /* ---- 3. 节点状态同步修正：只对「免疫目标 Pod 所属节点」生效 ---- */
+  /*
+   * 【修复的缺陷】旧实现遍历**所有**节点：只要某节点名下没有异常 Pod，
+   * 就把它的状态改成 Ready、水位改写成健康区间。
+   * 后果是自愈一个 Pod 会顺带"洗白"与本次自愈毫无关系的节点——
+   * 例如用户只修了 worker-beta 上的 Pod，worker-alpha 的 CPU 尖峰
+   * （HighLoad）也会被改成 Ready，健康分被动拉高，演练语义被抹掉。
+   * 现在只修正免疫目标 Pod 真正所属的节点，其余节点保持服务端真实状态。
+   */
+  const immuneNodeIds = new Set<string>();
+  for (const pod of snapshot.pods) {
+    if (immunePodIds.has(pod.id)) {
+      immuneNodeIds.add(pod.nodeId);
+    }
+  }
+
   const nodes = snapshot.nodes.map((node) => {
+    /* 与本次自愈无关的节点：原样保留（不洗白） */
+    if (!immuneNodeIds.has(node.id)) return node;
+
     /* 该节点名下是否仍有异常 Pod（崩溃/调度中） */
     let hasAbnormal = false;
     for (const pod of pods) {
@@ -351,7 +433,6 @@ export function reconcileSnapshot(
     reconciledCount,
   };
 }
-
 /* ========================================================================== */
 /* Hook 主体                                                                   */
 /* ========================================================================== */
@@ -406,6 +487,19 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
    * 【初始化】以瞬态池初始快照为起点（页面加载时二者相同）。
    */
   const evolutionBaseRef = useRef<TelemetrySnapshot>(telemetryTransientRef.snapshot);
+
+  /**
+   * immuneSmoothingRef —— 免疫展示值的平滑回落缓存（Pod ID → 最后一帧免疫值）。
+   *
+   * 【为什么是 ref 而不是 state】它只在帧投递管线里读写，不驱动渲染；
+   * 放进 state 会让每个 tick 触发一次重渲染，直接违反 60 FPS 红线。
+   *
+   * 【生命周期】
+   * - Pod 处于免疫窗口内：每帧写入当前展示值；
+   * - 窗口到期后的第一帧：读出该值做一次插值，随后删除条目；
+   * - 因此任何时刻表里最多只有"仍在免疫中"的 Pod，规模与自愈目标数量同阶。
+   */
+  const immuneSmoothingRef = useRef<Map<string, ImmuneSmoothingEntry>>(new Map());
 
   /**
    * hasReceivedFrameRef —— 是否已收到过至少一帧有效数据。
@@ -512,6 +606,8 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
         store.healedPodIds,
         immunityWindowMs,
         Date.now(),
+        /* 平滑缓存：窗口到期后用它把展示值平滑回服务端真实值（一帧插值） */
+        immuneSmoothingRef.current,
       );
 
       /* ---- 3. 双轨分发 ---- */

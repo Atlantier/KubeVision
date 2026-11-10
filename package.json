@@ -26,6 +26,9 @@
     "benchmark": "node scripts/benchmark.mjs",
     "shot": "node scripts/shot.mjs",
     "probe:blackout": "node scripts/probe-blackout.mjs",
+    "probe:r13": "node scripts/probe-r13.mjs",
+    "sim:drift": "node scripts/sim-drift.mjs",
+    "verify:demo-drill": "node scripts/verify-demo-drill.mjs",
     "lint:glsl": "node scripts/lint-glsl.mjs"
   },
   "dependencies": {

@@ -807,14 +807,47 @@ export async function collectLiveTelemetrySnapshot(
           }
         }
 
+        /*
+         * ---- 内存百分比的折算基准 ----
+         *
+         * metrics-server 给的是**绝对字节**（working set），而 PodEntity.memoryUsage
+         * 的契约是 0~100 的百分比。既然拿不到 Pod 的 memory limit，
+         * 就用「同节点均分内存预算」作为分母：
+         *   预算 = 节点内存容量 ÷ 该节点 Pod 数
+         * 这个分母完全由真实数据决定（节点容量来自 API，Pod 数来自列表），
+         * 不随观测值漂移，也不会因为节点规格不同而失真。
+         */
+        const podsPerNode = new Map<string, number>();
+        for (const pod of k8sPods) {
+          podsPerNode.set(pod.nodeName, (podsPerNode.get(pod.nodeName) ?? 0) + 1);
+        }
+        const memCapacityByNode = new Map<string, number>();
+        for (const node of k8sNodes) {
+          memCapacityByNode.set(node.name, node.memCapacityGiB * 1024 ** 3);
+        }
+
         const enrichedPods: K8sPodInfo[] = k8sPods.map((pod): K8sPodInfo => {
           const usage = usageByPod.get(pod.name);
           if (usage === undefined) return pod;
+
+          /*
+           * ---- 修复：live + K8s 模式下 Pod 内存恒为 0 ----
+           *
+           * 旧实现把解析出来的 mem 直接丢弃（memUsage 写死为 null），
+           * 于是所有 Pod 的内存曲线是一条 0 平线——指标面板看起来「没数据」，
+           * 而实际上 metrics-server 明明返回了值。
+           * 现在按上面的均分预算折算成百分比并 clamp 到契约区间。
+           */
+          const capacity = memCapacityByNode.get(pod.nodeName) ?? 0;
+          const podCount = Math.max(1, podsPerNode.get(pod.nodeName) ?? 1);
+          const budget = capacity > 0 ? capacity / podCount : 0;
+          const memPercent = budget > 0 ? clamp((usage.mem / budget) * 100, 0, 100) : 0;
+
           return {
             ...pod,
             /* cpu 为核数，换算成单核百分比后再 clamp（多核 Pod 可能 >100%） */
             cpuUsage: clamp(usage.cpu, 0, 100),
-            memUsage: null,
+            memUsage: memPercent,
           };
         });
 
