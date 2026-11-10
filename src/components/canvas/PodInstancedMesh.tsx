@@ -52,6 +52,7 @@ import { cn } from '@/utils/cn';
 import { HoloFrame, MiniBar } from '@/components/canvas/HoloHud';
 import { useClusterStore } from '@/store/useClusterStore';
 import { MAX_PODS, telemetryTransientRef } from '@/store/useTelemetryRef';
+import { PALETTE } from '@/constants/palette';
 import type { PodStatus } from '@/types/cluster';
 import type { PodHoverLabelData, PodStatusBadgeStyle } from '@/types/canvas';
 import type { ClusterState, SelectedEntityType, StatusFilter } from '@/types/store';
@@ -74,9 +75,19 @@ import { BASE_PAD_CLEARANCE, POD_BOX_HEIGHT, POD_BOX_SIZE, getPodWorldTransform 
  * 这三个值刻意取得更高饱和与更高亮度，使晶块在暗场里"自发光"，
  * 同时保留红/绿/琥珀的语义可辨识度（色相不变，仅提亮）。
  */
-const COLOR_RUNNING = new THREE.Color('#10b981'); // 翠绿：Running 正常态（对标参考图的能量晶体绿）
-const COLOR_PENDING = new THREE.Color('#fbbf24'); // 琥珀（提亮）：Pending / Terminating 过渡态
-const COLOR_CRASH = new THREE.Color('#ff3b6b'); // 警示红（提亮）：CrashLoopBackOff / OOMKilled
+/*
+ * L10：3D 状态色统一到 UI 语义色板（palette.ts 单一事实源）。
+ *
+ * 【为什么不再是"为黑底提亮的变体"】旧实现把 emerald-500 手工提亮成
+ * #10b981，UI 的 HUD 却是 emerald-400——同一"健康"在画面里出现两种绿。
+ * 现在 3D 与 UI 共用同一 hex；HDR 所需额外亮度由加色输出时的
+ * emitterMultiplier 承担，不改色相。
+ *
+ * 【只读约定】PALETTE 里的 Color 实例只读；需要可变副本时 clone()。
+ */
+const COLOR_RUNNING = PALETTE.healthy.color; // emerald-400
+const COLOR_PENDING = PALETTE.elevated.color; // amber-400
+const COLOR_CRASH = PALETTE.critical.color; // rose-500
 
 /* -------------------------------------------------------------------------- */
 /* 自愈充能脉冲（点击自愈 → 3D 腔体瞬间点亮的视觉反馈）                              */

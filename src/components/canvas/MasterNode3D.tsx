@@ -44,6 +44,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Edges, Html } from '@react-three/drei';
 import * as THREE from 'three';
+import { PALETTE } from '@/constants/palette';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import { MASTER_ENTITY_ID } from '@/types/canvas';
@@ -391,7 +392,8 @@ const TONE_HEALTHY = new THREE.Color('#38bdf8');
 /** 警告态：流光琥珀 */
 const TONE_WARNING = new THREE.Color('#fbbf24');
 /** 故障态：绯红等离子 */
-const TONE_CRITICAL = new THREE.Color('#f43f5e');
+/* L10：主控故障色 / 主题青统一到 palette（HDR 增益由发光强度承担） */
+const TONE_CRITICAL = PALETTE.critical.color;
 
 /** 健康分阈值：≥90 健康、≥70 警告、其余故障 */
 const HEALTHY_SCORE_THRESHOLD = 90;
@@ -404,7 +406,7 @@ const WARNING_SCORE_THRESHOLD = 70;
  * 用于粒子与连线；光锥是"高能光柱"，需要更饱和、更接近青的 #22d3ee
  * 才能表达"高密青蓝色"的浓度。两者是不同的视觉角色，不该共用一个常量。
  */
-const GODRAY_CYAN = new THREE.Color('#22d3ee');
+const GODRAY_CYAN = PALETTE.theme.color;
 
 /**
  * 变形宽银幕光晕的三档色温（核色 / 翼色）。

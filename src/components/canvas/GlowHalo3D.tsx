@@ -80,9 +80,12 @@ export interface GlowHalo3DProps {
 /** 顶点着色器：仅透传 UV（Billboard 已负责朝向，无需额外变换） */
 const VERTEX_SHADER = /* glsl */ `
   varying vec2 vUv;
+  varying float vFogDepth;
   void main() {
     vUv = uv;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    vFogDepth = -mvPosition.z;
+    gl_Position = projectionMatrix * mvPosition;
   }
 `;
 
@@ -101,7 +104,9 @@ const FRAGMENT_SHADER = /* glsl */ `
   uniform vec3 uColor;
   uniform float uOpacity;
   uniform float uFalloff;
+  uniform float uFogFar;
   varying vec2 vUv;
+  varying float vFogDepth;
 
   void main() {
     /* 把 [0,1]² 的 UV 映射到以中心为原点的 [-1,1]² 坐标 */
@@ -130,7 +135,9 @@ const FRAGMENT_SHADER = /* glsl */ `
     float alpha = clamp((outerBloom * 0.75 + whiteCore * 0.9) * uOpacity, 0.0, 1.0);
 
     /* 预乘 alpha 输出（rgb 已乘 alpha），配合 premultipliedAlpha 标记 */
-    gl_FragColor = vec4(clamp(finalColor * alpha, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  /* L9：自定义着色器雾衰减（uFogFar=64 与线性雾远端一致；edge0<edge1 满足 R01） */
+  float kvFog = 1.0 - smoothstep(0.75 * uFogFar, uFogFar, vFogDepth);
+    gl_FragColor = vec4(clamp(finalColor * alpha, 0.0, 8.0) * kvFog, clamp(alpha, 0.0, 1.0) * kvFog);
   #ifdef KV_DEBUG_NAN
     if (!(gl_FragColor.r == gl_FragColor.r)
         || !(gl_FragColor.g == gl_FragColor.g)
@@ -175,6 +182,7 @@ export default function GlowHalo3D({
       uColor: { value: new THREE.Color(color) },
       uOpacity: { value: opacity },
       uFalloff: { value: falloff },
+      uFogFar: { value: 64 },
     }),
     [color, opacity, falloff],
   );

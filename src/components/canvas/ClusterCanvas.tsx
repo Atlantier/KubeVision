@@ -22,7 +22,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Canvas, type RootState } from '@react-three/fiber';
 import { ContactShadows, Grid, MeshReflectorMaterial, PerformanceMonitor, Sparkles } from '@react-three/drei';
-import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing';
+import { NeutralToneMapping, NoToneMapping } from 'three';
+import { Bloom, EffectComposer, FXAA, Noise, ToneMapping, Vignette } from '@react-three/postprocessing';
+import { ToneMappingMode } from 'postprocessing';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import CyberMatrixRain3D from '@/components/canvas/CyberMatrixRain3D';
@@ -175,12 +177,16 @@ const CAMERA_FOV = 40;
  * 尺寸重算；这条重建路径在部分驱动上会留下未释放的纹理，表现为"越跑越卡，
  * 最后一次黑屏"。因此档位在首次渲染前一次定死，换档只能靠 key 整体重挂载。
  */
-type RenderQualityTier = 'high' | 'balanced';
+type RenderQualityTier = 'high' | 'balanced' | 'low';
+
+/** 质量档位 → 后处理 AA 策略（L4）：T3 用 MSAA×2；T2 用 FXAA；T1 不加 AA */
+type RenderTier = 'T3' | 'T2' | 'T1';
 
 /** 反射 RT 分辨率（像素）——按档位固定，与 DPR 完全解耦 */
 const REFLECTOR_RESOLUTION: Readonly<Record<RenderQualityTier, number>> = {
   high: 512,
   balanced: 256,
+  low: 128,
 };
 
 /**
@@ -196,7 +202,8 @@ function resolveQualityTier(): RenderQualityTier {
   if (typeof window === 'undefined') return 'high';
   try {
     const param = new URLSearchParams(window.location.search).get('quality');
-    if (param === 'balanced' || param === 'low') return 'balanced';
+    if (param === 'low') return 'low';
+    if (param === 'balanced') return 'balanced';
   } catch {
     /* URL 解析异常不影响默认档位 */
   }
@@ -205,6 +212,55 @@ function resolveQualityTier(): RenderQualityTier {
 
 /** 【模块级单例】档位只解析一次，保证反射 RT 尺寸恒为同一个数 */
 const RENDER_QUALITY_TIER: RenderQualityTier = resolveQualityTier();
+
+/** 后处理 AA 策略（L4）：T3 = Composer 内 MSAA×2；T2 = FXAA；T1 = 不加 AA */
+const RENDER_TIER: RenderTier =
+  RENDER_QUALITY_TIER === 'high' ? 'T3' : RENDER_QUALITY_TIER === 'balanced' ? 'T2' : 'T1';
+
+/**
+ * DPR 上下限（L5）。
+ *
+ * 【为什么上限 1.75】DPR 从 2.0 降到 1.75 只损失约 12% 的线性分辨率，
+ * 但像素数减少 23%——这是 Retina 屏上性价比最高的一刀。下限 0.85 保证
+ * 弱 GPU 降级后仍不至于糊到读不清状态色；降级链只允许向下（R01 约束）。
+ */
+const DPR_MAX = 1.75;
+const DPR_FLOOR = 0.85;
+
+/** 固定曝光（L1）：上限 1.18，按 A/B 校准；1.05 是中性起点 */
+const TONEMAP_EXPOSURE = 1.05;
+
+/**
+ * detectRenderCapabilities —— 挂载期能力探测（L8）。
+ *
+ * 【三个判据】软渲染判定不能只看 renderer 字符串：部分虚拟化环境会把
+ * 字符串伪装成正常 GPU。这里叠加 WebGL2 可用性与
+ * EXT_color_buffer_half_float（HDR 后处理 RT 的前提）：
+ * - 无 WebGL2 或 无 half-float → 不能承载 HDR Bloom 链，按软渲染处理；
+ * - renderer 字符串命中 swiftshader / software / llvmpipe 等 → 软渲染。
+ *
+ * @returns 是否软渲染 + 两项能力位
+ */
+function detectRenderCapabilities(): { software: boolean; webgl2: boolean; halfFloat: boolean } {
+  if (typeof document === 'undefined') return { software: false, webgl2: true, halfFloat: true };
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl2');
+    if (gl === null) return { software: true, webgl2: false, halfFloat: false };
+    const halfFloat = gl.getExtension('EXT_color_buffer_half_float') !== null;
+    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+    const rendererName =
+      debugInfo === null ? '' : String(gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) ?? '');
+    const isSoftware =
+      /swiftshader|software|llvmpipe|mesa offscreen|basic render/i.test(rendererName) || !halfFloat;
+    /* 立即释放探测上下文，避免占用一个 WebGL slot */
+    const lose = gl.getExtension('WEBGL_lose_context');
+    lose?.loseContext();
+    return { software: isSoftware, webgl2: true, halfFloat };
+  } catch {
+    return { software: true, webgl2: false, halfFloat: false };
+  }
+}
 
 /** DPR 下调的最小间隔（毫秒） */
 const DPR_ADJUST_COOLDOWN_MS = 8_000;
@@ -320,7 +376,16 @@ export default function ClusterCanvas() {
    * 清晰度突变，用户会感到明显的"分辨率跳变"。按 0.25 步进平滑过渡，
    * 视觉上几乎察觉不到，但性能收益是逐步累积的。
    */
-  const [adaptiveDpr, setAdaptiveDpr] = useState<number>(2);
+  const [adaptiveDpr, setAdaptiveDpr] = useState<number>(() => {
+    /*
+     * L5：挂载期常量（R01 约束）。软件渲染直接锁 1.0；
+     * 真机取 min(devicePixelRatio, 1.75) 并 clamp 到下限 0.85。
+     * 这是"挂载期一次定死"的初始值，后续只允许单向下调。
+     */
+    if (typeof window === 'undefined') return 1.75;
+    if (detectRenderCapabilities().software) return 1;
+    return Math.min(DPR_MAX, Math.max(DPR_FLOOR, window.devicePixelRatio));
+  });
 
   /**
    * 自适应 dpr 的稳定性约束。
@@ -398,7 +463,38 @@ export default function ClusterCanvas() {
    * 保留全部几何与材质（场景内容不减），只关掉后处理链与实时反射。
    * 这样任何环境下都能看到画面，真实 GPU 上仍是完整电影感。
    */
-  const [heavyRenderEnabled, setHeavyRenderEnabled] = useState<boolean>(true);
+  /**
+   * L8：把原单一开关拆成两条独立链路。
+   *
+   * - postEnabled：Bloom + ToneMapping + Vignette 后处理链；
+   * - reflectorEnabled：镜面反射地面（整场景再渲染一遍）。
+   * 软渲染下两者都关（HDR Bloom 的 halffloat RT 在 SwiftShader 上会静默黑屏），
+   * 但几何/材质/灯光保持不变——画面内容不减，只是去掉重后处理。
+   */
+  const [envCaps] = useState(detectRenderCapabilities);
+  const [postEnabled, setPostEnabled] = useState<boolean>(!envCaps.software);
+  const [reflectorEnabled, setReflectorEnabled] = useState<boolean>(!envCaps.software);
+
+  /**
+   * L11：渲染路径一致性对比钩子（仅开发构建暴露）。
+   *
+   * 不做任何产品 UI：A/B 脚本通过它把同一条管线切成
+   * "Composer 路径 / 兜底路径"，逐帧读取像素统计亮度/对比度/色相偏移，
+   * 从而量化两条路径的观感差异，而不是靠肉眼说"差不多"。
+   */
+  useEffect((): (() => void) | undefined => {
+    if (process.env.NODE_ENV === 'production') return undefined;
+    const handle = {
+      setPost: (enabled: boolean): void => setPostEnabled(enabled),
+      getPost: (): boolean => postEnabled,
+      getEnvCaps: (): { software: boolean; webgl2: boolean; halfFloat: boolean } => envCaps,
+      getTier: (): RenderTier => RENDER_TIER,
+    };
+    (window as unknown as Record<string, unknown>).__KUBEVISION_RENDER__ = handle;
+    return (): void => {
+      delete (window as unknown as Record<string, unknown>).__KUBEVISION_RENDER__;
+    };
+  }, [postEnabled, envCaps]);
 
   /**
    * 帧率走低：只关装饰层，不动 dpr。
@@ -439,7 +535,7 @@ export default function ClusterCanvas() {
 
     dprAdjustRef.current = { count: state.count + 1, lastAt: now };
     setAdaptiveDpr((prev): number => {
-      const next = Math.max(1, Math.round((prev - 0.25) * 100) / 100);
+      const next = Math.max(DPR_FLOOR, Math.round((prev - 0.25) * 100) / 100);
       return next;
     });
   }, []);
@@ -458,7 +554,7 @@ export default function ClusterCanvas() {
     return (): void => {
       clearTimeout(timer);
     };
-  }, [heavyRenderEnabled]);
+  }, [postEnabled, reflectorEnabled]);
 
 
   /**
@@ -589,17 +685,18 @@ export default function ClusterCanvas() {
          * 这个降级是**单向保守**的：一旦降下来，只有帧率稳定回升才会恢复，
          * 避免在临界点反复横跳造成视觉抖动。
          */
-        dpr={[1, adaptiveDpr]}
+        dpr={[DPR_FLOOR, adaptiveDpr]}
         /**
          * 【实时软阴影】`shadows="soft"` 让 three 使用 PCFSoft 阴影贴图过滤：
          * 硬边阴影在机柜这种大面积几何上会显出锯齿与"剪纸感"，
          * 软边才能让机架真正"压"在地面上。代价是每帧一次阴影贴图渲染，
          * 但场景只有 3 座机架 + 48 个实例，绝对开销可控。
          */
-        shadows="soft"
+        shadows={envCaps.software ? 'basic' : 'soft'}
         camera={{ position: INITIAL_CAMERA_POSITION, fov: CAMERA_FOV }}
         gl={{
-          antialias: true,
+          /* L4：Composer 路径下 canvas MSAA 无效（离屏 RT 才是最终画面），关掉省带宽 */
+          antialias: !postEnabled,
           powerPreference: 'high-performance',
           // 多模态视觉快照前提：帧合成后仍可 toDataURL 读取绘制缓冲
           preserveDrawingBuffer: true,
@@ -627,8 +724,9 @@ export default function ClusterCanvas() {
               : String(context.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) ?? '');
           const isSoftware =
             /swiftshader|software|llvmpipe|mesa offscreen|basic render/i.test(rendererName);
-          if (isSoftware) {
-            setHeavyRenderEnabled(false);
+          if (isSoftware || !envCaps.webgl2 || !envCaps.halfFloat) {
+            setPostEnabled(false);
+            setReflectorEnabled(false);
           }
           /*
            * ---- WebGL 上下文丢失恢复 ----
@@ -641,6 +739,18 @@ export default function ClusterCanvas() {
            * 【为什么必须 preventDefault】默认行为下浏览器不会尝试恢复上下文。
            * 只有显式 preventDefault，才会在后续派发 webglcontextrestored。
            */
+          /* L1：固定曝光；后处理链负责 Neutral ToneMapping，渲染器本身关闭 tone mapping */
+          if (postEnabled) {
+            state.gl.toneMapping = NoToneMapping;
+          } else {
+            /* L11：兜底路径用渲染器内置 Neutral tone mapping 对齐色相 */
+            state.gl.toneMapping = NeutralToneMapping;
+          }
+          state.gl.toneMappingExposure = TONEMAP_EXPOSURE;
+          /* L8：软渲染锁 DPR=1.0（只降一次，且不参与后续自适应升回） */
+          if (isSoftware) {
+            setAdaptiveDpr(1);
+          }
           const canvasEl = state.gl.domElement;
           const onContextLost = (event: Event): void => {
             event.preventDefault();
@@ -801,24 +911,25 @@ export default function ClusterCanvas() {
          *  3) 主光（key light，投射阴影）+ 侧逆轮廓光（rim light，青蓝）
          *     + 控制平面中心点光（青色），勾出背光侧金属棱角与中心能量感。
          */}
-        <ambientLight intensity={0.42} color="#94a3b8" />
-        <hemisphereLight args={['#38bdf8', '#020617', 0.55]} />
+        <ambientLight intensity={0.18} color="#94a3b8" />
+        <hemisphereLight args={['#38bdf8', '#020617', 0.34]} />
         <directionalLight
           castShadow
           position={[14, 24, 14]}
-          intensity={1.85}
-          color="#f8fafc"
-          shadow-mapSize={[1024, 1024]}
-          shadow-camera-left={-16}
-          shadow-camera-right={16}
-          shadow-camera-top={16}
-          shadow-camera-bottom={-16}
+          intensity={2.3}
+          color="#eaf4ff"
+          shadow-mapSize={[2048, 2048]}
+          shadow-camera-left={-13}
+          shadow-camera-right={13}
+          shadow-camera-top={13}
+          shadow-camera-bottom={-13}
           shadow-bias={-0.0005}
+          shadow-normalBias={0.02}
         />
         {/* 侧逆轮廓光：只勾勒背光侧金属棱角，不参与阴影计算（省一次阴影渲染） */}
-        <directionalLight position={[-14, 12, -10]} intensity={0.65} color="#22d3ee" />
-        {/* 控制平面中心点光：距离 28 / 衰减 2，覆盖三座机架环域 */}
-        <pointLight position={[0, 3.0, 0]} intensity={36} distance={28} decay={2} color="#22d3ee" />
+        <directionalLight position={[-14, 12, -10]} intensity={0.95} color="#22d3ee" />
+        {/* 控制平面中心点光：距离 28 / 衰减 2，覆盖三座机架环域（L6：36→28） */}
+        <pointLight position={[0, 3.0, 0]} intensity={28} distance={28} decay={2} color="#22d3ee" />
 
         {/*
          * ---- 地面接触阴影（Contact Shadows）----
@@ -848,16 +959,18 @@ export default function ClusterCanvas() {
          * 同时把 opacity 从 0.68 降到 0.5：镜面地面上阴影过重会形成一块
          * 死黑泥斑，反而破坏"通透的反射感"。
          */}
-        <ContactShadows
-          position={[0, 0.008, 0]}
-          opacity={0.5}
-          scale={34}
-          blur={2.2}
-          far={8}
-          resolution={512}
-          frames={1}
-          color="#000000"
-        />
+        {envCaps.software ? null : (
+          <ContactShadows
+            position={[0, 0.008, 0]}
+            opacity={0.55}
+            scale={34}
+            blur={1.6}
+            far={8}
+            resolution={768}
+            frames={1}
+            color="#000000"
+          />
+        )}
 
         {/* ---- 黑曜石镜面反射地面（图五空间纵深感的核心）----
          *
@@ -875,6 +988,8 @@ export default function ClusterCanvas() {
          * 【Y = −0.025】低于两层 Grid（−0.02 / +0.01），
          * 于是网格像蚀刻在镜面上层的坐标网，而非浮在反射之上。
          */}
+        {/* L8：镜面反射地面独立开关（软渲染下整段关闭，省一次全场景重渲染） */}
+        {reflectorEnabled ? (
         <mesh
           key={`reflector-${canvasRemountKey}`}
           rotation={[-Math.PI / 2, 0, 0]}
@@ -910,6 +1025,7 @@ export default function ClusterCanvas() {
             mirror={0.55}
           />
         </mesh>
+        ) : null}
 
         {/* ---- 赛博极客双层地面网格（蚀刻在镜面上的坐标网）----
           下层（y=-0.020）：大尺度粗格延伸至雾效远端，构建深空坐标系纵深；
@@ -1042,20 +1158,62 @@ export default function ClusterCanvas() {
          * canvas 的 antialias 与 DPR 控制画质，后处理链不重复 MSAA；
          * 本版本 EffectComposer 无 disableNormalPass 选项，法线通道关闭由上游 npm 版本决定。
          */}
-        {heavyRenderEnabled ? (<EffectComposer
-          key={`composer-${canvasRemountKey}`}
-          multisampling={0}
-          frameBufferType={HalfFloatType}
-        >
-          <Bloom
-            intensity={0.55}
-            luminanceThreshold={0.62}
-            luminanceSmoothing={0.24}
-            mipmapBlur
-            radius={0.56}
-          />
-          <Vignette eskil={false} offset={0.18} darkness={0.35} />
-        </EffectComposer>) : null}
+        {/*
+         * ---- 后处理链（L1–L4）----
+         *
+         * 【顺序固定】Bloom → ToneMapping → AA → Vignette → Noise。
+         *  - Bloom 必须在 ToneMapping 之前：它处理的是**线性 HDR 能量**，
+         *    先压到 LDR 再泛光会把高光信息截断；
+         *  - AA 放在 ToneMapping 之后：对最终显示亮度做边缘检测更接近感知；
+         *  - Vignette / Noise 放最后，只做屏幕空间修饰。
+         *
+         * 【ToneMappingMode.NEUTRAL】ACES 会把高饱和的绿/琥珀/绯红压灰，
+         * 而运维语义色必须保色相（绿=健康、琥珀=高负载、绯红=故障）。
+         * Neutral 只做线性到 sRGB 的中性映射，色相偏移最小。
+         *
+         * 【AA 策略】T3 = MSAA×2（禁止 ×8：HDR 8× RT > 200MB）；
+         * T2 = FXAA；T1 = 不加 AA（最低端路径，DPR 已降）。
+         */}
+        {postEnabled ? (
+          RENDER_TIER === 'T2' ? (
+            <EffectComposer
+              key={`composer-${canvasRemountKey}`}
+              multisampling={0}
+              frameBufferType={HalfFloatType}
+            >
+              <Bloom
+                intensity={0.72}
+                luminanceThreshold={0.78}
+                luminanceSmoothing={0.14}
+                mipmapBlur
+                radius={0.62}
+                levels={6}
+              />
+              <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+              <FXAA />
+              <Vignette eskil={false} offset={0.22} darkness={0.28} />
+              <Noise opacity={0.03} />
+            </EffectComposer>
+          ) : (
+            <EffectComposer
+              key={`composer-${canvasRemountKey}`}
+              multisampling={RENDER_TIER === 'T3' ? 2 : 0}
+              frameBufferType={HalfFloatType}
+            >
+              <Bloom
+                intensity={0.72}
+                luminanceThreshold={0.78}
+                luminanceSmoothing={0.14}
+                mipmapBlur
+                radius={0.62}
+                levels={6}
+              />
+              <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+              <Vignette eskil={false} offset={0.22} darkness={0.28} />
+              <Noise opacity={0.03} />
+            </EffectComposer>
+          )
+        ) : null}
       </Canvas>
 
       {/*
@@ -1133,7 +1291,7 @@ export default function ClusterCanvas() {
        */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 z-[1] bg-[radial-gradient(circle_at_center,transparent_55%,rgba(2,6,23,0.65)_100%)]"
+        className="pointer-events-none absolute inset-0 z-[1] bg-[radial-gradient(circle_at_center,transparent_62%,rgba(2,6,23,0.42)_100%)]"
       />
 
       {/* ---- 左上角实体巡检 HUD（DOM 层浮层，非 R3F 场景内）：

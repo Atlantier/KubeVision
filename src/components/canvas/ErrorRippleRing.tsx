@@ -52,10 +52,13 @@ import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
  */
 const VERTEX_SHADER = /* glsl */ `
   varying vec2 vUv;
+  varying float vFogDepth;
 
   void main() {
     vUv = uv;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    vFogDepth = -mvPosition.z;
+    gl_Position = projectionMatrix * mvPosition;
   }
 `;
 
@@ -95,8 +98,10 @@ const FRAGMENT_SHADER = /* glsl */ `
   uniform float uTrailWidth;
   uniform float uBeamWidth;
   uniform float uTrailGain;
+  uniform float uFogFar;
 
   varying vec2 vUv;
+  varying float vFogDepth;
 
   void main() {
     // 1. 归一化畸变半径（圆心 0 → 边缘 1，即 RING_MAX_RADIUS）
@@ -136,7 +141,9 @@ const FRAGMENT_SHADER = /* glsl */ `
     vec3 rgb = uPeakColor * totalPeak + uColor * totalTrail * uTrailGain;
 
     // 5. 加色混合下 alpha 恒为 1.0，保证 rgb 线性叠加（详见上方第 5 点）
-    gl_FragColor = vec4(clamp(rgb * uOpacity, 0.0, 8.0), 1.0);
+  /* L9：自定义着色器雾衰减（uFogFar=64 与线性雾远端一致；edge0<edge1 满足 R01） */
+  float kvFog = 1.0 - smoothstep(0.75 * uFogFar, uFogFar, vFogDepth);
+    gl_FragColor = vec4(clamp(rgb * uOpacity, 0.0, 8.0) * kvFog, 1.0);
   #ifdef KV_DEBUG_NAN
     if (!(gl_FragColor.r == gl_FragColor.r)
         || !(gl_FragColor.g == gl_FragColor.g)
@@ -262,6 +269,7 @@ export function RackErrorRing({ rackIndex }: RackErrorRingProps) {
       uTrailWidth: { value: RING_TRAIL_WIDTH },
       uBeamWidth: { value: RING_BEAM_WIDTH },
       uTrailGain: { value: RING_TRAIL_GAIN },
+      uFogFar: { value: 64 },
     }),
     [],
   );

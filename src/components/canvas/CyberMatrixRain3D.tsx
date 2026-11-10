@@ -75,10 +75,13 @@ const HEALTHY_SCORE_THRESHOLD = 90;
  */
 const RAIN_VERTEX_SHADER = `
 varying vec2 vUv;
+varying float vFogDepth;
 
 void main() {
   vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vFogDepth = -mvPosition.z;
+  gl_Position = projectionMatrix * mvPosition;
 }
 `;
 
@@ -108,8 +111,10 @@ void main() {
 const RAIN_FRAGMENT_SHADER = `
 uniform float uTime;
 uniform float uOpacity;
+uniform float uFogFar;
 
 varying vec2 vUv;
+varying float vFogDepth;
 
 /* 图形学经典哈希：输入相同 → 输出恒定，分布均匀 */
 float hash(float n) {
@@ -162,7 +167,9 @@ void main() {
   vec3 headColor = vec3(0.878, 0.996, 0.980);
   vec3 color = mix(tailColor, headColor, trail);
 
-  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  /* L9：自定义着色器雾衰减（uFogFar=64 与线性雾远端一致；edge0<edge1 满足 R01） */
+  float kvFog = 1.0 - smoothstep(0.75 * uFogFar, uFogFar, vFogDepth);
+  gl_FragColor = vec4(clamp(color, 0.0, 8.0) * kvFog, clamp(alpha, 0.0, 1.0) * kvFog);
   #ifdef KV_DEBUG_NAN
     if (!(gl_FragColor.r == gl_FragColor.r)
         || !(gl_FragColor.g == gl_FragColor.g)
@@ -192,6 +199,7 @@ export default function CyberMatrixRain3D(): React.ReactElement {
     (): Record<string, THREE.IUniform> => ({
       uTime: { value: 0 },
       uOpacity: { value: RAIN_MAX_OPACITY },
+      uFogFar: { value: 64 },
     }),
     [],
   );

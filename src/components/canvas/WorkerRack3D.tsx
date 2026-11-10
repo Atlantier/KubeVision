@@ -56,6 +56,7 @@ import { getBrushedMetalTextures } from '@/components/canvas/ProceduralPbrEnviro
 import { useOptionalGltfModel } from '@/hooks/useOptionalGltfModel';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { PALETTE } from '@/constants/palette';
 import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
 import {
   POD_BOX_SIZE,
@@ -78,10 +79,14 @@ import type { SelectedEntityType } from '@/types/store';
 /* ========================================================================== */
 
 /** 导光柱三态目标色（模块级单例，useFrame 内只读，color.lerp 的 target） */
-const COLOR_HEALTHY = new THREE.Color('#10b981'); // 翠绿：Ready 正常态
-const COLOR_WARNING = new THREE.Color('#f59e0b'); // 琥珀：HighLoad 高负载
-const COLOR_CRITICAL = new THREE.Color('#f43f5e'); // 警示红：NetworkPartition 分区/崩溃
-const COLOR_SELECTED = new THREE.Color('#22d3ee'); // 主题青：选中态覆盖色
+/*
+ * L10：机架状态色统一到 palette.ts（与 UI 的 emerald-400 / amber-400 /
+ * rose-500 / cyan-400 同 hex）。HDR 增益由发光强度承担，不再改色相。
+ */
+const COLOR_HEALTHY = PALETTE.healthy.color; // emerald-400
+const COLOR_WARNING = PALETTE.elevated.color; // amber-400
+const COLOR_CRITICAL = PALETTE.critical.color; // rose-500
+const COLOR_SELECTED = PALETTE.theme.color; // cyan-400
 
 /** 高负载判定阈值（%）：CPU 或 MEM 越限即转琥珀，即使 status 仍为 Ready */
 const HIGH_LOAD_THRESHOLD = 85;
@@ -489,10 +494,13 @@ const BEAM_BLOOM_PULSE_RATE = 3.9;
  */
 const BEAM_BLOOM_VERTEX_SHADER = `
 varying vec2 vUv;
+varying float vFogDepth;
 
 void main() {
   vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vFogDepth = -mvPosition.z;
+  gl_Position = projectionMatrix * mvPosition;
 }
 `;
 
@@ -512,8 +520,10 @@ void main() {
 const BEAM_BLOOM_FRAGMENT_SHADER = `
 uniform vec3 uColor;
 uniform float uPulse;
+uniform float uFogFar;
 
 varying vec2 vUv;
+varying float vFogDepth;
 
 void main() {
   float r = length(vUv - vec2(0.5)) * 2.0;
@@ -529,7 +539,9 @@ void main() {
   float ringB = exp(-(ringBd * ringBd));
 
   float alpha = (glow * 1.05 + ringA * 0.62 + ringB * 0.42) * uPulse;
-  gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  /* L9：自定义着色器雾衰减（uFogFar=64 与线性雾远端一致；edge0<edge1 满足 R01） */
+  float kvFog = 1.0 - smoothstep(0.75 * uFogFar, uFogFar, vFogDepth);
+  gl_FragColor = vec4(clamp(uColor, 0.0, 8.0) * kvFog, clamp(alpha, 0.0, 1.0) * kvFog);
   #ifdef KV_DEBUG_NAN
     if (!(gl_FragColor.r == gl_FragColor.r)
         || !(gl_FragColor.g == gl_FragColor.g)
@@ -1070,6 +1082,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
     (): Record<string, THREE.IUniform> => ({
       uColor: { value: new THREE.Color('#22d3ee') },
       uPulse: { value: 1 },
+      uFogFar: { value: 64 },
     }),
     [],
   );
