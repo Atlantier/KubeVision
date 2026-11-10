@@ -38,7 +38,7 @@
 
 import { createOpenAI } from '@ai-sdk/openai';
 import { streamText, tool, type CoreMessage } from 'ai';
-import { createTrace, elapsedMs, endSpan, startSpan } from '@/utils/agentTrace';
+import { createTrace, elapsedMs, endSpan, startSpan, type AgentSpan, type AgentTrace, type EndedSpan } from '@/utils/agentTrace';
 import { z } from 'zod';
 
 import type {
@@ -1086,8 +1086,12 @@ async function streamWithLLM(params: {
    * 才能只补缺失的卡而不是三张全重发（A1 重复卡片缺陷的根因）。
    */
   readonly ledger: ToolCallLedger;
+  /** R43：请求级 trace（span 事件写入同一条 NDJSON 流） */
+  readonly trace: AgentTrace;
+  /** R43：AI SDK usage 回调（tokens 由上游按 env 单价换算成本） */
+  readonly onUsage?: (usage: { promptTokens?: number; completionTokens?: number }) => void;
 }): Promise<boolean> {
-  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, allowedTools, onFirstToolCall, emit, signal, ledger } = params;
+  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, allowedTools, onFirstToolCall, emit, signal, ledger, trace, onUsage } = params;
 
   try {
     const provider = createOpenAI({ apiKey, baseURL });
@@ -1231,11 +1235,20 @@ async function streamWithLLM(params: {
       ...(Object.keys(toolsForModel).length > 0 ? { tools: toolsForModel } : {}),
     });
 
+    /* R43：LLM 总时长与首 token span（TTFT） */
+    const llmTotalSpan = startSpan(trace, 'llm-total');
+    const firstTokenSpan = startSpan(trace, 'llm-first-token');
+    let firstTokenEnded = false;
+
     /* ---- 遍历 fullStream 逐帧转发 ---- */
     for await (const part of result.fullStream) {
       if (signal.aborted) return true;
 
       if (part.type === 'text-delta') {
+        if (!firstTokenEnded) {
+          firstTokenEnded = true;
+          emit({ type: 'span', ...endSpan(firstTokenSpan, { status: 'ok' }) });
+        }
         emit({ type: 'text', content: part.textDelta });
         continue;
       }
@@ -1243,6 +1256,7 @@ async function streamWithLLM(params: {
       if (part.type === 'tool-call') {
         const toolName = part.toolName;
         const toolCallId = part.toolCallId;
+        const toolSpan = startSpan(trace, 'tool-call:' + toolName);
         const mcpUri = `mcp://k8s-cluster/tools/${toolName}`;
 
         /*
@@ -1321,6 +1335,10 @@ async function streamWithLLM(params: {
           args: finalPayload,
         });
         recordToolResult(ledger, toolCallId, true);
+        emit({
+          type: 'span',
+          ...endSpan(toolSpan, { status: 'ok', attrs: { tool: toolName } }),
+        });
         continue;
       }
 
@@ -1337,6 +1355,17 @@ async function streamWithLLM(params: {
      * 补卡不会打断正文的流式节奏；且只有确认引擎 A 成功（未抛错、未中断）
      * 才补——若走 catch 回落引擎 B，引擎 B 自身就会产出完整三卡。
      */
+    emit({ type: 'span', ...endSpan(llmTotalSpan, { status: 'ok' }) });
+    try {
+      const usage = await result.usage;
+      onUsage?.({
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+      });
+    } catch {
+      /* usage 不可用时保持缺省：不填 0 冒充 */
+    }
+
     emitMissingCards({
       ctx: clusterContext,
       runbooks,
@@ -2436,7 +2465,13 @@ export async function POST(request: Request): Promise<Response> {
    * 也会拿到两条手册，并因 0 分归一化被虚标成 86.0%。
    * 把分类前移到检索之前，从流程上消除了"寒暄被塞进排障链路"的可能。
    */
+  /* R43：trace 在检索之前创建，才能覆盖 intent/rag/prompt 三段真实耗时 */
+  const trace = createTrace();
+  const pendingSpanEvents: EndedSpan[] = [];
+  const intentSpan = startSpan(trace, 'intent-route');
+
   const intent: IntentKind = classifyUserIntent(lastUserMessage, clusterContext, hasImage);
+  pendingSpanEvents.push(endSpan(intentSpan, { status: 'ok', attrs: { intent } }));
 
   /**
    * ---- 前置 RAG 检索（寒暄路径跳过） ----
@@ -2453,6 +2488,7 @@ export async function POST(request: Request): Promise<Response> {
     .filter((s): boolean => s.length > 0)
     .join(' ');
 
+  const ragSpan = startSpan(trace, 'rag-retrieve');
   const runbooks =
     intent === 'GREETING_OR_CHITCHAT'
       ? []
@@ -2474,8 +2510,15 @@ export async function POST(request: Request): Promise<Response> {
            */
           body.customRunbooks ?? [],
         );
+  pendingSpanEvents.push(
+    endSpan(ragSpan, { status: 'ok', attrs: { hits: runbooks.length } }),
+  );
 
+  const promptSpan = startSpan(trace, 'prompt-build');
   const systemPrompt = buildSystemPrompt(clusterContext, runbooks, hasImage, intent);
+  pendingSpanEvents.push(
+    endSpan(promptSpan, { status: 'ok', attrs: { chars: systemPrompt.length } }),
+  );
 
   /**
    * 【真实实体清单】用于校正模型复述 ID 时的幻觉。
@@ -2555,11 +2598,14 @@ export async function POST(request: Request): Promise<Response> {
     async start(controller): Promise<void> {
       controllerRef = controller;
 
-      /** R35：本次请求的 trace（服务端 performance.now 计时） */
-      const trace = createTrace();
-      /** 第一个 token/推理步骤到达时刻（用于 TTFT） */
+      /** 第一个 token 到达时刻（TTFT 只计正文 token） */
       let firstEventAt: number | null = null;
-      const requestSpan = startSpan(trace, 'intent-route');
+      /** R43：AI SDK usage 容器（缺省时 trace-summary 不填 token/成本） */
+      const usageHolder: { value: { promptTokens?: number; completionTokens?: number } | null } = {
+        value: null,
+      };
+      /* R43：实际引擎（响应头代表意图，流内事件与 trace-summary 代表事实） */
+      let actualEngine: 'llm' | 'simulator' = engineAtResponseTime;
 
       /** 单帧写入（带状态锁与异常兜底） */
       const emit = (event: ChatStreamEvent): void => {
@@ -2573,6 +2619,11 @@ export async function POST(request: Request): Promise<Response> {
           isClosed = true;
         }
       };
+
+      /* R43：intent / rag / prompt 三段已在流创建前完成，emit 就绪后补发 */
+      for (const spanEvent of pendingSpanEvents) {
+        emit({ type: 'span', ...spanEvent });
+      }
 
       const signal = request.signal;
 
@@ -2778,7 +2829,12 @@ export async function POST(request: Request): Promise<Response> {
         const ledger: ToolCallLedger = createToolCallLedger();
 
         if (useLLM) {
+          const fallbackSpan = startSpan(trace, 'fallback');
           const ok = await streamWithLLM({
+            trace,
+            onUsage: (value): void => {
+              usageHolder.value = value;
+            },
             apiKey: apiKey as string,
             baseURL,
             modelName,
@@ -2811,6 +2867,11 @@ export async function POST(request: Request): Promise<Response> {
               emit,
               'engine A failed before producing this card; fell back to local engine',
             );
+            actualEngine = 'simulator';
+            emit({
+              type: 'span',
+              ...endSpan(fallbackSpan, { status: 'error', attrs: { reason: 'llm-failed' } }),
+            });
             /* 引擎 A 失败 → 无缝回落引擎 B，并先声明实际引擎（流内事实） */
             emit({
               type: 'engine',
@@ -2838,6 +2899,14 @@ export async function POST(request: Request): Promise<Response> {
           }
         } else {
           /* 未配置 Key → 直接走引擎 B */
+          actualEngine = 'simulator';
+          emit({
+            type: 'span',
+            ...endSpan(startSpan(trace, 'fallback'), {
+              status: 'ok',
+              attrs: { reason: 'no-api-key' },
+            }),
+          });
           emit({
             type: 'engine',
             engine: 'simulator',
@@ -2856,12 +2925,25 @@ export async function POST(request: Request): Promise<Response> {
         }
 
         /* ---- R35：先发 span + trace-summary，再发 done（顺序保证 verify 可断言） ---- */
-        const endedEngine = useLLM ? 'llm' : 'simulator';
-        const requestEnded = endSpan(requestSpan, {
-          status: 'ok',
-          attrs: { engine: endedEngine, coarse: true },
-        });
-        emit({ type: 'span', ...requestEnded });
+        const endedEngine = actualEngine;
+        const usage = usageHolder.value;
+        /* R43：tokens/cost 只在真实获得时填写；env 单价未配置则不填 costCny */
+        const priceIn = Number(process.env.KV_PRICE_INPUT_CNY_PER_MTOK ?? '');
+        const priceOut = Number(process.env.KV_PRICE_OUTPUT_CNY_PER_MTOK ?? '');
+        const costCny =
+          usage !== null &&
+          usage.promptTokens !== undefined &&
+          usage.completionTokens !== undefined &&
+          Number.isFinite(priceIn) &&
+          Number.isFinite(priceOut) &&
+          process.env.KV_PRICE_INPUT_CNY_PER_MTOK !== undefined &&
+          process.env.KV_PRICE_OUTPUT_CNY_PER_MTOK !== undefined
+            ? Math.round(
+                ((usage.promptTokens / 1_000_000) * priceIn +
+                  (usage.completionTokens / 1_000_000) * priceOut) *
+                  10000,
+              ) / 10000
+            : undefined;
         emit({
           type: 'trace-summary',
           traceId: trace.traceId,
@@ -2871,10 +2953,13 @@ export async function POST(request: Request): Promise<Response> {
               ? elapsedMs(trace)
               : Math.round((firstEventAt - trace.startedAt) * 100) / 100,
           totalMs: elapsedMs(trace),
+          ...(usage?.promptTokens === undefined ? {} : { promptTokens: usage.promptTokens }),
+          ...(usage?.completionTokens === undefined ? {} : { completionTokens: usage.completionTokens }),
+          ...(costCny === undefined ? {} : { costCny }),
         });
 
         /* ---- A8：流末必有 done（前端不再靠 socket 关闭判断结束） ---- */
-        emit({ type: 'done', requestId, engine: useLLM ? 'llm' : 'simulator' });
+        emit({ type: 'done', requestId, engine: actualEngine });
 
         safeClose();
       } catch (error) {
@@ -2903,11 +2988,26 @@ export async function POST(request: Request): Promise<Response> {
             content: `\n\n> [ ENGINE-ERROR ] 推理中断：${message}\n\n`,
           });
         }
+        /* R43：错误分支也必须有 trace-summary（前端据此展示 traceId 与耗时） */
+        const usage = usageHolder.value;
+        emit({
+          type: 'trace-summary',
+          traceId: trace.traceId,
+          engine: actualEngine,
+          ttftMs:
+            firstEventAt === null
+              ? elapsedMs(trace)
+              : Math.round((firstEventAt - trace.startedAt) * 100) / 100,
+          totalMs: elapsedMs(trace),
+          ...(usage?.promptTokens === undefined ? {} : { promptTokens: usage.promptTokens }),
+          ...(usage?.completionTokens === undefined ? {} : { completionTokens: usage.completionTokens }),
+        });
         emit({
           type: 'error',
           category,
           message,
           requestId,
+          traceId: trace.traceId,
           retryable: category !== 'abort',
         });
         emit({ type: 'done', requestId, engine: 'simulator' });

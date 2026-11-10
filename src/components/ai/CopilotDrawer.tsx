@@ -75,6 +75,7 @@ import RootCauseAlert from '@/components/ai/GenUI/RootCauseAlert';
 import { cn } from '@/utils/cn';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
 import AgentTracePanel from '@/components/ai/AgentTracePanel';
+import TraceIdChip from '@/components/hud/TraceIdChip';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
   CHAT_ERROR_COPY,
@@ -949,6 +950,10 @@ function MessageBubble({
               {message.requestId !== undefined ? `（请求 id：${message.requestId}）` : ''}
             </span>
           </p>
+          <div className="mt-1 flex items-center gap-1.5">
+            <span className="font-mono text-[10px] text-amber-300/70">链路</span>
+            <TraceIdChip />
+          </div>
           <button
             type="button"
             onClick={(): void => {
@@ -1461,16 +1466,39 @@ export default function CopilotDrawer() {
             chaos: useClusterStore.getState().activeChaos,
           };
 
-    setPostMortemMarkdown(
-      buildPostMortemMarkdown({
-        messages,
-        clusterContext: buildClusterContext(),
-        startedAtMs: sessionStartedAtRef.current,
-        nowMs,
-        incidentBefore,
-        incidentTimelineMarkdown: renderIncidentTimelineMarkdown(),
-      }),
-    );
+    const baseReport = buildPostMortemMarkdown({
+      messages,
+      clusterContext: buildClusterContext(),
+      startedAtMs: sessionStartedAtRef.current,
+      nowMs,
+      incidentBefore,
+      incidentTimelineMarkdown: renderIncidentTimelineMarkdown(),
+    });
+    /* R43：复盘报告附链路摘要（无 trace 时保持原样） */
+    const traceSummary = useAgentTraceStore.getState().summary;
+    const traceBlock =
+      traceSummary === null
+        ? ''
+        : [
+            '',
+            '---',
+            '',
+            '## 链路追踪摘要',
+            '',
+            '| 指标 | 值 |',
+            '|---|---|',
+            '| traceId | ' + traceSummary.traceId + ' |',
+            '| 引擎 | ' + traceSummary.engine + ' |',
+            '| TTFT | ' + traceSummary.ttftMs.toFixed(0) + ' ms |',
+            '| 总时长 | ' + traceSummary.totalMs.toFixed(0) + ' ms |',
+            '| tokens | ' +
+              (traceSummary.promptTokens === undefined && traceSummary.completionTokens === undefined
+                ? '未配置'
+                : String(traceSummary.promptTokens ?? 0) + ' / ' + String(traceSummary.completionTokens ?? 0)) +
+              ' |',
+            '| 成本 | ' + (traceSummary.costCny === undefined ? '未配置' : '¥' + traceSummary.costCny.toFixed(4)) + ' |',
+          ].join('\n');
+    setPostMortemMarkdown(baseReport + traceBlock);
     setPostMortemFilename(buildPostMortemFilename(nowMs));
     setPostMortemOpen(true);
   }, [buildClusterContext, messages]);

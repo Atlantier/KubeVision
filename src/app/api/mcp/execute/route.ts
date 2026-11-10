@@ -94,6 +94,8 @@ interface McpExecuteReceipt {
   readonly kubectlCommand: string;
   readonly latencyMs: number;
   readonly auditDigest: string;
+  /** R43：调用方传入的链路 id（可选；不参与审计摘要计算） */
+  readonly traceId?: string;
   readonly mode: ExecutionMode;
   readonly note: string;
 }
@@ -389,8 +391,14 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   /* ---- 1. 解析并校验请求体 ---- */
   let body: McpExecuteRequest;
+  /* R43：调用方 traceId（可选，不参与 sha256 摘要）；函数级作用域，回执组装时可用 */
+  let traceId: string | undefined;
   try {
     const parsed: unknown = await request.json();
+    traceId =
+      parsed !== null && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>).traceId === 'string'
+        ? ((parsed as Record<string, unknown>).traceId as string)
+        : undefined;
     if (typeof parsed !== 'object' || parsed === null) {
       throw new Error('body is not an object');
     }
@@ -555,6 +563,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     kubectlCommand,
     latencyMs,
     auditDigest,
+    ...(traceId === undefined ? {} : { traceId }),
     mode,
     note: `${note} (clusterMode=${clusterMode}, namespace=${effectiveNamespace}${
       requestedNamespace === null ? ' [assumed in simulated mode]' : ''

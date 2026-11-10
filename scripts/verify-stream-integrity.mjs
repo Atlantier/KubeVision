@@ -255,14 +255,20 @@ for (const scenario of SCENARIOS) {
   /* ---- 断言 0b（R35）：trace-summary 必达且 engine 与实际一致 ---- */
   const traceSummaries = events.filter((e) => e.type === 'trace-summary');
   const spans = events.filter((e) => e.type === 'span');
-  if (traceSummaries.length >= 1 && traceSummaries.some((e) => e.engine === engine)) {
+  /*
+   * R43：响应头 engine 是"响应时刻的意图"，流内 engine 事件才是事实（A 失败会回落 B）。
+   * 断言 trace-summary.engine 与最后一个 engine 事件一致；无事件时回退 header。
+   */
+  const engineEvents = events.filter((e) => e.type === 'engine');
+  const actualEngine = engineEvents.length === 0 ? engine : engineEvents[engineEvents.length - 1].engine;
+  if (traceSummaries.length >= 1 && traceSummaries.some((e) => e.engine === actualEngine)) {
     const sample = traceSummaries[traceSummaries.length - 1];
-    console.log(`  ✓ trace-summary 必达且 engine 一致（engine=${sample.engine} ttft=${sample.ttftMs}ms total=${sample.totalMs}ms spans=${spans.length}）`);
+    console.log(`  ✓ trace-summary 必达且 engine 与实际一致（header=${engine} actual=${actualEngine} summary=${sample.engine} ttft=${sample.ttftMs}ms total=${sample.totalMs}ms spans=${spans.length}）`);
     console.log(`    [trace-summary 样例] ${JSON.stringify(sample)}`);
     for (const span of spans.slice(0, 4)) console.log(`    [span 样例] ${JSON.stringify(span)}`);
   } else {
     failures += 1;
-    console.log(`  ✗ trace-summary 缺失或 engine 不一致（实际 engine=${engine ?? '(none)'} summaries=${traceSummaries.length}）`);
+    console.log(`  ✗ trace-summary 缺失或 engine 不一致（header=${engine ?? '(none)'} actual=${String(actualEngine)} summaries=${traceSummaries.length}）`);
   }
 
   /* ---- 断言 1（核心）：无孤儿 tool-start ---- */

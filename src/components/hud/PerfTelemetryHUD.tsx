@@ -30,6 +30,7 @@ import { Activity, Cpu, Gauge, Layers, Radio, Triangle, X } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { useAgentTraceStore } from '@/store/useAgentTraceStore';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
   HEALTH_JITTER_WARN_MS,
@@ -158,6 +159,8 @@ function FpsSparkline({ values }: { readonly values: readonly number[] }) {
  */
 function DataHealthBlock() {
   const readOnly = useClusterStore((s): boolean => s.telemetryReadOnly);
+  /* R43：链路预算（每次请求更新一次，不进入 250ms 遥测节拍） */
+  const traceSummary = useAgentTraceStore((s): import('@/store/useAgentTraceStore').ClientTraceSummary | null => s.summary);
   const notice = useClusterStore((s): string | null => s.telemetrySchemaNotice);
 
   const qpsRef = useRef<HTMLSpanElement | null>(null);
@@ -239,6 +242,30 @@ function DataHealthBlock() {
           <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">免疫改写</span>
           <span ref={immuneRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0</span>
           <span className="ml-auto font-mono text-[10px] text-slate-500">条</span>
+        </div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">链路预算</span>
+          {traceSummary === null ? (
+            <span className="font-mono text-[10px] text-slate-500">等待首次请求</span>
+          ) : (
+            <>
+              <span
+                className="font-mono text-[10px] font-bold tabular-nums"
+                style={{ color: traceSummary.ttftMs > 2000 ? '#fbbf24' : '#e2e8f0' }}
+              >
+                TTFT {traceSummary.ttftMs.toFixed(0)}ms
+              </span>
+              <span
+                className="ml-2 font-mono text-[10px] font-bold tabular-nums"
+                style={{ color: traceSummary.totalMs > 8000 ? '#fbbf24' : '#e2e8f0' }}
+              >
+                TOTAL {traceSummary.totalMs.toFixed(0)}ms
+              </span>
+              <span className="ml-auto font-mono text-[10px] text-slate-500">
+                {traceSummary.engine === 'llm' ? 'LLM' : '容灾引擎'}
+              </span>
+            </>
+          )}
         </div>
         <div className="flex items-baseline gap-1.5">
           <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">协议版本</span>

@@ -463,6 +463,8 @@ export interface ChatStreamErrorEvent {
   readonly message: string;
   /** 请求 id（服务端生成，贯穿日志与前端提示） */
   readonly requestId: string;
+  /** R43：贯穿链路 id（前端错误卡片可复制；与 span/trace-summary 同源） */
+  readonly traceId?: string;
   /** 是否建议重试 */
   readonly retryable: boolean;
 }
