@@ -44,6 +44,13 @@ import {
   type ChaosRemediationAction,
 } from '@/utils/chaosTargets';
 import { isActionAllowedForPod, resolvePodAction } from '@/utils/chaosFacts';
+import {
+  captureDemoFrame,
+  clearDemoRecording,
+  finishDemoRecording,
+  setDemoFrameContextProvider,
+  startDemoRecording,
+} from '@/utils/demoRecorder';
 import type { DemoFacts } from '@/types/demo';
 
 /* ========================================================================== */
@@ -86,6 +93,19 @@ export interface DemoPhase {
   readonly template?: (facts: DemoFacts) => string;
 }
 
+/**
+ * 路演节奏模式（追问 1）。
+ *
+ * · `standard` 标准：答辩默认，约 30~35 秒跑完；
+ * · `compact`  紧凑：压到约 20 秒，适合"只给 30 秒"的极短陈述；
+ * · `narrator` 讲解版：每个阶段结束**停在断点**等主讲人按空格，
+ *   时长由人掌控而不是由计时器掌控。
+ */
+export type DemoPacingKind = 'standard' | 'compact' | 'narrator';
+
+/** 各节奏模式的总时长（毫秒） */
+export type DemoPacingTable = Readonly<Record<DemoPacingKind, number>>;
+
 /** 剧本定义 */
 export interface DemoScript {
   readonly id: DemoScriptId;
@@ -93,8 +113,16 @@ export interface DemoScript {
   readonly label: string;
   /** 完整标题 */
   readonly title: string;
-  /** 总时长（毫秒） */
+  /**
+   * 标准节奏总时长（毫秒）。
+   *
+   * 【保留它的原因】所有阶段的 `atMs` 都以标准时间轴为基准；
+   * 切到紧凑/讲解版时按 `pacing[mode] / pacing.standard` 等比缩放，
+   * 这样一份阶段定义可以服务三种节奏，不需要维护三套时间轴。
+   */
   readonly durationMs: number;
+  /** 三种节奏的总时长表 */
+  readonly pacing: DemoPacingTable;
   readonly phases: readonly DemoPhase[];
 }
 
@@ -114,6 +142,20 @@ export interface DemoDirectorSnapshot {
   readonly badge: string;
   /** 当前导演字幕；idle 时为空串 */
   readonly narration: string;
+
+  /*
+   * ===== 节奏（追问 1）=====
+   */
+
+  /** 当前节奏模式 */
+  readonly pacing: DemoPacingKind;
+  /**
+   * 讲解版是否正停在阶段断点等待主讲人按空格。
+   *
+   * 【为什么单独外露】字幕条要据此显示「按空格继续」的提示；
+   * 只靠 status==='paused' 区分不出来（用户手动暂停也会 paused）。
+   */
+  readonly awaitingNarratorAdvance: boolean;
 
   /*
    * ===== 时间与外显状态（B / G / H 项）=====
@@ -456,6 +498,7 @@ export const DEMO_SCRIPTS: readonly DemoScript[] = [
     label: 'OOM 全链路自愈',
     title: 'OOM 内存溢出全链路诊断与 MCP 自愈闭环',
     durationMs: 34_000,
+    pacing: { standard: 34_000, compact: 20_000, narrator: 34_000 },
     phases: OOM_PHASES,
   },
   {
@@ -463,6 +506,7 @@ export const DEMO_SCRIPTS: readonly DemoScript[] = [
     label: 'CNI 网络延迟追踪',
     title: 'CNI 跨节点网络延迟追踪与自愈闭环',
     durationMs: 32_000,
+    pacing: { standard: 32_000, compact: 20_000, narrator: 32_000 },
     phases: NETWORK_PHASES,
   },
   {
@@ -470,6 +514,7 @@ export const DEMO_SCRIPTS: readonly DemoScript[] = [
     label: '节点 CPU 尖刺扩缩容',
     title: '节点 CPU 算力尖刺定位与扩缩容自愈闭环',
     durationMs: 34_000,
+    pacing: { standard: 34_000, compact: 20_000, narrator: 34_000 },
     phases: CPU_PHASES,
   },
 ];
@@ -527,6 +572,18 @@ let finishedAt: number | null = null;
  * 这样 stop / 重播时能一并取消，也不会受 React 渲染节奏影响。
  */
 let finishedCollapseTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 当前节奏模式（追问 1）——跨剧本记住用户选择，不在 start 时重置 */
+let currentPacing: DemoPacingKind = 'standard';
+
+/** 讲解版是否停在阶段断点等待主讲人按空格（追问 1） */
+let awaitingNarratorAdvance = false;
+
+/** 讲解版待推进到的阶段下标（停在断点时记录） */
+let pendingNarratorIndex = -1;
+
+/** 空格键监听是否已绑定（幂等） */
+let narratorKeyBound = false;
 
 /** 是否因页面隐藏而自动暂停（F 项） */
 let pausedByVisibility = false;
@@ -711,6 +768,8 @@ let cachedSnapshot: DemoDirectorSnapshot = {
   preflightError: null,
   finishedAt: null,
   pausedByVisibility: false,
+  pacing: 'standard',
+  awaitingNarratorAdvance: false,
 };
 
 /**
@@ -832,6 +891,42 @@ function abortMcp(): void {
   }
 }
 
+/**
+ * effectiveDurationMs —— 当前节奏下的剧本总时长（追问 1）。
+ *
+ * @returns 毫秒；无剧本时 0
+ */
+function effectiveDurationMs(): number {
+  const script = currentScript;
+  if (script === null) return 0;
+  return script.pacing[currentPacing];
+}
+
+/**
+ * pacingScale —— 当前节奏相对标准时间轴的倍数。
+ *
+ * 【为什么用比例而不是重写每套剧本的 atMs】三套剧本 × 四阶段 × 三节奏
+ * 会产生 36 个数字，人工维护必然漂移。只维护"标准时间轴"一份，
+ * 其余节奏按总时长比例等比缩放，永远自洽。
+ *
+ * @returns 倍数（标准节奏为 1）
+ */
+function pacingScale(): number {
+  const script = currentScript;
+  if (script === null || script.pacing.standard <= 0) return 1;
+  return script.pacing[currentPacing] / script.pacing.standard;
+}
+
+/**
+ * scaledAtMs —— 把阶段的标准时间轴位置换算到当前节奏。
+ *
+ * @param phase 阶段定义
+ * @returns 当前节奏下的毫秒位置
+ */
+function scaledAtMs(phase: DemoPhase): number {
+  return Math.round(phase.atMs * pacingScale());
+}
+
 /** 当前已用时长（毫秒） */
 function currentElapsedMs(): number {
   if (status !== 'running') return accumulatedMs;
@@ -841,7 +936,9 @@ function currentElapsedMs(): number {
 /** 重新计算并广播快照 */
 function publish(): void {
   const script = currentScript;
-  const elapsed = script === null ? 0 : Math.min(currentElapsedMs(), script.durationMs);
+  /* 时长基准是"当前节奏"的总时长，而不是剧本的标准时长 */
+  const total = effectiveDurationMs();
+  const elapsed = script === null ? 0 : Math.min(currentElapsedMs(), total);
   const activePhase =
     script !== null && phaseIndex >= 0 && phaseIndex < script.phases.length
       ? script.phases[phaseIndex]
@@ -854,11 +951,8 @@ function publish(): void {
     phases: script?.phases ?? [],
     phaseIndex,
     elapsedMs: Math.round(elapsed),
-    durationMs: script?.durationMs ?? 0,
-    progress:
-      script === null || script.durationMs <= 0
-        ? 0
-        : Math.min(1, Math.max(0, elapsed / script.durationMs)),
+    durationMs: total,
+    progress: total <= 0 ? 0 : Math.min(1, Math.max(0, elapsed / total)),
     badge: activePhase?.badge ?? '',
     /* 优先用当帧事实渲染的旁白，其次才是剧本静态兜底文案 */
     narration: narrationOverride ?? activePhase?.fallback ?? '',
@@ -867,6 +961,8 @@ function publish(): void {
     preflightError,
     finishedAt,
     pausedByVisibility,
+    pacing: currentPacing,
+    awaitingNarratorAdvance,
   };
 
   for (const listener of listeners) listener();
@@ -1788,6 +1884,9 @@ function enterPhase(index: number): void {
     const rendered = renderPhaseNarration(phase, lastInjectedChaos);
     narrationOverride = rendered;
 
+    /* 追问 2：阶段切换是天然的语义节点，显式录一帧 */
+    captureDemoFrame(index, phase.badge, rendered);
+
     /* 语音解说：与字幕同源，避免"念的和写的不一样" */
     if (narrator !== null) narrator(rendered);
   }
@@ -1812,16 +1911,46 @@ function scheduleFrom(elapsed: number): void {
     const phase = script.phases[i];
     if (phase === undefined) continue;
 
-    if (phase.atMs <= elapsed) {
+    /* 【追问 1】阶段位置按当前节奏等比换算，标准节奏下与原值一致 */
+    const atMs = scaledAtMs(phase);
+
+    if (atMs <= elapsed) {
       /* 已到点但还没进过 → 立即补触发 */
       if (i > phaseIndex) enterPhase(i);
       continue;
     }
 
-    const delay = phase.atMs - elapsed;
+    const delay = atMs - elapsed;
     const handle = setTimeout((): void => {
       if (status !== 'running') return;
+      if (awaitingNarratorAdvance) return;
       phaseTimerByIndex.delete(i);
+
+      /*
+       * 【追问 1 · 讲解版】进入下一阶段前先停在断点，等主讲人按空格。
+       * 注意停在断点时**不推进 phaseIndex**，这样字幕条仍显示上一阶段的
+       * 收尾文案，主讲人可以就着这句话继续讲；按空格后才真正进入下一阶段。
+       */
+      if (currentPacing === 'narrator') {
+        awaitingNarratorAdvance = true;
+        pendingNarratorIndex = i;
+        /*
+         * 【必须把 status 置 paused】断点的语义是"时间停止"。
+         * 若仍保持 running，currentElapsedMs 会继续累加，进度条在主讲人
+         * 讲解期间持续推进，等他按空格时早已跑过头。
+         */
+        accumulatedMs += performance.now() - segmentStartedAt;
+        segmentStartedAt = performance.now();
+        status = 'paused';
+        pausedByVisibility = false;
+        clearAllTimers();
+        actions().appendTerminalLog(
+          '[DEMO-DIRECTOR] ⏸ 讲解版断点：按空格进入下一阶段',
+        );
+        publish();
+        return;
+      }
+
       enterPhase(i);
     }, delay);
     phaseTimers.push(handle);
@@ -1829,7 +1958,7 @@ function scheduleFrom(elapsed: number): void {
   }
 
   /* 收尾定时器：到总时长后标记完成（但不得抢跑仍未决的事件门） */
-  const remain = Math.max(script.durationMs - elapsed, FINISH_MIN_GRACE_MS);
+  const remain = Math.max(effectiveDurationMs() - elapsed, FINISH_MIN_GRACE_MS);
   const finishHandle = setTimeout((): void => {
     if (status !== 'running') return;
     /*
@@ -1872,6 +2001,200 @@ export function getDemoScript(id: DemoScriptId): DemoScript | null {
   return null;
 }
 
+/* ========================================================================== */
+/* 追问 1：节奏切换 / 讲解版断点                                                */
+/* ========================================================================== */
+
+/**
+ * setDemoPacing —— 切换路演节奏（追问 1）。
+ *
+ * 【运行中可切换，且不重置已完成阶段】切换时不碰 phaseIndex：已走过的阶段
+ * 永远算走过。做法是把**已用时长**按新旧总时长比例折算（progress 比例不变），
+ * 再按新时间轴重排尚未触发的阶段。于是"看到一半切成紧凑版"不会跳回阶段 1，
+ * 也不会把进度条打回 0。
+ *
+ * 【讲解版的行为差异】切到 narrator 后，下一个阶段边界不再是自动推进，
+ * 而是停在断点等空格（见 scheduleFrom 内的分支）。
+ *
+ * @param mode 目标节奏
+ */
+export function setDemoPacing(mode: DemoPacingKind): void {
+  if (mode === currentPacing) return;
+
+  const oldTotal = effectiveDurationMs();
+  const oldElapsed = currentElapsedMs();
+  const wasRunning = status === 'running';
+
+  currentPacing = mode;
+  const newTotal = effectiveDurationMs();
+
+  /*
+   * 按比例折算已用时长：progress = elapsed / total 保持不变。
+   * 这是"重算进度但不重置阶段"的实现要点——变的只有时间刻度，不是相位。
+   */
+  if (oldTotal > 0 && newTotal > 0 && oldElapsed > 0) {
+    accumulatedMs = Math.round(oldElapsed * (newTotal / oldTotal));
+  }
+  segmentStartedAt = performance.now();
+
+  /* 断点状态在切换节奏时作废，避免停在旧断点上 */
+  awaitingNarratorAdvance = false;
+  pendingNarratorIndex = -1;
+
+  if (wasRunning) {
+    clearAllTimers();
+    scheduleFrom(currentElapsedMs());
+    startTick();
+  }
+
+  actions().appendTerminalLog(
+    `[DEMO-DIRECTOR] 节奏切换为 ${PACING_LABEL[mode]}（总时长 ${Math.round(newTotal / 1000)} 秒）`,
+  );
+  publish();
+}
+
+/**
+ * advanceNarratorBreakpoint —— 讲解版断点处按空格继续（追问 1）。
+ *
+ * 【为什么不能复用 resumeDemoDirector】resume 会按已用时长重排时间轴，
+ * 而断点的那个阶段恰好是"已到点"的位置，重排会立刻又停回同一个断点，
+ * 形成死循环。这里改为**直接进入待推进的阶段**，再排其余部分。
+ */
+export function advanceNarratorBreakpoint(): void {
+  if (!awaitingNarratorAdvance) return;
+
+  const target = pendingNarratorIndex;
+  awaitingNarratorAdvance = false;
+  pendingNarratorIndex = -1;
+
+  const script = currentScript;
+  if (script === null) {
+    publish();
+    return;
+  }
+
+  status = 'running';
+  segmentStartedAt = performance.now();
+
+  if (target >= 0 && target < script.phases.length && target > phaseIndex) {
+    enterPhase(target);
+  }
+  scheduleFrom(currentElapsedMs());
+  startTick();
+
+  actions().appendTerminalLog('[DEMO-DIRECTOR] ▶ 讲解版断点已继续');
+  publish();
+}
+
+/**
+ * bindNarratorKey —— 绑定空格键推进讲解版断点（幂等）。
+ *
+ * 【为什么绑在模块而不是组件】空格是全局演示快捷键，绑在组件里会随组件
+ * 挂载/卸载丢失；模块级单例只需绑一次，且能用 awaitingNarratorAdvance
+ * 精确判断"此刻空格该不该被消费"，不会干扰输入框打字（输入框聚焦时放行）。
+ */
+function bindNarratorKey(): void {
+  if (narratorKeyBound) return;
+  if (typeof document === 'undefined') return;
+  narratorKeyBound = true;
+
+  document.addEventListener('keydown', (event: KeyboardEvent): void => {
+    if (event.code !== 'Space') return;
+    if (!awaitingNarratorAdvance) return;
+
+    /* 输入框/文本域里打字时空格属于正常输入，不能抢 */
+    const target = event.target;
+    if (target instanceof HTMLElement) {
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return;
+    }
+
+    event.preventDefault();
+    advanceNarratorBreakpoint();
+  });
+}
+
+/* ========================================================================== */
+/* 追问 3：双击保护与调试钩子                                                    */
+/* ========================================================================== */
+
+/**
+ * 启动去重窗口（毫秒）。
+ *
+ * 【追问 3 要解决的问题】连点 5 次启动按钮，早期实现会真的跑 5 次
+ * startDemoDirector：每次都 stop('switch') + 重新排程 + 代次自增。
+ * 表面上最后只剩一套定时器，但中间会产生大量无效日志，并把 AI 诊断请求
+ * 重复触发 5 次——而 AI 请求是最贵的副作用。
+ *
+ * 现在同一剧本在窗口期内重复启动直接忽略，5 次点击只产生 1 个实例。
+ */
+const START_DEDUPE_WINDOW_MS = 1_200;
+
+/** 上一次成功启动的时刻（用于去重） */
+let lastStartAt = 0;
+
+/** 上一次成功启动的剧本 id（用于去重） */
+let lastStartId: DemoScriptId | null = null;
+
+/**
+ * countActiveTimers —— 当前存活的定时器数量（追问 3 的断言口径）。
+ *
+ * 【为什么把它做成可读指标】"只产生一个实例"不能靠嘴说。把存活的定时器
+ * 总数暴露出来，R04 就能据此断言"点 5 次与点 1 次的 timerCount 相同"，
+ * 而不是靠截图或日志行数猜测。
+ *
+ * @returns 存活定时器数量
+ */
+function countActiveTimers(): number {
+  let count = phaseTimers.length;
+  if (tickTimer !== null) count += 1;
+  if (phaseGateTimer !== null) count += 1;
+  if (phaseGateDeadlineTimer !== null) count += 1;
+  if (finishedCollapseTimer !== null) count += 1;
+  return count;
+}
+
+/**
+ * installDemoDirectorDebug —— 暴露 `window.__demoDirectorDebug__`（追问 3）。
+ *
+ * 【为什么用 getter 而不是静态对象】定时器数量随时变化，若挂一个静态对象，
+ * R04 读到的永远是安装那一刻的旧值。用属性 getter 每次读取都现算，断言才可靠。
+ *
+ * 【为什么不随生产构建剔除】调试钩子通常会被 DCE 剔除（如
+ * window.__KUBEVISION_STORE__），但那会让"生产环境的实例唯一性"无法被外部
+ * 断言。这里保留：对象极小、无副作用、且不含任何用户数据。
+ */
+function installDemoDirectorDebug(): void {
+  if (typeof window === 'undefined') return;
+  const debugTarget = window as unknown as {
+    __demoDirectorDebug__?: {
+      readonly timerCount: number;
+      readonly status: DemoDirectorStatus;
+      readonly pacing: DemoPacingKind;
+      readonly phaseIndex: number;
+      readonly awaitingNarratorAdvance: boolean;
+    };
+  };
+  Object.defineProperty(debugTarget, '__demoDirectorDebug__', {
+    configurable: true,
+    enumerable: false,
+    get: () => ({
+      timerCount: countActiveTimers(),
+      status,
+      pacing: currentPacing,
+      phaseIndex,
+      awaitingNarratorAdvance,
+    }),
+  });
+}
+
+/** 节奏模式的中文标签（日志与 UI 共用） */
+export const PACING_LABEL: Readonly<Record<DemoPacingKind, string>> = {
+  standard: '标准',
+  compact: '紧凑',
+  narrator: '讲解版',
+};
+
 /**
  * startDemoDirector —— 启动指定剧本。
  *
@@ -1883,6 +2206,29 @@ export function getDemoScript(id: DemoScriptId): DemoScript | null {
 export function startDemoDirector(id: DemoScriptId): void {
   const script = getDemoScript(id);
   if (script === null) return;
+
+  /*
+   * ---- 追问 3：连续点击去重 ----
+   *
+   * 连点 5 次会触发 5 轮"停止 → 复位 → 重排 → 唤醒 AI"。定时器虽然每次都被
+   * 新一轮清掉，但 AI 诊断请求会被真实发出 5 次——这是最贵的副作用。
+   * 同一剧本在窗口期内重复启动直接忽略。
+   */
+  const nowMs = Date.now();
+  if (
+    nowMs - lastStartAt < START_DEDUPE_WINDOW_MS &&
+    lastStartId === id &&
+    (status === 'running' || status === 'paused')
+  ) {
+    return;
+  }
+  lastStartAt = nowMs;
+  lastStartId = id;
+
+  /* 绑定空格推进讲解版断点（幂等） */
+  bindNarratorKey();
+  /* 暴露 window.__demoDirectorDebug__（追问 3） */
+  installDemoDirectorDebug();
 
   /* 先彻底停掉上一轮，避免两套定时器同时向 store 写动作 */
   stopDemoDirector('switch');
@@ -1908,6 +2254,21 @@ export function startDemoDirector(id: DemoScriptId): void {
 
   /* 绑定可见性守卫（幂等，只会真正注册一次） */
   bindVisibilityGuard();
+
+  /*
+   * 追问 2：开始录制关键帧（重播/连跑时先清空上一轮）。
+   * 同时注册帧上下文提供者，让定时采样也能带上"当前阶段/字幕"，
+   * 否则采样帧会出现"阶段 —"的空信息帧。
+   */
+  setDemoFrameContextProvider(() => ({
+    phaseIndex,
+    badge:
+      currentScript !== null && phaseIndex >= 0 && phaseIndex < currentScript.phases.length
+        ? (currentScript.phases[phaseIndex]?.badge ?? '')
+        : '',
+    narration: cachedSnapshot.narration,
+  }));
+  startDemoRecording();
 
   const bootApi = actions();
   if (bootApi.connectionMode !== 'demo') {
@@ -1949,6 +2310,8 @@ export function startDemoDirector(id: DemoScriptId): void {
   preflightError = null;
   finishedAt = null;
   pausedByVisibility = false;
+  awaitingNarratorAdvance = false;
+  pendingNarratorIndex = -1;
 
   currentScript = script;
   lastScriptId = script.id;
@@ -1995,6 +2358,14 @@ export function pauseDemoDirector(): void {
  */
 export function resumeDemoDirector(): void {
   if (status !== 'paused' || currentScript === null) return;
+  /*
+   * 【断点态必须走断点推进】常规 resume 会按已用时长重排时间轴，
+   * 而断点所在阶段恰好"已到点"，重排会立刻再次停在同一个断点 → 死循环。
+   */
+  if (awaitingNarratorAdvance) {
+    advanceNarratorBreakpoint();
+    return;
+  }
   status = 'running';
   pausedByVisibility = false;
   segmentStartedAt = performance.now();
@@ -2103,6 +2474,14 @@ function finishDemoDirector(): void {
   finishApi.selectEntity(null);
   finishApi.setOrbitPatrolActive(true, 'programmatic');
   finishApi.appendTerminalLog('[DEMO-DIRECTOR] ■ 剧本已完整跑完');
+
+  /* 追问 2：收尾帧单独补录——完成时刻的健康分与卡片状态最有讲解价值 */
+  finishDemoRecording(
+    phaseIndex,
+    currentScript?.phases[phaseIndex]?.badge ?? '',
+    cachedSnapshot.narration,
+  );
+
   publish();
 
   /*
@@ -2150,6 +2529,10 @@ export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user')
    *
    * 顺序要求：必须在 status 置 idle 之前发起中止，因为中止链路会读当前状态。
    */
+  /* 追问 2：停止即清空录像并解除上下文提供者，避免上一轮帧混入下一轮 */
+  clearDemoRecording();
+  setDemoFrameContextProvider(null);
+
   const stopApi = actions();
   stopApi.requestCopilotAbort();
   stopApi.clearQuickPromptTrigger();
@@ -2167,6 +2550,8 @@ export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user')
   status = 'idle';
   finishedAt = null;
   pausedByVisibility = false;
+  awaitingNarratorAdvance = false;
+  pendingNarratorIndex = -1;
   phaseStartedAt = null;
   phaseDeadline = null;
   currentScript = null;

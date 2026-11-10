@@ -53,6 +53,8 @@ import { useClusterStore } from '@/store/useClusterStore';
 import {
   DEMO_SCRIPTS,
   FINISHED_AUTO_COLLAPSE_MS,
+  PACING_LABEL,
+  setDemoPacing,
   clearPreflightError,
   dismissFinishedDemo,
   registerDemoNarrator,
@@ -62,9 +64,11 @@ import {
   togglePauseDemoDirector,
   useDemoDirector,
   type DemoDirectorSnapshot,
+  type DemoPacingKind,
   type DemoScriptId,
 } from '@/utils/demoDirector';
 import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
+import DemoReplayTimeline from '@/components/hud/DemoReplayTimeline';
 import type { ChaosScenario, PodStatus, TelemetrySnapshot } from '@/types/cluster';
 import type { ConnectionMode, StatusFilter } from '@/types/store';
 import type {
@@ -766,13 +770,20 @@ function DemoDirectorBar({
    * 是程序卡了还是自己切走导致的。明确写出"已暂停，点击继续"才算交代清楚。
    * 被动暂停（pausedByVisibility）额外说明原因。
    */
+  /*
+   * 【断点提示优先级最高】讲解版停在断点时 status 也是 paused，
+   * 若只按 paused 渲染会显示"已暂停，点击继续"，把"按空格"这个关键
+   * 操作方式藏起来。因此断点态单独成一句。
+   */
   const narrationText = isPreflightError
     ? `演示环境自检未通过：${demo.preflightError ?? ''}`
-    : isPaused
-      ? demo.pausedByVisibility
-        ? '已暂停（页面切至后台触发），点击继续'
-        : '已暂停，点击继续'
-      : demo.narration;
+    : demo.awaitingNarratorAdvance
+      ? '讲解版断点：按空格（或点此处）进入下一阶段'
+      : isPaused
+        ? demo.pausedByVisibility
+          ? '已暂停（页面切至后台触发），点击继续'
+          : '已暂停，点击继续'
+        : demo.narration;
 
   /**
    * 阶段剩余时间提示（B 项）。
@@ -858,6 +869,30 @@ function DemoDirectorBar({
 
         {/* ---- 右：计时 + 进度 + 操作 ---- */}
         <div className="flex shrink-0 items-center gap-2">
+          {/* 追问 1：运行中可切换节奏，切换按比例重算进度、不重置已完成阶段 */}
+          <span className="flex items-center gap-px" role="group" aria-label="路演节奏">
+            {(Object.keys(PACING_LABEL) as DemoPacingKind[]).map((kind): React.ReactNode => (
+              <button
+                key={`pacing-${kind}`}
+                type="button"
+                onClick={(): void => {
+                  setDemoPacing(kind);
+                }}
+                aria-label={`切换为${PACING_LABEL[kind]}节奏`}
+                aria-pressed={demo.pacing === kind}
+                title={`${PACING_LABEL[kind]}节奏`}
+                className={cn(
+                  'h-4 px-1 font-mono text-[9px] leading-none transition-colors',
+                  demo.pacing === kind
+                    ? 'bg-cyan-400/20 text-cyan-200'
+                    : 'text-slate-500 hover:text-slate-300',
+                )}
+              >
+                {PACING_LABEL[kind]}
+              </button>
+            ))}
+          </span>
+
           <span className="font-mono text-[9px] tabular-nums text-slate-500">
             {elapsedSec}s / {totalSec}s
           </span>
@@ -1393,6 +1428,18 @@ export default function TopBar() {
         </div>
       ) : null}
     </AnimatePresence>
+
+    {/*
+      * 【追问 2：事故回放入口/面板】
+      *
+      * 刻意放在 isDemoActive 条件**之外**：路演的"完成态 8 秒自动收起"
+      * 会把 status 打回 idle，但录像仍在——此时最需要回放。
+      * 若把它写在演示态里面，字幕条一收起回放入口就跟着消失。
+      * 组件自身在无录像时返回 null，所以常驻渲染不占位。
+      */}
+    <div className="pointer-events-none fixed bottom-6 left-1/2 z-40 flex w-full max-w-[54rem] -translate-x-1/2 justify-center px-4">
+      <DemoReplayTimeline />
+    </div>
     </>
   );
 }

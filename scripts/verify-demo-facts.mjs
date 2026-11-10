@@ -424,8 +424,22 @@ async function main() {
         s.lastDirectorLog.includes('自愈未完全验证'));
 
     if ((healedCount > 0 && hasReceipt) || hasVerdict) {
-      await sleep(1500);
-      final = await evaluate(cdp, READ_STATE);
+      /*
+       * 【结论先到、回执后到】闭环结论日志在 healEntity 落库时就写了，
+       * 而 MCP 回执要等控制器调谐完成——实测晚 1~3 秒，慢环境更久。
+       * 若一看到结论就收尾，3a 会读到 mcpAction=null 并误判 actionType 不符。
+       * 因此看到结论后再给回执最多 10 秒窗口（与矩阵脚本同一策略）。
+       */
+      const receiptDeadline = Date.now() + 10000;
+      let settled = await evaluate(cdp, READ_STATE);
+      while (
+        !(settled?.mcpAction !== null && settled?.mcpAction !== undefined) &&
+        Date.now() < receiptDeadline
+      ) {
+        await sleep(500);
+        settled = await evaluate(cdp, READ_STATE);
+      }
+      final = settled;
       break;
     }
     if (Date.now() - settleStart > 90000) {
