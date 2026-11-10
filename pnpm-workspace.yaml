@@ -1,4 +1,10 @@
 # =============================================================================
+# 安装策略（由 .npmrc 迁移至此；pnpm 11 从 pnpm-workspace.yaml 读取配置）
+# =============================================================================
+autoInstallPeers: true
+strictPeerDependencies: false
+shamefullyHoist: true
+
 # KubeVision AI — pnpm 构建脚本许可配置（pnpm 11 自动生成脚手架，显式定稿）
 #
 # 【设计意图】显式拒绝以下三个依赖的 install/postinstall 原生构建脚本：

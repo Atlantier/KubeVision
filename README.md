@@ -67,7 +67,7 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 | **大模型流式集成** | 8% | 双引擎（真实 LLM + 确定性仿真器）NDJSON 流式协议；`fullStream` 逐帧消费；断流自动降级不断演示 | [`src/app/api/chat/route.ts`](src/app/api/chat/route.ts) · [`CopilotDrawer.tsx`](src/components/ai/CopilotDrawer.tsx) |
 | **ReAct Agent 工作流** | 8% | 四阶段可解释推理链：意图规划 → 多模态视觉 → RAG 检索 → MCP 工具调用，每阶段实时回传耗时与详情到思维链 UI | [`AgentThoughtChain`](src/components/ai/GenUI/AgentThoughtChain.tsx) |
 | **混合 RAG 检索** | 6% | 语料库级 IDF 预计算 + Okapi BM25（k₁=1.5, b=0.75）+ TF-IDF 加权余弦 + RRF 倒数秩融合 + Sigmoid 分段置信度校准；12 篇权威手册 | [`sreRagEngine.ts`](src/utils/sreRagEngine.ts) |
-| **多模态融合** | 5% | 3D 视口截图 → 多模态数组消息（`[text, image]`）→ 视觉推理步骤；语音输入 / 语音播报双通道 | [`route.ts`](src/app/api/chat/route.ts) · [`useSpeechRecognition`](src/hooks/useSpeechRecognition.ts) |
+| **多模态融合** | 5% | 3D 视口截图 → 多模态数组消息（`[text, image]`）→ 视觉推理步骤；语音输入 / 语音播报双通道 | [`route.ts`](src/app/api/chat/route.ts) · [`useSpeechInput`](src/hooks/useSpeechInput.ts) |
 | **端侧脱敏与 HITL 安全** | 4% | 6 类 PII 正则脱敏（零出域）+ WebGPU/WASM 384 维神经余弦分类 + 高危动作二次确认护栏 | [`logSanitizer.ts`](src/utils/logSanitizer.ts) · [`logClassifier.worker.ts`](src/workers/logClassifier.worker.ts) |
 | **MCP 协议工具闭环** | 4% | 3 个 MCP 工具注册、参数校验、执行回执、3D 空间自愈脉冲 | [`route.ts`](src/app/api/chat/route.ts) |
 
@@ -451,6 +451,22 @@ src/
 - 核心算法必须有中文原理注释
 
 ---
+
+### 7.6 HTTP API 清单
+
+| 路由 | 方法 | 说明 |
+|---|---|---|
+| `/api/chat` | POST | 双擎 NDJSON 流式对话（意图 → RAG → 多模态 → MCP 工具卡片） |
+| `/api/telemetry` | GET | SSE 遥测流（1Hz 合成集群快照） |
+| `/api/logs/live` | GET | 模拟实时日志流（端侧脱敏后的日志样本） |
+| `/api/mcp` | GET | MCP JSON-RPC 工具清单（tools/list） |
+| `/api/mcp/execute` | POST | MCP 工具执行回执（写操作需前端 HITL 二次确认） |
+| `/api/verify/rag` | POST | RAG 检索契约验证（评测/CI 用） |
+| `/api/verify/sanitize` | POST | 脱敏契约验证（评测/CI 用） |
+| `/api/dev/rag-eval` | GET | 仅开发环境可用的 RAG 评测数据（生产 404） |
+
+> 流式响应由路由自身返回 `Cache-Control: no-cache, no-transform`、
+> `X-Accel-Buffering: no` 等头；`vercel.json` 不再重复声明，避免配置漂移导致 SSE 被缓冲。
 
 ## 八、交互指南
 
