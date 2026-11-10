@@ -83,6 +83,12 @@ const NEBULA_COUNT = 360;
 const NEBULA_RADIUS = 1.15;
 const VERTEX_SPARK_COUNT = 12;
 const GYRO_RING_COUNT = 3;
+/**
+ * 星芒平面世界尺寸 = 晶核直径 × 1.6 上限。
+ * 晶核半径 0.4 → 直径 0.8 → 星芒最大边 1.28 世界单位。
+ * 透视投影下屏幕尺寸与晶核保持同一比例，因此恒 ≤ 晶核屏幕直径的 1.6 倍。
+ */
+const STAR_SIZE = CORE_RADIUS * 2 * 1.6;
 
 /** 色温：健康 = 冰川青（#00f2fe / #38bdf8） */
 const TONE_HEALTHY = new THREE.Color('#38bdf8');
@@ -154,13 +160,17 @@ float snoise(vec3 v) {
   return 42.0 * dot(m * m, vec4(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
 }
 
-/** 3 个倍频叠加：低频塑造大团流动，高频提供细节 */
+/** 3 个倍频叠加：低频塑造大团流动，高频提供细节；低档位只保留第 1 倍频 */
 float fbm3(vec3 p) {
-  float value = 0.0;
-  value += 0.55 * snoise(p);
+  float value = 0.55 * snoise(p);
+#if KV_LOW_NOISE
+  /* T1/T0：关闭倍频 2/3，保留主流动（detail 降低但形状仍在） */
+  return value;
+#else
   value += 0.30 * snoise(p * 2.03 + vec3(11.7, 3.1, 7.9));
   value += 0.15 * snoise(p * 4.11 + vec3(2.3, 9.4, 5.2));
   return value;
+#endif
 }
 `;
 
@@ -285,12 +295,13 @@ const WIRE_VERTEX = /* glsl */ `
 const WIRE_FRAGMENT = /* glsl */ `
   uniform vec3 uColor;
   uniform float uTime;
+  uniform float uFlowSpeed;
   uniform float uLeak;
   uniform float uBaseAlpha;
   varying float vT;
   void main() {
-    /* 沿边的流光：sin 脉冲沿 t 推进，而不是整条匀亮 */
-    float flow = 0.55 + 0.45 * sin(vT * 18.0 - uTime * 2.4);
+    /* 沿边的流光：sin 脉冲沿 t 推进；uFlowSpeed 由 QPS 驱动 */
+    float flow = 0.55 + 0.45 * sin(vT * 18.0 - uTime * 2.4 * uFlowSpeed);
     /* 漏光：中段提亮并向两端扩散（uLeak 由晶核脉冲驱动） */
     float midDist = (vT - 0.5) / 0.22;
     float mid = exp(-(midDist * midDist));
@@ -325,6 +336,34 @@ const NEBULA_FRAGMENT = /* glsl */ `
     if (dist > 0.5) discard;
     float falloff = 1.0 - smoothstep(0.0, 0.5, dist);
     gl_FragColor = vec4(clamp(uColor * (0.7 + 0.6 * vTwinkle), 0.0, 8.0), falloff * 0.5 * vTwinkle);
+  }
+`;
+
+/** 1.5 屏幕空间星芒：4 瓣衍射（只在晶核屏幕投影处，绝不整屏横竖条） */
+const STAR_VERTEX = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const STAR_FRAGMENT = /* glsl */ `
+  uniform vec3 uColor;
+  uniform float uPulse;
+  varying vec2 vUv;
+  void main() {
+    vec2 centered = vUv - 0.5;
+    float radius = length(centered);
+    /* 四瓣：0°/90°/180°/270° 方向各一瓣，指数衰减；对角方向只有极弱副瓣 */
+    float lobeH = exp(-abs(centered.x) * 26.0) * exp(-centered.y * centered.y * 2100.0);
+    float lobeV = exp(-abs(centered.y) * 26.0) * exp(-centered.x * centered.x * 2100.0);
+    float lobeD = (lobeH + lobeV) * 0.0;
+    float star = lobeH + lobeV + lobeD;
+    /* 硬性圆形裁切：半径 0.5 外完全归零，保证不会出现贯穿屏幕的横竖条 */
+    float mask = 1.0 - smoothstep(0.42, 0.5, radius);
+    float alpha = star * mask * 0.85 * uPulse;
+    gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
   }
 `;
 
@@ -385,14 +424,14 @@ function buildWireGeometry(radius: number): THREE.BufferGeometry {
  *
  * @returns Points 几何（position / aPhase / aSize）
  */
-function buildNebulaGeometry(): THREE.BufferGeometry {
-  const positions = new Float32Array(NEBULA_COUNT * 3);
-  const phases = new Float32Array(NEBULA_COUNT);
-  const sizes = new Float32Array(NEBULA_COUNT);
+function buildNebulaGeometry(count: number): THREE.BufferGeometry {
+  const positions = new Float32Array(count * 3);
+  const phases = new Float32Array(count);
+  const sizes = new Float32Array(count);
   const golden = 2.399963229728653;
-  for (let i = 0; i < NEBULA_COUNT; i += 1) {
+  for (let i = 0; i < count; i += 1) {
     const arm = i % 3;
-    const ratio = (i + 0.5) / NEBULA_COUNT;
+    const ratio = (i + 0.5) / count;
     const radius = NEBULA_RADIUS * Math.pow(ratio, 0.72);
     const angle = arm * 2.0943951 + radius * 6.6 + (i % 7) * 0.09;
     const y = Math.sin(i * golden) * 0.42 * (1 - ratio * 0.6);
@@ -425,6 +464,27 @@ export default function CrystalOptics(): React.ReactElement {
   const usePhysicalCrystal = useMemo((): boolean => {
     return resolveCrystalQuality() === 'high' && !detectSoftwareRenderer();
   }, []);
+
+  /**
+   * 追问 4：低档位（T1/T0）。
+   *
+   * 判定口径与 R10 档位一致：?quality=low（T1）或检测到软件光栅化（T0）。
+   * 低档位下内部星云 360→120，噪声音频倍频 2/3 关闭，星芒与色温仍保留
+   * （它们各自只有 1 个 draw call，是"最低限度的光学语义"）。
+   */
+  const isLowTier = useMemo((): boolean => {
+    return resolveCrystalQuality() === 'low' || detectSoftwareRenderer();
+  }, []);
+
+  /** 3 道内部陀螺仪骨架 refs（普通混合，不额外加色） */
+  const gyroBoneRefs = useRef<ReadonlyArray<THREE.Mesh | null>>([]);
+  /** 星芒材质 uniforms（复用色调） */
+  const starUniforms = useMemo(
+    () => ({ uColor: { value: new THREE.Color('#cffafe') }, uPulse: { value: 1 } }),
+    [],
+  );
+  /** 星芒 mesh ref（billboard 用） */
+  const starRef = useRef<THREE.Mesh>(null);
 
   /** 色温当前值（预分配，useFrame 内只 lerp） */
   const toneCurrent = useMemo((): THREE.Color => new THREE.Color('#38bdf8'), []);
@@ -459,6 +519,7 @@ export default function CrystalOptics(): React.ReactElement {
     () => ({
       uColor: { value: new THREE.Color('#38bdf8') },
       uTime: { value: 0 },
+      uFlowSpeed: { value: 1 },
       uLeak: { value: 0 },
       uBaseAlpha: { value: 0.45 },
     }),
@@ -468,6 +529,7 @@ export default function CrystalOptics(): React.ReactElement {
     () => ({
       uColor: { value: new THREE.Color('#38bdf8') },
       uTime: { value: 0 },
+      uFlowSpeed: { value: 1 },
       uLeak: { value: 0 },
       uBaseAlpha: { value: 0.28 },
     }),
@@ -489,7 +551,10 @@ export default function CrystalOptics(): React.ReactElement {
   /** 几何预分配 */
   const wireInnerGeometry = useMemo(() => buildWireGeometry(WIRE_INNER_RADIUS), []);
   const wireOuterGeometry = useMemo(() => buildWireGeometry(WIRE_OUTER_RADIUS), []);
-  const nebulaGeometry = useMemo(() => buildNebulaGeometry(), []);
+  const nebulaGeometry = useMemo(
+    () => buildNebulaGeometry(isLowTier ? 120 : NEBULA_COUNT),
+    [isLowTier],
+  );
 
   /** 顶点高光点几何：八面体 6 顶点 × 2 层 */
   const vertexSparkGeometry = useMemo((): THREE.BufferGeometry => {
@@ -546,10 +611,14 @@ export default function CrystalOptics(): React.ReactElement {
     (fogUniforms.uColor.value as THREE.Color).copy(toneCurrent);
     (crystalUniforms.uTint.value as THREE.Color).copy(toneCurrent);
     (crystalUniforms.uColor.value as THREE.Color).copy(toneCurrent).multiplyScalar(0.22);
+    /* QPS 驱动流光速度：负载越高，能量沿棱线流得越快 */
+    const flowSpeed = 1 + 0.6 * qpsNorm;
     wireInnerUniforms.uTime.value = t;
+    wireInnerUniforms.uFlowSpeed.value = flowSpeed;
     wireInnerUniforms.uLeak.value = leak * 0.6;
     (wireInnerUniforms.uColor.value as THREE.Color).copy(toneCurrent);
     wireOuterUniforms.uTime.value = t * 0.8;
+    wireOuterUniforms.uFlowSpeed.value = flowSpeed * 0.8;
     wireOuterUniforms.uLeak.value = leak * 0.35;
     (wireOuterUniforms.uColor.value as THREE.Color).copy(toneCurrent);
     nebulaUniforms.uTime.value = t;
@@ -560,12 +629,32 @@ export default function CrystalOptics(): React.ReactElement {
     /* 粒子整体涡旋（只改 transform，不动顶点） */
     const nebula = nebulaRef.current;
     if (nebula !== null) {
-      nebula.rotation.y = t * 0.22;
+      /* QPS 也驱动内部星云的涡旋速度（呼吸之外的第二条映射） */
+      nebula.rotation.y = t * 0.22 * (1 + 0.5 * qpsNorm);
       nebula.rotation.x = Math.sin(t * 0.3) * 0.08;
     }
     /* 内层棱线反向旋转，外层正向，形成视差 */
     if (wireInnerRef.current !== null) wireInnerRef.current.rotation.y = -t * 0.12;
     if (wireOuterRef.current !== null) wireOuterRef.current.rotation.y = t * 0.09;
+    /* ---- 追问 1：星芒亮度随晶核脉冲；并在每帧计算 billboard 朝向 ---- */
+    starUniforms.uPulse.value = 0.72 + 0.28 * Math.max(0, Math.sin(t * 2.2 + Math.PI / 3));
+    const star = starRef.current;
+    if (star !== null) {
+      /* billboard：复制相机四元数（与旧 flare 相同的零滞后做法） */
+      star.quaternion.copy(state.camera.quaternion);
+      star.updateMatrixWorld(true);
+    }
+
+    /* ---- 追问 2：内部陀螺仪骨架（普通混合、超细环，与外层线框相位错开） ---- */
+    const gyroBones = gyroBoneRefs.current;
+    for (let i = 0; i < 3; i += 1) {
+      const bone = gyroBones[i];
+      if (bone !== null && bone !== undefined) {
+        bone.rotation.x = t * (0.17 + i * 0.05) + i * 1.1;
+        bone.rotation.z = t * (-0.13 - i * 0.04) + i * 0.7;
+      }
+    }
+
     /* 陀螺环：3 道不同倾角、3.6s 节拍的整数分之一（1.8s / 0.9s / 0.6s） */
     const gyros = gyroRefs.current;
     for (let i = 0; i < GYRO_RING_COUNT; i += 1) {
@@ -582,6 +671,7 @@ export default function CrystalOptics(): React.ReactElement {
       <mesh raycast={(): void => undefined} renderOrder={1}>
         <icosahedronGeometry args={[CORE_RADIUS, 4]} />
         <shaderMaterial
+          defines={{ KV_LOW_NOISE: isLowTier ? 1 : 0 }}
           uniforms={coreUniforms}
           vertexShader={CORE_VERTEX}
           fragmentShader={CORE_FRAGMENT}
@@ -645,6 +735,47 @@ export default function CrystalOptics(): React.ReactElement {
           />
         )}
       </mesh>
+
+      {/* ---- 1.5 屏幕空间星芒：1 draw call，四瓣衍射，宽度 ≤ 晶核屏幕直径 1.6× ---- */}
+      <mesh ref={starRef} raycast={(): void => undefined} renderOrder={4}>
+        <planeGeometry args={[STAR_SIZE, STAR_SIZE]} />
+        <shaderMaterial
+          uniforms={starUniforms}
+          vertexShader={STAR_VERTEX}
+          fragmentShader={STAR_FRAGMENT}
+          transparent
+          depthWrite={false}
+          depthTest={false}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+        />
+      </mesh>
+
+      {/* ---- 追问 2：内部陀螺仪骨架（3 个互相垂直的超细环，普通混合不加色） ---- */}
+      {[0.82, 0.9, 0.98].map((radius, index) => (
+        <mesh
+          key={`gyro-bone-${index}`}
+          ref={(node): void => {
+            gyroBoneRefs.current = [
+              ...gyroBoneRefs.current.slice(0, index),
+              node,
+              ...gyroBoneRefs.current.slice(index + 1),
+            ];
+          }}
+          rotation={[index * 1.047, index * 0.61, index * 0.37]}
+          raycast={(): void => undefined}
+          renderOrder={1}
+        >
+          <torusGeometry args={[radius, 0.0038, 6, 96]} />
+          <meshBasicMaterial
+            color="#7dd3fc"
+            transparent
+            opacity={0.32 - index * 0.06}
+            depthWrite={false}
+            toneMapped={false}
+          />
+        </mesh>
+      ))}
 
       {/* ---- 4. 棱线两层 + 顶点高光点 ---- */}
       <lineSegments

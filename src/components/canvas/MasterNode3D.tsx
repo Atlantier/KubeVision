@@ -282,21 +282,6 @@ const TONE_CRITICAL = PALETTE.critical.color;
 const HEALTHY_SCORE_THRESHOLD = 90;
 const WARNING_SCORE_THRESHOLD = 70;
 
-const GODRAY_CYAN = PALETTE.theme.color;
-
-/**
- * 变形宽银幕光晕的三档色温（核色 / 翼色）。
- *
- * 【为何核色都接近白】眩光的物理本质是"传感器过曝"——真实镜头里
- * 强光源在成像平面上会饱和成纯白，色相只出现在向外衰减的翼部。
- * 因此核色统一取高明度低饱和的近白色（分别偏青/偏暖/偏粉，
- * 让三档之间仍有可辨的色偏），翼色才承载完整色相。
- *
- * 【为何不用 TONE_* 常量】那三个是给粒子/连线用的中间色，
- * 是"被染色的物质"；光晕是"发光体"，两者的明度需求完全不同。
- */
-const FLARE_WING_CRITICAL = new THREE.Color('#f43f5e');
-
 /**
  * 色温过渡阻尼率 k（1/秒）。
  *
@@ -639,8 +624,6 @@ export default function MasterNode3D() {
   /** 八面体顶点电光锚点实例网格 ref（呼吸辉光由材质 emissive 驱动） */
   const vertexAnchorRef = useRef<THREE.InstancedMesh>(null);
 
-  const flareRef = useRef<THREE.Mesh>(null);
-
   /**
    * 二十面体测地线内胆的线框几何（useMemo 预分配）。
    *
@@ -742,7 +725,6 @@ export default function MasterNode3D() {
   const constellationRef = useRef<THREE.Points>(null);
   /** 内部神经晶格连线 ref */
   const neuralRef = useRef<THREE.LineSegments>(null);
-  const pillarRef = useRef<THREE.Mesh>(null);
 
   /** 环绕星火 Points ref */
   const sparkRef = useRef<THREE.Points>(null);
@@ -971,15 +953,6 @@ export default function MasterNode3D() {
     return geometry;
   }, [constellationGeometry]);
 
-  /** 垂直贯穿能量光柱的 uniforms */
-  const pillarUniforms = useMemo(
-    (): Record<string, THREE.IUniform> => ({
-      uPulse: { value: 1 },
-      uColor: { value: new THREE.Color('#38bdf8') },
-    }),
-    [],
-  );
-
   /**
    * 八面体 6 顶点星芒锚点的实例矩阵（模块级常量推导，挂载时写一次）。
    *
@@ -1039,7 +1012,6 @@ export default function MasterNode3D() {
 
     /** 星云粒子与光柱的时间/脉动驱动（原地写 uniform，零分配） */
     constellationUniforms.uTime.value = t;
-    pillarUniforms.uPulse.value = 1 + 0.22 * Math.sin(t * 1.7);
 
     /* ---- 赤道环 / 斜交极轨环自转（三种角速度，形成球壳经纬差速） ---- */
     if (equatorRef.current !== null) {
@@ -1058,11 +1030,10 @@ export default function MasterNode3D() {
      *
      * 【核心数学】帧率无关指数阻尼：α = 1 − e^(−k·Δt)
      *   healthColorCurrent.lerp(healthTargetColor, α)
-     * 单一持久色统一插值后**广播**给三处材质：
+     * 单一持久色统一插值后**广播**给两处材质：
      *   · 星云粒子 uniform uColor（内圈色调）
      *   · 神经连线 material.color
-     *   · 垂直光柱 uniform uColor
-     * 因此三者的变色永远同步，不会出现"粒子先黄、光柱后黄"的割裂。
+     * 因此两者的变色永远同步，不会出现"粒子先黄、连线后黄"的割裂。
      *
      * 【零分配】healthColorCurrent 是 useMemo 预分配的 Color，
      * lerp 原地突变；uniform 的 .value 已是 Color 实例，copy 原地写入。
@@ -1072,7 +1043,6 @@ export default function MasterNode3D() {
     healthColorCurrent.lerp(healthTargetColor, toneAlpha);
 
     (constellationUniforms.uColor.value as THREE.Color).copy(healthColorCurrent);
-    (pillarUniforms.uColor.value as THREE.Color).copy(healthColorCurrent);
 
     const neural = neuralRef.current;
     if (neural !== null) {

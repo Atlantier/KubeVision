@@ -17,6 +17,11 @@
 | `PILLAR_GEOMETRY` / `pillarRef` | **0** |
 | `FLARE_WIDTH` / `flareRef` | **0** |
 
+> **R26 更正**：R25 提交时的 grep 使用了未展开的 glob（`src/**/*.ts`），导致证据为空。
+> R26 用递归文件列表复核发现仍残留 4 处（`GODRAY_CYAN` / `FLARE_WING_CRITICAL` /
+> `pillarRef` / `pillarUniforms`，其中后两者仍在 useFrame 内被写），已在 R26 全部删除，
+> 并以正确方式重新生成证据（`docs/summit/artifacts/r25-deleted-inventory.txt`，全部 0 处）。
+
 同时删除：`GODRAY_TOP_HEIGHT`/`GODRAY_TOP_RADIUS`/`GODRAY_BOTTOM_*` 常量与
 `GODRAY_VERTEX/FRAGMENT_SHADER`；`PILLAR_WIDTH/BOTTOM_Y/TOP_Y/HEIGHT/CENTER_Y`、
 `PILLAR_GEOMETRY`、`PILLAR_VERTEX/FRAGMENT_SHADER`；`FLARE_WIDTH/HEIGHT`、

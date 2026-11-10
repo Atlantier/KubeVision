@@ -1,9 +1,15 @@
-R25 删除清单与引用证据（grep 全仓 src/）
+R25/R26 删除清单与引用证据（递归 grep，src/**/*.{ts,tsx}）
 
---- godRayTop : 0 处 src 引用
---- godRayBottom : 0 处 src 引用
---- GODRAY_ : 0 处 src 引用
---- PILLAR_GEOMETRY : 0 处 src 引用
---- pillarRef : 0 处 src 引用
---- FLARE_WIDTH : 0 处 src 引用
---- flareRef : 0 处 src 引用
+--- godRayTop : 0 处
+--- godRayBottom : 0 处
+--- GODRAY_ : 0 处
+--- PILLAR_GEOMETRY : 0 处
+--- pillarRef : 0 处
+--- pillarUniforms : 0 处
+--- FLARE_WIDTH : 0 处
+--- flareRef : 0 处
+--- FLARE_ : 0 处
+
+注：MasterNode3D 中仍保留“地面投射光束”（BEAM_* 常量、cylinderGeometry），
+它是晶体 → 地面的能量脐带（位于晶体下方），不是应删除的顶部光柱；
+WorkerRack3D 的 PILLAR_* 是机架立柱几何，与 Master 光学结构无关。
