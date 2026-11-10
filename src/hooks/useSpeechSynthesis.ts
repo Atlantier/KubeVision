@@ -216,6 +216,44 @@ export function selectBestChineseVoice(voices: readonly SpeechSynthesisVoice[]):
 const STORAGE_RATE_KEY = 'kv-tts-rate-v1';
 const STORAGE_VOICE_KEY = 'kv-tts-voice-v1';
 
+/**
+ * splitIntoSentences —— 把净化后的文本切成适合逐句播报的片段。
+ *
+ * 【为什么要分句】整段一次性交给 speechSynthesis 时，Chrome 会在长文本上
+ * 延迟数秒才出声，且无法在中间自然停顿/被打断；按句切分后可以：
+ * 1. 第一句立即开口（感知延迟更低）；
+ * 2. 每句之间留出自然停顿；
+ * 3. 打断时只取消当前句，队列整体作废（防残留回调）。
+ *
+ * @param text 已净化的文本
+ * @returns 句子数组（非空）
+ */
+function splitIntoSentences(text: string): string[] {
+  const raw = text
+    .split(/(?<=[。！？!?；;])|\n+/u)
+    .map((piece): string => piece.trim())
+    .filter((piece): boolean => piece.length > 0);
+  const merged: string[] = [];
+  for (const piece of raw) {
+    const previous = merged[merged.length - 1];
+    if (previous !== undefined && (previous.length < 10 || piece.length < 6)) {
+      merged[merged.length - 1] = previous + piece;
+    } else {
+      merged.push(piece);
+    }
+  }
+  /* 单句过长时按逗号再切，避免一次出声过长 */
+  const result: string[] = [];
+  for (const sentence of merged) {
+    if (sentence.length <= 120) { result.push(sentence); continue; }
+    for (const part of sentence.split(/(?<=[，,、])/u)) {
+      const trimmed = part.trim();
+      if (trimmed.length > 0) result.push(trimmed);
+    }
+  }
+  return result.length > 0 ? result : [text];
+}
+
 /** 速度合法区间（SpeechSynthesisUtterance.rate 实际有效范围） */
 const MIN_RATE = 0.5;
 const MAX_RATE = 2;
@@ -321,6 +359,8 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
 
   /** 当前 utterance 引用：用于在停止时精确取消并解绑回调 */
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  /** R50：逐句播报队列（打断时整体作废，防止残留句继续读） */
+  const chunkQueueRef = useRef<boolean>(false);
   /** 结束回调：utterance.onend 里触发，供调用方清理 UI 态 */
   const onEndRef = useRef<(() => void) | null>(null);
   /** 是否已卸载：阻止卸载后 setState */
@@ -406,6 +446,7 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
       utteranceRef.current = null;
     }
     onEndRef.current = null;
+    chunkQueueRef.current = false;
 
     window.speechSynthesis.cancel();
     if (mountedRef.current) {
@@ -441,31 +482,16 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
       }
       window.speechSynthesis.cancel();
 
-      /* ---- 2. 构造 utterance 并绑定音色 ---- */
-      const utter = new SpeechSynthesisUtterance(spoken);
-      const selected = selectBestChineseVoice(window.speechSynthesis.getVoices());
-      if (selected.voice !== null) {
-        /* C4：用户指定了音色则精确匹配，否则用自动优选结果 */
-      const preferredVoice =
-        voiceUri === null ? undefined : voiceListRef.current.find((voice) => voice.voiceURI === voiceUri);
-      utter.voice = preferredVoice ?? selected.voice;
-      utter.rate = rate;
-      }
-      /* 即使没选到具体音色也设 lang：部分浏览器会据此挑选匹配引擎 */
-      utter.lang = 'zh-CN';
-
-      utter.pitch = SPEECH_PITCH;
-      utter.volume = 1;
-
+      /* ---- 2. 分句并逐句播报（R50） ---- */
+      const chunks = splitIntoSentences(spoken);
+      let index = 0;
       onEndRef.current = onEnd ?? null;
+      chunkQueueRef.current = true;
+      setSpeakingMessageId(messageId);
+      setPlaybackState('preparing');
 
-      /* ---- 3. 事件回调：每次都清理引用，保证回调只生效一次 ---- */
-      utter.onstart = (): void => {
-        if (!mountedRef.current) return;
-        setPlaybackState('speaking');
-      };
-
-      utter.onend = (): void => {
+      const finish = (): void => {
+        chunkQueueRef.current = false;
         utteranceRef.current = null;
         if (mountedRef.current) {
           setSpeakingMessageId(null);
@@ -476,46 +502,53 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
         cb?.();
       };
 
-      utter.onerror = (event): void => {
-        utteranceRef.current = null;
-        if (mountedRef.current) {
-          setSpeakingMessageId(null);
-          /**
-           * 【区分错误类型】'interrupted' / 'canceled' 是我们主动 cancel 的
-           * 正常结果，不算失败；'not-allowed' 表示自动播放策略拦截，
-           * 需要用户在页面上做过交互才能发声——这类要如实告知，
-           * 否则用户只会觉得"喇叭没反应"。
-           */
-          const err = (event as SpeechSynthesisErrorEvent).error;
-          setPlaybackState(err === 'not-allowed' ? 'blocked' : 'idle');
+      const speakNext = (): void => {
+        if (!chunkQueueRef.current || !mountedRef.current) return;
+        if (index >= chunks.length) {
+          finish();
+          return;
         }
-        const cb = onEndRef.current;
-        onEndRef.current = null;
-        cb?.();
+        const chunk = chunks[index] as string;
+        index += 1;
+        const utter = new SpeechSynthesisUtterance(chunk);
+        const selected = selectBestChineseVoice(window.speechSynthesis.getVoices());
+        const preferredVoice =
+          voiceUri === null ? undefined : voiceListRef.current.find((voice) => voice.voiceURI === voiceUri);
+        const chosen = preferredVoice ?? selected.voice;
+        if (chosen !== undefined) {
+          utter.voice = chosen;
+        }
+        utter.lang = 'zh-CN';
+        utter.rate = rate;
+        utter.pitch = SPEECH_PITCH;
+        utter.volume = 1;
+        utter.onstart = (): void => {
+          if (mountedRef.current) setPlaybackState('speaking');
+        };
+        utter.onend = (): void => {
+          utteranceRef.current = null;
+          speakNext();
+        };
+        utter.onerror = (event): void => {
+          const err = (event as SpeechSynthesisErrorEvent).error;
+          if (err === 'interrupted' || err === 'canceled') {
+            finish();
+            return;
+          }
+          if (mountedRef.current) {
+            setPlaybackState(err === 'not-allowed' ? 'blocked' : 'idle');
+          }
+          finish();
+        };
+        utteranceRef.current = utter;
+        try {
+          window.speechSynthesis.speak(utter);
+        } catch {
+          finish();
+        }
       };
 
-      utteranceRef.current = utter;
-      setSpeakingMessageId(messageId);
-      /* 进入 preparing：Chrome 从调用 speak 到真正出声有约 100-300ms 延迟，
-         这段时间界面应显示"正在准备"而不是假装已开始朗读 */
-      setPlaybackState('preparing');
-
-      /**
-       * ---- 4. 真正发声 ----
-       *
-       * 【为何包 try/catch】部分浏览器在音频设备被独占时 speak() 会同步抛错。
-       * 捕获后标记为 idle，不让一个音频异常炸掉整个对话界面。
-       */
-      try {
-        window.speechSynthesis.speak(utter);
-      } catch {
-        utteranceRef.current = null;
-        setSpeakingMessageId(null);
-        setPlaybackState('idle');
-        const cb = onEndRef.current;
-        onEndRef.current = null;
-        cb?.();
-      }
+      speakNext();
     },
     [rate, voiceUri],
   );
