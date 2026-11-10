@@ -243,7 +243,7 @@ export interface TelemetrySnapshot {
  * INITIAL_CLUSTER_SNAPSHOT 构造说明：
  *
  * 【设计意图】为 Zustand Store、混沌模拟引擎与 3D 场景提供第 0 轮确定性初始态：
- * 3 个 Worker 机架节点（worker-alpha/beta/gamma ↔ rackIndex 0/1/2）+
+ * 3 个 Worker 机架节点（worker-alpha/beta/gamma <-> rackIndex 0/1/2）+
  * 24 个真实云原生命名风格 Pod（每节点 8 个，均匀分布）。
  *
  * 【确定性契约】所有字段（含时间戳）均为编译期固定字面量，严禁 Date.now() /

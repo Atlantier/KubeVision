@@ -33,12 +33,11 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Boxes,
-  Clapperboard,
+  Radar,
   Gauge,
   OctagonAlert,
   Pause,
   Play,
-  Radar,
   Radio,
   RotateCcw,
   Search,
@@ -435,7 +434,7 @@ export function ChaosBanner({ scenario, onTerminate }: ChaosBannerProps) {
 }
 
 /**
- * ChaosDrillControl —— 混沌演练的「二合一」控件（按钮 ↔ 告警胶囊）。
+ * ChaosDrillControl —— 混沌演练的「二合一」控件（按钮 <-> 告警胶囊）。
  *
  * 【为何合并】此前顶栏有两个独立元素：右翼的「混沌故障演练」按钮 +
  * 中翼的告警横幅。激活时用户会看到两处混沌相关 UI，既占位置又割裂——
@@ -804,15 +803,10 @@ function DemoDirectorBar({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8 }}
       transition={{ duration: 0.28, ease: 'easeOut' }}
-      className="pointer-events-auto w-full max-w-[54rem] overflow-hidden rounded-md border border-cyan-400/25 bg-slate-950/72"
-      style={{ boxShadow: '0 10px 34px rgba(2,6,23,0.72), inset 0 0 24px rgba(34,211,238,0.06)' }}
-      role="status"
-      aria-live="polite"
-      aria-label={
-        isPreflightError
-          ? `演示环境自检未通过：${demo.preflightError ?? ''}`
-          : `剧本路演${isFinished ? '已完成' : '进行中'}：${demo.badge}`
-      }
+      className="kv-panel pointer-events-auto w-full max-w-[54rem] overflow-hidden rounded-lg border border-white/[0.075]"
+      style={{ boxShadow: 'var(--kv-inset-highlight)' }}
+      role="region"
+      aria-label="自动演练序列器"
     >
       {/* 顶缘 1px 折射亮边（与 3D HUD 同一套玻璃语言） */}
       <span
@@ -827,7 +821,7 @@ function DemoDirectorBar({
       <div className="flex items-center gap-2.5 px-3 py-2">
         {/* ---- 左：剧本标识 + 4 阶段进度点 ---- */}
         <div className="flex shrink-0 items-center gap-2">
-          <Clapperboard
+          <Radar
             className={cn(
               'h-3.5 w-3.5 shrink-0',
               isPaused ? 'text-amber-300' : 'text-cyan-300 animate-glow-pulse',
@@ -861,7 +855,7 @@ function DemoDirectorBar({
               isPreflightError ? 'text-rose-300' : 'text-cyan-300/80',
             )}
           >
-            {isPreflightError ? 'DEMO-PREFLIGHT · 未通过' : demo.badge}
+            {isPreflightError ? 'DEMO-PREFLIGHT · 未通过' : 'RUNBOOK · 自动演练'}
             {phaseRemainSec !== null ? ` · 等待诊断 ${phaseRemainSec}s` : ''}
           </span>
           <span className="mt-0.5 truncate text-[11px] font-medium tracking-tight text-slate-100">
@@ -895,8 +889,8 @@ function DemoDirectorBar({
             ))}
           </span>
 
-          <span className="font-mono text-[10px] tabular-nums text-slate-500">
-            {elapsedSec}s / {totalSec}s
+          <span className="font-mono text-[10px] tabular-nums text-slate-500" aria-live="off">
+            T+{elapsedSec} / 00:{String(totalSec).padStart(2, '0')}
           </span>
 
           <span
@@ -1325,7 +1319,7 @@ export default function TopBar() {
                 : 'border-cyan-400/45 bg-cyan-400/[0.14] text-cyan-200 hover:border-cyan-300/70 hover:bg-cyan-400/25',
             )}
           >
-            <Clapperboard
+            <Radar
               className={cn('h-3.5 w-3.5', isDemoActive ? 'text-rose-300' : 'text-cyan-300')}
               aria-hidden
             />

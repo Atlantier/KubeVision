@@ -37,19 +37,24 @@
  * 面板内不再出现二级浮层，避免与 Copilot 抽屉 / 3D 标注抢层级。
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState } from 'react';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { createPortal } from 'react-dom';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence,
+  motion } from 'framer-motion';
 import {
   AlertTriangle,
   CheckCircle2,
   Database,
   Plus,
   Search,
-  Sparkles,
   Trash2,
   X,
+  Radar,
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
@@ -1170,7 +1175,7 @@ export default function RagKnowledgeModal({
                           onClick={handleFillExample}
                           className="flex items-center gap-1.5 rounded-md border border-white/[0.07] bg-slate-800/60 px-3 py-1.5 font-mono text-[10px] tracking-[0.08em] text-slate-300 transition-colors hover:border-white/[0.07] hover:bg-slate-800"
                         >
-                          <Sparkles className="h-3.5 w-3.5" aria-hidden />
+                          <Radar className="h-3.5 w-3.5" aria-hidden />
                           填入示例
                         </button>
                         <button

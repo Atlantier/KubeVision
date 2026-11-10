@@ -397,17 +397,17 @@ const OOM_PHASES: readonly DemoPhase[] = [
       const labelPart = facts.chaosLabel === null ? '' : `（${facts.chaosLabel}）`;
       const nodePart = facts.nodeName === null ? '' : `，3D 镜头已锁定受灾机架 ${facts.nodeName}`;
       if (victimPart === '') return '';
-      return `${victimPart}${labelPart}${nodePart}！`;
+      return `${victimPart}${labelPart}${nodePart}。`;
     },
   },
   {
     index: 2,
     atMs: 11_000,
     badge: '阶段 3/4 · RAG 混合检索与多卡诊断',
-    fallback: 'AI 运维副驾正在检索 SRE Runbook 知识库并生成交互式诊断卡片...',
+    fallback: '检索 SRE Runbook 知识库 · 生成交互式诊断卡片',
     template: (facts: DemoFacts): string => {
       const nodePart = facts.nodeName === null ? '' : `受灾机架 ${facts.nodeName} 的`;
-      return `AI 运维副驾正在检索 SRE Runbook 知识库，分析${nodePart}故障根因并生成诊断卡片...`;
+      return `检索 SRE Runbook 知识库 · 分析${nodePart}故障根因并生成诊断卡片...`;
     },
   },
   {
@@ -465,10 +465,10 @@ const NETWORK_PHASES: readonly DemoPhase[] = [
     index: 2,
     atMs: 11_000,
     badge: '阶段 3/4 · CNI VXLAN 隧道瓶颈定位',
-    fallback: '副驾正在比对 VXLAN 隧道丢包率与 IPVS 连接超时，定位跨节点转发瓶颈...',
+    fallback: '比对 VXLAN 丢包率与 IPVS 连接超时 · 定位跨节点转发瓶颈...',
     template: (facts: DemoFacts): string => {
       const nodePart = facts.nodeName === null ? '跨节点' : `${facts.nodeName} 的跨节点`;
-      return `副驾正在比对 VXLAN 隧道丢包率与 IPVS 连接超时，定位${nodePart}转发瓶颈...`;
+      return `比对 VXLAN 丢包率与 IPVS 连接超时 · 定位${nodePart}转发瓶颈...`;
     },
   },
   {
@@ -528,17 +528,17 @@ const CPU_PHASES: readonly DemoPhase[] = [
         facts.victimCount === null ? '' : `检测到 ${facts.victimCount} 个容器算力被争抢`;
       const nodePart = facts.nodeName === null ? '' : `，3D 镜头已锁定受灾机架 ${facts.nodeName}`;
       if (victimPart.length === 0) return '';
-      return `${victimPart}${nodePart}！`;
+      return `${victimPart}${nodePart}。`;
     },
   },
   {
     index: 2,
     atMs: 11_000,
     badge: '阶段 3/4 · 节点算力瓶颈定位',
-    fallback: 'AI 运维副驾正在比对节点负载与容器 CPU 分布，定位算力瓶颈...',
+    fallback: '比对节点负载与容器 CPU 分布 · 定位算力瓶颈...',
     template: (facts: DemoFacts): string => {
       const nodePart = facts.nodeName === null ? '' : `受灾机架 ${facts.nodeName} 的`;
-      return `AI 运维副驾正在比对节点负载与容器 CPU 分布，定位${nodePart}算力瓶颈并生成扩缩容方案...`;
+      return `比对节点负载与容器 CPU 分布 · 定位${nodePart}算力瓶颈并生成扩缩容方案...`;
     },
   },
   {
@@ -1248,7 +1248,7 @@ function enterFaultAndLock(chaos: ActiveChaosScenario, label: string): void {
       const nodeLabel =
         snapshot.nodes.find((node): boolean => node.id === target.nodeId)?.name ?? target.nodeId;
       setNarration(
-        `检测到 ${resolved.podIds.length} 个容器触发 ${target.expectedPodStatus}（${target.label}），3D 镜头已锁定受灾机架 ${nodeLabel}！`,
+        `检测到 ${resolved.podIds.length} 个容器触发 ${target.expectedPodStatus}（${target.label}），3D 镜头已锁定受灾机架 ${nodeLabel}。`,
       );
       actions().appendTerminalLog(
         `[DEMO-DIRECTOR] 受灾校验通过：${target.nodeId} 命中 ${resolved.podIds.length} 个受害容器`,
@@ -2023,7 +2023,7 @@ function scheduleFrom(elapsed: number): void {
         pausedByVisibility = false;
         clearAllTimers();
         actions().appendTerminalLog(
-          '[DEMO-DIRECTOR] ⏸ 讲解版断点：按空格进入下一阶段',
+          '[DEMO-DIRECTOR] [PAUSE] 讲解版断点：按空格进入下一阶段',
         );
         publish();
         return;
@@ -2161,7 +2161,7 @@ export function advanceNarratorBreakpoint(): void {
   scheduleFrom(currentElapsedMs());
   startTick();
 
-  actions().appendTerminalLog('[DEMO-DIRECTOR] ▶ 讲解版断点已继续');
+  actions().appendTerminalLog('[DEMO-DIRECTOR] [PLAY] 讲解版断点已继续');
   publish();
 }
 
@@ -2403,7 +2403,7 @@ export function startDemoDirector(id: DemoScriptId): void {
   segmentStartedAt = performance.now();
 
   bootApi.appendTerminalLog(
-    `[DEMO-DIRECTOR] ▶ 启动剧本「${script.title}」（约 ${Math.round(script.durationMs / 1000)} 秒）`,
+    `[DEMO-DIRECTOR] [PLAY] 启动剧本「${script.title}」（约 ${Math.round(script.durationMs / 1000)} 秒）`,
   );
 
   /* 阶段 0 的 atMs 为 0 → scheduleFrom(0) 会立即补触发 */
@@ -2429,7 +2429,7 @@ export function pauseDemoDirector(): void {
   clearAllTimers();
   abortMcp();
   if (narratorStop !== null) narratorStop();
-  actions().appendTerminalLog('[DEMO-DIRECTOR] ⏸ 已暂停（进度保留，可继续）');
+  actions().appendTerminalLog('[DEMO-DIRECTOR] [PAUSE] 已暂停（进度保留，可继续）');
   publish();
 }
 
@@ -2454,7 +2454,7 @@ export function resumeDemoDirector(): void {
   /* 以当前累计时长为基准重新排程（含补触发已错过的阶段） */
   scheduleFrom(accumulatedMs);
   startTick();
-  actions().appendTerminalLog('[DEMO-DIRECTOR] ▶ 已恢复');
+  actions().appendTerminalLog('[DEMO-DIRECTOR] [PLAY] 已恢复');
   publish();
 }
 
@@ -2503,7 +2503,7 @@ export function clearPreflightError(): void {
   publish();
 }
 
-/** togglePauseDemoDirector —— running ↔ paused 一键切换 */
+/** togglePauseDemoDirector —— running <-> paused 一键切换 */
 export function togglePauseDemoDirector(): void {
   if (status === 'running') {
     pauseDemoDirector();
@@ -2647,9 +2647,9 @@ export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user')
   if (wasActive) {
     resetToBaseline();
     if (reason === 'user') {
-      actions().appendTerminalLog('[DEMO-DIRECTOR] ⏹ 已停止并复位集群稳态');
+      actions().appendTerminalLog('[DEMO-DIRECTOR] [STOP] 已停止并复位集群稳态');
     } else if (reason === 'unmount') {
-      actions().appendTerminalLog('[DEMO-DIRECTOR] ⏹ 组件卸载，已清理全部路演定时器');
+      actions().appendTerminalLog('[DEMO-DIRECTOR] [STOP] 组件卸载，已清理全部路演定时器');
     }
   }
 

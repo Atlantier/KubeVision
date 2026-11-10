@@ -39,8 +39,15 @@
  * 偏移也复位到标准机位）——「关闭卡片 = 退出巡检会话」的语义一致性。
  */
 
-import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  type ReactNode } from 'react';
+import { AnimatePresence,
+  motion } from 'framer-motion';
 import {
   Activity,
   ChevronDown,
@@ -53,10 +60,10 @@ import {
   RotateCcw,
   Server,
   ShieldCheck,
-  Sparkles,
   X,
   Zap,
   ZoomIn,
+  Radar,
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
@@ -874,7 +881,7 @@ function EntityProbeCard({
   readonly onDiagnose: () => void;
   readonly onHeal: () => void;
 }) {
-  const EntityIcon = view.entityType === 'pod' ? Sparkles : view.entityType === 'node' ? Server : Activity;
+  const EntityIcon = view.entityType === 'pod' ? Radar : view.entityType === 'node' ? Server : Activity;
 
   /* 重启次数强调：≥3 次视为反复崩溃（rose），1~2 次琥珀 */
   const restartsTone: InspectTone =
@@ -1055,7 +1062,7 @@ function EntityProbeCard({
           onClick={onDiagnose}
           className="flex items-center justify-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-cyan-300 transition-all duration-150 hover:border-cyan-400/70 hover:bg-cyan-500/20 active:scale-[0.98]"
         >
-          <Sparkles className="h-2.5 w-2.5 shrink-0" aria-hidden />
+          <Radar className="h-2.5 w-2.5 shrink-0" aria-hidden />
           <span className="truncate">AI 深度诊断</span>
         </button>
 

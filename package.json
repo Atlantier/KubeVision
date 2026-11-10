@@ -45,6 +45,7 @@
     "evidence:r24": "node scripts/r24-evidence.mjs",
     "quality:matrix": "node scripts/quality-matrix.mjs",
     "check:a11y": "node scripts/check-a11y.mjs",
+    "check:emoji": "node scripts/check-emoji.mjs",
     "visual:diff": "node scripts/visual-diff.mjs",
     "opening:frames": "node scripts/opening-frames.mjs",
     "soak": "node scripts/soak.mjs",

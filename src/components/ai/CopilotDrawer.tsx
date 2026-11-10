@@ -27,9 +27,16 @@
  * 同时在用户气泡里保留缩略图——用户始终能看见「我当时发出去的是什么」。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement } from 'react';
 import dynamic from 'next/dynamic';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence,
+  motion } from 'framer-motion';
 import {
   Activity,
   AlertTriangle,
@@ -49,7 +56,6 @@ import {
   RotateCw,
   ShieldAlert,
   ShieldCheck,
-  Sparkles,
   Square,
   Crosshair,
   Terminal,
@@ -57,6 +63,7 @@ import {
   VolumeX,
   X,
   type LucideIcon,
+  Radar,
 } from 'lucide-react';
 
 import ActionConfirm from '@/components/ai/GenUI/ActionConfirm';
@@ -115,7 +122,7 @@ function AuditorSkeleton() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 p-6">
       <span className="flex h-10 w-10 animate-glow-pulse items-center justify-center rounded-lg border border-cyan-400/40 bg-cyan-400/10">
-        <Sparkles className="h-5 w-5 text-cyan-400" aria-hidden />
+        <Radar className="h-5 w-5 text-cyan-400" aria-hidden />
       </span>
       <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-400/70">
         loading edge auditor
@@ -2519,7 +2526,7 @@ export default function CopilotDrawer() {
               <div className="flex h-full flex-col items-center justify-center gap-4 px-4 py-6">
                 {/* 微光徽标：单层细描边 + 柔和内发光，克制不刺眼 */}
                 <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
-                  <Sparkles className="h-5 w-5 text-cyan-300/90" aria-hidden />
+                  <Radar className="h-5 w-5 text-cyan-300/90" aria-hidden />
                 </span>
 
                 <div className="text-center">

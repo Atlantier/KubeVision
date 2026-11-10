@@ -21,7 +21,12 @@
  * 只有一处管理，避免组件与 Hook 双重创建/双重终止。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState } from 'react';
 import {
   Activity,
   Cpu,
@@ -34,9 +39,9 @@ import {
   Radio,
   Satellite,
   ShieldCheck,
-  Sparkles,
   Square,
   Zap,
+  Radar,
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
@@ -621,7 +626,7 @@ function AuditCard({
           aria-label="仅将脱敏安全摘要移交 Copilot 深度诊断"
           className="mt-1 flex w-full items-center justify-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300 transition-colors hover:border-cyan-400/70 hover:bg-cyan-500/20"
         >
-          <Sparkles className="h-2.5 w-2.5" aria-hidden />
+          <Radar className="h-2.5 w-2.5" aria-hidden />
           仅将脱敏安全摘要移交 Copilot
         </button>
       ) : null}
@@ -1347,7 +1352,7 @@ export default function LocalAuditorPanel() {
           aria-label="将脱敏异常摘要移交 Copilot 排障"
           className="mt-1 flex w-full shrink-0 items-center justify-center gap-1 rounded border border-rose-500/40 bg-rose-500/10 px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-rose-300 transition-colors hover:border-rose-400/70 hover:bg-rose-500/20"
         >
-          <Sparkles className="h-2.5 w-2.5" aria-hidden />
+          <Radar className="h-2.5 w-2.5" aria-hidden />
           将脱敏异常摘要移交 Copilot 排障
         </button>
       ) : null}
