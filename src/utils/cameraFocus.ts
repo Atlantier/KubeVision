@@ -47,8 +47,18 @@ import {
  */
 export const OVERVIEW_CAMERA_POSITION: readonly [number, number, number] = [7.8, 14, 22];
 
-/** 全景注视点：MASTER 全息投影锚点（三机架环形布局的几何中心上方） */
-export const OVERVIEW_LOOK_AT: readonly [number, number, number] = MASTER_POSITION;
+/**
+ * 全景注视点（R29 · A 项：构图修复）。
+ *
+ * 【改动】[0, 2.5, 0] → **[0, 1.20, 0]**，相机 [7.8, 14, 22] 与 fov 40 保持不动。
+ * 【为什么】旧注视点抬到 2.5 时画面被"仰视"压缩——前排机架底边被裁掉，
+ * 晶核被推到约 52% 高度。下移注视点相当于整体构图下压：
+ *   · 前排机架底边完整入画；
+ *   · 晶核屏幕位置约 44% 高度，地面获得呼吸空间。
+ * 【不变量】OVERVIEW_CAMERA_POSITION 未动，因此 verify 的相机位置断言
+ * （pos[1]≈14、pos[2]≈22 判"是否离开全景机位"）继续有效，无需改基准。
+ */
+export const OVERVIEW_LOOK_AT: readonly [number, number, number] = [0, 1.2, 0];
 
 /* ========================================================================== */
 /* 俯视拓扑机位（极角约束反解）                                                  */

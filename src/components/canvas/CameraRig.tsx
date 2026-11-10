@@ -33,6 +33,12 @@
 
 import { useEffect, useMemo, useRef, type ComponentRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
+import {
+  OPENING_CAMERA_POSITION,
+  OPENING_FLIGHT_DAMPING,
+  OPENING_FLIGHT_DURATION,
+} from '@/utils/bootUniform';
+import { isReducedMotion } from '@/constants/motion';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 
@@ -169,6 +175,10 @@ export default function CameraRig() {
   /** 归一化飞行进度 [0,1] */
   const flightProgressRef = useRef<number>(0);
 
+  /* R29 C：开场运镜（0–2.4s，与 uBoot 同步；reduced-motion 时直接落位） */
+  const openingProgressRef = useRef<number>(0);
+  const openingDoneRef = useRef<boolean>(false);
+
   /**
    * disengagePatrolIfActive —— 若环绕巡检开启则自动解除（经 Store Action 回写）。
    *
@@ -200,6 +210,24 @@ export default function CameraRig() {
       state.setOrbitPatrolActive(false, 'user');
     }
   };
+
+  /* ---- R29 C：挂载时把相机放到开场起点，由 useFrame 平滑推到 OVERVIEW ---- */
+  useEffect((): void => {
+    if (isReducedMotion()) {
+      openingDoneRef.current = true;
+      return;
+    }
+    camera.position.set(
+      OPENING_CAMERA_POSITION[0],
+      OPENING_CAMERA_POSITION[1],
+      OPENING_CAMERA_POSITION[2],
+    );
+    const controls = controlsRef.current;
+    if (controls !== null) {
+      controls.target.set(OVERVIEW_LOOK_AT[0], OVERVIEW_LOOK_AT[1], OVERVIEW_LOOK_AT[2]);
+      controls.update();
+    }
+  }, [camera]);
 
   /* ---- 飞行触发通道 1：选中实体变更（含取消选中 → 全景鸟瞰） ---- */
   useEffect(() => {
@@ -244,6 +272,8 @@ export default function CameraRig() {
     const handleUserTakeover = (): void => {
       // 打断即所得：相机停在当前插值位置，不吸附终点，由用户全权接管
       isAnimatingRef.current = false;
+      /* 用户接管同时终止开场运镜，避免与之抢相机 */
+      openingDoneRef.current = true;
       // 环绕巡检让位：用户拖拽即手动操作优先，自动解除 autoRotate
       disengagePatrolIfActive();
     };
@@ -255,6 +285,39 @@ export default function CameraRig() {
 
   /* ---- 每帧插值（瞬态通道：零 setState / 零 new） ---- */
   useFrame((state, delta): void => {
+    /* ---- R29 C：开场运镜（0–2.4s），独立于选中/预设飞行 ---- */
+    if (!openingDoneRef.current) {
+      const dt = Math.min(delta, 0.1);
+      openingProgressRef.current = Math.min(
+        1,
+        openingProgressRef.current + dt / OPENING_FLIGHT_DURATION,
+      );
+      const alpha = 1 - Math.exp(-OPENING_FLIGHT_DAMPING * dt);
+      targetPosVec.set(
+        OVERVIEW_CAMERA_POSITION[0],
+        OVERVIEW_CAMERA_POSITION[1],
+        OVERVIEW_CAMERA_POSITION[2],
+      );
+      targetLookVec.set(OVERVIEW_LOOK_AT[0], OVERVIEW_LOOK_AT[1], OVERVIEW_LOOK_AT[2]);
+      state.camera.position.lerp(targetPosVec, alpha);
+      const controlsForOpening = controlsRef.current;
+      if (controlsForOpening !== null) {
+        controlsForOpening.target.lerp(targetLookVec, alpha);
+        controlsForOpening.update();
+      }
+      if (
+        openingProgressRef.current >= 1 ||
+        state.camera.position.distanceTo(targetPosVec) < 0.05
+      ) {
+        state.camera.position.copy(targetPosVec);
+        if (controlsForOpening !== null) {
+          controlsForOpening.target.copy(targetLookVec);
+          controlsForOpening.update();
+        }
+        openingDoneRef.current = true;
+      }
+    }
+
     if (!isAnimatingRef.current) return;
 
     const focus = focusRef.current;

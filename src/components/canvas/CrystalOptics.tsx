@@ -29,6 +29,8 @@ import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { bootUniform } from '@/utils/bootUniform';
+import { MOTION_BREATH_OMEGA, MOTION_GYRO_FAST_OMEGA, MOTION_GYRO_MID_OMEGA, MOTION_GYRO_SLOW_OMEGA } from '@/constants/motion';
 import { useClusterStore } from '@/store/useClusterStore';
 
 /**
@@ -491,6 +493,7 @@ export default function CrystalOptics(): React.ReactElement {
   /** 色温目标值（预分配，useFrame 内 copy） */
   const toneTarget = useMemo((): THREE.Color => new THREE.Color('#38bdf8'), []);
   /** 8 条棱的方向与流光泄漏强度 */
+  const crystalGroupRef = useRef<THREE.Group>(null);
   const wireInnerRef = useRef<THREE.LineSegments>(null);
   const wireOuterRef = useRef<THREE.LineSegments>(null);
   const nebulaRef = useRef<THREE.Points>(null);
@@ -579,6 +582,12 @@ export default function CrystalOptics(): React.ReactElement {
     const t = state.clock.elapsedTime;
     const dt = Math.min(delta, 0.1);
 
+    /* R29 B：开场 uBoot 乘到晶体整体 scale（0→1，0 新增 draw call） */
+    const boot = Math.max(0.001, Math.min(1, bootUniform.value));
+    if (crystalGroupRef.current !== null) {
+      crystalGroupRef.current.scale.setScalar(0.55 + 0.45 * boot);
+    }
+
     /* ---- C. 色温目标：健康=冰川青 / 高负载=琥珀 / 故障=绯红 ---- */
     const snapshot = useClusterStore.getState().snapshotSummary;
     const health = snapshot.clusterHealthScore;
@@ -597,9 +606,10 @@ export default function CrystalOptics(): React.ReactElement {
     /* ---- QPS 联动呼吸（幅度 ≤ 6%） ---- */
     const qps = telemetryTransientRef.snapshot.totalQps;
     const qpsNorm = Math.min(1, Math.log10(qps + 1) / 4);
-    const breath = 1 + 0.06 * qpsNorm * Math.sin(t * 2.2);
+    /* R29 E：呼吸取全局节拍 3.6s/1 */
+    const breath = 1 + 0.06 * qpsNorm * Math.sin(t * MOTION_BREATH_OMEGA);
     /* 晶核脉冲 → 棱线漏光（这是替代顶部光柱的能量表达） */
-    const leak = 0.25 + 0.75 * Math.max(0, Math.sin(t * 2.2));
+    const leak = 0.25 + 0.75 * Math.max(0, Math.sin(t * MOTION_BREATH_OMEGA));
 
     /* 所有 uniform 原地写值（零分配） */
     coreUniforms.uTime.value = t;
@@ -637,7 +647,8 @@ export default function CrystalOptics(): React.ReactElement {
     if (wireInnerRef.current !== null) wireInnerRef.current.rotation.y = -t * 0.12;
     if (wireOuterRef.current !== null) wireOuterRef.current.rotation.y = t * 0.09;
     /* ---- 追问 1：星芒亮度随晶核脉冲；并在每帧计算 billboard 朝向 ---- */
-    starUniforms.uPulse.value = 0.72 + 0.28 * Math.max(0, Math.sin(t * 2.2 + Math.PI / 3));
+    starUniforms.uPulse.value =
+      0.72 + 0.28 * Math.max(0, Math.sin(t * MOTION_BREATH_OMEGA + Math.PI / 3));
     const star = starRef.current;
     if (star !== null) {
       /* billboard：复制相机四元数（与旧 flare 相同的零滞后做法） */
@@ -660,13 +671,16 @@ export default function CrystalOptics(): React.ReactElement {
     for (let i = 0; i < GYRO_RING_COUNT; i += 1) {
       const ring = gyros[i];
       if (ring !== null && ring !== undefined) {
-        ring.rotation.z = t * ((i + 1) * (Math.PI * 2)) / (3.6 / (i + 1));
+        const gyroOmega =
+          [MOTION_GYRO_SLOW_OMEGA, MOTION_GYRO_FAST_OMEGA, MOTION_GYRO_MID_OMEGA][i] ??
+          MOTION_GYRO_FAST_OMEGA;
+        ring.rotation.z = t * gyroOmega;
       }
     }
   });
 
   return (
-    <group>
+    <group ref={crystalGroupRef}>
       {/* ---- 1. 内核奇点 r≈0.40 ---- */}
       <mesh raycast={(): void => undefined} renderOrder={1}>
         <icosahedronGeometry args={[CORE_RADIUS, 4]} />

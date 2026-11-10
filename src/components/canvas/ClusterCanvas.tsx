@@ -49,6 +49,10 @@ import GroundHorizonFade from '@/components/canvas/GroundHorizonFade';
 import ArcStartGlow3D from '@/components/canvas/ArcStartGlow3D';
 import ReturnStream3D from '@/components/canvas/ReturnStream3D';
 import RackGroundReflection from '@/components/canvas/RackGroundReflection';
+import BootController from '@/components/canvas/BootController';
+import GlowDebugOverlay from '@/components/canvas/GlowDebugOverlay';
+import { useQualityStore } from '@/store/useQualityStore';
+import { useQualityGovernor } from '@/hooks/useQualityGovernor';
 import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
 import ClusterTopologyFloor3D from '@/components/canvas/ClusterTopologyFloor3D';
 import { HalfFloatType } from 'three';
@@ -541,6 +545,10 @@ export default function ClusterCanvas() {
   /** R27：T3 景深 Effect 实例（T2/T1/T0 不挂载、不分配） */
   const dofEffectRef = useRef<DepthOfFieldEffect | null>(null);
 
+  /* R29 F：质量档位（非持久化）+ 自动治理（2Hz 采样、带迟滞与冷却） */
+  const qualityTier = useQualityStore((state): number => state.tier);
+  useQualityGovernor();
+
   /**
    * R24 追问 3：把"当前渲染路径 + 原因"写入瞬态轨。
    *
@@ -980,11 +988,16 @@ export default function ClusterCanvas() {
         {/* ---- WebGL 指标采集探针（无渲染，每 500ms 写入瞬态轨） ---- */}
         <GlStatsCollector />
 
+        {/* R29 B：开场编排唯一推进者（uBoot 0→1，1.2s） */}
+        <BootController />
+
         {/* ---- R24：自适应曝光驱动（≤4Hz 估计亮度、每帧阻尼插值） ---- */}
         <ExposureDriver effectRef={exposureEffectRef} />
 
         {/* ---- R27：T3 景深焦点阻尼跟随（T2/T1/T0 完全不渲染） ---- */}
-        {postEnabled && RENDER_TIER === 'T3' ? <DofFocusDriver effectRef={dofEffectRef} /> : null}
+        {postEnabled && RENDER_TIER === 'T3' && qualityTier >= 3 ? (
+          <DofFocusDriver effectRef={dofEffectRef} />
+        ) : null}
 
         {/* ---- 深空氛围：背景色 + 线性雾 ---- */}
         <color attach="background" args={[VOID_COLOR]} />
@@ -1325,6 +1338,9 @@ export default function ClusterCanvas() {
           )
         ) : null}
       </Canvas>
+
+      {/* R29 D：?glowDebug=1 时的发光预算调试浮层（开发/答辩用） */}
+      <GlowDebugOverlay />
 
       {/*
        * ---- 上下文丢失提示条 ----
