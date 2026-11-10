@@ -42,6 +42,7 @@
     "verify:rag": "node scripts/verify-rag.mjs",
     "probe:voice-ui": "node scripts/probe-voice-esc-ui.mjs",
     "evidence:r23": "node scripts/r23-pipeline-evidence.mjs",
+    "evidence:r24": "node scripts/r24-evidence.mjs",
     "soak": "node scripts/soak.mjs",
     "strictmode:audit": "node scripts/strictmode-audit.mjs",
     "docs:metrics": "node scripts/sync-docs-metrics.mjs",

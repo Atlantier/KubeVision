@@ -88,6 +88,10 @@ export const telemetryTransientRef: TelemetryTransientRef = {
     triangles: 0,
     sseLatencyMs: 0,
     workerStatus: 'idle',
+    renderTier: 'T0',
+    renderReason: '初始化中',
+    toneMappingExposure: 1.18,
+    sceneLuminanceEstimate: 0,
   },
 };
 

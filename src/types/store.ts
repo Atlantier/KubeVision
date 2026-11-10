@@ -48,6 +48,17 @@ export interface GlStatsSnapshot {
   triangles: number;
   sseLatencyMs: number;
   workerStatus: string;
+  /**
+   * 当前渲染路径档位（R24 追问 3）。
+   * T3/T2/T1 = Composer 路径质量档；T0 = 兜底路径（无后处理）。
+   */
+  renderTier: string;
+  /** 路径原因（人类可读，HUD 直接展示，让降级可见） */
+  renderReason: string;
+  /** 自适应曝光当前值（R24 追问 1，阻尼插值后的实际值） */
+  toneMappingExposure: number;
+  /** 场景亮度估计（0~1，来自瞬态轨而非 readPixels） */
+  sceneLuminanceEstimate: number;
 }
 
 /**
