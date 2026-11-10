@@ -51,8 +51,8 @@ import { useFrame, type ThreeEvent } from '@react-three/fiber';
 import { Edges, Html, RoundedBox, type EdgesRef } from '@react-three/drei';
 import * as THREE from 'three';
 
-import { HoloFrame, MiniBar } from '@/components/canvas/HoloHud';
-import { getBrushedMetalTextures } from '@/components/canvas/ProceduralPbrEnvironment';
+
+import { enhanceArmorMaterial, getBrushedMetalTextures } from '@/components/canvas/ProceduralPbrEnvironment';
 import { useOptionalGltfModel } from '@/hooks/useOptionalGltfModel';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
@@ -1650,6 +1650,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
            */}
           <boxGeometry args={[OPTIC_RAIL_SIZE, RACK_BODY_SIZE[1], OPTIC_RAIL_SIZE]} />
           <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
             color={OPTIC_RAIL_COLOR}
             metalness={0.92}
             roughness={0.16}
@@ -1693,6 +1694,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
               >
                 <boxGeometry args={[RACK_BODY_SIZE[0], OPTIC_RAIL_SIZE, OPTIC_RAIL_SIZE]} />
                 <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
                   color={OPTIC_RAIL_COLOR}
                   metalness={0.92}
                   roughness={0.16}
@@ -1713,6 +1715,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
               >
                 <boxGeometry args={[OPTIC_RAIL_SIZE, OPTIC_RAIL_SIZE, RACK_BODY_SIZE[2]]} />
                 <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
                   color={OPTIC_RAIL_COLOR}
                   metalness={0.92}
                   roughness={0.16}
@@ -1747,6 +1750,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           <mesh raycast={noRaycast} visible={!isGltfRackAvailable}>
             <boxGeometry args={[PILLAR_SIZE, RACK_BODY_SIZE[1], PILLAR_SIZE]} />
             <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
               color={PILLAR_COLOR}
               metalness={TI_METALNESS}
               roughness={TI_ROUGHNESS}
@@ -1803,6 +1807,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         >
           <boxGeometry args={[1, 1, 1]} />
           <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
             color={CHAMFER_COLOR}
             metalness={CHAMFER_METALNESS}
             roughness={CHAMFER_ROUGHNESS}
@@ -1839,6 +1844,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         >
           <cylinderGeometry args={[RIVET_RADIUS, RIVET_RADIUS * 1.35, RIVET_HEIGHT, 8]} />
           <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
             color={RIVET_COLOR}
             metalness={RIVET_METALNESS}
             roughness={RIVET_ROUGHNESS}
@@ -1862,6 +1868,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         visible={!isGltfRackAvailable}
       >
         <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
           color={HARDWARE_COLOR}
           metalness={TI_METALNESS}
           roughness={TI_ROUGHNESS}
@@ -1892,6 +1899,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           <mesh position={[0, tierY, 0]} receiveShadow raycast={noRaycast}>
             <boxGeometry args={[RACK_BODY_SIZE[0] - 0.16, 0.055, RACK_BODY_SIZE[2] - 0.14]} />
             <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
               color="#1e293b"
               metalness={TI_METALNESS}
               roughness={TI_ROUGHNESS}
@@ -1994,6 +2002,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         visible={!isGltfRackAvailable}
       >
         <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
           color={HARDWARE_COLOR}
           metalness={TI_METALNESS}
           roughness={TI_ROUGHNESS}
@@ -2029,6 +2038,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         visible={!isGltfRackAvailable}
       >
         <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
           color={HARDWARE_COLOR}
           metalness={TI_METALNESS}
           roughness={TI_ROUGHNESS}
@@ -2057,6 +2067,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       <mesh position={[0, CROWN_Y + CROWN_HEIGHT / 2 + 0.012, 0]} raycast={noRaycast} visible={!isGltfRackAvailable}>
         <boxGeometry args={[CROWN_WIDTH - 0.42, 0.02, CROWN_DEPTH - 0.42]} />
         <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
           color="#091326"
           metalness={HARDWARE_METALNESS}
           roughness={HARDWARE_ROUGHNESS}
@@ -2095,6 +2106,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           >
             <boxGeometry args={[louverWidth, LOUVER_THICKNESS, louverDepth * 0.62]} />
             <meshStandardMaterial
+            onBeforeCompile={enhanceArmorMaterial}
               color={LOUVER_COLOR}
               metalness={LOUVER_METALNESS}
               roughness={LOUVER_ROUGHNESS}
@@ -2385,38 +2397,91 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
          * 比任何文字都更快被余光捕捉到；放在名字左侧而非标尺行，
          * 是为了让它与"这个节点"语义绑定，而不是与"这块面板"绑定。
          */}
-        <HoloFrame
-          accent={statusColor}
-          glow={emphasized}
-          rulerLabel={`NODE // RACK-${String(node.rackIndex + 1).padStart(2, '0')}`}
+        {/*
+         * R27 D 项：无底色玻璃拟态铭牌（局部实现 R14 的 .kv-chip 规格）。
+         * 去掉了圆角矩形 + 顶部微标尺的"典型科幻 HUD"：
+         *  - 无底色，仅 1px white/8 内描边 + 8px backdrop blur；
+         *  - 四角 6px/1px 发光角标（状态色）；
+         *  - 标题 12px 无衬线、数值 10px 等宽 tabular-nums（全仓 ≥10px，R14）；
+         *  - 信息只留节点名 / 状态徽标 / POD 数 / CPU·MEM 2px 迷你条。
+         */}
+        <div
+          className="relative px-2.5 py-1.5 backdrop-blur-[8px]"
+          style={{
+            boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)',
+            background: 'transparent',
+          }}
         >
-          {/* 第一行：身份 + 状态徽标 + 容器数 */}
-          <div className="flex items-center gap-1 whitespace-nowrap">
-            {/* 在线呼吸点：紧贴节点名左侧，颜色 = 状态色 */}
+          {/* 四角极细发光角标（6×6px，1px 线） */}
+          <span
+            aria-hidden
+            className="absolute left-0 top-0 h-1.5 w-1.5 border-l border-t"
+            style={{ borderColor: `${statusColor}cc` }}
+          />
+          <span
+            aria-hidden
+            className="absolute right-0 top-0 h-1.5 w-1.5 border-r border-t"
+            style={{ borderColor: `${statusColor}cc` }}
+          />
+          <span
+            aria-hidden
+            className="absolute bottom-0 left-0 h-1.5 w-1.5 border-b border-l"
+            style={{ borderColor: `${statusColor}66` }}
+          />
+          <span
+            aria-hidden
+            className="absolute bottom-0 right-0 h-1.5 w-1.5 border-b border-r"
+            style={{ borderColor: `${statusColor}66` }}
+          />
+
+          {/* 指针线：1px 渐变（近端实、远端透明），长度随 Html distanceFactor 缩放 */}
+          <span
+            aria-hidden
+            className="absolute left-1/2 top-[-14px] h-3 w-px -translate-x-1/2"
+            style={{ background: `linear-gradient(to top, ${statusColor}cc, transparent)` }}
+          />
+
+          {/* 第一行：状态点 + 节点名 + 状态徽标 + Pod 数 */}
+          <div className="flex items-center gap-1.5 whitespace-nowrap">
             <span
               className="h-1 w-1 shrink-0 rounded-full animate-glow-pulse"
               style={{ backgroundColor: statusColor, boxShadow: `0 0 5px ${statusColor}` }}
             />
-            <span className="text-[9.5px] font-semibold tracking-wider text-white">
+            <span className="font-sans text-[12px] font-semibold tracking-wider text-white">
               {node.name}
             </span>
             <span
-              className="ml-auto rounded-[1px] border px-1 text-[7px] font-semibold tracking-[0.10em]"
-              style={{ borderColor: `${statusColor}66`, color: statusColor }}
+              className="ml-auto rounded-[2px] border px-1 font-mono text-[10px] font-semibold tracking-[0.08em]"
+              style={{ borderColor: `${statusColor}55`, color: statusColor }}
             >
               {statusBadgeLabel}
             </span>
-            <span className="font-mono text-[7px] tabular-nums tracking-[0.10em] text-slate-500">
+            <span className="font-mono text-[10px] tabular-nums tracking-[0.06em] text-slate-500">
               {node.podIds.length} PODS
             </span>
           </div>
 
-          {/* 第二行：CPU / MEM 分段微米级进度条（含发光游标） */}
-          <div className="mt-1 flex items-center gap-2">
-            <MiniBar label="CPU" value={node.cpuUsage} />
-            <MiniBar label="MEM" value={node.memUsage} tone="#38bdf8" />
+          {/* 第二行：CPU / MEM 2px 迷你条 + 等宽数值 */}
+          <div className="mt-1 grid grid-cols-2 gap-2">
+            {[
+              { label: 'CPU', value: node.cpuUsage, tone: statusColor },
+              { label: 'MEM', value: node.memUsage, tone: '#38bdf8' },
+            ].map((metric): React.ReactElement => (
+              <div key={metric.label} className="flex items-center gap-1">
+                <span className="font-mono text-[10px] tracking-wider text-slate-500">{metric.label}</span>
+                <span className="relative h-[2px] w-10 overflow-hidden rounded-full bg-white/10">
+                  <span
+                    className="absolute left-0 top-0 h-full rounded-full"
+                    style={{ width: `${Math.max(2, Math.min(100, metric.value))}%`, background: metric.tone }}
+                  />
+                </span>
+                <span className="font-mono text-[10px] font-semibold tabular-nums text-slate-300">
+                  {Math.round(metric.value)}%
+                </span>
+              </div>
+            ))}
           </div>
-        </HoloFrame>
+        </div>
       </Html>
     </group>
   );

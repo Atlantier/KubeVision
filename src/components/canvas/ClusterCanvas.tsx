@@ -20,17 +20,20 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Canvas, type RootState } from '@react-three/fiber';
+import { Canvas, useFrame, type RootState } from '@react-three/fiber';
 import { ContactShadows, Grid, MeshReflectorMaterial, PerformanceMonitor, Sparkles } from '@react-three/drei';
+import * as THREE from 'three';
 import { NeutralToneMapping, NoToneMapping } from 'three';
 import { ExposureDriver, ExposureEffect, type ExposureEffectHandle } from '@/components/canvas/ExposureDriver';
-import { Bloom, EffectComposer, FXAA, Noise, ToneMapping, Vignette } from '@react-three/postprocessing';
+import { Bloom, DepthOfField, EffectComposer, FXAA, Noise, ToneMapping, Vignette } from '@react-three/postprocessing';
+import type { DepthOfFieldEffect } from 'postprocessing';
 import { ToneMappingMode } from 'postprocessing';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import CyberMatrixRain3D from '@/components/canvas/CyberMatrixRain3D';
 import ProceduralPbrEnvironment from '@/components/canvas/ProceduralPbrEnvironment';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { MASTER_POSITION, getRackTransform } from '@/utils/spatialLayout';
 import { useInViewPause } from '@/hooks/useInViewPause';
 import { dispatchViewPreset, subscribeViewPreset } from '@/utils/viewPresetBus';
 import type { WorkerNodeEntity } from '@/types/cluster';
@@ -139,6 +142,57 @@ const CAMERA_FOV = 40;
 /* ========================================================================== */
 /* ClusterCanvas 主体                                                          */
 /* ========================================================================== */
+
+/**
+ * DofFocusDriver —— T3 景深焦点阻尼跟随（R27 B3）。
+ *
+ * 焦点目标 = 相机到"关注实体"的距离：选中节点→机架中心；
+ * 选中 Pod→其所属机架中心；否则→控制平面中心。
+ * 每 250ms 更新目标、每帧指数阻尼（k=5），镜头飞行时焦点平滑跟随、无跳变。
+ *
+ * @param props.effectRef 指向 DepthOfFieldEffect 的 ref
+ */
+function DofFocusDriver({
+  effectRef,
+}: {
+  readonly effectRef: React.MutableRefObject<DepthOfFieldEffect | null>;
+}): null {
+  const targetRef = useRef<number>(12);
+  const currentRef = useRef<number>(12);
+  const lastReadRef = useRef<number>(0);
+  const centerRef = useRef(new THREE.Vector3(MASTER_POSITION[0], MASTER_POSITION[1], MASTER_POSITION[2]));
+
+  useFrame(({ camera }, delta): void => {
+    const now = performance.now();
+    if (now - lastReadRef.current >= 250) {
+      lastReadRef.current = now;
+      const state = useClusterStore.getState();
+      const selectedId = state.selectedEntityId;
+      centerRef.current.set(MASTER_POSITION[0], MASTER_POSITION[1], MASTER_POSITION[2]);
+      if (selectedId !== null) {
+        const node = state.snapshotSummary.nodes.find((item): boolean => item.id === selectedId);
+        const pod = state.snapshotSummary.pods.find((item): boolean => item.id === selectedId);
+        const rackIndex =
+          node?.rackIndex ??
+          (pod === undefined
+            ? undefined
+            : state.snapshotSummary.nodes.find((item): boolean => item.id === pod.nodeId)?.rackIndex);
+        if (rackIndex !== undefined) {
+          const rack = getRackTransform(rackIndex);
+          centerRef.current.set(rack.position[0], rack.position[1] + 1.2, rack.position[2]);
+        }
+      }
+      targetRef.current = camera.position.distanceTo(centerRef.current);
+    }
+    const alpha = 1 - Math.exp(-5 * Math.min(delta, 0.1));
+    currentRef.current += (targetRef.current - currentRef.current) * alpha;
+    const effect = effectRef.current;
+    if (effect !== null) {
+      effect.circleOfConfusionMaterial.focusDistance = currentRef.current;
+    }
+  });
+  return null;
+}
 
 /**
  * ClusterCanvas —— R3F 根画布（page.tsx 经 dynamic(ssr:false) 懒加载挂载）。
@@ -481,6 +535,9 @@ export default function ClusterCanvas() {
 
   /** R24：自适应曝光 Effect 实例（Composer 路径下由 ExposureDriver 驱动） */
   const exposureEffectRef = useRef<ExposureEffectHandle | null>(null);
+
+  /** R27：T3 景深 Effect 实例（T2/T1/T0 不挂载、不分配） */
+  const dofEffectRef = useRef<DepthOfFieldEffect | null>(null);
 
   /**
    * R24 追问 3：把"当前渲染路径 + 原因"写入瞬态轨。
@@ -924,6 +981,9 @@ export default function ClusterCanvas() {
         {/* ---- R24：自适应曝光驱动（≤4Hz 估计亮度、每帧阻尼插值） ---- */}
         <ExposureDriver effectRef={exposureEffectRef} />
 
+        {/* ---- R27：T3 景深焦点阻尼跟随（T2/T1/T0 完全不渲染） ---- */}
+        {postEnabled && RENDER_TIER === 'T3' ? <DofFocusDriver effectRef={dofEffectRef} /> : null}
+
         {/* ---- 深空氛围：背景色 + 线性雾 ---- */}
         <color attach="background" args={[VOID_COLOR]} />
         <fog attach="fog" args={[VOID_COLOR, FOG_NEAR, FOG_FAR]} />
@@ -1210,6 +1270,18 @@ export default function ClusterCanvas() {
               multisampling={0}
               frameBufferType={HalfFloatType}
             >
+              {/*
+               * R27：DoF 在 Bloom **之前**（物理顺序：失焦发生在成像面，
+               * Bloom 是镜头后的光溢出）。focusRange 取大值保证前排机架与
+               * 晶核都在焦内，只虚化最远节点与背景粒子。
+               */}
+              <DepthOfField
+                ref={dofEffectRef}
+                focusDistance={12}
+                focalLength={0.02}
+                focusRange={26}
+                bokehScale={1.2}
+              />
               <Bloom
                 intensity={0.72}
                 luminanceThreshold={0.78}

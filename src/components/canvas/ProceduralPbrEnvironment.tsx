@@ -108,6 +108,46 @@ function hashNoise(seed: number): number {
 let brushedMetalCache: { roughnessMap: THREE.DataTexture; bumpMap: THREE.DataTexture } | null = null;
 
 /**
+ * enhanceArmorMaterial —— 机架装甲材质程序化增强（R11 A2/A3/B1）。
+ *
+ * 通过 onBeforeCompile 注入，不新增 draw call、不新增贴图文件：
+ * 1. 倒角高光：fresnel^4 × 冷白 × 0.25（掠射角/棱边附近）；
+ * 2. 接缝 AO：UV 纵向 4 段接缝附近把漫反射压暗最多 30%（不碰自发光）；
+ * 3. 深度大气：按视深 smoothstep(14, 33.6, |viewPos|)×0.35 混向雾色，
+ *    远端节点亮度与饱和度同步下降；edge0<edge1 满足 R01。
+ *
+ * @param shader three 编译期着色器对象
+ */
+export function enhanceArmorMaterial(shader: {
+  vertexShader: string;
+  fragmentShader: string;
+  uniforms: Record<string, { value: unknown }>;
+}): void {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 kvViewPos;\nvarying vec3 kvNrm;\nvarying vec2 kvUv;')
+    .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n  kvNrm = normalize(normalMatrix * objectNormal);')
+    .replace('#include <project_vertex>', '#include <project_vertex>\n  kvViewPos = - mvPosition.xyz;')
+    .replace('#include <uv_vertex>', '#include <uv_vertex>\n  kvUv = uv;');
+
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      '#include <common>',
+      '#include <common>\nvarying vec3 kvViewPos;\nvarying vec3 kvNrm;\nvarying vec2 kvUv;\nuniform float uKvHaze;\nuniform vec3 uKvFogColor;',
+    )
+    .replace(
+      '#include <map_fragment>',
+      '#include <map_fragment>\n  float kvSeamPhase = fract(kvUv.y * 4.0);\n  float kvSeam = smoothstep(0.94, 1.0, kvSeamPhase) + (1.0 - smoothstep(0.0, 0.06, kvSeamPhase));\n  diffuseColor.rgb *= 1.0 - clamp(kvSeam, 0.0, 1.0) * 0.30;',
+    )
+    .replace(
+      '#include <emissivemap_fragment>',
+      '#include <emissivemap_fragment>\n  float kvFres = pow(max(1.0 - abs(dot(normalize(kvNrm), normalize(kvViewPos))), 1.0e-4), 4.0);\n  totalEmissiveRadiance += vec3(0.85, 0.92, 1.0) * kvFres * 0.25;\n  float kvDepth = length(kvViewPos);\n  float kvHaze = smoothstep(uKvHaze, uKvHaze * 2.4, kvDepth) * 0.35;\n  diffuseColor.rgb = mix(diffuseColor.rgb, uKvFogColor, kvHaze);',
+    );
+
+  shader.uniforms.uKvHaze = { value: 14 };
+  shader.uniforms.uKvFogColor = { value: new THREE.Color(0.008, 0.024, 0.067) };
+}
+
+/**
  * getBrushedMetalTextures —— 程序化生成拉丝金属的粗糙度与凹凸贴图。
  *
  * 【产出两张贴图的物理意义】
@@ -145,6 +185,10 @@ export function getBrushedMetalTextures(): {
   /* 已有缓存直接复用（模块级单例，零重复开销） */
   if (brushedMetalCache !== null) return brushedMetalCache;
 
+  /*
+   * R11：三座机架共用同一份纹理（模块级单例缓存）。
+   * 生成一次、上传一次，材质间共享 GPU 纹理对象。
+   */
   /* 服务端没有 WebGL 上下文：返回 null，调用方以无贴图方式降级 */
   if (typeof window === 'undefined') return null;
 
@@ -182,12 +226,16 @@ export function getBrushedMetalTextures(): {
       const grain = hashNoise(x * 7919 + y * 104729) - 0.5;
 
       /* ---- 6. 合成粗糙度 ----
-       * 基准 0.25（拉丝金属的典型粗糙度），
-       * 丝纹贡献 ±0.06，长尺度起伏 ±0.02，晶粒 ±0.012。
-       * 合计落在约 0.16~0.34，与真实拉丝不锈钢一致。
+       * R11：基准 0.55、丝纹 ±0.07、次纹 ±0.03、长尺度 ±0.04、
+       * 晶粒 ±0.02、低频污渍 ±0.05 —— 总范围收敛到 **0.38~0.72**。
+       * 这比"镜面不锈钢"更接近真实机柜：面板有使用痕迹与油污，
+       * 高光不会整片过曝，近景才有材质可读性。
        */
+      /* 低频污渍：32px 块的稀疏哈希，模拟指印/油污，半径远大于丝纹 */
+      const stain =
+        (hashNoise((Math.floor(x / 32) * 73856093) ^ Math.floor(y / 32)) - 0.5) * 0.10;
       const roughness =
-        0.25 + brushWave * 0.06 + secondaryWave * 0.02 + slowWave * 0.02 + grain * 0.024;
+        0.55 + brushWave * 0.07 + secondaryWave * 0.03 + slowWave * 0.04 + grain * 0.04 + stain;
 
       /* 归一化到 [0,1] 再编码为字节（三通道同值：three 读绿通道，写满更稳） */
       const roughnessClamped = Math.max(0, Math.min(1, roughness));
