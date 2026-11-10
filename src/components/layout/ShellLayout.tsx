@@ -310,7 +310,7 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
         <section
           aria-label="3D 集群拓扑视口"
           className={cn(
-            'relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-white/[0.07] bg-slate-900/40',
+            'kv-fade-in relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-white/[0.07] bg-slate-900/40',
             // 移动端：copilot 视图时隐藏左栏（常驻 DOM，不卸载画布）
             mobileView === 'copilot' && 'hidden lg:block',
           )}
@@ -372,7 +372,7 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
           aria-label="AI Copilot 抽屉"
           style={{ '--drawer-w': `${effectiveDrawerPct}%` } as React.CSSProperties}
           className={cn(
-            'kv-panel min-h-0 overflow-hidden rounded-lg',
+            'kv-panel kv-fade-in min-h-0 overflow-hidden rounded-lg',
             // 移动端：w-full 铺满，宽度变量不生效
             'w-full',
             // 桌面端：消费 --drawer-w，且不参与 flex 伸缩

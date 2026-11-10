@@ -821,6 +821,9 @@ function DemoDirectorBar({
       style={{ boxShadow: 'var(--kv-inset-highlight)' }}
       role="region"
       aria-label="自动演练序列器"
+      data-demo-phase={demo.badge}
+      data-demo-status={demo.status}
+      data-demo-index={demo.phaseIndex}
     >
       {/* 顶缘 1px 折射亮边（与 3D HUD 同一套玻璃语言） */}
       <span

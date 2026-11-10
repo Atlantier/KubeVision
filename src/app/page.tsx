@@ -27,6 +27,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Radar } from 'lucide-react';
 
 import ShellLayout from '@/components/layout/ShellLayout';
+import StartupStatusCapsule from '@/components/hud/StartupStatusCapsule';
 import { useTelemetryStream } from '@/hooks/useTelemetryStream';
 import { useEscapeDispatcher, useEscapeHint, useEscapeLayer } from '@/hooks/useEscapeStack';
 import { rehydratePersistedClusterState, useClusterStore } from '@/store/useClusterStore';
@@ -278,6 +279,9 @@ export default function HomePage() {
   return (
     <>
       <ShellLayout viewport={<ClusterCanvas />} drawer={<CopilotDrawer />} />
+
+      {/* R41：WebGL / Copilot chunk / 遥测三条启动状态合并为一个可折叠胶囊 */}
+      <StartupStatusCapsule />
 
       {/*
        * 【AnimatePresence 退场动画自愈（审查报告 §4.1）】

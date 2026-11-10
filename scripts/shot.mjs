@@ -39,7 +39,7 @@ import { basename, extname, join, resolve } from 'node:path';
 /* 参数                                                                        */
 /* ========================================================================== */
 
-const SCENE_KEYS = ['overview', 'pod-closeup', 'oom', 'crystal', 'demo-phase2', 'demo-phase4'];
+const SCENE_KEYS = ['overview', 'pod-closeup', 'oom', 'crystal', 'demo-phase2', 'demo-phase4', 'demo-preflight-fail'];
 
 const baseUrl = readArg('--base') ?? 'http://127.0.0.1:3000';
 const scene = readArg('--scene') ?? 'overview';
@@ -58,6 +58,8 @@ if (gpuMode !== 'swiftshader' && gpuMode !== 'd3d11') {
   process.exit(1);
 }
 const tag = readArg('--tag') ?? outDir.split(/[\\/]/).filter(Boolean).pop() ?? 'untagged';
+/** R41：追加到页面 URL 的 query（如 startupDebug=1），默认空 */
+const urlQuery = readArg('--query') ?? '';
 
 if (!SCENE_KEYS.includes(scene)) {
   console.error(`[FATAL] --scene 必须是 ${SCENE_KEYS.join(' | ')}，收到 "${scene}"`);
@@ -178,6 +180,27 @@ const SCENES = {
     apply: null,
     demoWaitUntil: '阶段 4/4',
     demoWaitTimeoutMs: 40000,
+  },
+  'demo-preflight-fail': {
+    /* R41：预检失败态截图。移除 Copilot 抽屉（预检第 3 项），保留 3D 画面。 */
+    label: '路演预检失败态（Copilot 抽屉缺失，红色细边框 + 原因）',
+    settleMs: 0,
+    apply: `(async () => {
+      const drawer = document.querySelector('[aria-label="AI Copilot 抽屉"]');
+      if (drawer !== null) drawer.remove();
+      const btn = Array.from(document.querySelectorAll('button')).find((b) =>
+        (b.getAttribute('aria-label') || '').startsWith('启动全自动剧本路演'));
+      if (btn === undefined) return { error: 'start button missing' };
+      btn.click();
+      await new Promise((r) => setTimeout(r, 800));
+      const item = Array.from(document.querySelectorAll('[role="menu"][aria-label="选择路演剧本"] button'))[0];
+      if (item === undefined) return { error: 'menu item missing' };
+      item.click();
+      await new Promise((r) => setTimeout(r, 1200));
+      const bar = document.querySelector('[aria-label="自动演练序列器"]');
+      const phase = bar === null ? null : bar.getAttribute('data-demo-phase');
+      return { ok: true, phase };
+    })()`,
   },
 };
 
@@ -348,7 +371,7 @@ async function main() {
     deviceScaleFactor: 1,
     mobile: false,
   });
-  await cdp.send('Page.navigate', { url: baseUrl });
+  await cdp.send('Page.navigate', { url: urlQuery === '' ? baseUrl : `${baseUrl}?${urlQuery}` });
 
   for (let i = 0; i < 300; i += 1) {
     if ((await evaluate(cdp, 'document.querySelector("canvas") !== null')) === true) break;
@@ -412,8 +435,15 @@ async function main() {
       const aria = await evaluate(
         cdp,
         `(() => {
-          const bar = document.querySelector('[aria-label^="剧本路演进行中"]');
-          return bar === null ? null : bar.getAttribute('aria-label');
+          /* R41：字幕条已重命名为「自动演练序列器」，阶段信息走 data-demo-phase；
+             anchor 仍兼容旧 aria-label，避免历史脚本失效。 */
+          const bar =
+            document.querySelector('[aria-label="自动演练序列器"]') ??
+            document.querySelector('[aria-label^="剧本路演进行中"]');
+          if (bar === null) return null;
+          const phase = bar.getAttribute('data-demo-phase');
+          const status = bar.getAttribute('data-demo-status');
+          return phase === null ? bar.getAttribute('aria-label') : phase + ' / ' + (status ?? '');
         })()`,
       );
       if (typeof aria === 'string' && aria.includes(def.demoWaitUntil)) {
