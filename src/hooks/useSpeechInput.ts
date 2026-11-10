@@ -231,8 +231,14 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
   const startedAtRef = useRef<number>(0);
   const activeFramesRef = useRef<number>(0);
   const lastVoiceAtRef = useRef<number>(0);
+  /** Q2：结构化错误原因（权限 / 不支持 / 网络），供 UI 给出具体提示与重试 */
+  const [errorKind, setErrorKind] = useState<'permission' | 'unsupported' | 'network' | null>(null);
+  /** Q1：最近一次 stop 产出的最终文本（供调用方自动发送） */
+  const [finalText, setFinalText] = useState<string | null>(null);
   /** C3：上一次向 React 发布频谱的时间戳（限制 ≤8Hz，避免整树 60FPS 重渲染） */
   const lastPublishAtRef = useRef<number>(0);
+  /** Q2：CSS 变量 --kv-mic-level 的节流写入时间（零重渲染驱动图标电平） */
+  const lastCssVarAtRef = useRef<number>(0);
   /** C3：静音自动收尾是否已触发（保证只触发一次） */
   const silenceStopRequestedRef = useRef<boolean>(false);
   /** C3：stop 的最新引用，供静音收尾调用 */
@@ -335,7 +341,16 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
       freqBufferRef.current = new Uint8Array(analyser.frequencyBinCount);
 
       return true;
-    } catch {
+    } catch (error) {
+      /* Q2：把异常翻译成用户能操作的错误类型 */
+      const name = error instanceof DOMException ? error.name : '';
+      setErrorKind(
+        name === 'NotAllowedError' || name === 'SecurityError'
+          ? 'permission'
+          : name === 'NotFoundError' || name === 'NotSupportedError'
+            ? 'unsupported'
+            : 'network',
+      );
       /**
        * 【异常路径也必须释放资源】
        *
@@ -378,6 +393,17 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
       /* 有效发声判定：用中低频段的平均值代表整体人声能量 */
       const voiceEnergy = bands.slice(0, 7).reduce((a, b): number => a + b, 0) / 7;
       const now = Date.now();
+
+      /*
+       * Q2：把电平写进 CSS 变量（每 125ms 一次，零 React 重渲染）。
+       * 麦克风图标的发光/脉冲由 CSS 读 var(--kv-mic-level) 驱动，
+       * 这样频谱变化不会触发任何组件 setState。
+       */
+      if (now - lastCssVarAtRef.current >= 125 && typeof document !== 'undefined') {
+        lastCssVarAtRef.current = now;
+        const level = Math.min(1, Math.max(0, voiceEnergy / 255));
+        document.documentElement.style.setProperty('--kv-mic-level', level.toFixed(3));
+      }
       if (voiceEnergy > VOICE_ENERGY_THRESHOLD) {
         activeFramesRef.current += 1;
         lastVoiceAtRef.current = now;
@@ -547,6 +573,15 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
   /* ---------------------------------------------------------------------- */
 
   const start = useCallback(async (): Promise<void> => {
+    /* Q2：媒体能力缺失时给出"不支持"而非笼统失败 */
+    if (typeof navigator === 'undefined' || navigator.mediaDevices === undefined) {
+      setErrorKind('unsupported');
+      setNotice('当前浏览器不支持麦克风采集：请改用 Chrome / Edge，或直接键盘输入');
+      startingRef.current = false;
+      return;
+    }
+    setErrorKind(null);
+
     /*
      * 【C3：并发互斥】连点两次"开始"会开两条 getUserMedia 管线，
      * 第二条的 setState/stop 会把第一条的状态覆盖掉（幽灵麦克风）。
@@ -590,6 +625,7 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
      * 但当前没有配套的云端转写服务实现，因此实际仍走浏览器原生识别 +
      * 声学兜底。这里如实标注，不假装支持了一个并不存在的后端。
      */
+    setErrorKind(null);
     const asrEndpoint = process.env.NEXT_PUBLIC_ASR_API_URL;
     if (asrEndpoint !== undefined && asrEndpoint.length > 0) {
       setNotice('已检测到云端 ASR 配置，但该后端尚未实现，当前使用浏览器原生识别');
@@ -620,6 +656,9 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
     }
 
     releaseAudio();
+    if (typeof document !== 'undefined') {
+      document.documentElement.style.setProperty('--kv-mic-level', '0');
+    }
     if (mountedRef.current) {
       setIsListening(false);
       setSnapshot((prev) => ({ ...prev, bands: new Array<number>(BAND_COUNT).fill(0), interimText: '' }));
@@ -633,6 +672,7 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
     /* ---- 云端模式：用识别到的文本 ---- */
     const cloudText = `${transcriptRef.current}${interimRef.current}`.trim();
     if (!acousticModeRef.current && cloudText.length > 0) {
+      setFinalText(cloudText);
       return cloudText;
     }
 
@@ -651,7 +691,9 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
       ctx.selectedName,
       ctx.chaos,
     );
-    return `[声学推断] ${inferred}`;
+    const inferredText = `[声学推断] ${inferred}`;
+    setFinalText(inferredText);
+    return inferredText;
   }, [getContext, releaseAudio]);
 
   /* 供静音自动收尾调用最新 stop（stop 定义在前，此赋值在每次渲染时刷新） */
@@ -691,11 +733,28 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
     };
   }, [abort]);
 
+  /**
+   * consumeFinalText —— 取走并清空最终文本（Q1 自动发送的一次性消费）。
+   *
+   * @returns 上一次 stop 的文本；无则 null
+   */
+  const consumeFinalText = useCallback((): string | null => {
+    let taken: string | null = null;
+    setFinalText((prev): string | null => {
+      taken = prev;
+      return null;
+    });
+    return taken;
+  }, []);
+
   return {
     isListening,
     snapshot,
     mode,
     notice,
+    errorKind,
+    finalText,
+    consumeFinalText,
     start,
     stop,
     abort,

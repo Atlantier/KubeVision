@@ -26,7 +26,7 @@
  * 而不是靠调用顺序碰巧成立。
  */
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 /** 一个可被 Esc 关闭的层 */
 export interface EscapeLayer {
@@ -36,6 +36,8 @@ export interface EscapeLayer {
   readonly priority: number;
   /** 关闭回调（只应关闭自己这一层） */
   readonly onEscape: () => void;
+  /** 人类可读层名（Q3：底部 chip 提示用，如 '混沌演练控制台'） */
+  readonly label: string;
 }
 
 /** 注册表（模块级单例；组件挂载注册、卸载注销） */
@@ -49,9 +51,13 @@ const layers: EscapeLayer[] = [];
  */
 export function registerEscapeLayer(layer: EscapeLayer): () => void {
   layers.push(layer);
+  notifyEscapeLayersChanged();
   return (): void => {
     const index = layers.findIndex((candidate): boolean => candidate === layer);
-    if (index >= 0) layers.splice(index, 1);
+    if (index >= 0) {
+      layers.splice(index, 1);
+      notifyEscapeLayersChanged();
+    }
   };
 }
 
@@ -110,11 +116,73 @@ export function useEscapeLayer(layer: EscapeLayer | null): void {
   const id = layer?.id ?? null;
   const priority = layer?.priority ?? 0;
   const onEscape = layer?.onEscape;
+  const label = layer?.label ?? '';
 
   useEffect((): (() => void) | undefined => {
     if (id === null || onEscape === undefined) return undefined;
-    return registerEscapeLayer({ id, priority, onEscape });
-  }, [id, priority, onEscape]);
+    return registerEscapeLayer({ id, priority, onEscape, label });
+  }, [id, priority, onEscape, label]);
+}
+
+/* ========================================================================== */
+/* 可视化提示（Q3）：当前最上层 Esc 目标                                         */
+/* ========================================================================== */
+
+/** 层变化订阅者集合 */
+const hintListeners = new Set<() => void>();
+
+/**
+ * subscribeEscapeLayers —— 订阅注册表变化（供底部提示 chip 使用）。
+ *
+ * @param listener 变化回调
+ * @returns 取消订阅函数
+ */
+export function subscribeEscapeLayers(listener: () => void): () => void {
+  hintListeners.add(listener);
+  return (): void => {
+    hintListeners.delete(listener);
+  };
+}
+
+/** 通知订阅者：注册表变化（弹层开关会改变"当前最上层"） */
+function notifyEscapeLayersChanged(): void {
+  for (const listener of hintListeners) listener();
+}
+
+/**
+ * getTopEscapeLabel —— 当前最上层弹层的可读名（无弹层返回 null）。
+ *
+ * 【Q3 用途】底部 chip 显示"Esc 关闭：<名字>"，让评委一眼知道
+ * 此刻按 Esc 会发生什么——键盘行为不再是隐藏知识。
+ *
+ * @returns 最上层标签；没有可关闭层时返回 null
+ */
+export function getTopEscapeLabel(): string | null {
+  let top: EscapeLayer | null = null;
+  for (const layer of layers) {
+    if (layer.priority <= 0) continue;
+    if (top === null || layer.priority > top.priority) top = layer;
+  }
+  return top?.label ?? null;
+}
+/**
+ * useEscapeHint —— 订阅"当前最上层 Esc 目标"的可读名（Q3）。
+ *
+ * 【为什么要订阅而不是每次渲染现算】注册表是模块级可变表，
+ * React 不知道它何时变化；用 useSyncExternalStore 语义的订阅，
+ * 弹层开关时 chip 才会重建文本。
+ *
+ * @returns 顶层名；没有可关闭弹层时返回 null
+ */
+export function useEscapeHint(): string | null {
+  const [label, setLabel] = useState<string | null>(() => getTopEscapeLabel());
+  useEffect((): (() => void) => {
+    setLabel(getTopEscapeLabel());
+    return subscribeEscapeLayers((): void => {
+      setLabel(getTopEscapeLabel());
+    });
+  }, []);
+  return label;
 }
 
 /**

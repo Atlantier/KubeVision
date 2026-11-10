@@ -316,7 +316,7 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
    */
   /* 【C1】命令面板由父级按需挂载（打开时才存在），因此注册即代表打开；
      优先级 100：从页面任意位置按 Esc 都先关它。 */
-  useEscapeLayer({ id: 'command-palette', priority: 100, onEscape: onClose });
+  useEscapeLayer({ id: 'command-palette', priority: 100, label: '运维命令面板', onEscape: onClose });
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>): void => {

@@ -310,6 +310,29 @@ export default function ActionConfirm({
     );
   }, [receipt]);
 
+  /**
+   * Q1：语音确认的"显式二次确认"语义。
+   *
+   * 【为什么不能直接执行】高危动作（isHighRisk）必须与复选框同语义：
+   * 用户必须在卡片上显式勾选"我已确认影响面"后才能执行。
+   * 语音说"确认"不能替代这个复选框——否则语音通道就成了绕过安全护栏的后门。
+   *
+   * 【失败静默回退键盘】条件不满足时这里**什么都不做、也不报错**：
+   * 用户仍然可以点击按钮或勾选复选框完成确认，不会因为语音失败而卡住。
+   */
+  useEffect((): (() => void) => {
+    const onVoiceConfirm = (): void => {
+      if (phase !== 'idle' && phase !== 'failed') return;
+      if (isHighRisk && !acknowledged) return;
+      executeRef.current?.();
+    };
+    window.addEventListener('kv-voice-confirm', onVoiceConfirm);
+    return (): void => window.removeEventListener('kv-voice-confirm', onVoiceConfirm);
+  }, [phase, isHighRisk, acknowledged]);
+
+  /** 最新 handleExecute 引用（语音确认监听通过它调用，避免闭包过期） */
+  const executeRef = useRef<(() => void) | null>(null);
+
   const handleExecute = useCallback((): void => {
     if (phase !== 'idle' && phase !== 'failed') return;
     if (isHighRisk && !acknowledged) return;
@@ -485,6 +508,7 @@ export default function ActionConfirm({
       }
     })();
   }, [
+
     acknowledged,
     actionType,
     appendTerminalLog,
@@ -496,6 +520,11 @@ export default function ActionConfirm({
     targetId,
     targetName,
   ]);
+
+  /* 捕获最新 handleExecute（effect 中同步，避免渲染期副作用） */
+  useEffect((): void => {
+    executeRef.current = handleExecute;
+  }, [handleExecute]);
 
   /*
    * 【渲染一律读 effectivePhase】直接用 phase 会让"导演已降级执行"的卡片

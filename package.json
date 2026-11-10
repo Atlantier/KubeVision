@@ -40,6 +40,7 @@
     "probe:escape": "node scripts/probe-escape-stack.mjs",
     "probe:immune": "node scripts/probe-immune-reject.mjs",
     "verify:rag": "node scripts/verify-rag.mjs",
+    "probe:voice-ui": "node scripts/probe-voice-esc-ui.mjs",
     "soak": "node scripts/soak.mjs",
     "strictmode:audit": "node scripts/strictmode-audit.mjs",
     "docs:metrics": "node scripts/sync-docs-metrics.mjs",

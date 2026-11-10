@@ -160,7 +160,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
    */
   useEscapeLayer(
     isChaosModalOpen
-      ? { id: 'chaos-modal', priority: 90, onEscape: (): void => setChaosModalOpen(false) }
+      ? { id: 'chaos-modal', priority: 90, label: '混沌演练控制台', onEscape: (): void => setChaosModalOpen(false) }
       : null,
   );
 

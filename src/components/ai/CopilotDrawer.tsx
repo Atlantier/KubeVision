@@ -83,6 +83,7 @@ import type {
 } from '@/types/ai';
 import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
 import { useSpeechInput } from '@/hooks/useSpeechInput';
+import { useVoiceActivity } from '@/hooks/useVoiceActivity';
 import type { RightPanelTab, SelectedEntityType } from '@/types/store';
 import type { PodEntity, WorkerNodeEntity } from '@/types/cluster';
 import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
@@ -2149,14 +2150,50 @@ export default function CopilotDrawer() {
    */
   const toggleListening = useCallback((): void => {
     if (speechInput.isListening) {
-      void speechInput.stop().then((text): void => {
-        if (text.length > 0) {
-          setInputValue((prev): string => (prev.length > 0 ? `${prev} ${text}` : text));
-        }
-      });
+      /* Q1：停止后由 finalText 消费 effect 统一决定"自动发送 / 填充输入框" */
+      void speechInput.stop();
       return;
     }
     void speechInput.start();
+  }, [speechInput]);
+
+  /**
+   * Q1：播报中用户开口 → 立即打断 TTS 并进入拾音。
+   *
+   * 打断检测走独立的能量 VAD（useVoiceActivity），不依赖语音识别，
+   * 因此在断网/隐私模式下也可用；检测失败时静默降级为手动停止。
+   */
+  useVoiceActivity(speakingMessageId !== null && ttsEnabled, (): void => {
+    stopSpeaking();
+    void speechInput.start();
+  });
+
+  /**
+   * Q1：拾音结束自动发送。
+   *
+   * 规则：
+   * - 纯识别文本 → 直接发送（"说完就说"）；
+   * - [声学推断] 兜底文本 → 只填充输入框**不自动发送**（推断可能不准确，
+   *   把最终决定权交给用户，这是对"声学推断不是识别结果"的诚实处理）；
+   * - 确认类短句（确认/执行/同意/confirm/yes）→ 派发语音确认事件，
+   *   由动作卡决定是否执行（高危仍需显式二次确认）。
+   */
+  const voiceSentRef = useRef<string | null>(null);
+  useEffect((): void => {
+    const text = speechInput.consumeFinalText();
+    if (text === null || text.trim().length === 0) return;
+    if (voiceSentRef.current === text) return;
+    voiceSentRef.current = text;
+
+    if (text.startsWith('[声学推断]')) {
+      setInputValue((prev): string => (prev.length > 0 ? `${prev} ${text}` : text));
+      return;
+    }
+    if (/^(确认|执行|同意|confirm|yes)/i.test(text.trim())) {
+      window.dispatchEvent(new CustomEvent('kv-voice-confirm'));
+      return;
+    }
+    sendMessageRef.current?.(text);
   }, [speechInput]);
 
 
@@ -2919,7 +2956,17 @@ export default function CopilotDrawer() {
                       : 'text-slate-400 hover:bg-white/[0.05] hover:text-cyan-300',
                   )}
                 >
-                  <Mic className="h-3 w-3 shrink-0" aria-hidden />
+                  <Mic
+                    className="h-3 w-3 shrink-0"
+                    aria-hidden
+                    /* Q2：电平由 CSS 变量驱动，零 React 重渲染 */
+                    style={{
+                      filter: isListening
+                        ? 'drop-shadow(0 0 calc(var(--kv-mic-level, 0) * 6px) rgba(244,63,94,0.9))'
+                        : undefined,
+                      opacity: isListening ? 'calc(0.75 + var(--kv-mic-level, 0) * 0.25)' : undefined,
+                    }}
+                  />
                   <span className="truncate">{isListening ? '完成录音' : '语音输入'}</span>
                   {/* 录音脉冲红点 */}
                   {isListening ? (
@@ -2929,6 +2976,32 @@ export default function CopilotDrawer() {
                     </span>
                   ) : null}
                 </button>
+
+                {/*
+                 * Q2：语音错误态必须给出具体原因与可操作出口。
+                 * 旧实现只有一句泛化 notice，用户不知道是权限、浏览器不支持还是网络。
+                 */}
+                {speechInput.errorKind !== null ? (
+                  <span
+                    className="flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-300"
+                    role="status"
+                    aria-label="语音输入错误提示"
+                  >
+                    {speechInput.errorKind === 'permission'
+                      ? '麦克风权限被拒绝：请在地址栏允许后重试'
+                      : speechInput.errorKind === 'unsupported'
+                        ? '当前浏览器不支持语音：请改用 Chrome / Edge'
+                        : '语音网络异常：请检查网络后重试'}
+                    <button
+                      type="button"
+                      onClick={(): void => void speechInput.start()}
+                      className="rounded border border-amber-400/50 px-1 text-[9px] font-bold uppercase tracking-wider hover:bg-amber-500/20"
+                      aria-label="重试语音输入"
+                    >
+                      重试
+                    </button>
+                  </span>
+                ) : null}
 
                 {/*
                  * 【战术指令开关 —— 仅对话态提供】

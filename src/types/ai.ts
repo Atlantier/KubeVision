@@ -872,6 +872,12 @@ export interface SpeechInputController {
   readonly mode: AsrFallbackMode;
   /** 面向用户的非阻断提示（如"云端识别不可用，已切换端侧模式"） */
   readonly notice: string | null;
+  /** 结构化错误原因（Q2：权限 / 不支持 / 网络） */
+  readonly errorKind: 'permission' | 'unsupported' | 'network' | null;
+  /** 最近一次 stop 产出的最终文本（Q1：自动发送的载体） */
+  readonly finalText: string | null;
+  /** 取走并清空 finalText（一次性消费，防止重复自动发送） */
+  readonly consumeFinalText: () => string | null;
   /** 开始拾音 */
   readonly start: () => Promise<void>;
   /** 停止拾音并返回最终文本 */

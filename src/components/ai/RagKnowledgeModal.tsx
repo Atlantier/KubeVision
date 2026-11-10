@@ -467,7 +467,7 @@ export default function RagKnowledgeModal({
    * 【C1】Esc 统一由页面级分级退出栈处理：本组件只注册一层，
    * 不再向 window 挂自己的 keydown（旧实现多个弹层会同时抢 Esc）。
    */
-  useEscapeLayer(open ? { id: 'rag-knowledge', priority: 80, onEscape: onClose } : null);
+  useEscapeLayer(open ? { id: 'rag-knowledge', priority: 80, label: 'SRE 领域知识库', onEscape: onClose } : null);
 
   /** 当前选中的 Runbook（null 表示语料池为空或尚无选中项） */
   const selectedDoc = useMemo<RagRunbookDoc | null>(

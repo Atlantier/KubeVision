@@ -142,7 +142,7 @@ export default function PostMortemModal({
    * 【C1】Esc 交给页面级分级退出栈（优先级 70：低于 RAG / 混沌 / 命令面板）。
    * 关闭态不注册，注册表随 open 变化自动增删。
    */
-  useEscapeLayer(open ? { id: 'post-mortem', priority: 70, onEscape: onClose } : null);
+  useEscapeLayer(open ? { id: 'post-mortem', priority: 70, label: '复盘报告', onEscape: onClose } : null);
 
   /**
    * handleDownload —— 用 Blob + 临时 `<a download>` 触发 .md 下载。
