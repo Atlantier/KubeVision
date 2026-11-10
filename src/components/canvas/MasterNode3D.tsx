@@ -45,6 +45,7 @@ import { useFrame } from '@react-three/fiber';
 import { Edges, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { PALETTE } from '@/constants/palette';
+import CrystalOptics from '@/components/canvas/CrystalOptics';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import { MASTER_ENTITY_ID } from '@/types/canvas';
@@ -225,124 +226,6 @@ void main() {
 `;
 
 /* -------------------------------------------------------------------------- */
-/* 垂直贯穿能量光柱（Vertical Energy Pillar）                                    */
-/* -------------------------------------------------------------------------- */
-
-/** 光柱宽度（直径）与总高度：从地面雷达中心 −2.48 直达高空 +3.72 */
-const PILLAR_WIDTH = 0.26;
-const PILLAR_BOTTOM_Y = -2.48;
-const PILLAR_TOP_Y = 3.72;
-const PILLAR_HEIGHT = PILLAR_TOP_Y - PILLAR_BOTTOM_Y;
-const PILLAR_CENTER_Y = (PILLAR_TOP_Y + PILLAR_BOTTOM_Y) / 2;
-
-/**
- * 垂直光柱的合批几何：两片正交纵向平面，**合并为一次 Draw Call**。
- *
- * 【为什么合并】光柱原本是 2 个独立 mesh（XY 面 + ZY 面）。
- * 二者共用同一套着色器与材质、且永远以同一角度一起旋转，
- * 没有任何理由拆成两次提交——合并后整根光柱只占 1 次 Draw Call，
- * 这是本轮把新增 Draw Call 压进预算的直接手段。
- *
- * 【UV 契约】每片平面独立拥有 0~1 的 uv 区间（片元着色器按 uv.x 做横向衰减、
- * uv.y 做纵向 sin 包络）。因此合并时必须**为每片重新写一份完整 uv**，
- * 不能直接复用首片的坐标，否则第二片会整块落在衰减边缘而熄灭。
- */
-const PILLAR_GEOMETRY: THREE.BufferGeometry = (() => {
-  const halfW = PILLAR_WIDTH / 2;
-  const halfH = PILLAR_HEIGHT / 2;
-
-  /* 两片平面：XY 面（朝阳）与 ZY 面（朝侧），交叉成十字 */
-  const quads: ReadonlyArray<ReadonlyArray<readonly [number, number, number]>> = [
-    [
-      [-halfW, -halfH, 0],
-      [halfW, -halfH, 0],
-      [halfW, halfH, 0],
-      [-halfW, halfH, 0],
-    ],
-    [
-      [0, -halfH, -halfW],
-      [0, -halfH, halfW],
-      [0, halfH, halfW],
-      [0, halfH, -halfW],
-    ],
-  ];
-
-  const positions: number[] = [];
-  const uvs: number[] = [];
-  const indices: number[] = [];
-
-  quads.forEach((quad, quadIndex): void => {
-    for (const point of quad) {
-      positions.push(point[0], point[1], point[2]);
-    }
-    /* 每片独立完整 uv，保证着色器的横向/纵向衰减对两片都成立 */
-    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
-    const base = quadIndex * 4;
-    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
-  });
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-  geometry.setIndex(indices);
-  return geometry;
-})();
-
-/**
- * 垂直光柱的着色器（顶点）。
- *
- * 传递平面 UV：`vUv.y = 0` 为底部、`= 1` 为顶部，用于纵向渐变；
- * `vUv.x` 用于横向衰减。
- */
-const PILLAR_VERTEX_SHADER = `
-varying vec2 vUv;
-
-void main() {
-  vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}
-`;
-
-/**
- * 垂直光柱的着色器（片元）。
- *
- * 【核心数学】两个方向上的指数衰减相乘：
- *   横向：`lx = 1 - abs(vUv.x - 0.5) * 2` → 中心 1、边缘 0，取 pow(lx, 2.2)
- *   纵向：`ly = sin(vUv.y · π)^0.65` → 两端趋 0、中段最亮
- * alpha = 横向 · 纵向 · uPulse
- *
- * 【为何纵向用 sin(π·y) 而非线性】线性渐变会让光柱在顶端/底端"截断"，
- * 出现一条硬边；sin 包络两端自然归零，光柱是"淡入淡出"的。
- * 0.65 次幂把峰值段拉宽，让中段（穿过晶核的区域）保持明亮。
- */
-const PILLAR_FRAGMENT_SHADER = `
-uniform float uPulse;
-uniform vec3 uColor;
-
-varying vec2 vUv;
-
-void main() {
-  float lx = 1.0 - abs(vUv.x - 0.5) * 2.0;
-  float lateral = pow(max(0.0, lx), 2.2);
-  float vertical = pow(max(0.0, sin(vUv.y * 3.14159265)), 0.65);
-
-  float alpha = lateral * vertical * uPulse * 0.9;
-  vec3 color = mix(uColor, vec3(1.0, 1.0, 1.0), lateral * 0.55);
-  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
-  #ifdef KV_DEBUG_NAN
-    if (!(gl_FragColor.r == gl_FragColor.r)
-        || !(gl_FragColor.g == gl_FragColor.g)
-        || !(gl_FragColor.b == gl_FragColor.b)
-        || !(gl_FragColor.a == gl_FragColor.a)
-        || abs(gl_FragColor.r) > 1.0e38
-        || abs(gl_FragColor.g) > 1.0e38
-        || abs(gl_FragColor.b) > 1.0e38) {
-      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
-    }
-  #endif
-}
-`;
-
 /** 星火环绕半径（控制平面外围能量场） */
 const AMBIENT_SPARK_RADIUS = 2.2;
 
@@ -399,13 +282,6 @@ const TONE_CRITICAL = PALETTE.critical.color;
 const HEALTHY_SCORE_THRESHOLD = 90;
 const WARNING_SCORE_THRESHOLD = 70;
 
-/**
- * 体积光锥的健康基线色 —— 严格采用设计规格指定的 #22d3ee。
- *
- * 【为何单独定义而不复用 TONE_HEALTHY】TONE_HEALTHY 是 #38bdf8（天蓝），
- * 用于粒子与连线；光锥是"高能光柱"，需要更饱和、更接近青的 #22d3ee
- * 才能表达"高密青蓝色"的浓度。两者是不同的视觉角色，不该共用一个常量。
- */
 const GODRAY_CYAN = PALETTE.theme.color;
 
 /**
@@ -419,11 +295,6 @@ const GODRAY_CYAN = PALETTE.theme.color;
  * 【为何不用 TONE_* 常量】那三个是给粒子/连线用的中间色，
  * 是"被染色的物质"；光晕是"发光体"，两者的明度需求完全不同。
  */
-const FLARE_CORE_HEALTHY = new THREE.Color('#e0f7ff');
-const FLARE_WING_HEALTHY = new THREE.Color('#22d3ee');
-const FLARE_CORE_WARNING = new THREE.Color('#fff2c0');
-const FLARE_WING_WARNING = new THREE.Color('#fbbf24');
-const FLARE_CORE_CRITICAL = new THREE.Color('#ffd6e8');
 const FLARE_WING_CRITICAL = new THREE.Color('#f43f5e');
 
 /**
@@ -616,279 +487,6 @@ const VERTEX_ANCHOR_BREATH_RATE = 1.9;
 const VERTEX_ANCHOR_BASE_SCALE = 1;
 
 /* ========================================================================== */
-/* 好莱坞级特效二：上下穿透式双锥体积光柱                                          */
-/* ========================================================================== */
-
-/**
- * 上锥体积光参数。
- *
- * 【几何语义】从控制平面核心（局部 y = 0）向上射出的光束，
- * 高度 5.2、顶半径 2.1 —— 顶端张得比底端宽，形成"圣光柱向外扩散"的
- * god-ray 形态，而不是一束激光。
- */
-const GODRAY_TOP_HEIGHT = 5.2;
-const GODRAY_TOP_RADIUS = 2.1;
-
-/**
- * 下锥体积光参数。
- *
- * 【为何更矮更窄】下锥是"投射到基座"的光，它要落在地面刻度环内
- * （RING_OUTER_RADIUS = 2.35）。高度 2.4、底半径 1.6 保证光锥
- * 恰好收在地上基座范围内，不会溢出到机架轨道上。
- */
-const GODRAY_BOTTOM_HEIGHT = 2.4;
-const GODRAY_BOTTOM_RADIUS = 1.6;
-
-/**
- * 上锥体积光的顶点着色器。
- *
- * 【为何只需要 varying vUv 和 vLocalY】体积光的视觉核心全部在片元里：
- * 顶点阶段只负责把两样东西传给片元——圆柱侧面的 UV（用来算径向衰减）
- * 与归一化高度（用来算纵向消散）。任何多余的顶点计算都是浪费。
- */
-const GODRAY_VERTEX_SHADER = `
-  varying vec2 vUv;
-  varying float vHeightNorm;
-
-  void main() {
-    vUv = uv;
-    /*
-     * 圆柱几何的局部 Y 范围是 [-height/2, +height/2]，
-     * 用 position.y 归一化到 [0,1] 得到"从底到顶"的进度。
-     * 归一化必须在顶点里做一次，避免每个片元重复计算。
-     */
-    float halfH = 0.5;
-    vHeightNorm = position.y / halfH * 0.5 + 0.5;
-
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  }
-`;
-
-/**
- * 上锥体积光的片元着色器 —— 径向高斯衰减 × 纵向幂函数消散。
- *
- * 【物理直觉与数学实现】
- * 真实体积光（god ray）的亮度取决于两件事：
- * 1. **径向**：越靠近光柱中轴，穿过介质的路径越长，散射越亮。
- *    用高斯函数 exp(−(r/σ)²) 描述：中心最亮，边缘平滑归零，
- *    且不会像线性衰减那样在边界留下可见的硬边。
- * 2. **纵向**：光束在源头最密、向外逐渐稀释。
- *    用幂函数 pow(1−h, k) 描述：h=0（源头）为满值，
- *    h=1（末端）归零。指数 k 越大，消散越快越"聚拢"。
- *
- * 【为何不用 smoothstep】smoothstep 在两端都有零导数，会让光柱
- * 在中心处也显得"扁"；高斯在中心导数为零但值为最大值，
- * 得到的是一条中央尖锐隆起、两侧快速下落的光带，更接近真实光晕。
- */
-const GODRAY_FRAGMENT_SHADER = `
-  uniform vec3 uColor;
-  uniform float uPulse;
-  uniform float uTopPeak;
-  uniform float uBottomFade;
-
-  varying vec2 vUv;
-  varying float vHeightNorm;
-
-  void main() {
-    /*
-     * 【径向距离】圆柱侧面展开后，uv.x 沿圆周方向。
-     * 但体积光需要的是"到中轴的距离"，而柱面几何的每一片
-     * 到中轴距离都相等（都是半径）。
-     *
-     * 所以真正的径向衰减要换一个思路：用 uv.x 沿圆周的
-     * 连续变化来模拟"绕中轴一圈时透光厚度的差异"。
-     * 这里用 0.5 + 0.5·cos(2π·uv.x) 得到一个 0~1 的平滑环形包络，
-     * 使柱面在某些角度更亮、某些角度更暗——这正是真实体积光
-     * 从不同视角看过去厚度不同的表现。
-     */
-    float angularEnvelope = 0.5 + 0.5 * cos(vUv.x * 6.2831853);
-
-    /*
-     * 【纵向幂函数消散】
-     * vHeightNorm: 0 = 底端，1 = 顶端。
-     * uTopPeak 控制"峰值出现在哪一端"：上锥峰在底部（源头），
-     * 下锥峰在顶部（光源在核心）。用 mix 统一两种情况。
-     */
-    float h = vHeightNorm;
-    float longitudinal = pow(clamp(1.0 - h, 0.0, 1.0), uBottomFade);
-    float inverted = pow(clamp(h, 0.0, 1.0), uBottomFade);
-    /* uTopPeak=1 表示峰在底端（上锥）；=0 表示峰在顶端（下锥） */
-    float fade = mix(inverted, longitudinal, uTopPeak);
-
-    /*
-     * 【边缘消融】上下两端都必须归零，否则会看到圆柱的硬切边。
-     * 用 smoothstep 在两端各留 6% 的过渡带。
-     */
-    float edgeFade = smoothstep(0.0, 0.06, h) * (1.0 - smoothstep(0.94, 1.0, h));
-
-    /*
-     * 【合成】三因子相乘后乘以脉动。
-     * 系数 0.55 是整体强度——再高会让加色混合的中轴过曝成白块，
-     * 失去青蓝色的色相。
-     */
-    float intensity = angularEnvelope * fade * edgeFade * uPulse * 0.55;
-
-    gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(intensity, 0.0, 1.0));
-  #ifdef KV_DEBUG_NAN
-    if (!(gl_FragColor.r == gl_FragColor.r)
-        || !(gl_FragColor.g == gl_FragColor.g)
-        || !(gl_FragColor.b == gl_FragColor.b)
-        || !(gl_FragColor.a == gl_FragColor.a)
-        || abs(gl_FragColor.r) > 1.0e38
-        || abs(gl_FragColor.g) > 1.0e38
-        || abs(gl_FragColor.b) > 1.0e38) {
-      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
-    }
-  #endif
-  }
-`;
-
-/* ========================================================================== */
-/* 好莱坞级特效三：变形宽银幕水平镜头光晕                                          */
-/* ========================================================================== */
-
-/** 光晕带的宽度与高度（世界单位） */
-const FLARE_WIDTH = 6.6;
-const FLARE_HEIGHT = 0.18;
-
-/**
- * 变形宽银幕光晕的顶点着色器。
- *
- * 【为何用 plane 而非 sprite】Sprite 的朝向由 three 自动管理，
- * 但它会参与深度写入排序；用 plane + Billboard 手写朝向
- * （在 useFrame 里让 quaternion 复制相机四元数）能完全控制
- * 渲染顺序与混合行为，且不依赖 drei 的 Billboard 组件。
- */
-const FLARE_VERTEX_SHADER = `
-  varying vec2 vUv;
-
-  void main() {
-    vUv = uv;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  }
-`;
-
-/**
- * 变形宽银幕光晕的片元着色器。
- *
- * 【什么是 anamorphic flare】好莱坞镜头使用变形附加镜（anamorphic lens）时，
- * 强光源会在水平方向被拉伸成一道细长的蓝色亮带——这是《银翼杀手 2049》
- * 《星球大战》等片最标志性的光效。它区别于普通镜头光晕的地方是：
- * 1. **强烈各向异性**：水平延伸极长，垂直极窄；
- * 2. **中心有极亮白核**，向外迅速过渡到彩色翼；
- * 3. **翼部有次级条纹**（由镜头光圈叶片衍射形成）。
- *
- * 【数学实现】
- * - 核心：exp(−(d/σ_c)²)，σ 极小 → 中心一颗白热光点
- * - 翼部：exp(−|x|/τ)，双指数衰减 → 长而柔的水平拖尾
- * - 条纹：对 |x| 做 sin 调制，模拟光圈叶片的多重衍射
- */
-const FLARE_FRAGMENT_SHADER = `
-  uniform vec3 uCoreColor;
-  uniform vec3 uWingColor;
-  uniform float uPulse;
-  uniform float uIntensty;
-  /**
-   * 平面的宽高比（FLARE_WIDTH / FLARE_HEIGHT = 36.67）。
-   *
-   * 【为何必须传入】plane 在屏幕上是极扁的（6.6 × 0.18 世界单位）。
-   * uv 的 x/y 各自被归一化到 [0,1]，导致同样的 uv 增量在屏幕上对应的
-   * 像素数相差 36 倍。若直接对 uv 做各向同性计算，得到的"圆"在屏幕上
-   * 会被压成 1/36 高的扁条——核心白斑因此沦为亚像素、几乎不可见。
-   * 传入宽高比后，才能用 length(vec2(x, y/aspect)) 在 uv 空间里
-   * 构造出**屏幕空间真正的圆**。
-   */
-  uniform float uAspect;
-
-  varying vec2 vUv;
-
-  void main() {
-    /* 把 uv 转到以中心为原点的 [-0.5, 0.5] 区间 */
-    vec2 centered = vUv - 0.5;
-    /* x 归一化到 [-1, 1]，便于用整数级衰减系数思考 */
-    float dx = centered.x * 2.0;
-
-    /*
-     * 【核心白斑：屏幕空间的正圆】
-     * 把 y 除以宽高比，使 x/y 处于同一像素尺度，
-     * length() 得到的半径在屏幕上就是一个正圆。
-     * σ=0.010 → 核心半径约 0.010 × 平面像素宽（约 600px）= 6px，
-     * 直径约 12px。这是真实 anamorphic 眩光核心的合理尺寸：
-     * 小到不遮挡星核，大到能被看见。
-     */
-    float coreRadius = length(vec2(centered.x, centered.y / uAspect));
-    float coreSigma = 0.010;
-    /*
-     * 【稳定性改写】原写法 pow(x, 2.0) 有两个隐患：
-     *   1) GLSL 的 pow(x,y) 在 x<0 时为 undefined；
-     *   2) coreSigma 为 uniform，若被外部置 0 则 x 为 Inf。
-     * 数学等价改写：先做除法零保护，再用乘法代整数幂。
-     */
-    float coreRatio = coreRadius / max(coreSigma, 1.0e-4);
-    float core = exp(-(coreRatio * coreRatio));
-
-    /*
-     * 【水平流光翼】
-     *
-     * 横向：exp(−|dx|·1.3)。dx=0.5 处仍有 0.52，翼能延伸到画面两侧。
-     *
-     * 纵向：**必须用 centered.y 而非各向异性放大后的 dy**。
-     * 上一版用 dy = centered.y × 18 再平方乘 1.6，等效衰减系数
-     * k = 18² × 1.6 = 518 —— 偏离中心 1 像素（centered.y≈0.06）
-     * 就衰减到 exp(−518×0.0036) ≈ 0.15。实测结果正是
-     * "差分区只有 2px 高"，整条光晕细得几乎看不见。
-     * 改用 k=36：|centered.y|=0.25（约 4px）处衰减到 0.10，
-     * 光晕纵向约 8~10px 高——既保持宽银幕的"细线"特征，
-     * 又足以在画面上被辨识为一道光带。
-     */
-    /*
-     * 【稳定性改写·真实缺陷】centered.y 在中心上下两侧符号相反，
-     * pow(负数, 2.0) 在 GLSL 中结果未定义（大量驱动直接产出 NaN）。
-     * NaN 一旦进入 bloom 会把整条光晕扩散成黑/白块。
-     * y² = (−y)²，故用乘法完全等价且无定义域问题。
-     */
-    float wing = exp(-abs(dx) * 1.3) * exp(-(centered.y * centered.y) * 36.0);
-
-    /*
-     * 【光圈叶片衍射条纹】对 |dx| 做周期调制。
-     * 频率 7.0 产生约 7 道可见条纹，模拟 6~9 叶片光圈的星芒。
-     * 系数 0.26 控制条纹深度。
-     */
-    float streak = 0.74 + 0.26 * sin(abs(dx) * 7.0);
-
-    /*
-     * 【合成】核心偏白、翼部偏青。
-     * mix 的依据是 core 的强度：越靠近中心越白（过曝感），
-     * 越往外越接近翼色（色温感）。
-     */
-    vec3 color = mix(uWingColor, uCoreColor, clamp(core, 0.0, 1.0));
-
-    /* 翼部权重 0.85：中心由 core 主导（极窄高斯），中远距离由 wing 主导 */
-    float alpha = (core * 1.0 + wing * 0.85) * streak * uPulse * uIntensty;
-
-    /*
-     * 【边缘裁切】只在最外侧收边，避免 plane 的方形边界透出，
-     * 同时不砍掉翼部本体。
-     */
-    float vignette = 1.0 - smoothstep(0.50, 0.56, length(centered * vec2(0.92, 1.0)));
-    alpha *= vignette;
-
-    gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
-  #ifdef KV_DEBUG_NAN
-    if (!(gl_FragColor.r == gl_FragColor.r)
-        || !(gl_FragColor.g == gl_FragColor.g)
-        || !(gl_FragColor.b == gl_FragColor.b)
-        || !(gl_FragColor.a == gl_FragColor.a)
-        || abs(gl_FragColor.r) > 1.0e38
-        || abs(gl_FragColor.g) > 1.0e38
-        || abs(gl_FragColor.b) > 1.0e38) {
-      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
-    }
-  #endif
-  }
-`;
-
-/* -------------------------------------------------------------------------- */
 /* 地面投射光束（悬浮水晶 ↔ 地面全息基座的连接体）                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -1041,7 +639,6 @@ export default function MasterNode3D() {
   /** 八面体顶点电光锚点实例网格 ref（呼吸辉光由材质 emissive 驱动） */
   const vertexAnchorRef = useRef<THREE.InstancedMesh>(null);
 
-  /** 变形宽银幕水平镜头光晕 ref（每帧复制相机四元数实现 billboard） */
   const flareRef = useRef<THREE.Mesh>(null);
 
   /**
@@ -1141,69 +738,10 @@ export default function MasterNode3D() {
    */
   const totalQpsRef = useRef<number>(0);
 
-  /* ---- 本轮新增：体积光锥与镜头光晕 ---- */
-
-  /**
-   * 上锥体积光的 uniforms。
-   *
-   * 【uTopPeak = 1】峰值在底端（因为上锥的光源在核心处，向上逐渐消散）。
-   */
-  const godRayTopUniforms = useMemo(
-    (): Record<string, THREE.IUniform> => ({
-      uColor: { value: new THREE.Color('#22d3ee') },
-      uPulse: { value: 1 },
-      uTopPeak: { value: 1 },
-      uBottomFade: { value: 1.35 },
-    }),
-    [],
-  );
-
-  /**
-   * 下锥体积光的 uniforms。
-   *
-   * 【uTopPeak = 0】峰值在顶端（下锥的光源同样在核心，
-   * 向地面投射时逐渐消散）。与上锥形成镜像。
-   */
-  const godRayBottomUniforms = useMemo(
-    (): Record<string, THREE.IUniform> => ({
-      uColor: { value: new THREE.Color('#22d3ee') },
-      uPulse: { value: 1 },
-      uTopPeak: { value: 0 },
-      uBottomFade: { value: 1.1 },
-    }),
-    [],
-  );
-
-  /**
-   * 变形宽银幕光晕的 uniforms。
-   *
-   * 【uIntensty 的拼写】保持与既有项目内其他 shader uniform 风格一致
-   * 之外，这里刻意不改名——它是一个内部 uniform，改名没有收益，
-   * 反而会与 shader 源码里的字符串不匹配导致全黑（GLSL 找不到 uniform
-   * 时 three 只警告不报错，是最难排查的一类 bug）。
-   */
-  const flareUniforms = useMemo(
-    (): Record<string, THREE.IUniform> => ({
-      uCoreColor: { value: new THREE.Color('#e0f7ff') },
-      uWingColor: { value: new THREE.Color('#22d3ee') },
-      uPulse: { value: 1 },
-      uIntensty: { value: 2.6 },
-      /*
-       * 宽高比必须与实际 plane 尺寸严格一致（6.6 / 0.18 = 36.667）。
-       * 若改了 FLARE_WIDTH/FLARE_HEIGHT 却忘了同步这里，
-       * 核心白斑会重新变成椭圆并被压扁——因此直接用常量相除，
-       * 而不是写死一个数字。
-       */
-      uAspect: { value: FLARE_WIDTH / FLARE_HEIGHT },
-    }),
-    [],
-  );
-
   /** 星云星座粒子 Points ref */
   const constellationRef = useRef<THREE.Points>(null);
   /** 内部神经晶格连线 ref */
   const neuralRef = useRef<THREE.LineSegments>(null);
-  /** 垂直贯穿能量光柱（两片正交平面合并后的单个 mesh）ref */
   const pillarRef = useRef<THREE.Mesh>(null);
 
   /** 环绕星火 Points ref */
@@ -1300,44 +838,7 @@ export default function MasterNode3D() {
    */
   const healthColorCurrent = useMemo((): THREE.Color => TONE_HEALTHY.clone(), []);
 
-  /**
-   * 镜头光晕的目标核色/翼色（随集群健康分三态切换）。
-   *
-   * 【为何与 healthTargetColor 分开定义】healthTargetColor 是给粒子/连线
-   * 用的**中间色**（饱和度高、亮度低），适合做"被染色的物质"。
-   * 而光晕是**发光体**，它的核色必须接近白色（过曝感）才能表达"极亮"，
-   * 翼色才承载色相。若直接复用 healthTargetColor 作核色，
-   * 光晕会变成一坨彩色而失去眩光质感。
-   *
-   * 三档：
-   * - 健康 ≥90：核 #e0f7ff（青白）/ 翼 #22d3ee（青）
-   * - 告警 ≥70：核 #fff2c0（暖白）/ 翼 #fbbf24（琥珀）
-   * - 故障 <70：核 #ffd6e8（粉白）/ 翼 #f43f5e（洋红）
-   */
-  const flareTargetCore = useMemo((): THREE.Color => {
-    if (clusterHealthScore >= HEALTHY_SCORE_THRESHOLD) return FLARE_CORE_HEALTHY;
-    if (clusterHealthScore >= WARNING_SCORE_THRESHOLD) return FLARE_CORE_WARNING;
-    return FLARE_CORE_CRITICAL;
-  }, [clusterHealthScore]);
 
-  const flareTargetWing = useMemo((): THREE.Color => {
-    if (clusterHealthScore >= HEALTHY_SCORE_THRESHOLD) return FLARE_WING_HEALTHY;
-    if (clusterHealthScore >= WARNING_SCORE_THRESHOLD) return FLARE_WING_WARNING;
-    return FLARE_WING_CRITICAL;
-  }, [clusterHealthScore]);
-
-  /**
-   * 体积光锥的目标色。
-   *
-   * 【健康态必须是 #22d3ee】这是设计规格的硬要求。
-   * 只有告警/故障才允许偏离——那时用琥珀/绯红表达风险，
-   * 是"状态联动"带来的额外价值，不违背规格（规格描述的是常态外观）。
-   */
-  const godRayTargetColor = useMemo((): THREE.Color => {
-    if (clusterHealthScore >= HEALTHY_SCORE_THRESHOLD) return GODRAY_CYAN;
-    if (clusterHealthScore >= WARNING_SCORE_THRESHOLD) return TONE_WARNING;
-    return TONE_CRITICAL;
-  }, [clusterHealthScore]);
 
   /**
    * QPS → ref 镜像（供 useFrame 读取，避免 stale closure）。
@@ -1589,11 +1090,6 @@ export default function MasterNode3D() {
       neuralRef.current.rotation.y = t * CONSTELLATION_SPIN_RATE;
     }
 
-    /* 垂直光柱：轻微旋转，让双平面交叉的辉光持续变化 */
-    if (pillarRef.current !== null) {
-      pillarRef.current.rotation.y = t * 0.22;
-    }
-
     /* 外层水晶壳：正向自转 + 正弦倾角摆动（调度扫描感） */
     if (outerRef.current !== null) {
       outerRef.current.rotation.y = t * OUTER_SPIN_RATE;
@@ -1677,88 +1173,6 @@ export default function MasterNode3D() {
       }
     }
 
-    /* ---- 双锥体积光：呼吸脉动（上锥幅度略大，因为它是主光源） ---- */
-    godRayTopUniforms.uPulse.value = 1 + 0.24 * Math.sin(t * 1.45);
-    godRayBottomUniforms.uPulse.value = 1 + 0.18 * Math.sin(t * 1.45 + Math.PI / 3);
-
-    /**
-     * ---- 体积光色温：以规格色 #22d3ee 为**健康基线**，故障时联动降级 ----
-     *
-     * 【为何不直接 copy healthColorCurrent】上一版直接复制它，导致健康态
-     * 时光锥变成 #38bdf8（天蓝）——而设计规格明确要求中心是
-     * #22d3ee（高密青蓝）。两者同为蓝色但 #38bdf8 偏亮偏淡，
-     * 会削弱"高能光柱"的浓度感。
-     *
-     * 【本版做法】单独设一条光锥色轨道：
-     *   健康 → GODRAY_CYAN（#22d3ee，即规格色，恒定不变）
-     *   告警 → 琥珀、故障 → 绯红（保留状态联动的价值）
-     * 再用与其它材质相同的阻尼率 lerp，跨档时才发生色温演化。
-     * 这样既严格满足规格，又不丢失故障态的视觉报警。
-     */
-    const godRayToneAlpha = 1 - Math.exp(-TONE_LERP_RATE * clampedDelta);
-    (godRayTopUniforms.uColor.value as THREE.Color).lerp(godRayTargetColor, godRayToneAlpha);
-    (godRayBottomUniforms.uColor.value as THREE.Color).lerp(godRayTargetColor, godRayToneAlpha);
-
-    /**
-     * ---- 镜头光晕：朝向相机 + QPS 脉动 + 故障态色温切换 ----
-     *
-     * 【朝向实现】anamorphic flare 必须始终正对相机，否则从侧面看
-     * 会变成一条竖线（因为 plane 是平的）。这里让 plane 的
-     * quaternion 直接复制相机世界四元数——这是 billboard 的标准做法，
-     * 比 drei 的 <Billboard> 更轻，且不引入额外组件层级。
-     *
-     * 【QPS 脉动】clusterContext.totalQps 越高，光晕越亮。
-     * 用归一化的对数映射：log10(qps+1)/4 约把 [100, 20000] 映到 [0.5, 1.07]，
-     * 避免高 QPS 时光晕亮到过曝。
-     */
-    if (flareRef.current !== null) {
-      /*
-       * 【billboard 朝向不在这里做 —— 见 mesh 的 onBeforeRender】
-       *
-       * 最初实现是在这里 `quaternion.copy(state.camera.quaternion)`，
-       * 但那是错的：R3F 按**挂载顺序**执行 useFrame，而
-       * <MasterNode3D /> 在 ClusterCanvas 里排在 <CameraRig /> 之前，
-       * 所以本回调先跑、CameraRig 后跑。结果是光晕复制的是
-       * **上一帧**的相机朝向，相机随后又被移动——一帧滞后。
-       *
-       * 60FPS 匀速时滞后不可见，但相机飞行期间（CameraRig 用 lerp
-       * 逼近目标机位）单帧转角可能很大，实测在软件渲染的低帧率下
-       * 偏差达到 75°，表现为光晕与场景明显"剪切"错位。
-       *
-       * 因此朝向改为在 onBeforeRender 里设置：three.js 在所有
-       * useFrame 回调之后、计算 modelViewMatrix 之前调用它，
-       * 拿到的一定是**本帧最终**的相机朝向，零滞后。
-       */
-
-      /*
-       * 【QPS 驱动的微幅脉动】
-       * qpsNorm 落在 [0,1]，再叠加呼吸相位形成双重起伏：
-       * 慢的是 QPS 量级，快的是心跳。两者相乘而非相加——
-       * 相加会让低 QPS 时也有明显跳动，失去"负载越高越亮"的表达。
-       */
-      const qpsNorm = Math.min(1, Math.log10(totalQpsRef.current + 1) / 4);
-      const flareBreath = 0.72 + 0.28 * (0.6 + 0.4 * Math.sin(t * BREATH_RATE));
-      flareUniforms.uPulse.value = (0.55 + 0.45 * qpsNorm) * flareBreath;
-    }
-
-    /**
-     * ---- 故障态光晕色温切换（青白 → 琥珀/洋红） ----
-     *
-     * 【三档语义】与全局状态色体系严格对齐：
-     * - 健康：青白（#e0f7ff 核 / #22d3ee 翼）
-     * - 告警：琥珀（#fff2c0 核 / #fbbf24 翼）
-     * - 故障：洋红（#ffd6e8 核 / #f43f5e 翼）—— 好莱坞式的"危险红"
-     *
-     * 【为何用 lerp 而直接赋值】直接赋值会让色温在状态跳变时瞬间切换，
-     * 观感像电压跳闸。lerp 让过渡有 200~400ms 的柔和演化，
-     * 与 healthColorCurrent 的阻尼速率一致（TONE_LERP_RATE）。
-     */
-    const flareToneAlpha = 1 - Math.exp(-TONE_LERP_RATE * clampedDelta);
-    /** 目标核色：随集群状态在青白/琥珀/洋红间取一 */
-    const targetCore = flareTargetCore;
-    const targetWing = flareTargetWing;
-    (flareUniforms.uCoreColor.value as THREE.Color).lerp(targetCore, flareToneAlpha);
-    (flareUniforms.uWingColor.value as THREE.Color).lerp(targetWing, flareToneAlpha);
   });
 
   return (
@@ -2162,45 +1576,15 @@ export default function MasterNode3D() {
       </lineSegments>
 
       {/*
-       * ═══ 第 2d 层：垂直贯穿能量光柱（合批为单次 Draw Call）═══
-       *
-       * 【形态】两片正交纵向平面交叉成十字，宽 0.26、高 6.2，
-       * 从地面雷达中心 y=−2.48 一路向上穿透晶核直达高空 y=+3.72。
-       *
-       * 【为何交叉平面而非圆柱】圆柱从侧面看是一条实心柱；
-       * 交叉平面在任意机位都能看到"光在平面上铺开"，
-       * 且着色器可按 UV 做横向指数衰减——圆柱做不到"中心亮、两侧透明"。
-       *
-       * 【本轮：2 次提交 → 1 次】两片平面共用同一材质、永远同步旋转，
-       * 没有拆开的理由。几何已在模块加载期合并进 PILLAR_GEOMETRY（见其注释），
-       * 此处只剩一个 mesh。这也是把新增 Draw Call 压进预算的关键一步。
-       */}
-      <mesh
-        ref={pillarRef}
-        geometry={PILLAR_GEOMETRY}
-        position={[0, PILLAR_CENTER_Y, 0]}
-        raycast={(): void => undefined}
-      >
-        <shaderMaterial
-          defines={KV_DEBUG_NAN_DEFINES}
-          uniforms={pillarUniforms}
-          vertexShader={PILLAR_VERTEX_SHADER}
-          fragmentShader={PILLAR_FRAGMENT_SHADER}
-          transparent
-          depthWrite={false}
-          side={THREE.DoubleSide}
-          blending={THREE.AdditiveBlending}
-          toneMapped={false}
-        />
-      </mesh>
-
-      {/*
        * ═══ 程序化星核辉光（本轮收敛）═══
        *
        * 旧配置 scale 5.4 / opacity 0.85 的大面积柔光，叠在八面体上再经 Bloom
        * 放大，整颗晶体被糊成浅蓝棉花糖。现在只保留一枚紧凑锐利的星核辉光
        * （2.15 / 0.62）：它的职责是给中心白炽点一层薄光晕，而非覆盖整颗晶体。
        */}
+      {/* R25：7 层封闭光学结构（替代 godray / pillar / flare） */}
+      <CrystalOptics />
+
       <GlowHalo3D color={GLOW_CYAN} scale={2.15} opacity={0.62} falloff={2.6} pulse pulsePeriod={2.6} />
 
       {/*
@@ -2319,126 +1703,6 @@ export default function MasterNode3D() {
        * drei Html 契约（AGENTS.md 第 6 条）：zIndexRange=[10,0] +
        * pointer-events-none，永不遮挡右侧 Copilot 抽屉与顶层 Modal。
        */}
-      {/*
-       * ═══ 第 5 层：上下穿透式双锥体积光柱（Volumetric God-Ray Cones）═══
-       *
-       * 【为何用开口圆柱而非圆锥几何】three 的 ConeGeometry 是**闭合**的
-       * （含底盖），底盖会在光柱根部形成一圈明显的硬边圆盘。
-       * 体积光的本质是"光穿过介质"，它没有实体表面——因此用
-       * CylinderGeometry 的 radialSegments 侧壁 + openEnded=true，
-       * 只保留侧面，没有顶盖/底盖，光柱才能自然消融于背景。
-       *
-       * 【为何用加色混合 + depthWrite:false】
-       * 体积光是**发光介质**而非实体：加色混合下多片重叠只会更亮
-       * （符合"光叠加"的物理），且不遮挡身后物体；
-       * depthWrite:false 保证它不写入深度缓冲，避免在自身上产生
-       * 排序 artifacts（加色半透明物体的经典处理）。
-       *
-       * 【raycast: () => null】体积光完全不可拾取——否则用户点击中央
-       * 区域时会命中这个巨大的不可见圆柱，抢走控制平面的选中事件。
-       */}
-      <mesh
-        position={[0, GODRAY_TOP_HEIGHT / 2, 0]}
-        raycast={(): void => undefined}
-        renderOrder={2}
-      >
-        <cylinderGeometry
-          args={[GODRAY_TOP_RADIUS, 0.12, GODRAY_TOP_HEIGHT, 32, 1, true]}
-        />
-        <shaderMaterial
-          defines={KV_DEBUG_NAN_DEFINES}
-          uniforms={godRayTopUniforms}
-          vertexShader={GODRAY_VERTEX_SHADER}
-          fragmentShader={GODRAY_FRAGMENT_SHADER}
-          transparent
-          depthWrite={false}
-          blending={THREE.AdditiveBlending}
-          toneMapped={false}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-
-      <mesh
-        position={[0, -GODRAY_BOTTOM_HEIGHT / 2, 0]}
-        raycast={(): void => undefined}
-        renderOrder={2}
-      >
-        <cylinderGeometry
-          args={[0.12, GODRAY_BOTTOM_RADIUS, GODRAY_BOTTOM_HEIGHT, 32, 1, true]}
-        />
-        <shaderMaterial
-          defines={KV_DEBUG_NAN_DEFINES}
-          uniforms={godRayBottomUniforms}
-          vertexShader={GODRAY_VERTEX_SHADER}
-          fragmentShader={GODRAY_FRAGMENT_SHADER}
-          transparent
-          depthWrite={false}
-          blending={THREE.AdditiveBlending}
-          toneMapped={false}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-
-      {/*
-       * ═══ 第 6 层：好莱坞变形宽银幕水平镜头光晕（Anamorphic Lens Flare）═══
-       *
-       * 【为何挂在核心正中心、且尺寸远大于晶体】Anamorphic flare 在真实
-       * 摄影里是**镜头内部的鬼影**，它投射在成像平面上的尺寸与光源
-       * 本身的物理尺寸无关——一颗小灯泡也能拉出贯穿整个画面的长条。
-       * 因此宽度 6.6 远大于晶体直径 3.36 是正确的物理再现，不是夸张。
-       *
-       * 【朝向：必须用 onBeforeRender，不能用 useFrame】
-       *
-       * billboard 要求平面法线始终指向相机。但"在 useFrame 里复制
-       * 相机四元数"有两个致命前提，本项目都不满足：
-       *
-       * 1. **执行顺序**：R3F 按挂载顺序跑 useFrame。<MasterNode3D />
-       *    在 ClusterCanvas 中排在 <CameraRig /> 之前，因此本组件的
-       *    useFrame 先执行、CameraRig 后执行——光晕复制到的是
-       *    上一帧的相机朝向，随后相机又被移动。实测在软件渲染的低帧率
-       *    下（相机飞行期间单帧转角很大），朝向偏差达到 75°，
-       *    表现为光晕与场景明显剪切错位。
-       *
-       * 2. **矩阵更新时机**：即便顺序正确，useFrame 里改完 quaternion
-       *    还要等下一次 scene.updateMatrixWorld 才生效，同样是一帧。
-       *
-       * onBeforeRender 由 three.js 在**所有 useFrame 之后、
-       * 计算该对象 modelViewMatrix 之前**调用，因此：
-       *   - 拿到的 camera 一定是本帧最终相机；
-       *   - 紧接着 computeMatrix 用的是我们刚写入的 matrixWorld；
-       * 零滞后。手动 updateMatrixWorld(true) 是必需的：
-       * 此时 scene 的整体矩阵更新已经跑过，不强制刷新就用不到新朝向。
-       *
-       * 【renderOrder = 3】必须最后绘制：它是叠加在最上层的镜头效果，
-       * 绘制顺序错会让它在半透明体积光之前渲染，被后者的深度测试挡掉。
-       */}
-      <mesh
-        ref={flareRef}
-        raycast={(): void => undefined}
-        renderOrder={3}
-        onBeforeRender={(_gl, _scene, camera): void => {
-          const mesh = flareRef.current;
-          if (mesh === null) return;
-          /* 原地 copy，零分配（AGENTS.md 第 3 条：渲染热路径不允许 new） */
-          mesh.quaternion.copy(camera.quaternion);
-          /* 强制刷新本对象的世界矩阵，使新朝向作用于本次绘制 */
-          mesh.updateMatrixWorld(true);
-        }}
-      >
-        <planeGeometry args={[FLARE_WIDTH, FLARE_HEIGHT]} />
-        <shaderMaterial
-          defines={KV_DEBUG_NAN_DEFINES}
-          uniforms={flareUniforms}
-          vertexShader={FLARE_VERTEX_SHADER}
-          fragmentShader={FLARE_FRAGMENT_SHADER}
-          transparent
-          depthWrite={false}
-          depthTest={false}
-          blending={THREE.AdditiveBlending}
-          toneMapped={false}
-        />
-      </mesh>
-
       <Html
         position={[LABEL_POSITION[0], LABEL_POSITION[1], LABEL_POSITION[2]]}
         center

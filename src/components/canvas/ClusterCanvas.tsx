@@ -42,6 +42,8 @@ import ErrorRippleRing from '@/components/canvas/ErrorRippleRing';
 import GlStatsCollector from '@/components/canvas/GlStatsCollector';
 import MasterNode3D from '@/components/canvas/MasterNode3D';
 import NetworkStream3D from '@/components/canvas/NetworkStream3D';
+import GroundHorizonFade from '@/components/canvas/GroundHorizonFade';
+import ArcStartGlow3D from '@/components/canvas/ArcStartGlow3D';
 import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
 import ClusterTopologyFloor3D from '@/components/canvas/ClusterTopologyFloor3D';
 import { HalfFloatType } from 'three';
@@ -63,7 +65,8 @@ import NodeInspectHUD from '@/components/hud/NodeInspectHUD';
  * 使远处机架在雾中呈现**冷蓝的空气透视**，而不是单纯的黑化——
  * 这是真实大气透视的关键：远处的物体不是变黑，而是被大气的散射色取代。
  */
-const VOID_COLOR = '#020815';
+/* R25：背景色 / 雾色 / 地面中心色统一到 #020611，消除地平线色差 */
+const VOID_COLOR = '#020611';
 
 /**
  * 雾效近端距离（15 单位内完全清晰）。
@@ -1024,7 +1027,8 @@ export default function ClusterCanvas() {
           position={[0, -0.025, 0]}
           receiveShadow
         >
-          <circleGeometry args={[32, 64]} />
+          {/* R25：地面圆盘半径 32 → 22；边缘由 GroundHorizonFade 在 r∈[13,22] 吞没 */}
+          <circleGeometry args={[22, 96]} />
           <MeshReflectorMaterial
             blur={[320, 90]}
             /*
@@ -1043,14 +1047,14 @@ export default function ClusterCanvas() {
              */
             resolution={REFLECTOR_RESOLUTION[RENDER_QUALITY_TIER]}
             mixBlur={0.85}
-            mixStrength={15}
-            roughness={0.62}
+            mixStrength={9}
+            roughness={0.35}
             depthScale={1.1}
             minDepthThreshold={0.35}
             maxDepthThreshold={1.4}
-            color="#030816"
-            metalness={0.65}
-            mirror={0.55}
+            color="#010308"
+            metalness={0.88}
+            mirror={0.45}
           />
         </mesh>
         ) : null}
@@ -1062,31 +1066,26 @@ export default function ClusterCanvas() {
           共同构成 5 级非重叠 Y 顺序（详见上方层级契约注释）。
           【本轮调整】线宽与对比度双双调低——地面已是反光材质，
           网格若太亮会与倒影争视觉权重，变成"两张网"的噪音。 */}
-        <Grid
-          position={[0, -0.02, 0]}
-          args={[140, 140]}
-          cellSize={6}
-          cellThickness={0.25}
-          cellColor="#07333b"
-          sectionSize={30}
-          sectionThickness={0.55}
-          sectionColor="#084656"
-          fadeDistance={86}
-          fadeStrength={1.6}
-          infiniteGrid
-        />
-        <Grid
-          position={[0, 0.004, 0]}
-          args={[44, 44]}
-          cellSize={1.6}
-          cellThickness={0.25}
-          cellColor="#0b272f"
-          sectionSize={8}
-          sectionThickness={0.55}
-          sectionColor="#115564"
-          fadeDistance={40}
-          fadeStrength={1.4}
-        />
+        {/* R25：删除延伸到 r≈86 的外层大网格（地平线的主要来源） */}
+        {/*
+       * R25：内层细网格收窄到 r≈13 内（fadeDistance 13），
+       * 超过 14 单位不再有可见地面装饰——地平线由 GroundHorizonFade 吞没。
+       */}
+      <Grid
+        position={[0, 0.004, 0]}
+        args={[26, 26]}
+        cellSize={1.4}
+        cellThickness={0.22}
+        cellColor="#0b272f"
+        sectionSize={6}
+        sectionThickness={0.5}
+        sectionColor="#115564"
+        fadeDistance={13}
+        fadeStrength={1.6}
+      />
+
+        {/* R25：地面径向渐隐（r∈[13,22] 与背景 #020611 无缝衔接） */}
+        <GroundHorizonFade />
 
         {/* ---- 双层深空飞散光粒子场（Dual-Layer Sparkles）----
           第一层贴地环绕（粗亮、快）复刻光圈周围飞散的星尘；
@@ -1146,6 +1145,8 @@ export default function ClusterCanvas() {
         {/* ---- 集群网络通信流（MASTER→三机架拱形贝塞尔光缆 + 54 个流动数据包；
            吞吐驱动推进速率，故障车道切换警示红并断续卡顿） ---- */}
         <NetworkStream3D />
+        {/* R25：三条弧线起点的 0.15s 汇聚光斑（能量从晶体赤道抽出，而非插在空中） */}
+        <ArcStartGlow3D />
 
         {/* ---- 机架故障警示涟漪（仅故障机架激活：崩溃 Pod 或节点非 Ready；
            自定义 ShaderMaterial 三环由内向外扩散，加色混合贴地辉光） ---- */}
