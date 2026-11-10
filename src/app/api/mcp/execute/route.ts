@@ -13,16 +13,16 @@
  * latencyMs / auditDigest / timestamp），让自愈从"动画"变成"可审计的事件"。
  *
  * 【双路径执行】
- * 1. 配置了 K8S_API_SERVER + K8S_BEARER_TOKEN → 向真实集群发起 REST 调谐请求：
+ * 1. 配置了 K8S_API_SERVER + K8S_BEARER_TOKEN → 向真实集群发起 REST 自愈请求：
  *    - restart_pod      → DELETE pod（K8s 会按 Deployment 模板自动重建）
  *    - scale_deployment → PATCH deployment 的 replicas（scale 子资源）
  *    - drain_node       → PATCH node 打上不可调度污点（cordon 语义）
  *                        真正的驱逐（eviction）需要逐 Pod 调用 eviction 子资源，
  *                        这里如实只做 cordon 并声明，不假装驱逐已完成。
- * 2. 未配置 → 模拟标准控制器调谐时序（约 220ms）并返回同样的回执结构。
+ * 2. 未配置 → 模拟标准控制器自愈时序（约 220ms）并返回同样的回执结构。
  *
  * 【为何模拟路径要等 220ms 而不是立即返回】
- * 控制器调谐在真实世界里不是瞬时完成的（API Server 接受 → 控制器观测 →
+ * 控制器自愈在真实世界里不是瞬时完成的（API Server 接受 → 控制器观测 →
  * 重建 Pod → 就绪探针通过）。这个延迟让前端的"执行中"动画有真实的时长感，
  * 也让整条链路在有无真实集群时表现一致——否则演示环境的瞬间返回会掩盖
  * 真实环境的等待体验，属于对使用者的欺骗。
@@ -38,7 +38,7 @@ import type { NextRequest } from 'next/server';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-/** 模拟调谐耗时（毫秒）：对应真实控制器"受理 → 观测 → 重建"的可见等待 */
+/** 模拟自愈耗时（毫秒）：对应真实控制器"受理 → 观测 → 重建"的可见等待 */
 const SIMULATED_RECONCILE_MS = 220;
 
 /** 真实 K8s API 请求超时（毫秒）：防止网络挂起拖垮前端请求 */
@@ -66,7 +66,7 @@ interface McpExecuteRequest {
   /**
    * 目标命名空间。
    *
-   * 【B2 修复：不得写死 'default'】旧实现把 namespace 硬编码在 REST 路径里，
+   * 【B2 自愈：不得写死 'default'】旧实现把 namespace 硬编码在 REST 路径里，
    * 对 live 集群执行时会去删 default 命名空间的同名 Pod——轻则 404，
    * 重则删错资源。现在由前端传入（来自集群快照里该 Pod 的真实 namespace），
    * 真实集群模式下缺失直接拒绝，绝不猜测。
@@ -160,7 +160,7 @@ function buildKubectlCommand(
   replicas = 2,
 ): string {
   /*
-   * 【B2 修复：回执命令必须与实际执行一致】
+   * 【B2 自愈：回执命令必须与实际执行一致】
    *
    * 旧实现的 restart_pod 实际发的是 `DELETE /api/v1/namespaces/default/pods/{name}`，
    * 回执却写 `kubectl rollout restart deployment/{name}`——前者只重启单个 Pod，
@@ -304,7 +304,7 @@ function canonicalizeTargetName(targetId: string, targetName: string): string {
 }
 
 /**
- * executeAgainstRealCluster —— 对真实集群执行调谐请求。
+ * executeAgainstRealCluster —— 对真实集群执行自愈请求。
  *
  * 【drain_node 的真实边界】只做 cordon（打不可调度污点），不做 eviction。
  * 完整 drain 需要对节点上每个 Pod 逐个调用 /eviction 子资源，且需处理
@@ -335,7 +335,7 @@ async function executeAgainstRealCluster(
       'DELETE',
     );
     /*
-     * 【B2 修复：404 / 409 不得当成功】
+     * 【B2 自愈：404 / 409 不得当成功】
      *
      * 旧实现把 404 解释成"Pod 已不存在，等价于已重启"并返回成功。
      * 但 404 也可能意味着 namespace/名字拼错、RBAC 过滤后不可见、
@@ -524,7 +524,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       });
     }
   } else {
-    /* 模拟标准控制器调谐时序：让有无真实集群时的体验一致 */
+    /* 模拟标准控制器自愈时序：让有无真实集群时的体验一致 */
     await new Promise<void>((resolve): void => {
       setTimeout(resolve, SIMULATED_RECONCILE_MS);
     });

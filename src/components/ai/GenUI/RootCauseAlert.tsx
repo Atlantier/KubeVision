@@ -709,7 +709,7 @@ export default function RootCauseAlert({
                                 {doc.remediationSteps.length > 0 ? (
                                   <div>
                                     <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-400/70">
-                                      标准修复步骤
+                                      标准自愈步骤
                                     </p>
                                     <ol className="mt-0.5 space-y-0.5">
                                       {doc.remediationSteps.slice(0, 3).map((step, index): ReactNode => (

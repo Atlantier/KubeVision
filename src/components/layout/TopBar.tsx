@@ -796,6 +796,20 @@ function DemoDirectorBar({
     demo.phaseDeadline !== null && demo.phaseStartedAt !== null
       ? Math.max(0, Math.ceil((demo.phaseDeadline - Date.now()) / 1000))
       : null;
+  /* R34 追问 2：讲解者友好的下一步提示（三行） */
+  const nextPhase = demo.phases[demo.phaseIndex + 1] ?? null;
+  const currentPhaseView = demo.phases[demo.phaseIndex] ?? null;
+  const hintPrimary = isPreflightError
+    ? '预检未通过：请检查 dev 依赖后重新启动'
+    : demo.awaitingNarratorAdvance
+      ? `按空格继续：即将进入 ${nextPhase?.badge ?? '结束态'}`
+      : isFinished
+        ? '序列结束：可重播或关闭'
+        : `下一阶段：${nextPhase?.badge ?? '结束态'}`;
+  const hintStage = currentPhaseView === null
+    ? 'STAGE-00 / IDLE'
+    : `当前 ${currentPhaseView.badge} · T+${elapsedSec}s`;
+  const hintKey = 'Space 继续 / 暂停 · Esc 关闭 · ? 快捷键';
 
   return (
     <motion.div
@@ -970,6 +984,15 @@ function DemoDirectorBar({
             </>
           )}
         </div>
+      </div>
+      {/* R34 追问 2：三行下一步提示（讲解版断点时给出按键指令） */}
+      <div className="border-t border-white/[0.06] px-3 py-1.5 font-mono text-[10px] leading-relaxed">
+        <div className="flex items-center gap-2 text-slate-300">
+          <span className="text-cyan-300">下一步</span>
+          <span className="truncate" aria-live="polite">{hintPrimary}</span>
+        </div>
+        <div className="truncate text-slate-500">{hintStage}</div>
+        <div className="truncate text-slate-500">{hintKey}</div>
       </div>
     </motion.div>
   );

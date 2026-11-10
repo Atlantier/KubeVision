@@ -48,7 +48,7 @@ import {
 export const OVERVIEW_CAMERA_POSITION: readonly [number, number, number] = [7.8, 14, 22];
 
 /**
- * 全景注视点（R29 · A 项：构图修复）。
+ * 全景注视点（R29 · A 项：构图自愈）。
  *
  * 【改动】[0, 2.5, 0] → **[0, 1.20, 0]**，相机 [7.8, 14, 22] 与 fov 40 保持不动。
  * 【为什么】旧注视点抬到 2.5 时画面被"仰视"压缩——前排机架底边被裁掉，

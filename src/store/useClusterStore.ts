@@ -91,11 +91,11 @@ const HEALED_POD_MEM = 42;
 /**
  * 自愈后集群健康分下限（%）。
  *
- * 【设计意图】healEntity 代表一次「控制器已验证」的修复（日志尾句
+ * 【设计意图】healEntity 代表一次「控制器已验证」的自愈（日志尾句
  * Status verified: Running）。此时若健康分仍被尚未随下一轮 SSE tick
  * 清除的历史告警拖低，会出现「3D 场景全绿但 HUD 显示 42 分」的视觉矛盾。
  * 故对加权公式结果施加 96 分下限：既保留「未完全恢复到满分」的真实感
- * （余量 4 分对应尚在收敛的尾部指标），又保证修复动作的成效立即可见。
+ * （余量 4 分对应尚在收敛的尾部指标），又保证自愈动作的成效立即可见。
  */
 const HEAL_RECOVERY_FLOOR = 96;
 
@@ -114,7 +114,7 @@ const RECOVERY_COLD_START_MEM = 11;
 /**
  * 需纳入自愈范围的异常 Pod 状态集合。
  *
- * 【语义取舍】仅 Pending / CrashLoopBackOff / OOMKilled 三态视为「待修复异常」：
+ * 【语义取舍】仅 Pending / CrashLoopBackOff / OOMKilled 三态视为「待自愈异常」：
  * - Running 为健康态，无需干预；
  * - Terminating 是**有意的优雅退出**（缩容/滚动更新），把它「救活」会违背
  *   K8s 控制器语义并制造僵尸副本，故明确排除。
@@ -125,7 +125,7 @@ const ABNORMAL_POD_STATUSES: readonly PodStatus[] = [
   'OOMKilled',
 ];
 
-/** 判定 Pod 状态是否属于待修复异常态（O(n) 小集合线性查找，n=3，热路径无开销） */
+/** 判定 Pod 状态是否属于待自愈异常态（O(n) 小集合线性查找，n=3，热路径无开销） */
 function isAbnormalPodStatus(status: PodStatus): boolean {
   return ABNORMAL_POD_STATUSES.includes(status);
 }
@@ -140,7 +140,7 @@ function isAbnormalPodStatus(status: PodStatus): boolean {
  * （否则 3D 历史趋势环的末端会与 cpuUsage 读数自相矛盾）。
  *
  * 【确定性】纯算术、无随机、无时间依赖，同一输入恒得同一输出，
- * 因此修复后的快照依旧可被 SSR/CSR 逐字节复现，不引入水合风险。
+ * 因此自愈后的快照依旧可被 SSR/CSR 逐字节复现，不引入水合风险。
  *
  * @param from 冷启动起点水位（%）
  * @param to   稳态目标水位（%），即序列末位值
@@ -225,7 +225,7 @@ function computeClusterHealthScore(
 }
 
 /**
- * deriveHealedSnapshot —— 由原快照不可变派生「已修复」新快照（自愈闭环核心）。
+ * deriveHealedSnapshot —— 由原快照不可变派生「已自愈」新快照（自愈闭环核心）。
  *
  * 【为何必须派生新对象】TelemetrySnapshot 全字段 readonly，且当前快照很可能
  * 就是模块级种子常量 INITIAL_CLUSTER_SNAPSHOT 本身（snapshotSummary 与
@@ -240,9 +240,9 @@ function computeClusterHealthScore(
  *    restarts **刻意保留原值**：真实 K8s 中重启计数单调不减，它是故障取证
  *    的关键痕迹，抹零会丢失「该 Pod 曾崩溃 12 次」的运维信息。
  * 2. Node 轨：仅当 targetId 为节点时，该节点 status→'Ready'，
- *    且 cpuUsage/memUsage 重算为其名下（已修复）Pod 水位的算术均值——
+ *    且 cpuUsage/memUsage 重算为其名下（已自愈）Pod 水位的算术均值——
  *    真实派生而非魔法数字，保证节点读数与 Pod 读数永不自相矛盾。
- * 3. 告警轨：entityId 命中已修复实体（Pod 或该节点）的告警予以清除，
+ * 3. 告警轨：entityId 命中已自愈实体（Pod 或该节点）的告警予以清除，
  *    否则告警面板会对一个已验证 Running 的 Pod 持续闪烁 P0，视觉与语义双重矛盾。
  * 4. 健康分：按加权公式重算，再施加 HEAL_RECOVERY_FLOOR(96) 下限（见常量 JSDoc）。
  *
@@ -250,8 +250,8 @@ function computeClusterHealthScore(
  * 使 InstancedMesh 的 instanceId 下标映射与 spatialLayout 槽位关系不被打乱。
  *
  * @param snapshot    原快照（只读，不被修改）
- * @param healPodIds  待修复 Pod ID 集合
- * @param healNodeId  待修复节点 ID（targetId 为节点时非 null）
+ * @param healPodIds  待自愈 Pod ID 集合
+ * @param healNodeId  待自愈节点 ID（targetId 为节点时非 null）
  * @returns 全新 TelemetrySnapshot 实例
  */
 function deriveHealedSnapshot(
@@ -508,33 +508,33 @@ export const useClusterStore = create<ClusterStore>()(
       },
 
       /**
-       * healEntity —— 自愈动作闭环回写（登记 + 修复 + 双轨贯通 + 审计）。
+       * healEntity —— 自愈动作闭环回写（登记 + 自愈 + 双轨贯通 + 审计）。
        *
        * 【核心逻辑：五步闭环】
        * 1. **免疫去重**：查 healedPodIds[targetId]，若距上次自愈 < 30s 免疫窗口，
        *    直接拒绝并写终端日志——防止 Agent 在告警风暴期对同一 Pod 反复重启
        *    形成「自愈抖动」（真实 SRE 事故模式）。
-       * 2. **解析修复范围**：targetId 支持两种粒度——
-       *    - Pod 粒度（snapshot.pods 中存在该 id）：仅修复自身；
-       *    - Node 粒度（snapshot.nodes 中存在该 id）：批量修复该节点下**所有异常 Pod**
+       * 2. **解析自愈范围**：targetId 支持两种粒度——
+       *    - Pod 粒度（snapshot.pods 中存在该 id）：仅自愈自身；
+       *    - Node 粒度（snapshot.nodes 中存在该 id）：批量自愈该节点下**所有异常 Pod**
        *      （Pending / CrashLoopBackOff / OOMKilled，Terminating 刻意排除），
        *      同时恢复节点自身 status→Ready 与派生水位；
-       *    - 未知 id：不修复任何实体，但仍完成登记/历史/审计闭环，
+       *    - 未知 id：不自愈任何实体，但仍完成登记/历史/审计闭环，
        *      保证「记录已执行的自愈意图」这一审计语义不因实体缺失而丢失。
-       * 3. **状态修复（不可变派生）**：以当前 snapshotSummary 为基底调用
+       * 3. **状态自愈（不可变派生）**：以当前 snapshotSummary 为基底调用
        *    deriveHealedSnapshot 产出全新快照——命中 Pod 置 Running、
        *    cpuUsage=28、memoryUsage=42 并重建 6 点恢复曲线；清除相关告警；
        *    健康分按加权公式重算并施加 96 分下限。
        *    **严禁原地修改**：原快照极可能就是模块级种子常量
        *    INITIAL_CLUSTER_SNAPSHOT 本身，mutate 会永久污染种子。
-       * 4. **双轨贯通**：修复后的快照一次性写入两条轨道——
+       * 4. **双轨贯通**：自愈后的快照一次性写入两条轨道——
        *    响应轨 set snapshotSummary（驱动 HUD/详情面板重渲染），
        *    瞬态轨 syncSnapshotToTransientRef（原地更新 Float32Array 目标值，
-       *    下一帧 useFrame 即读到修复后水位，无需等待 React 渲染周期）。
-       *    两轨引用同一新快照对象，从根源杜绝「面板显示已修复、
+       *    下一帧 useFrame 即读到自愈后水位，无需等待 React 渲染周期）。
+       *    两轨引用同一新快照对象，从根源杜绝「面板显示已自愈、
        *    3D 场景仍是红色」的双轨撕裂。
        * 5. **混沌复位 + 登记 + 审计**：若当前处于混沌注入态则 activeChaos→'NONE'
-       *    （修复动作视为本轮演练的终止信号）；healedPodIds 对**全部受影响实体**
+       *    （自愈动作视为本轮演练的终止信号）；healedPodIds 对**全部受影响实体**
        *    逐一登记时间戳（Node 粒度时节点与其下每个异常 Pod 均进入免疫窗口）；
        *    RemediationRecord 追加至持久化 remediationHistory（新记录置顶）。
        *
@@ -554,7 +554,7 @@ export const useClusterStore = create<ClusterStore>()(
         /**
          * ---- 步骤 1：免疫窗口 → **明确拒绝**（C2）----
          *
-         * 【修复的缺陷】旧实现承诺"已排队，N 秒后重试"并写入 pendingRemediations，
+         * 【自愈的缺陷】旧实现承诺"已排队，N 秒后重试"并写入 pendingRemediations，
          * 但全项目没有任何调度器消费这个队列——任务永不执行。这是对用户的
          * 不实承诺，比"直接拒绝"更糟（用户会一直等一个不会发生的重试）。
          *
@@ -574,7 +574,7 @@ export const useClusterStore = create<ClusterStore>()(
             message: `免疫窗口内不可重复自愈，剩余 ${remainingSec} 秒`,
           };
         }
-        /* ---- 步骤 2：解析修复范围（Pod 粒度 / Node 粒度 / 未知 id） ---- */
+        /* ---- 步骤 2：解析自愈范围（Pod 粒度 / Node 粒度 / 未知 id） ---- */
         const snapshot = state.snapshotSummary;
         const targetIsNode = snapshot.nodes.some(
           (node): boolean => node.id === targetId,
@@ -588,7 +588,7 @@ export const useClusterStore = create<ClusterStore>()(
          * 下面的 healPodIds 为空、healNodeId 为 null，deriveHealedSnapshot 原样
          * 返回未变快照——但代码仍会继续执行到步骤 4/5：
          * - healedPodIds 被写入 { 'n/a': now }，污染持久化的免疫窗口；
-         * - remediationHistory 追加一条目标为 'n/a' 的修复记录；
+         * - remediationHistory 追加一条目标为 'n/a' 的自愈记录；
          * - 终端打印 `Executed ... on n/a -> Status verified: Running`，
          *   **一条彻头彻尾的假成功回执**。
          *
@@ -616,7 +616,7 @@ export const useClusterStore = create<ClusterStore>()(
         }
         const healNodeId: string | null = targetIsNode ? targetId : null;
 
-        /* ---- 步骤 3：不可变派生修复快照（严禁原地修改，见 deriveHealedSnapshot JSDoc） ---- */
+        /* ---- 步骤 3：不可变派生自愈快照（严禁原地修改，见 deriveHealedSnapshot JSDoc） ---- */
         const healedSnapshot = deriveHealedSnapshot(snapshot, healPodIds, healNodeId);
 
         /* ---- 步骤 4a：免疫登记（全部受影响实体，防级联重复自愈） ---- */
@@ -629,7 +629,7 @@ export const useClusterStore = create<ClusterStore>()(
           immunityEntries[healNodeId] = now;
         }
 
-        /* ---- 步骤 4b：修复记录（持久化白名单字段，新记录置顶） ---- */
+        /* ---- 步骤 4b：自愈记录（持久化白名单字段，新记录置顶） ---- */
         const record: RemediationRecord = {
           id: `heal-${now}-${remediationSeq++}`,
           timestamp: new Date(now).toISOString(),
@@ -649,7 +649,7 @@ export const useClusterStore = create<ClusterStore>()(
          * 【取值口径】
          * - Pod 粒度：取该 Pod 自身的 cpuUsage/memoryUsage/status；
          * - Node 粒度：取该节点的 cpuUsage/memUsage/status；
-         * - 健康分：始终取整个集群的 clusterHealthScore（局部修复也会改善总分）。
+         * - 健康分：始终取整个集群的 clusterHealthScore（局部自愈也会改善总分）。
          * before/after 同源同口径，差值才有解释力。
          */
         const beforeEntity = findEntityMetrics(snapshot, targetId);
@@ -677,16 +677,16 @@ export const useClusterStore = create<ClusterStore>()(
           healedPodIds: { ...current.healedPodIds, ...immunityEntries },
           remediationHistory: [record, ...current.remediationHistory],
           lastRemediationDiff: diff,
-          // 混沌注入态复位：修复动作视为本轮演练的终止信号
+          // 混沌注入态复位：自愈动作视为本轮演练的终止信号
           ...(chaosWasActive ? { activeChaos: 'NONE' as const } : {}),
         }));
 
         /* ---- 步骤 4d：瞬态轨同步（同一新快照对象写入 Float32Array 目标值）
-         * 下一帧 useFrame 即读到修复后水位，无需等待 React 渲染周期；
-         * 两轨引用同一对象，杜绝「面板已修复、3D 场景仍红」的双轨撕裂 ---- */
+         * 下一帧 useFrame 即读到自愈后水位，无需等待 React 渲染周期；
+         * 两轨引用同一对象，杜绝「面板已自愈、3D 场景仍红」的双轨撕裂 ---- */
         syncSnapshotToTransientRef(healedSnapshot);
 
-        /* ---- 步骤 5：终端审计（固定控制器风格行 + 混沌复位/批量修复附加行） ---- */
+        /* ---- 步骤 5：终端审计（固定控制器风格行 + 混沌复位/批量自愈附加行） ---- */
         get().appendTerminalLog(
           `[KUBE-CONTROLLER] Executed ${actionType} on ${targetId} -> Status verified: Running`,
         );
@@ -743,7 +743,7 @@ export const useClusterStore = create<ClusterStore>()(
        * 【为何必须有】`healEntity` 对同一目标有 30 秒免疫窗口：窗口内重复自愈
        * 会被转入退避队列而非真正执行。自动路演若在 30 秒内连跑第二遍，
        * 第二遍的自愈会被免疫窗口整体吞掉，表现为"跑了但没自愈"。
-       * 修复前 Store 没有任何清除入口，这是"连跑两遍第二遍失败"的根因。
+       * 自愈前 Store 没有任何清除入口，这是"连跑两遍第二遍失败"的根因。
        *
        * 【安全性】只清免疫时间戳，不动 remediationHistory —— 审计记录必须保留。
        */

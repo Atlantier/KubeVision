@@ -37,7 +37,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 const EDGE_INIT_BUDGET_MS = 180_000;
 
 /**
- * 单批分类超时（毫秒）——B1 的核心修复之一。
+ * 单批分类超时（毫秒）——B1 的核心自愈之一。
  *
  * 【为什么必须有】推理可能因 WebGPU 设备丢失、WASM OOM、模型输入异常
  * 而永久挂起：Worker 既不回 result 也不回 error，主线程的 Promise 永远
@@ -328,7 +328,7 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
      */
     const watchdog = window.setTimeout((): void => {
       /*
-       * 【B1 修复：看门狗必须"降级为可用"，而不是把 isReady 留在 false】
+       * 【B1 自愈：看门狗必须"降级为可用"，而不是把 isReady 留在 false】
        *
        * 旧实现只在 isReady=false 时写错误信息，**没有把 isReady 置 true**，
        * 于是 LocalAuditorPanel 的所有按钮永远 disabled（isReady 是门禁），

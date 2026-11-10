@@ -1029,7 +1029,7 @@ export default function LocalAuditorPanel() {
         `端侧分类：${record.result.label}（${meta.text}），置信度 ${(record.result.confidence * 100).toFixed(1)}%，` +
         `推理耗时 ${record.result.inferenceLatencyMs.toFixed(2)}ms，已脱敏 ${record.maskedCount} 处敏感信息。\n` +
         `以下是**脱敏后的安全日志**（原始凭证未离开本机）：\n\`\`\`\n${record.sanitizedText}\n\`\`\`\n` +
-        `请分析该异常的根因，并给出可执行的修复建议。`;
+        `请分析该异常的根因，并给出可执行的自愈建议。`;
 
       /**
        * 【移交审计行】记录「有一条脱敏摘要被送出设备边界」这一事实。

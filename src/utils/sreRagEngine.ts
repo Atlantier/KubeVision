@@ -81,7 +81,7 @@ export const SRE_RUNBOOK_CORPUS: readonly RagRunbookDoc[] = [
       'kubectl top pod <pod> --containers 观察实际内存峰值',
       '比对 resources.limits.memory 与容器真实峰值，判断是 limit 过低还是内存泄漏',
       '若为泄漏：抓取 heap profile（/debug/pprof/heap 或 jmap）定位增长对象',
-      '临时缓解：提升 limit 至峰值的 1.3 倍并重启；根因修复后回落',
+      '临时缓解：提升 limit 至峰值的 1.3 倍并重启；根因自愈后回落',
       '配置 HPA 基于 memory 指标或接入 VPA 自动调优',
     ],
     featureVocabulary: [
@@ -202,7 +202,7 @@ export const SRE_RUNBOOK_CORPUS: readonly RagRunbookDoc[] = [
       '查看 CNI Pod 日志中的 tunnel/VXLAN 相关错误',
       '验证节点间基础连通性与 MTU：ping、ip link show、traceroute',
       '检查 conntrack 表是否打满：cat /proc/sys/net/netfilter/nf_conntrack_count',
-      '修复后重启 CNI Pod 并验证 kubectl exec 跨节点连通',
+      '自愈后重启 CNI Pod 并验证 kubectl exec 跨节点连通',
     ],
     featureVocabulary: [
       'network',
@@ -818,7 +818,7 @@ function rrfFuse(ranks: readonly number[], routeCount: number): number {
 /**
  * calibrateConfidence —— 把融合证据强度映射为**真实校准**的置信度。
  *
- * 【C5 修复：分段边界必须连续、单调、无跳变】
+ * 【C5 自愈：分段边界必须连续、单调、无跳变】
  * 旧实现两处边界直接跳变（实测）：s=0.55 处 0.820→0.570，
  * s=0.28 处 0.446→0.300 —— "证据略强，置信度反而更低"。
  *
@@ -901,7 +901,7 @@ const STOP_WORDS: ReadonlySet<string> = new Set([
  *   2. 把 '-' '_' '/' '.' 视作分隔，让 "high-load" 贡献 high 与 load 两个词元；
  *   3. 剔除停用词与长度 < 2 的碎片。
  *
- * 二、中文通道（本轮新增，修复"中文提问永远检索不到"的缺陷）
+ * 二、中文通道（本轮新增，自愈"中文提问永远检索不到"的缺陷）
  *   1. 用 /[\u4e00-\u9fa5]+/g 提取连续中文段；
  *   2. 对长度 ≥ 2 的段，生成**全部相邻二元词（Bigram）** + **完整词**：
  *        "内存溢出" → ["内存", "存溢", "溢出", "内存溢出"]
@@ -1273,12 +1273,12 @@ export function retrieveSreRunbooks(
   /**
    * 【语义证据闸门】没有任何语义证据的文档不参与排名。
    *
-   * 【为何这是关键修复】RRF 的输入是**名次**而非分值。若把零分文档也送进
+   * 【为何这是关键自愈】RRF 的输入是**名次**而非分值。若把零分文档也送进
    * 排名，它们依然会拿到第 1、2、3 名，从而获得 rrf ≈ 1.0 / 0.98 / 0.97——
    * 于是"你好"这种与语料库零交集的查询会让 Top-3 全部拿到 0.6 以上的
    * 置信度。实测确认过这个缺陷：`今天天气不错` 曾输出 63.6%。
    *
-   * 修复原则：**没有证据就没有名次**。
+   * 自愈原则：**没有证据就没有名次**。
    */
   const candidates = entries.filter((entry): boolean => entry.hasSemanticEvidence);
   if (candidates.length === 0) return [];
@@ -1349,7 +1349,7 @@ export function retrieveSreRunbooks(
   /*
    * ---- 8. 校准置信度 + 提取命中特征词 + 排序 ----
    *
-   * 【C5 修复：排序依据改为**原始融合分**】
+   * 【C5 自愈：排序依据改为**原始融合分**】
    * 旧实现按四舍五入后的 similarityScore 排序：证据强度不同的文档可能因
    * 舍入并列，排序退化为 id 字典序。现在先按 fused 降序，再以校准分、id
    * 作确定性 tie-break，保证"证据更强排名更前"。

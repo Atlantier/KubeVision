@@ -4,7 +4,7 @@
  * KubeVision AI — Esc 分级退出栈（useEscapeStack）
  *
  * 【为什么需要它】
- * 修复前每个弹层各自在 window 上挂 keydown 监听：
+ * 自愈前每个弹层各自在 window 上挂 keydown 监听：
  *   RagKnowledgeModal / PostMortemModal / ChaosControlModal 各挂一个，
  *   page.tsx 又挂一个"逐级退出"链（关命令面板 → 关混沌弹窗 → 关 HUD → 清选中）。
  *

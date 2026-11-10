@@ -2,7 +2,7 @@
  * KubeVision AI — 混沌场景 → 受灾目标 的**单一事实源**（Chaos Targets）
  *
  * 【解决什么问题】
- * 修复前全仓有 3 处各自维护"哪个混沌打哪个机架"：
+ * 自愈前全仓有 3 处各自维护"哪个混沌打哪个机架"：
  *   · `utils/syntheticEngine.ts` 里 OOM=1 / SPIKE=0 / PARTITION=2（真正的引擎行为）
  *   · `utils/demoDirector.ts` 里手写了 `node-worker-alpha` / `node-worker-beta`（**写反了**）
  *   · `app/api/chat/route.ts` 里的 `pickRemediationActionType`（又一套动作规则）
@@ -88,7 +88,7 @@ export function resolveNodeIdByRack(rackIndex: number): string {
  * - `NODE_CPU_SPIKE`  → rackIndex 0（node-worker-alpha）
  * - `NET_PACKET_LOSS` → rackIndex 2（node-worker-gamma）
  *
- * 【修复的 P0-1】修复前 `demoDirector` 把 OOM 锁到 alpha、网络锁到 beta，
+ * 【自愈的 P0-1】自愈前 `demoDirector` 把 OOM 锁到 alpha、网络锁到 beta，
  * 正好与引擎行为相反——镜头会停在健康机架上，而 AI 正文却说故障在另一台。
  */
 export const CHAOS_TARGETS = {
@@ -169,7 +169,7 @@ export { isActionAllowedForPod } from '@/utils/chaosFacts';
 /**
  * resolveVictimPods —— 从快照中解析「真实受害 Pod」。
  *
- * 【修复的 P0-2】修复前按"聚焦节点"过滤，一旦镜头锁错节点就解析不到受害者，
+ * 【自愈的 P0-2】自愈前按"聚焦节点"过滤，一旦镜头锁错节点就解析不到受害者，
  * 然后兜底对健康节点执行 `drain_node`——宣称闭环而实际未修。
  *
  * 【本实现的解析顺序（全局视角，不依赖镜头）】
@@ -214,7 +214,7 @@ export function resolveVictimPods(
 /**
  * resolveVictims —— 解析某混沌场景的受害 Pod（规格 A 项导出面）。
  *
- * 【设计意图】把"谁受害了"从**镜头焦点**上解耦。修复前的 P0-2 按
+ * 【设计意图】把"谁受害了"从**镜头焦点**上解耦。自愈前的 P0-2 按
  * `pod.nodeId === selectedEntityId` 过滤，一旦镜头锁错节点就解析不到受害者，
  * 随后兜底对健康节点执行 drain_node —— 宣称闭环而实际一个没修。
  *

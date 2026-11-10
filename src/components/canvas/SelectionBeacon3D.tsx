@@ -187,7 +187,7 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
    * 且从不 dispose。本组件订阅 snapshotSummary.pods（1Hz 快照流），
    * 因此**每秒泄漏一个 BoxGeometry**，长时间运行会持续累积 GPU 缓冲。
    *
-   * 修复：在 useMemo 中一次性创建（空依赖 → 生命周期内仅一份），
+   * 自愈：在 useMemo 中一次性创建（空依赖 → 生命周期内仅一份），
    * 并在卸载时显式 dispose（BoxGeometry 与由其派生的 EdgesGeometry 各自持有缓冲）。
    * 尺寸跟随 POD_BOX_SIZE 外扩 BOX_PADDING，让包围框恰好包住方块。
    */

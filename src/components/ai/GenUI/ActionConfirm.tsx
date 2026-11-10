@@ -171,7 +171,7 @@ export default function ActionConfirm({
    *
    * 【为何要校验 targetId 匹配】多个动作卡可能同时存在于对话流中。
    * 如果 A 卡片执行后写入的 diff 被 B 卡片读到并展示，就会出现
-   * 「B 卡片显示了 A 的修复数据」——张冠李戴的对比比没有对比更糟。
+   * 「B 卡片显示了 A 的自愈数据」——张冠李戴的对比比没有对比更糟。
    * 因此只在 diff.targetId 与本卡目标一致时才展示。
    */
   const lastDiff = useClusterStore((s): RemediationDiff | null => s.lastRemediationDiff);
@@ -280,9 +280,9 @@ export default function ActionConfirm({
    * 4. 追加 [MCP-ROUTER] 审计行——记录本次「经 MCP 路由调用工具」的
    *    协议级事实（与步骤 3 中 store 写的 [KUBE-CONTROLLER] 控制器行互补：
    *    前者说「谁调用了什么工具」，后者说「控制器执行结果如何」）；
-   * 5. **selectEntity 引导 3D 相机聚焦到被修复实体**——这是「对话 → 空间」
+   * 5. **selectEntity 引导 3D 相机聚焦到被自愈实体**——这是「对话 → 空间」
    *    的反向联动：用户在聊天流里修好了一个 Pod，左侧画布立刻飞过去展示
-   *    修复结果。若不聚焦，用户可能完全不知道"我修的是哪一台"，
+   *    自愈结果。若不聚焦，用户可能完全不知道"我修的是哪一台"，
    *    自愈就变成了一个抽象的按钮，而非可验证的空间事件；
    * 6. 转入 done 态，最后回调 onActionExecuted 向上冒泡。
    *
@@ -345,9 +345,9 @@ export default function ActionConfirm({
      * 1. 旧版本持久化的会话历史（里面可能存着 'n/a'）；
      * 2. 集群状态在卡片生成后发生变化（目标 Pod 已被删除）。
      * 这两种情况下 healEntity / selectEntity 拿到不存在的 ID 会产生
-     * "修复空气"的假动作：3D 无变化、相机找不到目标、终端却打印成功回执。
+     * "自愈空气"的假动作：3D 无变化、相机找不到目标、终端却打印成功回执。
      *
-     * 【B3 修复：**禁止静默替换目标**】
+     * 【B3 自愈：**禁止静默替换目标**】
      *
      * 旧实现找不到 targetId 时会回退到 `snapshot.pods[0]`：用户确认的是
      * "重启 payment-gateway"，实际被重启的却是列表里第一个 Pod。这是
@@ -423,7 +423,7 @@ export default function ActionConfirm({
             targetId: effectiveTargetId,
             targetName: effectiveTargetName,
             /*
-             * 【B2 修复：命名空间由前端带过去】
+             * 【B2 自愈：命名空间由前端带过去】
              * 目标 Pod 的 namespace 只有前端快照知道；服务端若写死 'default'，
              * live 集群会删错命名空间或 404。这里从当前快照解析真实 namespace。
              */
@@ -483,10 +483,10 @@ export default function ActionConfirm({
         );
         appendTerminalLog(`[MCP-ROUTER] equivalent: ${result.kubectlCommand}`);
 
-        /* ---- 步骤 4：引导 3D 相机聚焦被修复实体 ---- *
+        /* ---- 步骤 4：引导 3D 相机聚焦被自愈实体 ---- *
          * 必须在 healEntity 之后：CameraRig 的 focus effect 依赖
          * selectedEntityId 变化，此时快照已是愈合态，
-         * 相机飞过去看到的就是"已修复"的绿色实例——时序上因果正确。 */
+         * 相机飞过去看到的就是"已自愈"的绿色实例——时序上因果正确。 */
         selectEntity(effectiveTargetId, effectiveEntityType);
 
         /* ---- 步骤 5：切换成功态并向上冒泡 ---- */

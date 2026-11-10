@@ -196,7 +196,7 @@ export default function CameraRig() {
     /*
      * ---- E 项：程序化锁生效时不解除 ----
      *
-     * 【修复的缺陷】导演阶段 4 收尾是「先 selectEntity(null) 再
+     * 【自愈的缺陷】导演阶段 4 收尾是「先 selectEntity(null) 再
      * setOrbitPatrolActive(true)」。两者落在同一批更新里时，选中变化 effect
      * 会调用本函数，把**刚开启**的巡检立刻关掉——表现为"巡检开了又被关"，
      * 收尾的环绕仪式感直接消失。

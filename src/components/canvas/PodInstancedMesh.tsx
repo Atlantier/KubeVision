@@ -948,7 +948,7 @@ export default function PodInstancedMesh() {
            * t = 60s 时 c 跳 0.1 → 相位跳 0.1 × 0.8 × 60 ≈ 4.8 rad ≈ 275°，
            * 盒子位置瞬间跳到几乎相反相位 —— 观感就是一秒抽一次。
            *
-           * 【修复两步】
+           * 【自愈两步】
            * 1. c 先做帧率无关指数阻尼 → smoothC 连续变化；
            * 2. 相位改为**对角速度积分** φ += ω(smoothC)·dt（而非 t·ω(c)），
            *    数据帧跳变只改变此后的角速度，历史相位不可变 → 零跳变。
@@ -1032,7 +1032,7 @@ export default function PodInstancedMesh() {
        * b) filter ≠ ALL 且 matchedCount > 0     → 匹配 1.12 高亮、其余 0.22 退让
        * c) filter ≠ ALL 且 matchedCount === 0   → **全部 1.0** 幽灵参考态（体积不缩水，仅颜色收敛灰蓝），
        *    颜色向冷灰蓝收敛 50%，表达"当前过滤条件下无匹配项"。
-       *    这是修复"点异常状态后整排容器消失"的关键分支：
+       *    这是自愈"点异常状态后整排容器消失"的关键分支：
        *    没有匹配 ≠ 容器不存在，机架必须保持完整体积感。
        */
       const matchesFilter = filter === 'ALL' || pod.status === filter;
@@ -1237,7 +1237,7 @@ export default function PodInstancedMesh() {
        * （实例色与材质色相乘，白基色保证 instanceColor 原样呈现）
        * 且 toneMapped={false}（状态色绕过色调映射，红/绿/琥珀保持语义纯度）。
        *
-       * 【PBR 吞光修复】早先的配置是 metalness={0.5} roughness={0.2}，但当时场景内
+       * 【PBR 吞光自愈】早先的配置是 metalness={0.5} roughness={0.2}，但当时场景内
        * **没有任何环境贴图**（无 <Environment> / envMap）。按 PBR 能量守恒，
        * 金属度 0.5 会把一半的漫反射固有色替换成"环境反射"，
        * 而环境是 #020617 纯黑背景 → 反射回黑色 → 翠绿被砍成暗沉泥绿。

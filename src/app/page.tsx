@@ -280,7 +280,7 @@ export default function HomePage() {
       <ShellLayout viewport={<ClusterCanvas />} drawer={<CopilotDrawer />} />
 
       {/*
-       * 【AnimatePresence 退场动画修复（审查报告 §4.1）】
+       * 【AnimatePresence 退场动画自愈（审查报告 §4.1）】
        *
        * 这两个组件内部都写了 exit={{ opacity: 0, scale: ... }} 的退场动画，
        * 但此前父级直接 `{cond ? <X/> : null}` 条件渲染——**关闭时 React

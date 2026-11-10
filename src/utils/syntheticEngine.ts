@@ -26,7 +26,7 @@
  *   next = current + (baseline − current) · REVERSION_RATE + noise · AMPLITUDE
  * 其中 REVERSION_RATE ∈ (0,1) 决定回归强度（越大越快拉回基准），
  * noise ∈ [−1,1] 为确定性哈希噪声。这一形式的两大性质：
- * - **自动修复**：任何偏离基线的异常值（含上一轮混沌遗留的 96% 高水位）
+ * - **自动自愈**：任何偏离基线的异常值（含上一轮混沌遗留的 96% 高水位）
  *   都会按指数速率自然回落，无需额外"复原"分支——混沌一停即自愈；
  * - **有界波动**：稳态下 current ≈ baseline + noise·(AMPLITUDE/REVERSION_RATE)，
  *   不会无界漂移，视觉上呈现自然的呼吸感而非乱跳。
@@ -79,7 +79,7 @@ const QPS_NOISE_RATIO = 0.02;
 /**
  * QPS_BASELINE —— **不可变**的 QPS 锚定基准（全集群稳态请求量）。
  *
- * 【修复的缺陷：复利漂移（compounding drift）】
+ * 【自愈的缺陷：复利漂移（compounding drift）】
  * 旧实现写作：
  *   `const qpsBaseline = prevSnapshot.totalQps`   ← 把**上一帧的输出**当基准
  *   `totalQps = round(qpsBaseline * (1 + wave + noise) * penalty)`
@@ -183,7 +183,7 @@ const HEALTH_SCORE_MAX = 100;
  */
 function hashNoise(seed: number): number {
   /*
-   * 【2026-11 修复：旧实现不是"噪声"，是一条缓慢斜坡】
+   * 【2026-11 自愈：旧实现不是"噪声"，是一条缓慢斜坡】
    *
    * 旧实现是裸 xorshift32（x ^= x<<13; x ^= x>>>17; x ^= x<<5）。
    * 对**小整数种子**（tick 从 1 开始、种子形如 tick*67+11）它没有雪崩效应：
@@ -192,7 +192,7 @@ function hashNoise(seed: number): number {
    * 后果：所谓"零均值随机噪声"其实是一个缓慢漂移项，节点水位会跟着它
    * 慢慢爬升/下滑——这正是"节点数值缓慢漂移、故障恢复后回不到基线"的根因。
    *
-   * 修复：改用 lowbias32 终混（两次 Math.imul + 高低位 xor），
+   * 自愈：改用 lowbias32 终混（两次 Math.imul + 高低位 xor），
    * 小种子也能瞬间雪崩，相邻种子输出互不相关。仍然：
    *   · 确定性（同种子恒得同输出）；
    *   · 无 Math.random；
@@ -745,7 +745,7 @@ function evolveNode(
        应该是忽快忽慢的断续感。0.28 给出约 ±6.4 Mbps 的可见抖动。 */
     networkMbps = nodeBaselineMbps * PARTITION_THROUGHPUT_RATIO * (1 + noiseNet * 0.28);
     /*
-     * 【修复：累计扣减】旧实现是 node.cpuUsage - 8（每帧都再减 8），
+     * 【自愈：累计扣减】旧实现是 node.cpuUsage - 8（每帧都再减 8），
      * 43 tick 的丢包演练足以把 CPU 从 44 打到 5%，故障解除后还要慢慢爬回来——
      * 视觉上就是"节点被打死了"，与"网络分区"的语义也不符（分区不消耗 CPU）。
      * 现在改为「基线 − 8」，稳定在基线下 8 个百分点。
@@ -763,7 +763,7 @@ function evolveNode(
     status = 'Ready';
   } else {
     /*
-     * ---- 正常态：CPU / 内存做**均值回归**（修复随机游走） ----
+     * ---- 正常态：CPU / 内存做**均值回归**（自愈随机游走） ----
      *
      * 公式与 Pod 侧完全同构：
      *   next = current + (baseline − current) · RATE + noise · AMPLITUDE
@@ -907,7 +907,7 @@ export function stepTelemetrySimulation(
       /*
        * ---- 恢复规则：名下 Pod 全部 Running → 节点回 Ready ----
        *
-       * 【修复的缺陷】旧实现里 "Ready/HighLoad" 由场景分支硬编码：
+       * 【自愈的缺陷】旧实现里 "Ready/HighLoad" 由场景分支硬编码：
        * 故障解除后节点可能因为水位残留（或 overlay 残留）继续显示 HighLoad，
        * 出现"Pod 全绿但机架仍是琥珀色"的自相矛盾画面。
        * 现在以 **Pod 实际状态** 为准：只要该节点名下没有异常 Pod，
@@ -925,7 +925,7 @@ export function stepTelemetrySimulation(
 
   /* ---- 5. QPS 演进：锚定**不可变基准**，只表达相对基准的瞬时偏离 ---- */
   /*
-   * 【修复：复利漂移】旧实现把 prevSnapshot.totalQps 当基准，
+   * 【自愈：复利漂移】旧实现把 prevSnapshot.totalQps 当基准，
    * 每一 tick 都在上一帧**输出**上再乘一次 (1 + wave + noise)——乘性递推，
    * 长期均值只要偏离 1 就会指数收敛到 0（实测 300 tick 从 12850 漂到 833）。
    *

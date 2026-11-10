@@ -139,7 +139,7 @@ interface CustomRunbookFormState {
   readonly rootCauseMechanism: string;
   /** 特征词（逗号分隔原文，提交时解析为 doc.featureVocabulary / doc.tags） */
   readonly featureVocabulary: string;
-  /** 修复步骤（按换行分割为 doc.remediationSteps） */
+  /** 自愈步骤（按换行分割为 doc.remediationSteps） */
   readonly remediationSteps: string;
 }
 
@@ -208,7 +208,7 @@ function splitVocabulary(raw: string): string[] {
 }
 
 /**
- * splitSteps —— 把 textarea 的多行文本解析为有序修复步骤。
+ * splitSteps —— 把 textarea 的多行文本解析为有序自愈步骤。
  *
  * 【核心逻辑】按换行切分后逐行 trim，并**丢弃空行**：用户在步骤之间多敲
  * 空行是排版习惯，不应变成空白的 SOP 条目（详情面板会渲染出空心序号圆点）。
@@ -905,7 +905,7 @@ export default function RagKnowledgeModal({
                   {selectedDoc === null ? (
                     <div className="flex flex-1 items-center justify-center px-4 text-center">
                       <p className="text-[11px] leading-relaxed text-slate-500">
-                        从左侧语料列表中选择一条 Runbook，查看其故障症状、底层根因机理与标准修复
+                        从左侧语料列表中选择一条 Runbook，查看其故障症状、底层根因机理与标准自愈
                         SOP。
                       </p>
                     </div>
@@ -959,8 +959,8 @@ export default function RagKnowledgeModal({
                         )}
                       </DetailSection>
 
-                      {/* 标准修复 SOP（有序列表 + 序号圆点） */}
-                      <DetailSection title="标准修复 SOP">
+                      {/* 标准自愈 SOP（有序列表 + 序号圆点） */}
+                      <DetailSection title="标准自愈 SOP">
                         {selectedDoc.remediationSteps.length === 0 ? (
                           <p className="text-[11px] text-slate-500">该条目尚未提供处置步骤。</p>
                         ) : (
@@ -1136,7 +1136,7 @@ export default function RagKnowledgeModal({
 
                         <label className="block md:col-span-2">
                           <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                            修复步骤（每行一条，按换行分割为有序 SOP）
+                            自愈步骤（每行一条，按换行分割为有序 SOP）
                           </span>
                           <textarea
                             value={form.remediationSteps}

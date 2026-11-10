@@ -34,7 +34,7 @@ export type ChaosRemediationAction = 'restart_pod' | 'scale_deployment' | 'drain
  * - `NODE_CPU_SPIKE`  → `scale_deployment`：CPU 尖刺靠扩容分摊，迁移负载反而放大抖动；
  * - `NET_PACKET_LOSS` → `drain_node`：网络分区下该节点已不可信，必须把负载迁走。
  *
- * 【修复 drain_node 滥用】旧实现把 drain_node 当默认兜底，于是"集群健康 100"
+ * 【自愈 drain_node 滥用】旧实现把 drain_node 当默认兜底，于是"集群健康 100"
  * 和"OOM 内存溢出"都可能弹出一张红色驱逐卡——代价最大的动作被用在了
  * 最不需要它的场景上。
  */

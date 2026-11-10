@@ -319,7 +319,7 @@ export function GET(request: Request): Response {
             liveFailures = 0;
 
             /**
-             * ---- 关键修复：live 模式下的故障演练叠加 ----
+             * ---- 关键自愈：live 模式下的故障演练叠加 ----
              *
              * 【原缺陷】此分支此前直接推送 `collected.snapshot`，
              * 完全忽略上面解析出来的 chaos 参数。于是用户在「实时」模式点

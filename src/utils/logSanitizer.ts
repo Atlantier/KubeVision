@@ -340,7 +340,7 @@ const SANITIZER_RULES: readonly SanitizerRule[] = [
      * 分隔符，使日志仍能看出"这是一个带认证的连接串"，只是凭证被抹掉。
      */
     /**
-     * 【B4 修复：密码内的未转义 '@'】
+     * 【B4 自愈：密码内的未转义 '@'】
      *
      * 旧正则用 `[^\s@/]+@` 匹配密码段，遇到密码含 '@'（如 `p@ssw0rd`）时
      * 只会吃到第一个 '@' 之前，结果：
@@ -387,7 +387,7 @@ const SANITIZER_RULES: readonly SanitizerRule[] = [
      * 而不是残缺成 `db_=[REDACTED_PASSWORD]`——保留键名才便于排查配置。
      */
     /**
-     * 【B4 修复：JSON 形态的带引号键名】
+     * 【B4 自愈：JSON 形态的带引号键名】
      *
      * `{"password": "hunter2"}` 里键名是 `"password"`，闭合引号出现在
      * 分隔符之前。旧正则要求键名后**立即**是 `\s*[=:]`，因此整个形态
@@ -487,7 +487,7 @@ export function sanitizeRawLog(raw: string): SanitizeResult {
   const maskedByRule: Record<string, number> = {};
 
   /*
-   * 【B4 修复：幂等的真正实现】
+   * 【B4 自愈：幂等的真正实现】
    *
    * 旧注释声称"占位符本身不匹配任何规则"，但 password-field 规则会再次
    * 命中 `db_password=[REDACTED_PASSWORD]`（值部分仍满足 {4,}），

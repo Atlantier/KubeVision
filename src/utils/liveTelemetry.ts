@@ -834,7 +834,7 @@ export async function collectLiveTelemetrySnapshot(
           if (usage === undefined) return pod;
 
           /*
-           * ---- 修复：live + K8s 模式下 Pod 内存恒为 0 ----
+           * ---- 自愈：live + K8s 模式下 Pod 内存恒为 0 ----
            *
            * 旧实现把解析出来的 mem 直接丢弃（memUsage 写死为 null），
            * 于是所有 Pod 的内存曲线是一条 0 平线——指标面板看起来「没数据」，

@@ -549,7 +549,7 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
   /**
    * C4：blocked 态必须能在用户交互后复位。
    *
-   * 【修复的缺陷】旧实现把 not-allowed 写成 blocked 后**永不复位**：
+   * 【自愈的缺陷】旧实现把 not-allowed 写成 blocked 后**永不复位**：
    * 用户明明已经点过页面、浏览器也允许了，界面仍显示"被拦截"，
    * 再点朗读也没有任何反应。现在监听一次用户手势（pointerdown/keydown），
    * 一旦发生就复位为 idle 并给出可操作提示。

@@ -486,7 +486,7 @@ async function initModelWithTimeout(
       postProgress(post, runtime, label, 100, `${MODEL_ID} (timeout -> builtin)`);
 
       /*
-       * 【后台续载：本轮关键修复】
+       * 【后台续载：本轮关键自愈】
        *
        * 3500ms 熔断的设计初衷是"别让界面卡在等模型下载"——这没错。
        * 但旧实现把 loadTask **连同熔断一起丢弃**了：模型其实还在下载，
@@ -583,7 +583,7 @@ async function classifyOne(text: string, extractor: FeatureExtractor | null): Pr
     /*
      * 取句向量（mean pooling + L2 归一化），随后与 4 类原型锚点比对。
      *
-     * 【本轮核心修复】旧实现拿到 `output.data` 后只检查了模长 `norm > 0.5`，
+     * 【本轮核心自愈】旧实现拿到 `output.data` 后只检查了模长 `norm > 0.5`，
      * 然后**原样返回内置正则分类器的结论**——模型跑完前向却被完全忽略，
      * 属"假端侧推理"。现在真正用 384 维向量做 zero-shot 语义分类：
      * 与预计算锚点做余弦点积 → softmax → 与领域先验加权融合。

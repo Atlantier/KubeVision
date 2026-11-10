@@ -461,7 +461,7 @@ function ContextPill({
  * 【解决什么问题：多轮对话丢失卡片上下文】
  * 前端把卡片作为**独立数据结构** `toolCards` 渲染，而发送给 `/api/chat` 的
  * `history` 只带 `m.text`。于是第二轮用户追问
- * 「刚刚那张卡片里的根因怎么修复？」时，服务端与模型**从没见过那张卡片**——
+ * 「刚刚那张卡片里的根因怎么自愈？」时，服务端与模型**从没见过那张卡片**——
  * 它的正文早就流式结束了，不在 `text` 里，也不在任何消息里。
  * 模型只能反问"您指的是哪张卡片？"，多轮记忆在这里断掉。
  *
@@ -1440,7 +1440,7 @@ export default function CopilotDrawer() {
     const nowMs = Date.now();
 
     /*
-     * 【A7 修复：用事故发生时刻的快照，而不是导出时刻的实时值】
+     * 【A7 自愈：用事故发生时刻的快照，而不是导出时刻的实时值】
      *
      * 用户自愈完成后集群已恢复健康，若此时导出，旧实现写的是
      * "当前健康分 100"——与事故经过完全对不上。
@@ -1499,7 +1499,7 @@ export default function CopilotDrawer() {
       if (text.length === 0) return;
 
       /*
-       * 【A5 修复：流式期间不丢弃请求，改为排队】
+       * 【A5 自愈：流式期间不丢弃请求，改为排队】
        * 旧实现 `if (isStreaming) return` 会让"快照诊断/主动诊断"在
        * AI 正在回答时被静默吞掉——用户点了按钮，什么也没发生。
        * 现在记入队列并在当前流结束后自动发送，同时明确提示"已排队"。
@@ -1637,7 +1637,7 @@ export default function CopilotDrawer() {
         /**
          * finalize —— 流收尾唯一入口（正常结束 / 异常 / abort 三条路径共用）。
          *
-         * 【A3 修复】旧实现只在正常结束分支把消息级 isStreaming 置 false；
+         * 【A3 自愈】旧实现只在正常结束分支把消息级 isStreaming 置 false；
          * abort 分支什么都不做，于是"停止生成"后打字光标不消失、
          * 朗读按钮也不出现（它依赖 !isStreaming）。现在三条路径统一收尾。
          *
@@ -1738,7 +1738,7 @@ export default function CopilotDrawer() {
 
               case 'tool-start': {
                 /*
-                 * 【A1 修复：按 toolCallId 去重】
+                 * 【A1 自愈：按 toolCallId 去重】
                  * 回落引擎可能重发同一张卡（旧服务端行为），或代理重放同一帧。
                  * 同 id 只挂一次，杜绝"两张指标卡"。
                  */
@@ -1754,7 +1754,7 @@ export default function CopilotDrawer() {
                 });
 
                 /*
-                 * 【A2 修复：骨架屏 8 秒看门狗】
+                 * 【A2 自愈：骨架屏 8 秒看门狗】
                  * 服务端保证 start/result 配对，但网络中断/代理截断仍可能丢 result。
                  * 旧实现只在"整条流结束"时兜底——流若挂住，卡片永久转圈。
                  * 现在每张骨架独立计时：超时即转失败态，用户可点重试。
@@ -1888,7 +1888,7 @@ export default function CopilotDrawer() {
           }));
         }
         /*
-         * 【A3 修复：abort 与正常结束统一走 finalize】
+         * 【A3 自愈：abort 与正常结束统一走 finalize】
          * 旧实现 abort 分支什么都不做，消息级 isStreaming 永远为 true，
          * 表现为"停止生成后还显示打字光标、朗读按钮不出现"。
          * 现在两条路径汇聚到同一个收尾函数，内容保留、状态复位。
@@ -1973,7 +1973,7 @@ export default function CopilotDrawer() {
    * 即便从 POD_OOM_SWARM 切到 NET_PACKET_LOSS 这样的**全新故障**，
    * 主动告警也再也不会弹出——而这恰恰是最该提醒的时刻。
    *
-   * 修复：监听 activeChaos 变化，每当注入新的非 NONE 场景时重置关闭态。
+   * 自愈：监听 activeChaos 变化，每当注入新的非 NONE 场景时重置关闭态。
    * 语义上"关闭"应作用于"当前这次告警"，而不是"整个会话"——
    * 新的故障是新的事实，用户值得被重新提醒一次。
    *
@@ -2001,7 +2001,7 @@ export default function CopilotDrawer() {
    * 这些**结果事实**的地方——那就是对话流里这条系统级摘要。
    *
    * 【数据从哪来】不编造：healEntity 已同步更新了 snapshotSummary，
-   * 此处从 store 读取修复后的**真实**指标（状态/内存/健康分）。
+   * 此处从 store 读取自愈后的**真实**指标（状态/内存/健康分）。
    * 报告里的每个数字都是当前集群的真实值。
    *
    * 【为何用 setTimeout 0】healEntity 与 selectEntity 在同一 tick 内完成，
@@ -2013,7 +2013,7 @@ export default function CopilotDrawer() {
       const state = useClusterStore.getState();
       const snapshot = state.snapshotSummary;
 
-      /* 定位被修复的实体（可能是 Pod，也可能是节点） */
+      /* 定位被自愈的实体（可能是 Pod，也可能是节点） */
       const healedPod = snapshot.pods.find((p): boolean => p.id === targetId);
       const healedNode = snapshot.nodes.find((n): boolean => n.id === targetId);
 

@@ -6,7 +6,7 @@
  * 【设计意图】把「点选 3D 实体」升级为一次完整的巡检会话：未选中时是
  * 场景的读图说明书（图例 + 手势），选中后切换为玻璃态探针卡片，
  * 同屏呈现身份、状态、元信息、实时波形与两根战术按钮（AI 诊断 / 隔离重启），
- * 让「发现异常 → 诊断根因 → 执行修复」形成闭环而不必离开 3D 视口。
+ * 让「发现异常 → 诊断根因 → 执行自愈」形成闭环而不必离开 3D 视口。
  *
  * 【双态互斥的动画契约】
  * 空态图例与实体卡片由外层 <AnimatePresence mode="wait"> 统一托管：
@@ -168,11 +168,11 @@ const TONE_RING_CLASS: Readonly<Record<InspectTone, string>> = {
 /**
  * 卡片外框（本轮改为光学玻璃拟态）。
  *
- * 【修复什么 · 历史】更早的版本用 shadow-glow-emerald / amber / rose
+ * 【自愈什么 · 历史】更早的版本用 shadow-glow-emerald / amber / rose
  * 这类大面积彩色模糊阴影：在深色画布上那不是"发光"，而是一团脏荧光雾，
  * 边界糊掉、颜色发闷、还随状态在三色间跳变。
  *
- * 【修复什么 · 本轮】上一版改成"单像素 hairline 描边 + 88% 不透明深底"，
+ * 【自愈什么 · 本轮】上一版改成"单像素 hairline 描边 + 88% 不透明深底"，
  * 边框问题解决了，但它和 3D 视口里的机架/控制平面铭牌**不是同一套语言**：
  *   · 3D HUD：border 0px · radius 0px · 底色 50% 通透
  *   · 本卡片：border 1px · radius 8px · 底色 88% 近乎不透明
@@ -984,7 +984,7 @@ function EntityProbeCard({
         {/*
          * 重启徽标（本轮改为常驻）。
          *
-         * 【修复什么】旧实现只在 restarts > 0 时渲染，看似省空间，实则让
+         * 【自愈什么】旧实现只在 restarts > 0 时渲染，看似省空间，实则让
          * "0 次重启"这一关键稳态信息完全不可见——用户无法确认集群是否真的干净。
          *
          * 【改为】始终显示：0 次时用沉稳灰青（hairline 边框 + slate-400 文字），
@@ -1024,7 +1024,7 @@ function EntityProbeCard({
 
       {/* ============ 第 3 行：2×2 结构化微仪表网格 ============ */}
       {/*
-       * 【修复什么】此前是一行用 `·` 连接的纯值串（`3 个 · 24 / 24 运行中 · 1,586`），
+       * 【自愈什么】此前是一行用 `·` 连接的纯值串（`3 个 · 24 / 24 运行中 · 1,586`），
        * 字段名被全部丢弃——读者根本不知道 `3 个` 指什么、`1,586` 是什么单位。
        * 信息没传达出去，却照样占满一整行。
        *
@@ -1374,7 +1374,7 @@ export default function NodeInspectHUD({ className }: NodeInspectHUDProps) {
       `请对 ${view.entityType} 实体「${view.displayName}」（ID: ${view.entityId}）执行专项根因诊断。` +
       `当前状态 ${view.statusLabel}，累计重启 ${view.restarts} 次，` +
       `CPU ${view.cpuSeries.latestText}、内存 ${view.memSeries.latestText}。` +
-      `请结合最近历史趋势判断潜在故障根因，并给出可执行的修复建议。`;
+      `请结合最近历史趋势判断潜在故障根因，并给出可执行的自愈建议。`;
     triggerQuickPrompt(prompt);
   }, [view, triggerQuickPrompt]);
 
@@ -1392,11 +1392,11 @@ export default function NodeInspectHUD({ className }: NodeInspectHUDProps) {
     /**
      * 【按实体类型分派动作，并拒绝控制面】
      *
-     * 修复两个真实缺陷（审查报告 §5.1）：
+     * 自愈两个真实缺陷（审查报告 §5.1）：
      * 1. master 控制面没有对应的 Pod 实体，此前一律传 'master-control-plane'
      *    给 healEntity，Store 找不到该 ID 却仍打印成功的
      *    [KUBE-CONTROLLER] executed 日志——**虚假成功回执比报错更危险**，
-     *    会让值班人员误以为控制面已被修复。此处直接拒绝并给明确提示。
+     *    会让值班人员误以为控制面已被自愈。此处直接拒绝并给明确提示。
      * 2. node 级目标应走节点维护动作（drain_node），而非 Pod 的 restart_pod。
      */
     if (view.entityType === 'master') {

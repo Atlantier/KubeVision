@@ -412,7 +412,7 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
       const elapsedSec = (now - startedAtRef.current) / 1000;
 
       /*
-       * 【C3 修复：rAF 每帧 setState → ≤8Hz 低频发布】
+       * 【C3 自愈：rAF 每帧 setState → ≤8Hz 低频发布】
        *
        * 旧实现每帧都 setSnapshot：60FPS × 每次 setState 触发 CopilotDrawer
        * 整树协调——语音输入期间整个对话界面被拖进无意义的重渲染。
@@ -436,7 +436,7 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
       }
 
       /**
-       * 【C3 修复：静音 1.8s 自动收尾】
+       * 【C3 自愈：静音 1.8s 自动收尾】
        * 旧实现只改一句提示文案"可点击完成录音"，从不真正结束——
        * 用户讲完话后麦克风一直亮着、识别继续跑。
        * 现在静音达标即调用 stop()，并保证只触发一次。
@@ -679,7 +679,7 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
     /*
      * ---- 声学模式（或云端没识别到）：结合上下文推断指令 ----
      *
-     * 【C3 修复：必须标注 [声学推断]】声学兜底是根据能量与上下文"猜"出的
+     * 【C3 自愈：必须标注 [声学推断]】声学兜底是根据能量与上下文"猜"出的
      * 指令，不是语音识别结果。旧实现把它当普通文本返回，输入框里看起来
      * 就像用户真的说了这句话——这是对识别能力的虚假陈述。
      */

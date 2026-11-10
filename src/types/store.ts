@@ -145,17 +145,17 @@ export interface RemediationRecord {
 }
 
 /**
- * RemediationDiff —— 自愈动作的「修复前后」指标对比快照。
+ * RemediationDiff —— 自愈动作的「自愈前后」指标对比快照。
  *
  * 【为什么需要它】自愈目前对用户来说是一个「黑盒按钮」：点下去，3D 场景里
- * 某个盒子从红变绿，终端打一行回执。用户无从判断这次修复**到底改善了多少**——
+ * 某个盒子从红变绿，终端打一行回执。用户无从判断这次自愈**到底改善了多少**——
  * CPU 是从 96% 降到 41%，还是从 92% 降到 88%？没有量化，自愈就只是个动画。
  *
- * 本结构在 healEntity 执行时同时取修复前快照与修复后快照的对应字段，
+ * 本结构在 healEntity 执行时同时取自愈前快照与自愈后快照的对应字段，
  * 让卡片可以渲染「96.0% → 41.0%」这样的对比，把一次点击变成一次可验证的改善。
  *
  * 【口径说明】
- * - before* 取自**本次修复动作执行前**的 clusterSummary；
+ * - before* 取自**本次自愈动作执行前**的 clusterSummary；
  * - after* 取自 deriveHealedSnapshot 产出的新快照中**同一目标**的对应值；
  * - Node 粒度自愈时，指标取该节点自身的 cpuUsage / memUsage，
  *   status 取节点状态（source 语义在 Node 上是 Ready/NotReady）。
@@ -168,21 +168,21 @@ export interface RemediationDiff {
   readonly targetName: string;
   /** 本次动作类型（restart_pod / scale_deployment / drain_node 等） */
   readonly actionType: string;
-  /** 修复前 CPU 使用率（百分比 0~100） */
+  /** 自愈前 CPU 使用率（百分比 0~100） */
   readonly beforeCpu: number;
-  /** 修复后 CPU 使用率（百分比 0~100） */
+  /** 自愈后 CPU 使用率（百分比 0~100） */
   readonly afterCpu: number;
-  /** 修复前内存使用率（百分比 0~100） */
+  /** 自愈前内存使用率（百分比 0~100） */
   readonly beforeMem: number;
-  /** 修复后内存使用率（百分比 0~100） */
+  /** 自愈后内存使用率（百分比 0~100） */
   readonly afterMem: number;
-  /** 修复前集群健康分（0~100） */
+  /** 自愈前集群健康分（0~100） */
   readonly beforeHealth: number;
-  /** 修复后集群健康分（0~100） */
+  /** 自愈后集群健康分（0~100） */
   readonly afterHealth: number;
-  /** 修复前实体状态（Pod 为 PodStatus，Node 为 Ready/NotReady） */
+  /** 自愈前实体状态（Pod 为 PodStatus，Node 为 Ready/NotReady） */
   readonly beforeStatus: string;
-  /** 修复后实体状态 */
+  /** 自愈后实体状态 */
   readonly afterStatus: string;
   /** 记录时刻，ISO 8601 字符串（与 RemediationRecord.timestamp 同口径） */
   readonly timestamp: string;
@@ -355,8 +355,8 @@ export interface ClusterState {
   /**
    * 最近一次自愈的前后指标对比（非持久化，仅用于卡片展示）。
    *
-   * 【为何不持久化】对比的语义是「刚刚这次修复改善了多少」。
-   * 刷新页面后展示上一次会话的修复对比没有意义，反而会让用户误以为
+   * 【为何不持久化】对比的语义是「刚刚这次自愈改善了多少」。
+   * 刷新页面后展示上一次会话的自愈对比没有意义，反而会让用户误以为
    * 那是刚刚发生的。卡片执行后由 healEntity 写入，卡片重渲染读取。
    */
   readonly lastRemediationDiff: RemediationDiff | null;
@@ -411,7 +411,7 @@ export interface ClusterActions {
    * 【为何必须有这个入口】`healEntity` 会按 30 秒免疫窗口去重：同一目标
    * 30 秒内重复自愈会被转入退避队列而不是真正执行。自动路演若在 30 秒内
    * 连跑第二遍，第二遍的自愈全部会被免疫窗口吞掉，表现为"路演跑了但没自愈"。
-   * 修复前 Store 没有任何清除免疫表的入口，这正是"连跑两遍第二遍失败"的根因。
+   * 自愈前 Store 没有任何清除免疫表的入口，这正是"连跑两遍第二遍失败"的根因。
    */
   clearHealedPodIds: () => void;
   /**

@@ -262,9 +262,9 @@ const TICK_INTERVAL_MS = 120;
 const MCP_EXECUTE_ENDPOINT = '/api/mcp/execute';
 
 /**
- * 【P0-1 修复记录 · 受灾目标不再硬编码】
+ * 【P0-1 自愈记录 · 受灾目标不再硬编码】
  *
- * 修复前这里手写了两行：
+ * 自愈前这里手写了两行：
  *   `const OOM_TARGET_NODE_ID = 'node-worker-alpha'`
  *   `const NETWORK_TARGET_NODE_ID = 'node-worker-beta'`
  * 而引擎的事实是：OOM→rackIndex 1(node-worker-beta)、
@@ -279,7 +279,7 @@ const MCP_EXECUTE_ENDPOINT = '/api/mcp/execute';
  * 单次路演最多自愈的目标数。
  *
  * 【为什么是 3】三机架 × 每架 8 Pod 的布局下，一次演示修 3 个刚好能看清
- * "批量修复"的效果，又不至于让动画与日志淹没画面。阶段 2 的受害计数与
+ * "批量自愈"的效果，又不至于让动画与日志淹没画面。阶段 2 的受害计数与
  * 阶段 4 的自愈上限**必须共用本常量**，否则矩阵里两列数字会互相矛盾。
  */
 const MAX_HEAL_TARGETS = 3;
@@ -414,7 +414,7 @@ const OOM_PHASES: readonly DemoPhase[] = [
     index: 3,
     atMs: 26_000,
     badge: '阶段 4/4 · MCP 闭环自愈',
-    fallback: '已下发控制器调谐指令，演练结束并恢复稳态。',
+    fallback: '已下发控制器自愈指令，演练结束并恢复稳态。',
     template: (facts: DemoFacts): string => {
       /* 【关键】健康分只在两端都取到时才写成 A → B，否则不提数字 */
       const healthPart =
@@ -424,7 +424,7 @@ const OOM_PHASES: readonly DemoPhase[] = [
       const actionPart = facts.actionType === null ? '' : `（${facts.actionType}）`;
       const victimPart =
         facts.victimCount === null ? '异常容器' : `${facts.victimCount} 个异常容器`;
-      return `已下发控制器调谐指令${actionPart}，${victimPart}恢复 Running${healthPart}。`;
+      return `已下发控制器自愈指令${actionPart}，${victimPart}恢复 Running${healthPart}。`;
     },
   },
 ];
@@ -695,7 +695,7 @@ let lastInjectedChaos: ActiveChaosScenario | null = null;
  *
  * 【为何要单独存】"健康分 A → B"这个表述需要**阶段开始时**的值，
  * 但阶段 4 收尾时再读 store 已经拿到新值了。因此在进入阶段 4 的第一时间
- * 快照一次，收尾时再读一次，两者相减才是真实的修复增量。
+ * 快照一次，收尾时再读一次，两者相减才是真实的自愈增量。
  */
 let healHealthBaseline: number | null = null;
 
@@ -1050,7 +1050,7 @@ function resetToBaseline(): void {
 }
 
 /* ========================================================================== */
-/* 阶段动作（P0-1 / P0-2 / P0-3 修复版）                                        */
+/* 阶段动作（P0-1 / P0-2 / P0-3 自愈版）                                        */
 /* ========================================================================== */
 
 /**
@@ -1189,12 +1189,12 @@ function enterCruise(): void {
 }
 
 /**
- * 阶段 2：注入混沌 + 锁定**真实受灾**机架（P0-1 修复）。
+ * 阶段 2：注入混沌 + 锁定**真实受灾**机架（P0-1 自愈）。
  *
- * 【修复前】节点 ID 是手写字面量，且 OOM/网络两个剧本正好与引擎行为相反
+ * 【自愈前】节点 ID 是手写字面量，且 OOM/网络两个剧本正好与引擎行为相反
  * ——镜头锁定健康机架，同屏 AI 正文却写另一个节点名，当场自证矛盾。
  *
- * 【修复后】nodeId 来自 `CHAOS_TARGETS` 单一事实源；注入后**轮询断言**
+ * 【自愈后】nodeId 来自 `CHAOS_TARGETS` 单一事实源；注入后**轮询断言**
  * 该机架名下确实出现了异常 Pod，断言失败则旁白降级为"等待数据回传"，
  * 绝不宣称"已锁定告警机架"。
  *
@@ -1242,7 +1242,7 @@ function enterFaultAndLock(chaos: ActiveChaosScenario, label: string): void {
        * 【口径必须与阶段 4 一致】这里若用 99（"有多少算多少"），日志会打出
        * "命中 8 个受害容器"，而阶段 4 按设计最多自愈 3 个 —— 两列数字天然
        * 对不上，矩阵里看起来像"只修了 3/8"，其实是两个口径在打架。
-       * 统一用 MAX_HEAL_TARGETS，阶段 2 的"受害数"就等于"将要被修复的数量"。
+       * 统一用 MAX_HEAL_TARGETS，阶段 2 的"受害数"就等于"将要被自愈的数量"。
        */
       const resolved = resolveVictims(snapshot, chaos, MAX_HEAL_TARGETS);
       const nodeLabel =
@@ -1273,7 +1273,7 @@ function enterFaultAndLock(chaos: ActiveChaosScenario, label: string): void {
  * 导出失败（跨域/上下文丢失）不阻断流程——诊断仍可纯文本进行。
  *
  * 【追问 2：prompt 由 DemoFacts 渲染，不再是一段与现场无关的固定文本】
- * 修复前 prompt 是写死的常量字符串，AI 只能从 store 上下文里自己猜现场情况。
+ * 自愈前 prompt 是写死的常量字符串，AI 只能从 store 上下文里自己猜现场情况。
  * 现在改为传入**构造函数**，在阶段 3 真正触发的那一刻用当帧快照渲染出
  * 「受灾节点是 worker-beta、异常容器 3 个、场景 OOM 内存溢出、期望动作
  * restart_pod」这样的具体句子。好处有两个：
@@ -1351,16 +1351,16 @@ function buildDiagnosisPrompt(
 }
 
 /**
- * 阶段 4：MCP 闭环自愈（P0-2 / P0-3 修复）。
+ * 阶段 4：MCP 闭环自愈（P0-2 / P0-3 自愈）。
  *
- * 【修复 P0-2：受害者解析改为全局】
- * 修复前按"聚焦节点"过滤，一旦镜头锁错节点就解析不到受害者，
+ * 【自愈 P0-2：受害者解析改为全局】
+ * 自愈前按"聚焦节点"过滤，一旦镜头锁错节点就解析不到受害者，
  * 然后兜底对健康节点执行 drain_node —— 宣称闭环而实际一个没修。
  * 现在用 `resolveVictimPods` 从 P0 告警 + 全量非 Running Pod 里解析，
  * **不再按镜头过滤，也不再 drain_node 兜底**。
  *
- * 【修复 P0-3：HITL 走真实 UI】
- * 修复前直接调 healEntity，旁白说"MCP 闭环自愈完成"而动作卡仍是
+ * 【自愈 P0-3：HITL 走真实 UI】
+ * 自愈前直接调 healEntity，旁白说"MCP 闭环自愈完成"而动作卡仍是
  * "立即执行自愈方案"待点 —— 同一屏上"系统已替你执行"与"需要你确认"并存。
  * 现在：置 demoAutoConfirm → 等卡片挂载 → 勾选风险 → 点击真实按钮 → 等回执。
  * 卡片 8 秒内未挂载才降级为直接 healEntity，并在旁白中**如实说明**。
@@ -1476,7 +1476,7 @@ function enterHeal(label: string): void {
      *
      * 【职责划分】第一个受害者始终走**真实 HITL**（勾选 + 点击，这是护栏演示）；
      * 同批次的其余受害者由导演引擎按同一动作补齐——这在语义上等价于
-     * "运维人员确认了整批修复方案"，而不是绕过护栏。
+     * "运维人员确认了整批自愈方案"，而不是绕过护栏。
      */
     const healedAfterHitl = new Set(Object.keys(actions().healedPodIds));
     const remaining = victimIds.filter((victimId): boolean => !healedAfterHitl.has(victimId));
@@ -1549,7 +1549,7 @@ function enterHeal(label: string): void {
       setNarration(
         factNarration.length > 0
           ? factNarration
-          : `已下发控制器调谐指令（${podAction}），${coveredCount} 个异常容器恢复 Running，集群健康分 ${healthBefore} → ${healthAfter}。`,
+          : `已下发控制器自愈指令（${podAction}），${coveredCount} 个异常容器恢复 Running，集群健康分 ${healthBefore} → ${healthAfter}。`,
       );
       actions().appendTerminalLog(
         `[DEMO-DIRECTOR] 阶段 4/4 · 闭环校验通过：${coveredCount}/${victimIds.length} 个受害者已自愈`,
@@ -1630,7 +1630,7 @@ function repairMcpReceipt(
           const record = receipt as { executionId?: unknown; actionType?: unknown };
           const id = typeof record.executionId === 'string' ? record.executionId : '(unknown)';
           const act = typeof record.actionType === 'string' ? record.actionType : actionType;
-          return `MCP 回执 ${id} · ${act} 已完成控制器调谐`;
+          return `MCP 回执 ${id} · ${act} 已完成控制器自愈`;
         }
       }
       return 'MCP 响应结构不符合 JSON-RPC 回执契约';
@@ -1934,7 +1934,7 @@ function enterPhase(index: number): void {
 
   /*
    * 【阶段 4 健康分基线】必须在执行阶段动作**之前**采样：
-   * 动作会下发自愈、改 store，之后再读就不是"修复前"的值了。
+   * 动作会下发自愈、改 store，之后再读就不是"自愈前"的值了。
    */
   if (phase !== undefined && phase.index === script.phases.length - 1) {
     try {
@@ -2608,7 +2608,7 @@ export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user')
    *    与"已停止并复位"的日志直接矛盾；
    * 2. 清空 quickPromptTrigger：否则下次挂载抽屉时会把上一轮的诊断指令重放；
    * 3. 复位路演临时态：healedPodIds / pendingRemediations / 弹层 / 页签，
-   *    修复"30 秒内重复路演被免疫窗口吞掉"。
+   *    自愈"30 秒内重复路演被免疫窗口吞掉"。
    *
    * 顺序要求：必须在 status 置 idle 之前发起中止，因为中止链路会读当前状态。
    */

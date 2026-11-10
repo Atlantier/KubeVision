@@ -116,7 +116,7 @@ interface SimulatorTarget {
 /**
  * buildSteadyStateSnapshot —— 为「稳态巡检」构造一个**真实存在**的代表性采样对象。
  *
- * 【为什么需要：Bug 修复】
+ * 【为什么需要：Bug 自愈】
  * 稳态（无混沌、无异常 Pod）时 `resolveSimulatorTarget` 的 P1~P4 全部落空，
  * 返回 `{ pod: null }`。上游据此认为"无真实数据支撑"，于是**一张卡都不发**。
  * 结果：用户点 `CMD-01 全集群健康巡检`，Agent 洋洋洒洒写了一段"集群健康度 100 分，
@@ -487,7 +487,7 @@ const remediationSchema = z.object({
 const OPS_DOMAIN_KEYWORDS: readonly string[] = [
   '集群', '节点', 'pod', '容器', '机架', '拓扑', '命名空间', '服务', '部署',
   '故障', '异常', '告警', '错误', '报错', '风险', '水位', '监控', '日志',
-  '巡检', '诊断', '排查', '根因', '自愈', '修复', '重启', '驱逐', '扩容', '缩容',
+  '巡检', '诊断', '排查', '根因', '自愈', '自愈', '重启', '驱逐', '扩容', '缩容',
   '指标', '健康', '性能', '负载', '压力', '容量', '延迟', '吞吐', 'qps',
   '内存', 'cpu', '网络', '丢包', '带宽', '磁盘', 'io',
   'oom', 'oomkilled', 'crashloop', 'pending', 'running', 'evicted', 'drain',
@@ -504,7 +504,7 @@ const DIAGNOSIS_KEYWORDS: readonly string[] = [
 
 /** 明确要求执行自愈动作的关键词：最高优先级，直接进入 FAULT 路径 */
 const HEAL_ACTION_KEYWORDS: readonly string[] = [
-  '重启', '驱逐', '扩容', '缩容', '伸缩', '自愈', '修复', '恢复',
+  '重启', '驱逐', '扩容', '缩容', '伸缩', '自愈', '自愈', '恢复',
   '杀掉', '终止演练', '停止演练', 'restart', 'drain', 'scale', 'heal',
 ];
 
@@ -812,7 +812,7 @@ function buildIntentDirective(
         '',
         '【严禁事项】',
         '  · **严禁**调用 `renderRootCauseAnalysis`——集群无故障，虚构根因会误导用户。',
-        '  · **严禁**调用 `proposeRemediationAction`——没有任何故障需要修复，',
+        '  · **严禁**调用 `proposeRemediationAction`——没有任何故障需要自愈，',
         '    此时弹出高危「驱逐节点」确认卡属于严重的产品事故。',
         '  · 不要凭空声称存在异常；若确实发现水位偏高，如实描述但不下故障结论。',
         runbooks.length === 0
@@ -844,7 +844,7 @@ function buildIntentDirective(
         '【工具使用规则】',
         '  · renderPodMetrics：展示目标 Pod 的实时指标趋势。',
         '  · renderRootCauseAnalysis：完成根因分析后调用，必须填写证据链与置信度。',
-        '  · proposeRemediationAction：给出修复动作建议时调用（不会自动执行，需用户二次确认）。',
+        '  · proposeRemediationAction：给出自愈动作建议时调用（不会自动执行，需用户二次确认）。',
         '',
         '【执行顺序（必须完整执行，不可提前结束）】',
         '  第 1 步：先用 Markdown 输出诊断正文（结论 → 根因机制 → 处置建议），不少于 150 字。',
@@ -862,7 +862,7 @@ function buildIntentDirective(
         '    把建议渲染成可点击的确认卡片。',
         '',
         /**
-         * 【动作类型选择规则 —— 修复 drain_node 滥用】
+         * 【动作类型选择规则 —— 自愈 drain_node 滥用】
          *
          * 旧实现在任何场景下都可能产出 drain_node（驱逐节点），
          * 这是**最重的破坏性操作**，却成了默认选项。
@@ -1112,7 +1112,7 @@ async function streamWithLLM(params: {
     /**
      * 多模态：把图片**附加到最后一条 user 消息**上，而不是新加一条。
      *
-     * 【修复什么】旧实现无条件 `[...coreMessages, { role:'user', content:[图片描述] }]`，
+     * 【自愈什么】旧实现无条件 `[...coreMessages, { role:'user', content:[图片描述] }]`，
      * 于是模型看到的是**同一句话说了两遍**：
      *   user: "分析这个故障"        ← 前端已带的原始提问
      *   user: "这是当前 3D 视口快照" ← 新追加的一条
@@ -1254,7 +1254,7 @@ async function streamWithLLM(params: {
         /**
          * ================= 事件顺序：先校验，再发 tool-start =================
          *
-         * 【修复的 P0 缺陷】旧实现先发 `tool-start` 让前端挂骨架屏，
+         * 【自愈的 P0 缺陷】旧实现先发 `tool-start` 让前端挂骨架屏，
          * 再校验参数；一旦校验返回 null 就 `continue` 跳过 `tool-result`。
          * 结果是前端那个骨架屏**永久悬空**，同时 `emittedToolNames` 已在
          * tool-start 处登记过该工具，流尾的 emitMissingCards 认为"已产出"
@@ -2075,7 +2075,7 @@ async function streamWithSimulator(params: {
    * 正是"问候语也弹高危卡"的主要来源之一。
    */
   /*
-   * 【A1 修复：只补缺失的卡】账本里已经成功产出的工具名直接跳过。
+   * 【A1 自愈：只补缺失的卡】账本里已经成功产出的工具名直接跳过。
    * 场景：引擎 A 已发指标卡 → 根因卡阶段失败 → 回落引擎 B。
    * 旧实现 B 无条件重发三张，用户看到两张指标卡（重复）。
    * 现在 B 只看差集，理论上不会与 A 的产出重复。
@@ -2789,7 +2789,7 @@ export async function POST(request: Request): Promise<Response> {
 
           if (!ok) {
             /*
-             * 【A2 修复：先修孤儿，再回落】
+             * 【A2 自愈：先修孤儿，再回落】
              *
              * 引擎 A 可能已经发出若干 tool-start 后才失败。若直接回落，
              * 这些 start 永远等不到配对 result —— 前端就是"骨架屏永远转圈"。
@@ -2855,7 +2855,7 @@ export async function POST(request: Request): Promise<Response> {
         const message = error instanceof Error ? error.message : 'unknown error';
 
         /*
-         * 【A9 修复：结构化错误事件】
+         * 【A9 自愈：结构化错误事件】
          * 旧实现只往正文里追加一行 [ENGINE-ERROR] 文本，前端无法据此选择
          * 文案与重试动作，也拿不到 requestId 对日志。现在推一条 error 事件，
          * 分类 + requestId + 是否可重试；同时保留正文提示（兼容旧客户端）。
