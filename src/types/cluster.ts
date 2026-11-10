@@ -646,7 +646,24 @@ interface NodeSeedEntry {
   readonly rackIndex: RackIndex;
 }
 
-/** 3 个 Worker 机架节点种子（异构容量：alpha/beta 32C128G，gamma 16C64G） */
+/**
+ * 3 个 Worker 机架节点种子（异构容量：alpha/beta 32C128G，gamma 16C64G）。
+ *
+ * 【CPU/内存水位按"机架角色"差异化】三台节点不是复制品：
+ * - worker-alpha（compute，计算型）：CPU 44 / 内存 36 —— CPU 偏高、内存偏低；
+ * - worker-beta （memory，内存型） ：CPU 36 / 内存 48 —— 内存偏高、CPU 偏低；
+ * - worker-gamma（network，网络型）：CPU 40 / 内存 40 —— 两项居中。
+ *
+ * 【为什么种子水位就要体现角色】种子的水位是**稳态起点**：
+ * 若种子与角色基线不一致，开场前十几秒会出现一段"莫名其妙的下坡/上坡"
+ * （从种子值回归到基线）。让种子直接等于角色基线，稳态画面从第一帧起
+ * 就有可辨识的个性，也不会出现开场瞬移。
+ *
+ * 【与调参表的同步契约】这三个数值必须等于
+ * `src/constants/telemetryTuning.ts` 里 `NODE_ROLE_PROFILE` 的 cpu/mem。
+ * 该一致性由 `scripts/sim-drift.mjs` 在每次运行时校验（不一致直接报错），
+ * 避免两处手写数值悄悄漂移。
+ */
 const NODE_SEED_TABLE: readonly NodeSeedEntry[] = [
   {
     id: 'node-worker-alpha',
@@ -656,7 +673,7 @@ const NODE_SEED_TABLE: readonly NodeSeedEntry[] = [
     cpuCapacity: 32,
     memCapacity: 128,
     cpuUsage: 44,
-    memUsage: 57,
+    memUsage: 36,
     networkMbps: 386.4,
     rackIndex: 0,
   },
@@ -667,8 +684,8 @@ const NODE_SEED_TABLE: readonly NodeSeedEntry[] = [
     status: 'Ready',
     cpuCapacity: 32,
     memCapacity: 128,
-    cpuUsage: 39,
-    memUsage: 62,
+    cpuUsage: 36,
+    memUsage: 48,
     networkMbps: 291.7,
     rackIndex: 1,
   },
@@ -679,8 +696,8 @@ const NODE_SEED_TABLE: readonly NodeSeedEntry[] = [
     status: 'Ready',
     cpuCapacity: 16,
     memCapacity: 64,
-    cpuUsage: 35,
-    memUsage: 52,
+    cpuUsage: 40,
+    memUsage: 40,
     networkMbps: 164.2,
     rackIndex: 2,
   },
