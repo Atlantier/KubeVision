@@ -54,7 +54,7 @@ import type { DemoFacts } from '@/types/demo';
 export type DemoDirectorStatus = 'idle' | 'running' | 'paused' | 'finished';
 
 /** 内置剧本标识 */
-export type DemoScriptId = 'oom-autofix' | 'network-latency-trace';
+export type DemoScriptId = 'oom-autofix' | 'network-latency-trace' | 'cpu-spike-autofix';
 
 /**
  * 单个剧本阶段（纯数据）。
@@ -139,6 +139,15 @@ const MCP_EXECUTE_ENDPOINT = '/api/mcp/execute';
  *
  * 现在统一从 `utils/chaosTargets.ts` 的单一事实源取，本文件不再出现节点字面量。
  */
+
+/**
+ * 单次路演最多自愈的目标数。
+ *
+ * 【为什么是 3】三机架 × 每架 8 Pod 的布局下，一次演示修 3 个刚好能看清
+ * "批量修复"的效果，又不至于让动画与日志淹没画面。阶段 2 的受害计数与
+ * 阶段 4 的自愈上限**必须共用本常量**，否则矩阵里两列数字会互相矛盾。
+ */
+const MAX_HEAL_TARGETS = 3;
 
 /** 阶段 2 注入后等待数据回传并断言"该机架确实出现异常 Pod"的超时上限 */
 const FAULT_VERIFY_TIMEOUT_MS = 2_000;
@@ -306,6 +315,76 @@ const NETWORK_PHASES: readonly DemoPhase[] = [
   },
 ];
 
+/**
+ * 剧本 3：节点 CPU 尖刺的算力定位与扩缩容恢复（约 34 秒）。
+ *
+ * 【与前两套剧本的差异】这是**资源争抢型**故障，不是崩溃型：
+ * `syntheticEngine.evolvePodCpuSpike` 刻意保持 Pod 状态为 Running，只把
+ * CPU 推到 92~99%（见 syntheticEngine.ts:437 注释）。因此
+ *   · 阶段 2 不能说"容器崩溃"，只能说"算力被争抢"；
+ *   · 阶段 4 的自愈动作是 `scale_deployment`（扩缩容分摊），
+ *     而不是 restart_pod（重启只会让新容器继续被挤占）。
+ * 这条剧本的存在本身就是"引擎三种故障域都能被完整演示"的证据。
+ */
+const CPU_PHASES: readonly DemoPhase[] = [
+  {
+    index: 0,
+    atMs: 0,
+    badge: '阶段 1/4 · 全景稳态巡航',
+    fallback: 'KubeVision AI 正在实时监控刀片机柜与容器实例，集群运行平稳。',
+    template: (facts: DemoFacts): string => {
+      const podPart =
+        facts.runningPods === null || facts.totalPods === null
+          ? ''
+          : `${facts.runningPods} / ${facts.totalPods} 个容器处于 Running`;
+      return podPart.length === 0
+        ? 'KubeVision AI 全景巡航：集群运行平稳。'
+        : `KubeVision AI 全景巡航：${podPart}。`;
+    },
+  },
+  {
+    index: 1,
+    atMs: 5_000,
+    badge: '阶段 2/4 · 节点算力尖刺与热点锁定',
+    fallback: '节点出现算力争抢，正在校验热点容器与节点负载回传。',
+    template: (facts: DemoFacts): string => {
+      /*
+       * 【措辞纪律】不能用"容器崩溃"——本场景 Pod 状态仍为 Running，
+       * 说崩溃就是与画面矛盾。只能用"算力被争抢 / CPU 被推高"。
+       */
+      const victimPart =
+        facts.victimCount === null ? '' : `检测到 ${facts.victimCount} 个容器算力被争抢`;
+      const nodePart = facts.nodeName === null ? '' : `，3D 镜头已锁定受灾机架 ${facts.nodeName}`;
+      if (victimPart.length === 0) return '';
+      return `${victimPart}${nodePart}！`;
+    },
+  },
+  {
+    index: 2,
+    atMs: 11_000,
+    badge: '阶段 3/4 · 节点算力瓶颈定位',
+    fallback: 'AI 运维副驾正在比对节点负载与容器 CPU 分布，定位算力瓶颈...',
+    template: (facts: DemoFacts): string => {
+      const nodePart = facts.nodeName === null ? '' : `受灾机架 ${facts.nodeName} 的`;
+      return `AI 运维副驾正在比对节点负载与容器 CPU 分布，定位${nodePart}算力瓶颈并生成扩缩容方案...`;
+    },
+  },
+  {
+    index: 3,
+    atMs: 26_000,
+    badge: '阶段 4/4 · 扩缩容自愈与算力恢复',
+    fallback: '已下发扩缩容指令，演练结束并恢复稳态。',
+    template: (facts: DemoFacts): string => {
+      const actionPart = facts.actionType === null ? '' : `（${facts.actionType}）`;
+      const healthPart =
+        facts.healthBefore === null || facts.healthAfter === null
+          ? ''
+          : `，集群健康分 ${facts.healthBefore} → ${facts.healthAfter}`;
+      return `已下发扩缩容指令${actionPart}，节点算力回落基线${healthPart}。`;
+    },
+  },
+];
+
 /** 内置剧本清单（顺序即菜单顺序） */
 export const DEMO_SCRIPTS: readonly DemoScript[] = [
   {
@@ -321,6 +400,13 @@ export const DEMO_SCRIPTS: readonly DemoScript[] = [
     title: 'CNI 跨节点网络延迟追踪与自愈闭环',
     durationMs: 32_000,
     phases: NETWORK_PHASES,
+  },
+  {
+    id: 'cpu-spike-autofix',
+    label: '节点 CPU 尖刺扩缩容',
+    title: '节点 CPU 算力尖刺定位与扩缩容自愈闭环',
+    durationMs: 34_000,
+    phases: CPU_PHASES,
   },
 ];
 
@@ -412,8 +498,13 @@ function collectDemoFacts(scenario: ActiveChaosScenario | null): DemoFacts {
       : snapshot.nodes.find((node): boolean => node.id === nodeId);
   const nodeName = nodeEntity === undefined ? null : nodeEntity.name;
 
+  /*
+   * 【口径必须与阶段 2/4 一致】这里若用 99 会得到"本机架全部热点 Pod"（如 8），
+   * 而阶段 2 日志与阶段 4 自愈都用 MAX_HEAL_TARGETS（3），于是提示词里写
+   * "异常容器 8 个"、字幕与回执却是 3 —— 同一场演示内自相矛盾。
+   */
   const victimCount =
-    scenario === null ? null : resolveVictims(snapshot, scenario, 99).podIds.length;
+    scenario === null ? null : resolveVictims(snapshot, scenario, MAX_HEAL_TARGETS).podIds.length;
 
   const actionType =
     scenario === null ? null : resolvePodAction(scenario);
@@ -802,14 +893,20 @@ function enterFaultAndLock(chaos: ActiveChaosScenario, label: string): void {
     if (generation !== runGeneration) return;
     if (verified) {
       const snapshot = actions().snapshotSummary;
-      const resolved = resolveVictims(snapshot, chaos, 99);
+      /*
+       * 【口径必须与阶段 4 一致】这里若用 99（"有多少算多少"），日志会打出
+       * "命中 8 个受害容器"，而阶段 4 按设计最多自愈 3 个 —— 两列数字天然
+       * 对不上，矩阵里看起来像"只修了 3/8"，其实是两个口径在打架。
+       * 统一用 MAX_HEAL_TARGETS，阶段 2 的"受害数"就等于"将要被修复的数量"。
+       */
+      const resolved = resolveVictims(snapshot, chaos, MAX_HEAL_TARGETS);
       const nodeLabel =
         snapshot.nodes.find((node): boolean => node.id === target.nodeId)?.name ?? target.nodeId;
       setNarration(
         `检测到 ${resolved.podIds.length} 个容器触发 ${target.expectedPodStatus}（${target.label}），3D 镜头已锁定受灾机架 ${nodeLabel}！`,
       );
       actions().appendTerminalLog(
-        `[DEMO-DIRECTOR] 受灾校验通过：${target.nodeId} 名下 ${resolved.podIds.length} 个异常 Pod`,
+        `[DEMO-DIRECTOR] 受灾校验通过：${target.nodeId} 命中 ${resolved.podIds.length} 个受害容器`,
       );
     } else {
       /* 如实降级：不宣称已锁定告警机架 */
@@ -817,7 +914,7 @@ function enterFaultAndLock(chaos: ActiveChaosScenario, label: string): void {
         '已注入故障，正在等待数据回传（本环境未在预期时间内收到异常事件）。',
       );
       actions().appendTerminalLog(
-        `[DEMO-DIRECTOR] 受灾校验超时：${target.nodeId} 名下未观察到异常 Pod，旁白已降级`,
+        `[DEMO-DIRECTOR] 受灾校验超时：${target.nodeId} 命中 0 个受害容器，旁白已降级`,
       );
     }
   });
@@ -830,10 +927,21 @@ function enterFaultAndLock(chaos: ActiveChaosScenario, label: string): void {
  * 若画布可导出 dataUrl，就写入 capturedViewportDataUrl，让 AI 拿到真实画面。
  * 导出失败（跨域/上下文丢失）不阻断流程——诊断仍可纯文本进行。
  *
- * @param prompt 送入副驾的诊断提示词
- * @param label  终端日志前缀
+ * 【追问 2：prompt 由 DemoFacts 渲染，不再是一段与现场无关的固定文本】
+ * 修复前 prompt 是写死的常量字符串，AI 只能从 store 上下文里自己猜现场情况。
+ * 现在改为传入**构造函数**，在阶段 3 真正触发的那一刻用当帧快照渲染出
+ * 「受灾节点是 worker-beta、异常容器 3 个、场景 OOM 内存溢出、期望动作
+ * restart_pod」这样的具体句子。好处有两个：
+ *   1. AI 的正文会明确复述同一个宿主节点，**与 HUD 选中节点可被机器比对**；
+ *   2. 事实变化（不同剧本/不同快照）时 prompt 自动跟随，不需要改代码。
+ *
+ * @param buildPrompt 由事实渲染诊断提示词的纯函数
+ * @param label       终端日志前缀
  */
-function enterAiDiagnosis(prompt: string, label: string): void {
+function enterAiDiagnosis(
+  buildPrompt: (facts: DemoFacts) => string,
+  label: string,
+): void {
   const api = actions();
 
   /* ---- 多模态快照（尽力而为，失败静默降级） ---- */
@@ -849,8 +957,42 @@ function enterAiDiagnosis(prompt: string, label: string): void {
     }
   }
 
+  /*
+   * 【为何在这里才渲染】collectDemoFacts 读的是当帧快照：阶段 2 注入的故障
+   * 此刻已经回传（异常 Pod、告警、选中节点都已就位），渲染出的节点名与数量
+   * 才与 HUD 完全一致。若在剧本定义时就渲染，会拿到注入前的空快照。
+   */
+  const facts = collectDemoFacts(lastInjectedChaos);
+  const prompt = buildDiagnosisPrompt(buildPrompt, facts);
   api.triggerQuickPrompt(prompt);
   api.appendTerminalLog(`[DEMO-DIRECTOR] ${label} · 已唤醒 AI 运维副驾`);
+  api.appendTerminalLog(`[DEMO-DIRECTOR] 诊断提示词：${prompt}`);
+}
+
+/**
+ * buildDiagnosisPrompt —— 把事实拼进诊断提示词。
+ *
+ * 【设计原则】与旁白模板同一套纪律：**取不到的字段整句省略**，
+ * 绝不用 0 或占位符填充。AI 拿到的是一段"只说知道的事"的提示词，
+ * 它复述出来的宿主节点才有可能与画面一致。
+ *
+ * @param buildPrompt 剧本提供的症状描述函数
+ * @param facts       当帧事实
+ * @returns 完整提示词
+ */
+function buildDiagnosisPrompt(
+  buildPrompt: (facts: DemoFacts) => string,
+  facts: DemoFacts,
+): string {
+  const symptom = buildPrompt(facts);
+
+  const parts: string[] = [symptom];
+  if (facts.nodeName !== null) parts.push(`受灾节点 ${facts.nodeName}`);
+  if (facts.victimCount !== null) parts.push(`异常容器 ${facts.victimCount} 个`);
+  if (facts.chaosLabel !== null) parts.push(`演练场景 ${facts.chaosLabel}`);
+  if (facts.actionType !== null) parts.push(`期望自愈动作 ${facts.actionType}`);
+
+  return `${parts.join('，')}。请结合 RAG 知识库定位根因并生成 MCP 自愈方案。`;
 }
 
 /**
@@ -879,7 +1021,7 @@ function enterHeal(label: string): void {
   /* ---- 1. 解析真实受害 Pod（场景事实驱动，不按镜头过滤） ---- */
   const snapshot = api.snapshotSummary;
   const chaosScenario: ActiveChaosScenario = chaos ?? 'POD_OOM_SWARM';
-  const resolved = resolveVictims(snapshot, chaosScenario, 3);
+  const resolved = resolveVictims(snapshot, chaosScenario, MAX_HEAL_TARGETS);
   /*
    * 【优先使用动作卡声明的 target】若 AI 已水合出 ActionConfirm，它声明的目标
    * 就是"AI 认为要修的东西"。当它与解析结果不一致时以卡片为准——因为
@@ -917,6 +1059,16 @@ function enterHeal(label: string): void {
     api.appendTerminalLog('[DEMO-DIRECTOR] 阶段 4/4 · 无受害 Pod，已终止演练并如实降级旁白');
     return;
   }
+
+  /*
+   * 【可机器解析的"本次目标"】阶段 2 的受害计数与阶段 4 的实际目标可能不同：
+   * 合成引擎的 Pod 状态是持续演进的，从阶段 2 校验到阶段 4 开场之间
+   * （约 20 秒）可能有 Pod 自行恢复。矩阵必须比较"阶段 4 实际瞄准了几个"
+   * 与"实际修好几个"，而不是拿 20 秒前的数字去对。
+   */
+  api.appendTerminalLog(
+    `[DEMO-DIRECTOR] 阶段 4/4 · 目标受害者 ${victimIds.length} 个`,
+  );
 
   const primaryId = victimIds[0];
   const primaryPod = snapshot.pods.find((pod): boolean => pod.id === primaryId);
@@ -1134,7 +1286,7 @@ const PHASE_ACTIONS: Readonly<Record<DemoScriptId, readonly (() => void)[]>> = {
     (): void => enterFaultAndLock('POD_OOM_SWARM', '阶段 2/4'),
     (): void =>
       enterAiDiagnosis(
-        '检测到集群发生 OOMKilled 内存溢出告警，请结合 RAG 知识库定位根因并生成 MCP 自愈方案。',
+        (): string => '检测到集群发生 OOMKilled 内存溢出告警',
         '阶段 3/4',
       ),
     (): void => enterHeal('阶段 4/4'),
@@ -1144,7 +1296,17 @@ const PHASE_ACTIONS: Readonly<Record<DemoScriptId, readonly (() => void)[]>> = {
     (): void => enterFaultAndLock('NET_PACKET_LOSS', '阶段 2/4'),
     (): void =>
       enterAiDiagnosis(
-        '检测到跨节点网络延迟与丢包，请结合 RAG 知识库定位 CNI VXLAN 隧道瓶颈并生成 MCP 自愈方案。',
+        (): string => '检测到跨节点网络延迟与丢包，疑似 CNI VXLAN 隧道瓶颈',
+        '阶段 3/4',
+      ),
+    (): void => enterHeal('阶段 4/4'),
+  ],
+  'cpu-spike-autofix': [
+    enterCruise,
+    (): void => enterFaultAndLock('NODE_CPU_SPIKE', '阶段 2/4'),
+    (): void =>
+      enterAiDiagnosis(
+        (): string => '检测到节点 CPU 利用率持续高位，容器算力被争抢',
         '阶段 3/4',
       ),
     (): void => enterHeal('阶段 4/4'),

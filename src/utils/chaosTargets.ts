@@ -91,7 +91,7 @@ export function resolveNodeIdByRack(rackIndex: number): string {
  * 【修复的 P0-1】修复前 `demoDirector` 把 OOM 锁到 alpha、网络锁到 beta，
  * 正好与引擎行为相反——镜头会停在健康机架上，而 AI 正文却说故障在另一台。
  */
-export const CHAOS_TARGETS: Readonly<Record<ActiveChaosScenario, ChaosTarget>> = {
+export const CHAOS_TARGETS = {
   POD_OOM_SWARM: {
     rackIndex: OOM_RACK_INDEX,
     nodeId: resolveNodeIdByRack(OOM_RACK_INDEX),
@@ -113,18 +113,54 @@ export const CHAOS_TARGETS: Readonly<Record<ActiveChaosScenario, ChaosTarget>> =
     remediationAction: CHAOS_REMEDIATION_ACTION.NET_PACKET_LOSS,
     label: 'CNI 网络丢包',
   },
-};
+} as const satisfies Readonly<Record<ActiveChaosScenario, ChaosTarget>>;
 
 /**
- * getChaosTarget —— 安全读取某场景的受灾目标。
+ * assertNeverScenario —— 穷举兜底：把"漏配映射"从运行期事故变成编译期错误。
+ *
+ * 【为什么参数类型是 `never`】这是 TypeScript 判别联合穷举的标准技巧。
+ * 只要 `switch` 把 `ChaosScenario` 的每个成员都显式分支了，`default` 分支里
+ * `scenario` 会被收窄成 `never`，因此能传入本函数。
+ *
+ * 【如果新增了场景却忘记配映射会怎样】
+ *   1. 首先 `CHAOS_TARGETS` 的 `satisfies Record<ActiveChaosScenario, …>`
+ *      会直接报"缺少属性 xxx"，把问题拦在映射表本身；
+ *   2. 即便有人绕过第 1 层（比如给 Record 加索引签名），这里的 `default`
+ *      分支中 `scenario` 就不再是 `never`，实参类型与形参 `never` 不兼容，
+ *      tsc 同样报错。
+ * 两层保护保证：**新增 ChaosScenario 而不配映射，编译直接失败**，
+ * 不会等到路演现场才发现某场景的镜头锁定了错误的机架。
+ *
+ * @param scenario 理论上的不可达值（类型为 never）
+ * @throws Error 运行期真的走到这里（说明类型断言被绕过）
+ */
+function assertNeverScenario(scenario: never): never {
+  throw new Error(`[chaosTargets] 未处理的混沌场景: ${String(scenario)}`);
+}
+
+/**
+ * getChaosTarget —— 穷举式读取某场景的受灾目标。
+ *
+ * 【为何改成 switch 而非索引访问】索引访问 `CHAOS_TARGETS[scenario]` 在新增
+ * 场景时会静默返回 undefined（运行期才炸），而 switch + never 兜底把它变成
+ * 编译期错误。这是一次"用啰嗦换安全"的刻意取舍。
  *
  * @param scenario 混沌场景（'NONE' 返回 null）
- * @returns 受灾目标；'NONE' 或未知场景返回 null
+ * @returns 受灾目标；'NONE' 返回 null
  */
 export function getChaosTarget(scenario: ChaosScenario): ChaosTarget | null {
-  if (scenario === 'NONE') return null;
-  const target = CHAOS_TARGETS[scenario];
-  return target === undefined ? null : target;
+  switch (scenario) {
+    case 'NONE':
+      return null;
+    case 'POD_OOM_SWARM':
+      return CHAOS_TARGETS.POD_OOM_SWARM;
+    case 'NODE_CPU_SPIKE':
+      return CHAOS_TARGETS.NODE_CPU_SPIKE;
+    case 'NET_PACKET_LOSS':
+      return CHAOS_TARGETS.NET_PACKET_LOSS;
+    default:
+      return assertNeverScenario(scenario);
+  }
 }
 
 /* isActionAllowedForPod 的实现收敛在 chaosFacts（跨端纯函数），此处再导出 */
@@ -226,8 +262,37 @@ export function resolveVictims(
     if (picked.length >= maxVictims) break;
     picked.push(id);
   }
+if (picked.length > 0) return { podIds: picked, nodeId };
 
-  return { podIds: picked, nodeId };
+  /*
+   * ---- 第 3 段：资源争抢型故障（NODE_CPU_SPIKE）的"热点 Pod" ----
+   *
+   * 【为什么需要这一段】syntheticEngine.evolvePodCpuSpike 刻意把 Pod 状态
+   * 保持为 Running（见 syntheticEngine.ts:437 的注释：“Pod 本身没崩，只是被
+   * 挤占资源”）。因此 CPU 尖刺场景下**不存在状态异常的 Pod**，前两段必然
+   * 返回空数组，阶段 4 只能降级成"未捕获到可自愈的异常容器"。
+   *
+   * 但对 CPU 争抢而言，正确的自愈对象恰恰是**占用最高的那几个 Pod**：
+   * 对它们的 Deployment 扩缩容（scale_deployment）才能把负载分摊出去。
+   * 所以这里按 cpuUsage 降序取本机架的热点 Pod 作为受害者。
+   *
+   * 【为什么只在"前两段为空"时启用】有真正崩溃的 Pod 时，它们永远优先——
+   * 崩溃比"忙"严重得多，不能被热点排序挤掉。
+   *
+   * 【排序稳定性】先按 cpuUsage 降序，相等时按 id 升序兜底，保证同一快照
+   * 多次调用得到同一结果。
+   */
+  const hotOnTargetRack = snapshot.pods
+    .filter((pod): boolean => pod.nodeId === nodeId)
+    .slice()
+    .sort((a, b): number => {
+      if (b.cpuUsage !== a.cpuUsage) return b.cpuUsage - a.cpuUsage;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    })
+    .slice(0, maxVictims)
+    .map((pod): string => pod.id);
+
+  return { podIds: hotOnTargetRack, nodeId };
 }
 
 /**

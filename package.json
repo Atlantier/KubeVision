@@ -19,6 +19,8 @@
     "verify:quick": "node scripts/verify.mjs --quick",
     "verify:stream": "node scripts/verify-stream-integrity.mjs",
     "verify:demo": "node scripts/verify-demo.mjs",
+    "verify:demo-facts": "node scripts/verify-demo-facts.mjs",
+    "verify:demo-matrix": "node scripts/verify-demo-matrix.mjs",
     "benchmark": "node scripts/benchmark.mjs",
     "shot": "node scripts/shot.mjs",
     "probe:blackout": "node scripts/probe-blackout.mjs",

@@ -38,13 +38,11 @@ export type ChaosRemediationAction = 'restart_pod' | 'scale_deployment' | 'drain
  * 和"OOM 内存溢出"都可能弹出一张红色驱逐卡——代价最大的动作被用在了
  * 最不需要它的场景上。
  */
-export const CHAOS_REMEDIATION_ACTION: Readonly<
-  Record<ActiveChaosScenario, ChaosRemediationAction>
-> = {
+export const CHAOS_REMEDIATION_ACTION = {
   POD_OOM_SWARM: 'restart_pod',
   NODE_CPU_SPIKE: 'scale_deployment',
   NET_PACKET_LOSS: 'drain_node',
-};
+} as const satisfies Readonly<Record<ActiveChaosScenario, ChaosRemediationAction>>;
 
 /**
  * isActionAllowedForPod —— Pod 粒度自愈的动作白名单。
