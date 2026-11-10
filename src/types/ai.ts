@@ -160,6 +160,13 @@ export interface AgentReasoningStep {
   readonly mcpUri?: string;
   /** 本步骤耗时（毫秒） */
   readonly latencyMs: number;
+  /**
+   * R35：该步骤是否为"模拟编排值"（仅引擎 B 的编排相位为 true）。
+   *
+   * 【为什么需要】引擎 B（simulator）的耗时是编排节拍，不是真实推理耗时；
+   * 前端必须能区分"实测"与"模拟节拍"，不得把编排值当实测值展示。
+   */
+  readonly sim?: boolean;
 }
 
 /* ========================================================================== */
@@ -481,7 +488,38 @@ export interface ChatStreamDoneEvent {
  * TextDecoder 按 '\n' 切分（跨 chunk 半行缓冲），JSON.parse 后以
  * event.type 做 switch 窄化，穷举五个分支即可安全消费。
  */
+/** R35：单条链路 span 事件（服务端 agentTrace 产出，前端画瀑布图） */
+export interface SpanStreamEvent {
+  readonly type: 'span';
+  readonly traceId: string;
+  readonly name: string;
+  readonly startMs: number;
+  readonly durationMs: number;
+  readonly status: 'ok' | 'error';
+  readonly attrs?: Readonly<Record<string, string | number | boolean | null>>;
+}
+
+/**
+ * R35：一次请求的 trace 汇总事件。
+ *
+ * 【engine 契约】engine='llm' 时 token/成本来自 AI SDK usage；
+ * engine='simulator' 时 ttft/total 由服务端真实计时，token/成本不填——
+ * 绝不冒充 LLM 的用量或价格。
+ */
+export interface TraceSummaryStreamEvent {
+  readonly type: 'trace-summary';
+  readonly traceId: string;
+  readonly engine: 'llm' | 'simulator';
+  readonly ttftMs: number;
+  readonly totalMs: number;
+  readonly promptTokens?: number;
+  readonly completionTokens?: number;
+  readonly costCny?: number;
+}
+
 export type ChatStreamEvent =
+  | SpanStreamEvent
+  | TraceSummaryStreamEvent
   | ChatStreamReasoningEvent
   | ChatStreamTextEvent
   | ChatStreamToolStartEvent

@@ -38,6 +38,7 @@
 
 import { createOpenAI } from '@ai-sdk/openai';
 import { streamText, tool, type CoreMessage } from 'ai';
+import { createTrace, elapsedMs, endSpan, startSpan } from '@/utils/agentTrace';
 import { z } from 'zod';
 
 import type {
@@ -2554,9 +2555,18 @@ export async function POST(request: Request): Promise<Response> {
     async start(controller): Promise<void> {
       controllerRef = controller;
 
+      /** R35：本次请求的 trace（服务端 performance.now 计时） */
+      const trace = createTrace();
+      /** 第一个 token/推理步骤到达时刻（用于 TTFT） */
+      let firstEventAt: number | null = null;
+      const requestSpan = startSpan(trace, 'intent-route');
+
       /** 单帧写入（带状态锁与异常兜底） */
       const emit = (event: ChatStreamEvent): void => {
         if (isClosed) return;
+        if (firstEventAt === null && event.type === 'text') {
+          firstEventAt = performance.now();
+        }
         try {
           controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
         } catch {
@@ -2844,6 +2854,24 @@ export async function POST(request: Request): Promise<Response> {
             ledger,
           });
         }
+
+        /* ---- R35：先发 span + trace-summary，再发 done（顺序保证 verify 可断言） ---- */
+        const endedEngine = useLLM ? 'llm' : 'simulator';
+        const requestEnded = endSpan(requestSpan, {
+          status: 'ok',
+          attrs: { engine: endedEngine, coarse: true },
+        });
+        emit({ type: 'span', ...requestEnded });
+        emit({
+          type: 'trace-summary',
+          traceId: trace.traceId,
+          engine: endedEngine,
+          ttftMs:
+            firstEventAt === null
+              ? elapsedMs(trace)
+              : Math.round((firstEventAt - trace.startedAt) * 100) / 100,
+          totalMs: elapsedMs(trace),
+        });
 
         /* ---- A8：流末必有 done（前端不再靠 socket 关闭判断结束） ---- */
         emit({ type: 'done', requestId, engine: useLLM ? 'llm' : 'simulator' });

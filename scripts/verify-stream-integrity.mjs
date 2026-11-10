@@ -252,6 +252,19 @@ for (const scenario of SCENARIOS) {
     for (const v of violations.slice(0, 5)) console.log(`      [${v.kind}] ${v.detail}`);
   }
 
+  /* ---- 断言 0b（R35）：trace-summary 必达且 engine 与实际一致 ---- */
+  const traceSummaries = events.filter((e) => e.type === 'trace-summary');
+  const spans = events.filter((e) => e.type === 'span');
+  if (traceSummaries.length >= 1 && traceSummaries.some((e) => e.engine === engine)) {
+    const sample = traceSummaries[traceSummaries.length - 1];
+    console.log(`  ✓ trace-summary 必达且 engine 一致（engine=${sample.engine} ttft=${sample.ttftMs}ms total=${sample.totalMs}ms spans=${spans.length}）`);
+    console.log(`    [trace-summary 样例] ${JSON.stringify(sample)}`);
+    for (const span of spans.slice(0, 4)) console.log(`    [span 样例] ${JSON.stringify(span)}`);
+  } else {
+    failures += 1;
+    console.log(`  ✗ trace-summary 缺失或 engine 不一致（实际 engine=${engine ?? '(none)'} summaries=${traceSummaries.length}）`);
+  }
+
   /* ---- 断言 1（核心）：无孤儿 tool-start ---- */
   if (orphanStarts.length === 0) {
     console.log('  ✓ 无孤儿 tool-start（每个 start 都有配对 result）');
