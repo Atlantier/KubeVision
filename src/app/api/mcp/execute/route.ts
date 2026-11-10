@@ -63,6 +63,17 @@ interface McpExecuteRequest {
   readonly actionType?: unknown;
   readonly targetId?: unknown;
   readonly targetName?: unknown;
+  /**
+   * 目标命名空间。
+   *
+   * 【B2 修复：不得写死 'default'】旧实现把 namespace 硬编码在 REST 路径里，
+   * 对 live 集群执行时会去删 default 命名空间的同名 Pod——轻则 404，
+   * 重则删错资源。现在由前端传入（来自集群快照里该 Pod 的真实 namespace），
+   * 真实集群模式下缺失直接拒绝，绝不猜测。
+   */
+  readonly namespace?: unknown;
+  /** 期望副本数（仅 scale_deployment 使用；回执命令与实际 PATCH 必须一致） */
+  readonly replicas?: unknown;
   readonly clusterMode?: unknown;
 }
 
@@ -101,7 +112,11 @@ interface JsonRpcFailure {
   readonly error: {
     readonly code: number;
     readonly message: string;
-    readonly data?: string;
+    /**
+     * 附加数据。字符串用于自由说明；对象用于结构化标注（如 httpStatus）——
+     * B2 要求上游非 2xx 时必须把 HTTP 状态码带进 JSON-RPC error。
+     */
+    readonly data?: unknown;
   };
 }
 
@@ -138,9 +153,29 @@ function compactId(): string {
  * @param targetName 目标实体展示名
  * @returns 单行 kubectl 命令
  */
-function buildKubectlCommand(actionType: McpActionType, targetName: string): string {
+function buildKubectlCommand(
+  actionType: McpActionType,
+  targetName: string,
+  namespace = 'default',
+  replicas = 2,
+): string {
+  /*
+   * 【B2 修复：回执命令必须与实际执行一致】
+   *
+   * 旧实现的 restart_pod 实际发的是 `DELETE /api/v1/namespaces/default/pods/{name}`，
+   * 回执却写 `kubectl rollout restart deployment/{name}`——前者只重启单个 Pod，
+   * 后者滚动重启整个 Deployment，影响面完全不同。运维照回执复核会得出错误结论。
+   *
+   * 现在：
+   * - restart_pod  → kubectl delete pod（与 DELETE 资源逐字对应）；
+   * - scale        → --replicas 使用实际 PATCH 的值（不再是含糊的 +1）；
+   * - drain_node   → cordon（本端点确实只做 cordon）。
+   */
+  if (actionType === 'restart_pod') {
+    return `kubectl delete pod/${targetName} -n ${namespace} --wait=false`;
+  }
   if (actionType === 'scale_deployment') {
-    return `kubectl scale deployment/${targetName} --replicas=+1`;
+    return `kubectl scale deployment/${targetName} -n ${namespace} --replicas=${replicas}`;
   }
   if (actionType === 'drain_node') {
     /**
@@ -171,6 +206,23 @@ async function sha256Hex(payload: string): Promise<string> {
     .map((byte): string => byte.toString(16).padStart(2, '0'))
     .join('');
   return hex.slice(0, 16);
+}
+
+/**
+ * K8sHttpError —— 携带上游 HTTP 状态码的执行错误。
+ *
+ * 【B2 要求】真实集群返回 404/409/403 时，JSON-RPC error 里必须能读到
+ * httpStatus，前端与日志才能区分"目标不存在"与"权限不足"。
+ * 只抛 message 字符串会把这个信息丢掉。
+ */
+class K8sHttpError extends Error {
+  readonly httpStatus: number;
+
+  constructor(httpStatus: number, action: string) {
+    super(`K8s ${action} returned HTTP ${httpStatus}`);
+    this.name = 'K8sHttpError';
+    this.httpStatus = httpStatus;
+  }
 }
 
 /**
@@ -266,6 +318,8 @@ async function executeAgainstRealCluster(
   actionType: McpActionType,
   targetId: string,
   targetName: string,
+  namespace: string,
+  replicas: number,
 ): Promise<string> {
   if (actionType === 'restart_pod') {
     /**
@@ -277,26 +331,34 @@ async function executeAgainstRealCluster(
     const { status } = await callK8sApi(
       config.server,
       config.token,
-      `/api/v1/namespaces/default/pods/${encodeURIComponent(targetName)}`,
+      `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(targetName)}`,
       'DELETE',
     );
-    /* 200/202 表示已受理；404 表示目标已不存在——后者对重启而言也算达成目的 */
-    if (status === 404) return 'pod already absent (equivalent to restarted)';
+    /*
+     * 【B2 修复：404 / 409 不得当成功】
+     *
+     * 旧实现把 404 解释成"Pod 已不存在，等价于已重启"并返回成功。
+     * 但 404 也可能意味着 namespace/名字拼错、RBAC 过滤后不可见、
+     * 或目标根本不是 Pod——把它当成功会让用户以为动作生效了。
+     * 409 同理（冲突/禁止删除）必须如实上报。
+     * 只有 2xx 才是"API Server 已受理"。
+     */
     if (status >= 200 && status < 300) return 'pod deletion accepted by API server';
-    throw new Error(`K8s DELETE pod returned HTTP ${status}`);
+    throw new K8sHttpError(status, `DELETE pod/${targetName} in namespace ${namespace}`);
   }
 
   if (actionType === 'scale_deployment') {
-    const patch = JSON.stringify({ spec: { replicas: 2 } });
+    /* 回执里的 --replicas 必须与实际 PATCH 的 spec.replicas 同值 */
+    const patch = JSON.stringify({ spec: { replicas } });
     const { status } = await callK8sApi(
       config.server,
       config.token,
-      `/apis/apps/v1/namespaces/default/deployments/${encodeURIComponent(targetName)}/scale`,
+      `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(targetName)}/scale`,
       'PATCH',
       patch,
     );
-    if (status >= 200 && status < 300) return 'deployment scale patch accepted';
-    throw new Error(`K8s PATCH scale returned HTTP ${status}`);
+    if (status >= 200 && status < 300) return `deployment scale patched to replicas=${replicas}`;
+    throw new K8sHttpError(status, `PATCH scale deployment/${targetName} in namespace ${namespace}`);
   }
 
   /**
@@ -312,7 +374,7 @@ async function executeAgainstRealCluster(
     patch,
   );
   if (status >= 200 && status < 300) return 'node cordoned (eviction not performed)';
-  throw new Error(`K8s PATCH node cordon returned HTTP ${status}`);
+  throw new K8sHttpError(status, `PATCH node/${targetId} cordon`);
 }
 
 /**
@@ -384,15 +446,55 @@ export async function POST(request: NextRequest): Promise<Response> {
       : canonicalizeTargetName(targetId, '');
   const clusterMode = body.clusterMode === 'live' ? 'live' : 'demo';
 
+  /*
+   * 【B2：namespace 从请求/实体取，不写死】
+   * - live 模式：必须由前端传入（来自集群快照中该 Pod 的真实 namespace），
+   *   缺失直接 400 拒绝——宁可失败，也不能去 default 里删一个同名 Pod；
+   * - simulated 模式：允许缺省为 'default'，但回执 note 里如实标注这是假设值。
+   */
+  const requestedNamespace =
+    typeof body.namespace === 'string' && body.namespace.trim().length > 0
+      ? body.namespace.trim()
+      : null;
+  const namespace =
+    requestedNamespace !== null ? requestedNamespace : clusterMode === 'live' ? null : 'default';
+
+  /* replicas：仅 scale 使用；范围校验防止把集群缩到 0 */
+  const requestedReplicas =
+    typeof body.replicas === 'number' && Number.isFinite(body.replicas) ? Math.round(body.replicas) : null;
+  const replicas = requestedReplicas !== null && requestedReplicas >= 1 && requestedReplicas <= 50
+    ? requestedReplicas
+    : 2;
+
   /* ---- 2. 执行（真实集群优先，未配置则模拟时序） ---- */
   const config = readEnvClusterConfig();
+  if (config !== null && actionType === 'restart_pod' && namespace === null) {
+    const failure: JsonRpcFailure = {
+      jsonrpc: '2.0',
+      id: rpcId,
+      error: {
+        code: RPC_INVALID_PARAMS,
+        message: 'namespace is required when executing against a live cluster',
+        data: { detail: 'request.namespace missing; refusing to assume "default"', httpStatus: null },
+      },
+    };
+    return Response.json(failure, { status: 400 });
+  }
+  const effectiveNamespace = namespace ?? 'default';
   let mode: ExecutionMode = 'simulated';
   let note: string;
 
   if (config !== null) {
     mode = 'real';
     try {
-      const detail = await executeAgainstRealCluster(config, actionType, targetId, targetName);
+      const detail = await executeAgainstRealCluster(
+        config,
+        actionType,
+        targetId,
+        targetName,
+        effectiveNamespace,
+        replicas,
+      );
       note = `Applied to live cluster via Kubernetes REST API: ${detail}`;
     } catch (error) {
       /**
@@ -402,16 +504,24 @@ export async function POST(request: NextRequest): Promise<Response> {
        * 后者会让用户在真实生产环境里以为自愈生效了，是最危险的假象。
        */
       const message = error instanceof Error ? error.message : String(error);
+      const httpStatus = error instanceof K8sHttpError ? error.httpStatus : null;
+      /*
+       * 【B2：非 2xx 一律 JSON-RPC error(-32603)，并标注 httpStatus】
+       * 上游 4xx 时响应码用 502（网关/上游错误），上游 5xx 用 500；
+       * 但无论哪种，error.data 里都带 httpStatus，前端可据此显示"目标不存在"。
+       */
       const failure: JsonRpcFailure = {
         jsonrpc: '2.0',
         id: rpcId,
         error: {
           code: RPC_INTERNAL_ERROR,
           message: 'Kubernetes API execution failed',
-          data: message.slice(0, 300),
+          data: { detail: message.slice(0, 300), httpStatus },
         },
       };
-      return Response.json(failure, { status: 500 });
+      return Response.json(failure, {
+        status: httpStatus !== null && httpStatus >= 400 && httpStatus < 500 ? 502 : 500,
+      });
     }
   } else {
     /* 模拟标准控制器调谐时序：让有无真实集群时的体验一致 */
@@ -424,7 +534,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   /* ---- 3. 组装回执 ---- */
   const latencyMs = Date.now() - startedAt;
   const timestamp = new Date().toISOString();
-  const kubectlCommand = buildKubectlCommand(actionType, targetName);
+  const kubectlCommand = buildKubectlCommand(actionType, targetName, effectiveNamespace, replicas);
   const executionId = compactId();
 
   /**
@@ -446,7 +556,9 @@ export async function POST(request: NextRequest): Promise<Response> {
     latencyMs,
     auditDigest,
     mode,
-    note: `${note} (clusterMode=${clusterMode})`,
+    note: `${note} (clusterMode=${clusterMode}, namespace=${effectiveNamespace}${
+      requestedNamespace === null ? ' [assumed in simulated mode]' : ''
+    })`,
   };
 
   const success: JsonRpcSuccess = { jsonrpc: '2.0', id: rpcId, result: receipt };
@@ -466,7 +578,7 @@ export function GET(): Response {
   const tools = MCP_TOOL_WHITELIST.map((name): { name: string; uri: string; command: string } => ({
     name,
     uri: `mcp://k8s-cluster/tools/${name}`,
-    command: buildKubectlCommand(name, '<target>'),
+    command: buildKubectlCommand(name, '<target>', '<namespace>'),
   }));
 
   return Response.json({

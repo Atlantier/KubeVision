@@ -83,7 +83,9 @@ const MIN_STATUS_VISIBLE_MS = 260;
  *
  * @returns 'webgpu' | 'wasm'
  */
-function detectRuntime(): ClassifierRuntime {
+type WorkerInferenceRuntime = Exclude<ClassifierRuntime, 'builtin'>;
+
+function detectRuntime(): WorkerInferenceRuntime {
   const hasWebGPU =
     typeof navigator !== 'undefined' &&
     'gpu' in navigator &&
@@ -92,133 +94,19 @@ function detectRuntime(): ClassifierRuntime {
 }
 
 /** 运行时可读标签（HUD 直接展示给用户） */
-function runtimeLabel(runtime: ClassifierRuntime): string {
+function runtimeLabel(runtime: WorkerInferenceRuntime): string {
   return runtime === 'webgpu' ? 'WebGPU Hardware Accelerated' : 'WebAssembly SIMD';
 }
 
-/* ========================================================================== */
-/* 内置端侧语义特征张量分类器（降级路径）                                        */
-/* ========================================================================== */
-
-/**
- * 标签特征词权重表 —— 内置分类器的「知识」。
+/*
+ * 内置分类器已抽取到 src/utils/builtinLogClassifier.ts（B1/B5）。
  *
- * 【权重的含义】数字代表该词对目标标签的**判别强度**：
- * - 3：决定性信号（如 SIGSEGV 几乎必然指向崩溃；OOMKilled 直接就是资源耗尽）
- * - 2：强信号（如 panic、connection refused）
- * - 1：弱信号（辅助判断，单独出现不足以定性）
- *
- * 【为何用权重而非简单计数】"kernel panic" 与 "connection timeout" 里
- * panic 的判别力远高于 timeout 的通用性。加权后，一个决定性词就能压过
- * 三个无关弱词，分类结果更贴近真实语义。
+ * 【为什么不在 Worker 里保留一份】主线程在"单批 3 秒超时"时必须能立刻
+ * 用同一套规则给出结果；两份实现必然漂移，届时同一条日志在 Worker 与
+ * 兜底路径上会得到不同标签，审计结论就自相矛盾了。
  */
-const LABEL_FEATURES: Readonly<Record<EdgeLogLabel, ReadonlyArray<{ readonly term: string; readonly weight: number }>>> = {
-  CRITICAL_PANIC: [
-    { term: 'sigsegv', weight: 3 },
-    { term: 'segmentation fault', weight: 3 },
-    { term: 'kernel panic', weight: 3 },
-    { term: 'fatal error', weight: 3 },
-    { term: 'panic', weight: 2 },
-    { term: 'fatal', weight: 2 },
-    { term: 'core dumped', weight: 3 },
-    { term: 'crash', weight: 2 },
-    { term: 'abort', weight: 2 },
-    { term: 'unhandled exception', weight: 2 },
-    { term: 'nil pointer', weight: 2 },
-    { term: 'stack overflow', weight: 2 },
-  ],
-  RESOURCE_EXHAUSTED: [
-    { term: 'oomkilled', weight: 3 },
-    { term: 'out of memory', weight: 3 },
-    { term: 'memory limit', weight: 2 },
-    { term: 'no space left', weight: 3 },
-    { term: 'disk full', weight: 3 },
-    { term: 'too many open files', weight: 3 },
-    { term: 'evicted', weight: 2 },
-    { term: 'quota exceeded', weight: 3 },
-    { term: 'cpu throttl', weight: 2 },
-    { term: 'resource exhausted', weight: 3 },
-    { term: 'cannot allocate memory', weight: 3 },
-    { term: 'memory pressure', weight: 2 },
-  ],
-  NETWORK_TIMEOUT: [
-    { term: 'timeout', weight: 2 },
-    { term: 'timed out', weight: 2 },
-    { term: 'connection refused', weight: 3 },
-    { term: 'connection reset', weight: 3 },
-    { term: 'econnrefused', weight: 3 },
-    { term: 'econnreset', weight: 3 },
-    { term: 'no such host', weight: 3 },
-    { term: 'dns resolution', weight: 2 },
-    { term: 'unreachable', weight: 2 },
-    { term: 'packet loss', weight: 2 },
-    { term: 'i/o timeout', weight: 3 },
-    { term: 'broken pipe', weight: 3 },
-    { term: 'tls handshake', weight: 2 },
-  ],
-  NORMAL_INFO: [
-    { term: 'successfully', weight: 1 },
-    { term: 'started', weight: 1 },
-    { term: 'ready', weight: 1 },
-    { term: 'healthy', weight: 1 },
-    { term: 'assigned', weight: 1 },
-    { term: 'completed', weight: 1 },
-    { term: 'info', weight: 1 },
-  ],
-};
-
-/**
- * classifyWithBuiltinClassifier —— 内置确定性分类器（降级路径的核心）。
- *
- * 【算法】对每个标签累加命中特征词的权重，取得分最高者；
- * 置信度由「最高分占总分的比例」映射到 [0.85, 0.99] 区间。
- *
- * 【为何置信度下限是 0.85】本项目只输出四态标签，且特征词表针对
- * K8s/Linux 日志高度特化。即便所有词都没命中（NORMAL_INFO 兜底），
- * 在"日志语义分类"这个封闭问题上，规则判别仍有较高可信度。
- * 下限 0.85 表达的是「我有把握这是四类之一」，而非「我 100% 确定」。
- *
- * 【为何上限是 0.99 而非 1.0】任何启发式分类都不该宣称绝对确定——
- * 留出 1% 的不确定性是对用户诚实的表现。
- *
- * @param text 脱敏后的日志文本
- * @returns 标签与置信度
- */
-function classifyWithBuiltinClassifier(text: string): { readonly label: EdgeLogLabel; readonly confidence: number } {
-  const haystack = text.toLowerCase();
-
-  /* ---- 逐标签累加加权命中分 ---- */
-  const scores: Array<{ label: EdgeLogLabel; score: number }> = [];
-  for (const label of Object.keys(LABEL_FEATURES) as EdgeLogLabel[]) {
-    let score = 0;
-    for (const feature of LABEL_FEATURES[label]) {
-      if (haystack.includes(feature.term)) score += feature.weight;
-    }
-    scores.push({ label, score });
-  }
-
-  /* ---- 取最高分（同分时按声明顺序稳定，保证确定性） ---- */
-  let best = scores[0];
-  for (const entry of scores) {
-    if (entry.score > best.score) best = entry;
-  }
-
-  /* ---- 无任何命中 → NORMAL_INFO 兜底 ---- */
-  const totalScore = scores.reduce((sum, entry): number => sum + entry.score, 0);
-  if (best.score === 0 || totalScore === 0) {
-    return { label: 'NORMAL_INFO', confidence: 0.85 };
-  }
-
-  /* ---- 置信度：最高分占比 → 映射到 [0.85, 0.99] ---- */
-  const dominance = best.score / totalScore;
-  /* dominance ∈ (0,1] → 置信度 0.85 + dominance * 0.14 */
-  const confidence = 0.85 + dominance * 0.14;
-  return {
-    label: best.label,
-    /* 保留两位小数，与契约的"置信度分数"精度一致 */
-    confidence: Math.round(Math.min(0.99, confidence) * 100) / 100,
-  };
-}
+import { classifyWithBuiltinClassifier } from '@/utils/builtinLogClassifier';
+import { LABEL_FEATURES } from '@/utils/builtinLogClassifier';
 
 /* ========================================================================== */
 /* 真实模型管道（WebGPU/WASM）                                                  */
@@ -547,7 +435,7 @@ function classifyWithNeuralSemantics(
  * @returns 模型句柄（含是否降级的标记）
  */
 async function initModelWithTimeout(
-  runtime: ClassifierRuntime,
+  runtime: WorkerInferenceRuntime,
   post: (message: ClassifierResponse) => void,
 ): Promise<ModelHandle> {
   const label = runtimeLabel(runtime);
@@ -645,7 +533,7 @@ async function initModelWithTimeout(
 /** 进度回传辅助（统一构造消息） */
 function postProgress(
   post: (message: ClassifierResponse) => void,
-  runtime: ClassifierRuntime,
+  runtime: WorkerInferenceRuntime,
   label: string,
   progress: number,
   modelName: string,
@@ -746,8 +634,28 @@ async function classifyOne(text: string, extractor: FeatureExtractor | null): Pr
 /** 模型句柄缓存（首次 init 后复用，避免重复加载） */
 let modelHandle: ModelHandle | null = null;
 
+/**
+ * 模型初始化的**单例 Promise**（B1）。
+ *
+ * 【解决什么】init 消息与"首批 classify"可能几乎同时到达：
+ * 两者都会调用 ensureModel()，而旧实现只判断 `modelHandle !== null`，
+ * 在 await 期间该判断仍是 null → 两次完整初始化并发执行，
+ * 重复下载权重、重复占 WebGPU 设备（实测在冷启动时会出现双倍内存峰值）。
+ *
+ * 单例 Promise 让后来者直接 await 同一个进行中的任务，天然去重。
+ */
+let modelPromise: Promise<ModelHandle> | null = null;
+
 /** 当前运行时（模块级，供每条消息自解释） */
-const currentRuntime: ClassifierRuntime = detectRuntime();
+/**
+ * Worker 内实际可用的推理后端只有 WebGPU / WASM 两种。
+ *
+ * 【为何不直接用 ClassifierRuntime】B5 给该类型加了 'builtin'，但 builtin
+ * 是"模型没加载、规则兜底"的运行时，不可能出现在 Worker 推理路径里；
+ * 若沿用宽类型，transformers 的 device 参数会被 TS 拒绝（实测）。
+ * 这里收窄为 Worker 专属子集，赋给消息字段时天然可宽化，无需断言。
+ */
+const currentRuntime: Exclude<ClassifierRuntime, 'builtin'> = detectRuntime();
 const currentLabel = runtimeLabel(currentRuntime);
 
 /** 回传消息到主线程 */
@@ -798,31 +706,52 @@ function postStatus(status: ClassifierWorkerStatus): void {
  * 但也要允许主线程主动 init 以提前预热（auditor 面板打开时）。
  */
 async function ensureModel(): Promise<ModelHandle> {
+  /* 已加载完成：直接复用 */
   if (modelHandle !== null) return modelHandle;
-  modelHandle = await initModelWithTimeout(currentRuntime, post);
 
   /*
-   * 【原型锚点预计算】模型真正加载成功后（非降级），立刻把 4 类语义原型的
-   * 锚点向量编码出来并缓存。这一步是"端侧模型真的参与决策"的前提：
-   * 没有锚点，384 维向量就只是躺在内存里的数字。
-   *
-   * 失败不致命：ensurePrototypes 返回 false 时，classifyOne 会检测到
-   * prototypesReady === false 并退回符号先验路径，功能仍可用。
+   * 已有初始化在途：复用同一个 Promise。
+   * 这是 B1「并发重复初始化」缺陷的正解——去重发生在"进行中"这一层，
+   * 而不是等第一次结束后靠 modelHandle 兜底（那时已经下载两遍了）。
    */
-  if (!modelHandle.fallback && modelHandle.extractor !== null) {
-    await ensurePrototypes(modelHandle.extractor);
-  }
+  if (modelPromise !== null) return modelPromise;
 
-  post({
-    type: 'ready',
-    runtime: currentRuntime,
-    runtimeLabel: currentLabel,
-    modelName: modelHandle.fallback ? 'builtin-semantic-classifier' : MODEL_ID,
-    fallback: modelHandle.fallback,
-  });
-  /* 模型就绪 → 状态同步切到 READY（HUD 立刻可见） */
-  postStatus('READY');
-  return modelHandle;
+  modelPromise = (async (): Promise<ModelHandle> => {
+    const handle = await initModelWithTimeout(currentRuntime, post);
+
+    /*
+     * 【原型锚点预计算】模型真正加载成功后（非降级），立刻把 4 类语义原型的
+     * 锚点向量编码出来并缓存。这一步是"端侧模型真的参与决策"的前提：
+     * 没有锚点，384 维向量就只是躺在内存里的数字。
+     *
+     * 失败不致命：ensurePrototypes 返回 false 时，classifyOne 会检测到
+     * prototypesReady === false 并退回符号先验路径，功能仍可用。
+     */
+    if (!handle.fallback && handle.extractor !== null) {
+      await ensurePrototypes(handle.extractor);
+    }
+
+    post({
+      type: 'ready',
+      runtime: currentRuntime,
+      runtimeLabel: currentLabel,
+      modelName: handle.fallback ? 'builtin-semantic-classifier' : MODEL_ID,
+      fallback: handle.fallback,
+    });
+    /* 模型就绪 → 状态同步切到 READY（HUD 立刻可见） */
+    postStatus('READY');
+
+    modelHandle = handle;
+    return handle;
+  })();
+
+  try {
+    return await modelPromise;
+  } catch (error) {
+    /* 初始化失败：清掉单例，允许下一次请求重试（不能永久卡死在 rejected） */
+    modelPromise = null;
+    throw error;
+  }
 }
 
 /**

@@ -36,7 +36,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  */
 const EDGE_INIT_BUDGET_MS = 180_000;
 
+/**
+ * 单批分类超时（毫秒）——B1 的核心修复之一。
+ *
+ * 【为什么必须有】推理可能因 WebGPU 设备丢失、WASM OOM、模型输入异常
+ * 而永久挂起：Worker 既不回 result 也不回 error，主线程的 Promise 永远
+ * 不 resolve，面板的"审计中"按钮就永久 disabled。
+ * 3 秒足够覆盖正常推理（实测 < 60ms），超时即用内置分类器兜底返回。
+ */
+const EDGE_BATCH_TIMEOUT_MS = 3_000;
+
+/** 单批分类超时错误标识（用于区分"超时兜底"与"正常结果"） */
+const BATCH_TIMEOUT_SENTINEL = 'endless-classify-timeout';
+
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { classifyLogsWithBuiltin } from '@/utils/builtinLogClassifier';
 import { isClassifierResponse } from '@/types/ai';
 import type {
   ClassifierRequest,
@@ -74,6 +88,8 @@ export interface UseEdgeLogClassifierResult {
   readonly classify: (logs: readonly LogEntry[]) => Promise<readonly EdgeAuditResult[] | null>;
   /** 是否有一批分类在处理中 */
   readonly isClassifying: boolean;
+  /** 取消当前在途批次（B1：并发上限 1 时必须提供取消出口） */
+  readonly cancelClassify: () => void;
 }
 
 /* ========================================================================== */
@@ -98,8 +114,18 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
   const [isClassifying, setIsClassifying] = useState<boolean>(false);
 
   const workerRef = useRef<Worker | null>(null);
-  /** 在途请求的 resolver（null 表示当前无在途请求） */
-  const pendingRef = useRef<((results: readonly EdgeAuditResult[] | null) => void) | null>(null);
+  /**
+   * 在途请求（null 表示无在途请求）。
+   *
+   * 【B1：同时记录日志与开始时刻】超时兜底必须能在主线程用内置分类器
+   * 重新算出结果，因此 pending 里要保留输入——只留 resolver 是不够的。
+   */
+  const pendingRef = useRef<{
+    readonly logs: readonly LogEntry[];
+    readonly startedAtMs: number;
+    readonly resolve: (results: readonly EdgeAuditResult[] | null) => void;
+    readonly timer: number;
+  } | null>(null);
 
   /* ---- Worker 生命周期 ---- */
   useEffect(() => {
@@ -202,10 +228,13 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
         }
 
         case 'result': {
-          const resolve = pendingRef.current;
+          const pending = pendingRef.current;
           pendingRef.current = null;
           setIsClassifying(false);
-          if (resolve !== null) resolve(message.results);
+          if (pending !== null) {
+            window.clearTimeout(pending.timer);
+            pending.resolve(message.results);
+          }
           break;
         }
 
@@ -214,10 +243,22 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
           setWorkerStatus('ERROR');
           setStatusLabel('ERROR');
           telemetryTransientRef.glStats.workerStatus = 'ERROR';
-          const resolve = pendingRef.current;
+          setIsFallback(true);
+          setRuntime('builtin');
+          setRuntimeLabel('builtin-classifier');
+          setIsReady(true);
+          const pending = pendingRef.current;
           pendingRef.current = null;
           setIsClassifying(false);
-          if (resolve !== null) resolve(null);
+          /*
+           * 【B1：异常也必须给结果】旧实现 resolve(null)，面板拿到 null 后
+           * 只能显示"无结果"，而且 isReady 仍可能为 false 导致按钮永久禁用。
+           * 现在直接以内置分类器产出结果，保证审计流程可完成。
+           */
+          if (pending !== null) {
+            window.clearTimeout(pending.timer);
+            pending.resolve(classifyLogsWithBuiltin(pending.logs, pending.startedAtMs));
+          }
           break;
         }
 
@@ -245,8 +286,9 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
       telemetryTransientRef.glStats.workerStatus = 'TIMEOUT';
       setIsFallback(true);
       setIsReady(true);
-      setRuntimeLabel('builtin-fallback');
-      setRuntime('wasm');
+      setRuntimeLabel('builtin-classifier');
+      /* B5：builtin 是独立运行时，不能标成 wasm（模型根本没加载） */
+      setRuntime('builtin');
     }, EDGE_INIT_BUDGET_MS);
 
     /* ---- Worker 运行期错误（脚本加载失败、未捕获异常等） ---- */
@@ -256,9 +298,17 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
       setStatusLabel('ERROR');
       telemetryTransientRef.glStats.workerStatus = 'ERROR';
       setIsClassifying(false);
-      const resolve = pendingRef.current;
+      setIsFallback(true);
+      setRuntime('builtin');
+      setRuntimeLabel('builtin-classifier');
+      setIsReady(true);
+      const pending = pendingRef.current;
       pendingRef.current = null;
-      if (resolve !== null) resolve(null);
+      if (pending !== null) {
+        window.clearTimeout(pending.timer);
+        /* B1：异常也必须产出可用结果，而不是把 null 丢给面板 */
+        pending.resolve(classifyLogsWithBuiltin(pending.logs, pending.startedAtMs));
+      }
     });
 
     /* ---- 预热 ---- */
@@ -277,18 +327,36 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
      * 宁可明确告知用户"端侧引擎降级"，也不要无限转圈。
      */
     const watchdog = window.setTimeout((): void => {
-      setIsReady((ready) => {
-        if (ready) return ready;
-        setError('端侧推理 Worker 未能及时就绪，已降级为主线程推理');
-        setWorkerStatus('ERROR');
-        setStatusLabel('ERROR');
-        telemetryTransientRef.glStats.workerStatus = 'ERROR';
-        /* 让在途请求立即失败并交由调用方兜底，避免永久挂起 */
-        const resolve = pendingRef.current;
+      /*
+       * 【B1 修复：看门狗必须"降级为可用"，而不是把 isReady 留在 false】
+       *
+       * 旧实现只在 isReady=false 时写错误信息，**没有把 isReady 置 true**，
+       * 于是 LocalAuditorPanel 的所有按钮永远 disabled（isReady 是门禁），
+       * 而"已降级为主线程推理"的文案也永远没有机会被使用——死锁。
+       *
+       * 现在：超时即宣布"内置分类器可用"，并如实标注 runtime='builtin'。
+       */
+      if (engineSettled) return;
+      engineSettled = true;
+
+      setError('端侧推理 Worker 未能及时就绪（15s），已降级为内置分类器');
+      setWorkerStatus('ERROR');
+      setStatusLabel('TIMEOUT');
+      setRuntime('builtin');
+      setRuntimeLabel('builtin-classifier');
+      setIsFallback(true);
+      setIsReady(true);
+      setProgress(100);
+      telemetryTransientRef.glStats.workerStatus = 'TIMEOUT';
+
+      /* 在途请求 → 立刻用内置分类器返回结果，而不是让它永久挂起 */
+      const pending = pendingRef.current;
+      if (pending !== null) {
+        window.clearTimeout(pending.timer);
         pendingRef.current = null;
-        if (resolve !== null) resolve(null);
-        return false;
-      });
+        setIsClassifying(false);
+        pending.resolve(classifyLogsWithBuiltin(pending.logs, pending.startedAtMs));
+      }
     }, 15000);
 
     /* ---- 卸载清理：清除看门狗、终止 Worker 释放 GPU/内存资源 ---- */
@@ -298,9 +366,12 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
         window.clearTimeout(initBudgetTimer);
         initBudgetTimer = null;
       }
-      const resolve = pendingRef.current;
+      const pending = pendingRef.current;
       pendingRef.current = null;
-      if (resolve !== null) resolve(null);
+      if (pending !== null) {
+        window.clearTimeout(pending.timer);
+        pending.resolve(null);
+      }
       worker.terminate();
       workerRef.current = null;
     };
@@ -315,23 +386,78 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
   const classify = useCallback(
     (logs: readonly LogEntry[]): Promise<readonly EdgeAuditResult[] | null> => {
       const worker = workerRef.current;
-      if (worker === null || logs.length === 0) {
-        return Promise.resolve(null);
-      }
-      if (pendingRef.current !== null) {
-        /* 已有在途请求：拒绝新请求，避免结果错配 */
-        return Promise.resolve(null);
+      if (logs.length === 0) return Promise.resolve([]);
+
+      /*
+       * 【B1：Worker 不可用时直接内置兜底】
+       * 旧实现返回 null，面板拿到 null 只能显示"无结果"；
+       * 现在直接给出规则分类结果，保证"审计"这个动作永远有产出。
+       */
+      if (worker === null) {
+        setIsFallback(true);
+        setRuntime('builtin');
+        setRuntimeLabel('builtin-classifier');
+        setIsReady(true);
+        return Promise.resolve(classifyLogsWithBuiltin(logs, Date.now()));
       }
 
+      /*
+       * 【B1：并发上限 1】
+       * Worker 协议没有请求 id，两批同时在途必然结果错配。
+       * 这里第二批复用"直接拒绝"，由调用方串行化（审计面板天然串行）。
+       */
+      if (pendingRef.current !== null) return Promise.resolve(null);
+
+      const startedAtMs = Date.now();
       setIsClassifying(true);
+
+      /*
+       * 【B1：单批 3 秒超时兜底】
+       * Worker 若因设备丢失/OOM 永久挂起，既不回 result 也不回 error。
+       * 超时后用内置分类器在主线程算出结果，保证 runAudit 一定能结束。
+       */
       return new Promise<readonly EdgeAuditResult[] | null>((resolve): void => {
-        pendingRef.current = resolve;
+        const timer = window.setTimeout((): void => {
+          const pending = pendingRef.current;
+          if (pending === null) return;
+          pendingRef.current = null;
+          setIsClassifying(false);
+          setIsFallback(true);
+          setRuntime('builtin');
+          setRuntimeLabel('builtin-classifier');
+          setIsReady(true);
+          setError(`单批分类超过 ${EDGE_BATCH_TIMEOUT_MS / 1000}s 未返回，已用内置分类器兜底`);
+          /*
+           * 记录超时事件：BATCH_TIMEOUT_SENTINEL 供面板/日志区分
+           * "内置兜底"与"模型真实结果"。
+           */
+          telemetryTransientRef.glStats.workerStatus = BATCH_TIMEOUT_SENTINEL;
+          resolve(classifyLogsWithBuiltin(pending.logs, pending.startedAtMs));
+        }, EDGE_BATCH_TIMEOUT_MS);
+
+        pendingRef.current = { logs, startedAtMs, resolve, timer };
         const request: ClassifierRequest = { type: 'classify', logs };
         worker.postMessage(request);
       });
     },
     [],
   );
+
+  /**
+   * cancelClassify —— 取消当前在途批次（B1：可取消）。
+   *
+   * 【用途】面板卸载、用户切走审计台、或检测到运行环境变化时，
+   * 立即让在途 Promise 以 null 结束，避免"已经没人要的结果"继续跑完
+   * 再 setState（React 会对已卸载组件报警告，且浪费一次推理）。
+   */
+  const cancelClassify = useCallback((): void => {
+    const pending = pendingRef.current;
+    if (pending === null) return;
+    pendingRef.current = null;
+    window.clearTimeout(pending.timer);
+    setIsClassifying(false);
+    pending.resolve(null);
+  }, []);
 
   return {
     progress,
@@ -344,6 +470,7 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
     statusLabel,
     error,
     classify,
+    cancelClassify,
     isClassifying,
   };
 }

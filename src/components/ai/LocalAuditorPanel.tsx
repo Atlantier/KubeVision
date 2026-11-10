@@ -1106,7 +1106,19 @@ export default function LocalAuditorPanel() {
     [records],
   );
 
-  const isWebGPU = classifier.runtime === 'webgpu';
+  /**
+   * 端侧运行时三态（B5）：
+   * - webgpu：WebGPU 硬件加速（模型真实推理）；
+   * - wasm：WASM SIMD 回退（模型真实推理，较慢）；
+   * - builtin：内置确定性规则分类器（**模型未加载**）。
+   *
+   * 【为什么要三分而不是两分】把 builtin 显示成 "WASM SIMD" 会让评审误以为
+   * 端侧模型在跑——这是对能力边界的虚假陈述。当前运行时必须如实呈现。
+   */
+  const runtimeKind: 'webgpu' | 'wasm' | 'builtin' = classifier.runtime ?? 'builtin';
+  const isWebGPU = runtimeKind === 'webgpu';
+  const runtimeBadgeLabel =
+    runtimeKind === 'webgpu' ? 'WebGPU' : runtimeKind === 'wasm' ? 'WASM SIMD' : '内置分类器';
 
   /* ========================================================================== */
   /* 渲染                                                                       */
@@ -1131,14 +1143,24 @@ export default function LocalAuditorPanel() {
           <span
             className={cn(
               'ml-auto flex shrink-0 items-center gap-0.5 rounded border px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider',
-              isWebGPU
+              runtimeKind === 'webgpu'
                 ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
-                : 'border-cyan-500/50 bg-cyan-500/15 text-cyan-300',
+                : runtimeKind === 'wasm'
+                  ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-300'
+                  : 'border-slate-500/50 bg-slate-500/15 text-slate-300',
             )}
-            title={classifier.runtimeLabel}
+            title={`当前端侧运行时：${classifier.runtimeLabel}`}
+            aria-label={`当前端侧运行时：${runtimeBadgeLabel}`}
+            data-runtime={runtimeKind}
           >
-            {isWebGPU ? <Zap className="h-2 w-2" aria-hidden /> : <Cpu className="h-2 w-2" aria-hidden />}
-            {isWebGPU ? 'WebGPU' : 'WASM SIMD'}
+            {isWebGPU ? (
+              <Zap className="h-2 w-2" aria-hidden />
+            ) : runtimeKind === 'wasm' ? (
+              <Cpu className="h-2 w-2" aria-hidden />
+            ) : (
+              <ShieldCheck className="h-2 w-2" aria-hidden />
+            )}
+            {runtimeBadgeLabel}
           </span>
         </div>
 
@@ -1204,7 +1226,13 @@ export default function LocalAuditorPanel() {
         {classifier.isFallback ? (
           <p className="mt-1 flex items-center gap-0.5 font-mono text-[10px] text-amber-400/90">
             <Activity className="h-2 w-2 shrink-0" aria-hidden />
-            外部模型不可用，已启用内置确定性分类器（离线可用）
+            外部模型不可用，已启用内置确定性分类器（离线可用 · 当前运行时 builtin）
+          </p>
+        ) : null}
+        {!classifier.isFallback ? (
+          <p className="mt-1 font-mono text-[10px] text-slate-500">
+            当前运行时：{runtimeBadgeLabel}
+            {runtimeKind === 'builtin' ? '（模型未加载，规则引擎兜底）' : '（端侧模型参与推理）'}
           </p>
         ) : null}
       </div>

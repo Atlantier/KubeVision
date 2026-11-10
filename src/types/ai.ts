@@ -890,7 +890,18 @@ export interface SpeechInputController {
  * 这个值会实时回显到性能 HUD，让用户明确知道「此刻用的是哪个后端」——
  * 性能数字脱离后端标识是没有意义的。
  */
-export type ClassifierRuntime = 'webgpu' | 'wasm';
+/**
+ * 端侧分类的三种运行时（B5：必须在 UI 与文档中明确区分）。
+ *
+ * - 'webgpu'：WebGPU 硬件加速（最快，模型真实参与推理）；
+ * - 'wasm'：WebAssembly SIMD 回退（模型真实参与推理，但慢一个量级）；
+ * - 'builtin'：内置确定性规则分类器——**模型没有加载**，
+ *   由 [[builtinLogClassifier]] 的词表打分得到结果。
+ *
+ * 三者语义完全不同：前两者可以说"端侧模型在推理"，后者只能说
+ * "规则引擎在兜底"。把 builtin 混标成 wasm 是对能力的虚假陈述。
+ */
+export type ClassifierRuntime = 'webgpu' | 'wasm' | 'builtin';
 
 /** 主线程 → Worker 的分类请求消息 */
 export interface ClassifierClassifyRequest {

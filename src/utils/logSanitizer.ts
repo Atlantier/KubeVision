@@ -82,6 +82,15 @@ interface SanitizerRule {
  * - 邮箱放在最后：它的匹配面最广，若提前处理可能吃掉 JWT 中的
  *   Base64 片段（形如 a@b 的组合），放最后最安全。
  */
+/**
+ * 占位符识别 —— 幂等性的判据。
+ *
+ * 【为什么用宽松模式】占位符有四种：[REDACTED_IP] / [MASKED_TOKEN] /
+ * [MASKED_KEY] / [REDACTED_EMAIL] / [REDACTED_CREDENTIAL] / [REDACTED_PASSWORD]。
+ * 将来可能新增，因此只要形如 `[大写_大写]` 就视为已脱敏标记。
+ */
+const PLACEHOLDER_TEST = /\[(?:REDACTED|MASKED)_[A-Z_]+\]/;
+
 const SANITIZER_RULES: readonly SanitizerRule[] = [
   {
     /* ---- 0. URL 内嵌凭证（最高优先级） ---- */
@@ -104,7 +113,20 @@ const SANITIZER_RULES: readonly SanitizerRule[] = [
      * 【保留结构】替换为 `$1://[REDACTED_CREDENTIAL]@`，保留 scheme 与 `@`
      * 分隔符，使日志仍能看出"这是一个带认证的连接串"，只是凭证被抹掉。
      */
-    pattern: /\b([a-z][a-z0-9+.-]*):\/\/[^\s:/@]+:[^\s@/]+@/gi,
+    /**
+     * 【B4 修复：密码内的未转义 '@'】
+     *
+     * 旧正则用 `[^\s@/]+@` 匹配密码段，遇到密码含 '@'（如 `p@ssw0rd`）时
+     * 只会吃到第一个 '@' 之前，结果：
+     *   postgres://svc:p@ssw0rd@db.internal  →
+     *   postgres://[REDACTED_CREDENTIAL]@ssw0rd@db.internal
+     * 剩余 `ssw0rd@db.internal` 又被邮箱规则误伤成 [REDACTED_EMAIL]，
+     * 文本结构被破坏、密码后半段是否泄露取决于后续规则——不可接受。
+     *
+     * 现在密码段改为 `[^\s/]+`（**包含 '@'**，贪婪），正则会自动回溯到
+     * 最后一个能让整体成立的 '@'，也就是 host 之前的那个分隔符。
+     */
+    pattern: /\b([a-z][a-z0-9+.-]*):\/\/[^\s:/@]+:[^\s/]+@/gi,
     placeholder: '$1://[REDACTED_CREDENTIAL]@',
   },
   {
@@ -138,8 +160,15 @@ const SANITIZER_RULES: readonly SanitizerRule[] = [
      * 使替换后保留完整键名（`db_password=[REDACTED_PASSWORD]`），
      * 而不是残缺成 `db_=[REDACTED_PASSWORD]`——保留键名才便于排查配置。
      */
+    /**
+     * 【B4 修复：JSON 形态的带引号键名】
+     *
+     * `{"password": "hunter2"}` 里键名是 `"password"`，闭合引号出现在
+     * 分隔符之前。旧正则要求键名后**立即**是 `\s*[=:]`，因此整个形态
+     * 匹配失败（实测漏脱敏）。现在允许键名与分隔符之间出现一个可选引号。
+     */
     pattern:
-      /(?<![A-Za-z0-9])((?:[A-Za-z0-9_.-]*)(?:password|passwd|pwd|secret|passphrase))\s*[=:]\s*["']?([^\s"',;}]{4,})/gi,
+      /(?<![A-Za-z0-9])((?:[A-Za-z0-9_.-]*)(?:password|passwd|pwd|secret|passphrase))["']?\s*[=:]\s*["']?([^\s"',;}]{4,})/gi,
     placeholder: '$1=[REDACTED_PASSWORD]',
   },
   {
@@ -231,15 +260,32 @@ export function sanitizeRawLog(raw: string): SanitizeResult {
    */
   const maskedByRule: Record<string, number> = {};
 
+  /*
+   * 【B4 修复：幂等的真正实现】
+   *
+   * 旧注释声称"占位符本身不匹配任何规则"，但 password-field 规则会再次
+   * 命中 `db_password=[REDACTED_PASSWORD]`（值部分仍满足 {4,}），
+   * 于是二次脱敏时 maskedCount 虚增 1——调用方重试一次，审计角标就多记一笔，
+   * "共脱敏 N 处"这个对外数字就不可信了。
+   *
+   * 现在改为**回调式替换**：先看本次 match 是否已包含占位符，
+   * 是则原样返回、不计数；否则展开 $1/$2 后替换并计数。
+   */
   for (const rule of SANITIZER_RULES) {
-    /* ---- 统计命中数（String.match 不修改正则状态，比 exec 循环安全） ---- */
-    const matches = sanitized.match(rule.pattern);
-    if (matches === null || matches.length === 0) continue;
+    sanitized = sanitized.replace(rule.pattern, (...args: unknown[]): string => {
+      const match = String(args[0] ?? '');
+      /* 已含占位符 → 该处此前已脱敏，保持原样且不计数 */
+      if (PLACEHOLDER_TEST.test(match)) return match;
 
-    maskedCount += matches.length;
-    maskedByRule[rule.name] = (maskedByRule[rule.name] ?? 0) + matches.length;
-    /* ---- 全局替换为语义化占位符 ---- */
-    sanitized = sanitized.replace(rule.pattern, rule.placeholder);
+      maskedCount += 1;
+      maskedByRule[rule.name] = (maskedByRule[rule.name] ?? 0) + 1;
+
+      /* 展开 $1/$2… 捕获组（captures 从 args[1] 开始） */
+      return rule.placeholder.replace(/\$(\d)/g, (_token, index: string): string => {
+        const group = args[Number(index)];
+        return group === undefined ? '' : String(group);
+      });
+    });
   }
 
   return { sanitized, maskedCount, maskedByRule };

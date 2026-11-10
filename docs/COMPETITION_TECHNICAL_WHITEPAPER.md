@@ -985,6 +985,30 @@ docker run -p 3000:3000 --env-file .env.local kubevision:latest
 | 端侧神经推理延迟 | 当前环境降级为内置确定性分类器，0.07ms 不是神经网络推理 |
 | TTS 音质 / 多并发 SSE | 无头环境无法验证音频；未做并发压测 |
 
+### 7.6 端侧运行时三态（WebGPU / WASM / 内置分类器）
+
+端侧日志审计存在三种**语义完全不同**的运行时，本项目的界面与文档始终三分标注，
+不把"规则兜底"说成"端侧模型推理"：
+
+| 运行时 | data-runtime | 模型是否参与 | 典型来源 | 界面标签 |
+|---|---|---|---|---|
+| WebGPU 硬件加速 | `webgpu` | 是 | 浏览器暴露 `navigator.gpu` 且设备初始化成功 | `WebGPU` |
+| WebAssembly SIMD | `wasm` | 是 | 无 WebGPU 或被禁用/设备丢失后回退 | `WASM SIMD` |
+| 内置确定性分类器 | `builtin` | **否** | Worker 15s 未就绪 / 初始化预算超时 / 单批 3s 超时 / Worker 异常 | `内置分类器` |
+
+**判定与降级契约**：
+
+- 15 秒就绪看门狗触发时，`isReady` 必须置 `true` 且 `runtime='builtin'`
+  ——面板不得永久 disabled；提示语明确写"已降级为内置分类器"；
+- 单批分类 3 秒超时以内置分类器结果返回（`endless-classify-timeout` 标记），
+  审计流程必须能结束，不允许出现"永远审计中"；
+- 并发上限 1（Worker 协议无请求 id），并提供 `cancelClassify` 取消出口；
+- 模型初始化使用**单例 Promise** 去重：init 与首批 classify 并发时只加载一次。
+
+**数据边界**：`builtin` 运行时的 0.07ms 级延迟**不是**神经网络推理延迟，
+本白皮书不将其作为端侧 AI 性能证据；`webgpu/wasm` 的推理延迟需在真机 GPU 环境采集。
+
+---
 ---
 ## 第七章：核心创新点总结
 

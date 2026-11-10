@@ -305,33 +305,42 @@ export default function ActionConfirm({
      * 这两种情况下 healEntity / selectEntity 拿到不存在的 ID 会产生
      * "修复空气"的假动作：3D 无变化、相机找不到目标、终端却打印成功回执。
      *
-     * 回退策略：优先用卡片自身目标；不存在则回退到快照中第一个真实 Pod；
-     * 若集群连一个实体都没有，中止本次执行，不做无效的"成功"表演。
+     * 【B3 修复：**禁止静默替换目标**】
+     *
+     * 旧实现找不到 targetId 时会回退到 `snapshot.pods[0]`：用户确认的是
+     * "重启 payment-gateway"，实际被重启的却是列表里第一个 Pod。这是
+     * 比"操作失败"严重得多的缺陷——确认对象与执行对象不一致，属越权副作用。
+     *
+     * 正确行为：目标不存在就**停在确认态**并明确提示"目标已不存在，
+     * 请重新诊断"，让用户重新拿到一张目标正确的卡，而不是替他猜一个。
      */
     const snapshot = useClusterStore.getState().snapshotSummary;
     const targetExists =
       snapshot.pods.some((pod): boolean => pod.id === targetId) ||
       snapshot.nodes.some((node): boolean => node.id === targetId);
 
-    const effectiveTargetId: string | null = targetExists
-      ? targetId
-      : snapshot.pods[0]?.id ?? snapshot.nodes[0]?.id ?? null;
-
-    if (effectiveTargetId === null) {
+    if (!targetExists) {
       appendTerminalLog(
-        `[MCP-ROUTER] ABORTED ${actionType} -> no valid target in current cluster snapshot`,
+        `[MCP-ROUTER] ABORTED ${actionType} -> target ${targetId} not in current snapshot`,
       );
-      setPhase('idle');
+      setFailureReason('目标已不存在于当前快照，请重新诊断后确认');
+      setPhase('failed');
       return;
     }
+
+    /* 走到这里 targetId 一定存在：确认对象 === 执行对象 */
+    const effectiveTargetId: string = targetId;
 
     /** 实体类型按**实际目标**重新推导，而非沿用动作卡的原始假设 */
     const effectiveEntityType: SelectedEntityType =
       snapshot.nodes.some((node): boolean => node.id === effectiveTargetId) ? 'node' : 'pod';
 
+    /** 当前快照中的目标 Pod（Node 场景为 undefined） */
+    const targetPod = snapshot.pods.find((pod): boolean => pod.id === effectiveTargetId);
+
     /** 展示名：优先用卡片已知的名字，否则剥前缀作为近似 */
     const effectiveTargetName =
-      snapshot.pods.find((pod): boolean => pod.id === effectiveTargetId)?.name ??
+      targetPod?.name ??
       snapshot.nodes.find((node): boolean => node.id === effectiveTargetId)?.name ??
       targetName;
 
@@ -371,6 +380,12 @@ export default function ActionConfirm({
             actionType,
             targetId: effectiveTargetId,
             targetName: effectiveTargetName,
+            /*
+             * 【B2 修复：命名空间由前端带过去】
+             * 目标 Pod 的 namespace 只有前端快照知道；服务端若写死 'default'，
+             * live 集群会删错命名空间或 404。这里从当前快照解析真实 namespace。
+             */
+            ...(targetPod !== undefined ? { namespace: targetPod.namespace } : {}),
             clusterMode: useClusterStore.getState().connectionMode,
           }),
           signal: controller.signal,
@@ -640,6 +655,11 @@ export default function ActionConfirm({
           <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-rose-300/70">
             {failureReason.length > 0 ? failureReason : '未知错误'}
           </p>
+          {failureReason.includes('目标已不存在') ? (
+            <p className="mt-1 text-[10px] leading-relaxed text-amber-300/80">
+              本地不会回退到其它 Pod 执行。请重新发起诊断，拿到指向当前快照的目标后再确认。
+            </p>
+          ) : null}
         </div>
       ) : null}
 
