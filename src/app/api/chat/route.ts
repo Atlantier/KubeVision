@@ -1044,6 +1044,19 @@ function buildSimulatorReport(
  *
  * @returns 是否已成功接管（false 表示调用失败，调用方应回落到引擎 B）
  */
+/**
+ * R48：多步只读工具的名单。
+ *
+ * 【为何单独列一份】这些工具的 tool-call 结果由 AI SDK 直接回灌给模型，
+ * **不应**走渲染卡片的 tool-start/tool-result 通道；否则前端会弹出
+ * 一张不存在的"卡片骨架"。
+ */
+const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'getPodMetrics',
+  'searchRunbooks',
+  'getRecentEvents',
+]);
+
 async function streamWithLLM(params: {
   readonly apiKey: string;
   readonly baseURL: string | undefined;
@@ -1224,6 +1237,81 @@ async function streamWithLLM(params: {
             }),
           }
         : {}),
+      /*
+       * R48：只读数据工具（真 execute，结果回灌模型继续推理；不渲染卡片）。
+       * 写入动作永远不交给模型直接执行 —— proposeRemediationAction 只产出卡片，
+       * 真正的 MCP 写操作仍由用户在 ActionConfirm 里二次确认。
+       */
+      ...(allowedTools.length > 0
+        ? {
+            getPodMetrics: tool({
+              description: '读取指定 Pod 的实时指标（只读数据工具，不渲染卡片）',
+              parameters: z.object({
+                podId: z.string().describe('Pod id 或名称'),
+              }),
+              execute: async (args: { podId: string }): Promise<string> => {
+                const pod =
+                  clusterContext.faultyPods.find(
+                    (candidate): boolean => candidate.id === args.podId || candidate.name === args.podId,
+                  ) ??
+                  (clusterContext.selectedPodSnapshot !== undefined &&
+                  (clusterContext.selectedPodSnapshot.id === args.podId ||
+                    clusterContext.selectedPodSnapshot.name === args.podId)
+                    ? clusterContext.selectedPodSnapshot
+                    : null);
+                if (pod === null) {
+                  return JSON.stringify({ error: 'pod not found in observation context', podId: args.podId });
+                }
+                return JSON.stringify({
+                  podId: pod.id,
+                  name: pod.name,
+                  status: pod.status,
+                  cpu: pod.cpuUsage,
+                  mem: pod.memoryUsage,
+                  restarts: pod.restarts,
+                  nodeId: pod.nodeId,
+                });
+              },
+            }),
+            searchRunbooks: tool({
+              description: '检索 SRE 知识库（只读数据工具，不渲染卡片）',
+              parameters: z.object({
+                query: z.string().min(1).max(200).describe('检索语句'),
+                topK: z.number().min(1).max(5).optional().describe('返回条数，默认 3'),
+              }),
+              execute: async (args: { query: string; topK?: number }): Promise<string> => {
+                const hits = retrieveSreRunbooks(
+                  args.query,
+                  normalizeChaos(clusterContext.activeChaos),
+                  clusterContext.faultyPods.map((pod): string => pod.name),
+                  Math.max(1, Math.min(5, args.topK ?? 3)),
+                );
+                return JSON.stringify(
+                  hits.map((hit) => ({ id: hit.id, title: hit.title, score: hit.similarityScore ?? null })),
+                );
+              },
+            }),
+            getRecentEvents: tool({
+              description: '读取最近事件（节点/ Pod 状态变化与集群健康，只读数据工具）',
+              parameters: z.object({
+                limit: z.number().min(1).max(10).optional().describe('最多条数，默认 5'),
+              }),
+              execute: async (args: { limit?: number }): Promise<string> => {
+                const events: string[] = [];
+                for (const node of clusterContext.nodes) {
+                  if (node.status !== 'Ready') events.push('node ' + node.name + ' ' + node.status);
+                }
+                for (const pod of clusterContext.faultyPods) {
+                  events.push('pod ' + pod.name + ' ' + pod.status + ' restarts=' + pod.restarts);
+                }
+                events.push(
+                  'cluster health ' + clusterContext.clusterHealthScore + '/100 chaos=' + clusterContext.activeChaos,
+                );
+                return JSON.stringify(events.slice(0, Math.max(1, Math.min(10, args.limit ?? 5))));
+              },
+            }),
+          }
+        : {}),
     };
 
     const result = await streamText({
@@ -1232,6 +1320,12 @@ async function streamWithLLM(params: {
       messages: messagesForModel,
       temperature: Number(process.env.AI_TEMPERATURE ?? '0.3'),
       maxRetries: Number(process.env.AI_MAX_RETRIES ?? '2'),
+      /* R48：最多 3 个 LLM 步骤（只读工具可连续回灌），写操作永不自动执行 */
+      maxSteps: 3,
+      onStepFinish: (step): void => {
+        /* 步骤结果由 fullStream 消费；这里只记录 span 便于排查，不改协议 */
+        void step;
+      },
       abortSignal: signal,
       /* 无工具时不传 tools 字段，避免空对象导致 provider 侧参数校验差异 */
       ...(Object.keys(toolsForModel).length > 0 ? { tools: toolsForModel } : {}),
@@ -1258,6 +1352,10 @@ async function streamWithLLM(params: {
       if (part.type === 'tool-call') {
         const toolName = part.toolName;
         const toolCallId = part.toolCallId;
+        /* R48：只读数据工具的调用结果由 AI SDK 回灌模型，不渲染卡片、不推进 MCP 步骤 */
+        if (READ_ONLY_TOOL_NAMES.has(toolName)) {
+          continue;
+        }
         const toolSpan = startSpan(trace, 'tool-call:' + toolName);
         const mcpUri = `mcp://k8s-cluster/tools/${toolName}`;
 
