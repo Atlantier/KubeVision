@@ -41,8 +41,19 @@ $ node scripts/verify.mjs --full
 | `last-frame.png` | 最后一帧截图 | 画面黑没黑、卡片在不在、字幕写的什么 |
 | `failures.json` | 失败断言清单 + 实际值 + 时间 + 目标 URL | 复现线索 |
 
-**验证方式**：`verify-demo` 提供 `--inject-failure` 开关（刻意注入一条失败），
-用来证明归档链路真的会落盘。实测产物：
+**验证方式**：`verify-demo` 支持**环境变量** `KV_VERIFY_INJECT_FAILURE=1`（刻意注入一条失败），
+用来证明归档链路真的会落盘。
+
+> 为什么只认环境变量、不认命令行参数：这是测试装置的"自伤开关"，
+> 一旦被误敲进 CI 或别人的验收命令，会把一次正常的全绿跑成红色。
+> 环境变量必须显式导出才生效，不会留在命令历史里被顺手复用。
+
+```powershell
+$env:KV_VERIFY_INJECT_FAILURE='1'; node scripts/verify-demo.mjs --skip-repeat
+Remove-Item Env:KV_VERIFY_INJECT_FAILURE
+```
+
+实测产物：
 
 ```
 docs/summit/failures/2026-11-10T04-20-01-883Z/
@@ -52,7 +63,17 @@ docs/summit/failures/2026-11-10T04-20-01-883Z/
   failures.json          0.4 KB
 ```
 
-样本已复制到 `docs/summit/artifacts/r10-failure-archive-sample/`；
+实测（两条对照）：
+
+```
+A) 传 --inject-failure 参数（应被忽略）     → 通过 19 · 失败 0 · exit 0
+B) 导出 KV_VERIFY_INJECT_FAILURE=1          → 通过 19 · 失败 1 · exit 1
+   ✗ INJECTED 测试装置自检（KV_VERIFY_INJECT_FAILURE=1）
+   失败证据已归档: docs/summit/failures/<时间戳>/
+     console.log  failures.json  last-frame.png  store-snapshot.json
+```
+
+样本已复制到 `docs/summit/artifacts/r11-failure-archive-sample/`；
 运行时目录 `docs/summit/failures/` 已加入 `.gitignore`（不入库）。
 
 ---
@@ -71,8 +92,23 @@ docs/summit/failures/2026-11-10T04-20-01-883Z/
   自动派发空格键，等效于主讲人按空格；
 - **网络条件**：CDP `Network.emulateNetworkConditions`，每组结束恢复。
 
-每组校验：启动成功、节奏生效、阶段 2 出现、锁定节点名符合引擎事实、
-`activeChaos` 与剧本一致、阶段 4 出现、本组新增 console error 为 0。
+每组**跑完整场**（跑到引擎自然进入 `finished`，再等 3 秒让自愈链静定），
+而不是"看到阶段 4 就停演"。校验项：
+
+| 校验 | 判据 |
+|---|---|
+| 启动 / 节奏 | 剧本启动成功、节奏按钮生效 |
+| 阶段 2 | 出现，且锁定节点名 == 引擎事实推导出的节点 |
+| 混沌 | `activeChaos` == 本组剧本场景 |
+| 异常 Pod | 崩溃型场景要求 ≥1；CPU 争抢型按设计无异常 Pod（见 §2.2） |
+| 阶段 4 | 出现 |
+| **完整收尾** | 引擎进入 `finished`（不等同于"进入阶段 4"） |
+| **自愈闭环** | `healedPodIds` 非空（所有场景都应有受害者被修复） |
+| **MCP 回执** | actionType == 场景映射（NET 的 `drain_node` 降级为 `restart_pod` 也算通过） |
+| console | 本组新增 error 为 0 |
+
+单组上限由 `--trial-timeout`（默认 150000ms）控制；早期版本是 75s 且一看到
+阶段 4 就 break，等于只验证前半程——"完整演练"必须包含自然收尾与自愈闭环。
 
 ### 2.2 首轮暴露的真实问题（不是产品缺陷，是断言写错）
 
@@ -95,8 +131,26 @@ docs/summit/failures/2026-11-10T04-20-01-883Z/
 ### 2.3 修正后结果（同一种子）
 
 ```
+| # | 场景 | 节奏 | 网络 | 结果 | 时长 |
+|---|---|---|---|---|---|
+| 1 | NODE_CPU_SPIKE | narrator | none | 通过 | 45s |
+| 2 | POD_OOM_SWARM | compact | none | 通过 | 27s |
+| 3 | NET_PACKET_LOSS | standard | none | 通过 | 38s |
+| 4 | NODE_CPU_SPIKE | narrator | slow300 | 通过 | 43s |
+| 5 | POD_OOM_SWARM | standard | slow300 | 通过 | 41s |
+| 6 | NET_PACKET_LOSS | compact | slow800 | 通过 | 26s |
+| 7 | NODE_CPU_SPIKE | narrator | slow300 | 通过 | 41s |
+| 8 | POD_OOM_SWARM | standard | none | 通过 | 40s |
+| 9 | NET_PACKET_LOSS | compact | slow300 | 通过 | 27s |
+| 10 | NODE_CPU_SPIKE | narrator | none | 通过 | 43s |
+| 11 | POD_OOM_SWARM | compact | none | 通过 | 27s |
+| 12 | NET_PACKET_LOSS | standard | none | 通过 | 39s |
+
+总时长: 437s（12 组，平均 36s/组，每组上限 150s）
 结论：12 / 12 组全部通过  ✓   SEED=20261110
 ```
+
+完整日志：`docs/summit/artifacts/r11-drill-full-20261110.log`。
 
 12 组的场景/节奏/网络组合与首轮**完全一致**（种子确定性成立），
 每组锁定节点分别为 worker-alpha / worker-beta / worker-gamma，全部正确。

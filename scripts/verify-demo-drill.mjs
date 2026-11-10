@@ -39,6 +39,16 @@ import { join } from 'node:path';
 
 const BASE_URL = readArg('--base') ?? 'http://127.0.0.1:3000';
 const TRIALS = Number(readArg('--trials') ?? '12');
+
+/**
+ * 单组演练的最长等待时长（毫秒）。
+ *
+ * 【为什么从 75s 提到 150s】早期版本只要"看到阶段 4 或第一张卡片"就停演，
+ * 等于只验证了前半程；标题里的"完整演练"要求跑到**自然收尾 + 自愈闭环**。
+ * 完整链路 = 34s 剧本 + 事件门最多 25s 兜底 + 阶段 4 HITL/自愈约 10s
+ * + 慢网 800ms 的额外延迟，150s 才留得下余量。
+ */
+const TRIAL_TIMEOUT_MS = Number(readArg('--trial-timeout') ?? '150000');
 /**
  * 随机种子。
  *
@@ -228,6 +238,16 @@ const READ = `(() => {
       return Array.from(drawer.querySelectorAll('[aria-label]'))
         .filter((el) => (el.getAttribute('aria-label') || '').startsWith('自愈操作确认')).length;
     })(),
+    lastDirectorLog: (st.terminalLogs ?? [])
+      .filter((l) => typeof l === 'string' && l.includes('DEMO-DIRECTOR')).slice(-1)[0] ?? null,
+    mcpAction: (() => {
+      const m = (st.terminalLogs ?? [])
+        .filter((l) => typeof l === 'string' && /MCP 回执/.test(l)).slice(-1)[0];
+      if (m === undefined) return null;
+      const hit = m.match(/·\\s*([a-z_]+)\\s*已完成/);
+      return hit === null ? null : hit[1];
+    })(),
+    finished: dbg === undefined ? false : dbg.status === 'finished',
   };
 })()`;
 
@@ -297,10 +317,11 @@ async function runTrial(cdp, trial) {
     })()`,
   );
 
-  /* ---- 等阶段 2 ---- */
+  /* ---- 记录阶段 2 快照，并一直等到**自然收尾** ---- */
   let phase2 = null;
   let sawPhase4 = false;
-  const deadline = Date.now() + 75_000;
+  let sawFinished = false;
+  const deadline = Date.now() + TRIAL_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
     await sleep(400);
@@ -331,7 +352,17 @@ async function runTrial(cdp, trial) {
     ) {
       sawPhase4 = true;
     }
-    if (sawPhase4 && phase2 !== null) break;
+
+    /*
+     * 【收尾判定】等到引擎自己进入 finished 才算跑完整场。
+     * 收尾后自愈链仍可能异步落库（MCP 回执要等控制器调谐），
+     * 因此再给 3 秒静定时间，然后读最终状态。
+     */
+    if (s.finished === true || s.dbg?.status === 'finished') {
+      sawFinished = true;
+      await sleep(3000);
+      break;
+    }
   }
 
   const finalState = await evaluate(cdp, READ);
@@ -369,6 +400,21 @@ async function runTrial(cdp, trial) {
    * 这条差异是首轮随机演练用种子 20261110 实测发现的——不是产品缺陷。
    */
   const expectsAbnormal = trial.scenario.chaos !== 'NODE_CPU_SPIKE';
+
+  /*
+   * 【回执动作期望】与 chaosFacts 的映射一致；NET_PACKET_LOSS 的 drain_node
+   * 作用在 Pod 上会降级为 restart_pod，两种都算通过。
+   */
+  const EXPECTED_ACTION = {
+    POD_OOM_SWARM: 'restart_pod',
+    NET_PACKET_LOSS: 'restart_pod',
+    NODE_CPU_SPIKE: 'scale_deployment',
+  };
+  const expectedAction = EXPECTED_ACTION[trial.scenario.chaos];
+  const mcpOk =
+    finalState?.mcpAction === expectedAction ||
+    (trial.scenario.chaos === 'NET_PACKET_LOSS' && finalState?.mcpAction === 'drain_node');
+
   const checks = {
     started: started?.ok === true,
     pacingApplied: pacingSet?.ok === true,
@@ -377,6 +423,12 @@ async function runTrial(cdp, trial) {
     chaosApplied: phase2?.chaos === trial.scenario.chaos,
     abnormalOk: expectsAbnormal ? abnormalOnSelected : true,
     phase4Seen: sawPhase4,
+    /* 完整演练：必须跑到自然收尾，而不是看到阶段 4 就停 */
+    finished: sawFinished,
+    /* 自愈闭环：所有场景都应有受害者被修复（CPU 争抢修的是热点 Pod） */
+    healed: (finalState?.healed ?? 0) > 0,
+    /* MCP 回执动作必须与场景映射一致 */
+    mcpAction: mcpOk,
     noConsoleError: errorsDelta === 0,
   };
 
@@ -393,6 +445,10 @@ async function runTrial(cdp, trial) {
       expectsAbnormal,
       healed: finalState?.healed ?? 0,
       cards: finalState?.cards ?? 0,
+      finished: finalState?.finished ?? false,
+      mcpAction: finalState?.mcpAction ?? null,
+      expectedAction,
+      lastDirectorLog: finalState?.lastDirectorLog ?? null,
       consoleErrorDelta: errorsDelta,
       consoleErrors: cdp.consoleErrors.slice(errorsBefore, errorsBefore + 3),
       durationMs: Date.now() - startedAt,
@@ -543,15 +599,21 @@ async function main() {
   console.log('\n' + '='.repeat(96));
   console.log(`随机化演练矩阵   SEED=${SEED}`);
   console.log('='.repeat(96));
-  console.log('| # | 场景 | 节奏 | 网络 | 结果 | 实际值 |');
-  console.log('|---|---|---|---|---|---|');
+  console.log('| # | 场景 | 节奏 | 网络 | 结果 | 时长 | 实际值 |');
+  console.log('|---|---|---|---|---|---|---|');
+  let totalMs = 0;
   for (const r of results) {
+    const durSec = (r.actual.durationMs / 1000).toFixed(0);
+    totalMs += r.actual.durationMs;
     console.log(
-      `| ${r.trial.index} | ${r.trial.scenario.chaos} | ${r.trial.pacing} | ${r.trial.network.key} | ${r.pass ? '通过' : '失败'} | ${JSON.stringify(r.actual).slice(0, 150)} |`,
+      `| ${r.trial.index} | ${r.trial.scenario.chaos} | ${r.trial.pacing} | ${r.trial.network.key} | ${r.pass ? '通过' : '失败'} | ${durSec}s | ${JSON.stringify(r.actual).slice(0, 140)} |`,
     );
   }
 
   const failed = results.filter((r) => !r.pass);
+  const totalSec = Math.round(totalMs / 1000);
+  console.log(`
+  总时长: ${totalSec}s（${results.length} 组，平均 ${Math.round(totalMs / results.length / 1000)}s/组，每组上限 ${Math.round(TRIAL_TIMEOUT_MS / 1000)}s）`);
   console.log('');
   if (failed.length === 0) {
     console.log(`结论：${results.length} / ${results.length} 组全部通过  ✓   SEED=${SEED}`);

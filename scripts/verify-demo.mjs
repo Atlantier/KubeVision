@@ -48,9 +48,15 @@ const STRESS = process.argv.includes('--stress');
  *
  * 【为什么保留它】"失败时自动归档证据"这条能力本身也需要被验证：
  * 若从不触发失败，就无法证明 store 快照 / console / 末帧截图真的会落盘。
- * 打开后会在汇总前主动记一条失败断言，用来验证归档链路。
+ * 置位后会在汇总前主动记一条失败断言，用来验证归档链路。
+ *
+ * 【为什么只认环境变量、不认命令行参数】它是**测试装置的自伤开关**，
+ * 一旦被误敲进 CI 或别人的验收命令里，会把一次正常的全绿跑成红色。
+ * 环境变量必须显式导出才能生效，天然不会出现在命令历史里被顺手复用：
+ *   PowerShell:  $env:KV_VERIFY_INJECT_FAILURE='1'; node scripts/verify-demo.mjs
+ *   bash:        KV_VERIFY_INJECT_FAILURE=1 node scripts/verify-demo.mjs
  */
-const INJECT_FAILURE = process.argv.includes('--inject-failure');
+const INJECT_FAILURE = process.env.KV_VERIFY_INJECT_FAILURE === '1';
 
 /** 是否跳过"连跑两遍"（第二遍耗时约 40s）；--stress 模式默认跳过以控制总时长 */
 const SKIP_REPEAT =
@@ -1589,7 +1595,7 @@ async function main() {
 
   /* 测试装置自检：主动制造一条失败，用于验证归档链路 */
   if (INJECT_FAILURE) {
-    bad('INJECTED 测试装置自检（--inject-failure）', {
+    bad('INJECTED 测试装置自检（KV_VERIFY_INJECT_FAILURE=1）', {
       note: '这条失败是刻意注入的，用于验证失败证据归档',
       at: new Date().toISOString(),
     });
