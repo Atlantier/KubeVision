@@ -210,6 +210,19 @@ export interface WorkerNodeEntity {
 export interface TelemetrySnapshot {
   /** 快照生成时刻，Unix epoch 毫秒时间戳（数值型，便于时序差分计算） */
   readonly timestamp: number;
+  /**
+   * 遥测 schema 版本号（当前为 {@link TELEMETRY_SCHEMA_VERSION}）。
+   *
+   * 【为什么快照必须带版本】SSE 是长连接、前后端可能不同版本并存
+   * （页面缓存了旧 bundle、服务端已升级；或反向代理混入了旧帧）。
+   * 若不校验版本，旧字段名/旧语义会被当成合法数据渲染，
+   * 表现为「画面在动但数值明显不对」——比直接报错更难排查。
+   *
+   * 【客户端契约】版本缺失或高于客户端支持版本时，进入**只读降级**：
+   * 停止应用新帧（保留最后一帧合法画面）并在 HUD 明确提示，
+   * 而不是猜测字段含义继续画。
+   */
+  readonly schemaVersion: number;
   /** 集群综合健康分。@range [0, 100]，100 为完全健康 */
   readonly clusterHealthScore: number;
   /** 集群入口总 QPS（每秒请求数，驱动全局流量粒子密度） */
@@ -244,6 +257,19 @@ export interface TelemetrySnapshot {
  * 【派生一致性】Pod.id 由名称派生（`pod-${name}`）；WorkerNodeEntity.podIds
  * 由 Pod 表按 nodeId 反向聚合生成，与 PodEntity.nodeId 双向一致，零手工冗余。
  */
+
+/**
+ * 遥测 schema 版本号（客户端与服务端的兼容契约）。
+ *
+ * 【版本历史】
+ * - v1：初始契约（timestamp / clusterHealthScore / totalQps / nodes / pods / activeAlerts）
+ * - v2：新增 schemaVersion 字段本身（本轮），用于后续演进时的版本协商
+ *
+ * 【兼容策略】客户端只接受 schemaVersion === 本文常量的帧；
+ * 缺失（旧帧）或更高（新服务端）一律进入只读降级并提示，
+ * 绝不"尽力解析"——错误字段语义比停更危险。
+ */
+export const TELEMETRY_SCHEMA_VERSION = 2;
 
 /** 种子快照基准时刻：2026-11-05T08:00:00Z（固定常量表达式，纯函数求值，SSR 安全） */
 const SEED_TIMESTAMP_MS: number = Date.UTC(2026, 10, 5, 8, 0, 0);
@@ -743,6 +769,7 @@ const SEED_NODES: WorkerNodeEntity[] = NODE_SEED_TABLE.map(
  */
 export const INITIAL_CLUSTER_SNAPSHOT: TelemetrySnapshot = {
   timestamp: SEED_TIMESTAMP_MS,
+  schemaVersion: TELEMETRY_SCHEMA_VERSION,
   clusterHealthScore: 100,
   totalQps: 12850,
   nodes: SEED_NODES,

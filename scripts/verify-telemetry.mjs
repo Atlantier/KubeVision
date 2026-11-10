@@ -79,10 +79,12 @@ function rewriteAliases(code) {
 transpile('src/constants/telemetryTuning.ts', 'telemetryTuning');
 transpile('src/types/cluster.ts', 'cluster', rewriteAliases);
 transpile('src/utils/syntheticEngine.ts', 'syntheticEngine', rewriteAliases);
+transpile('src/utils/snapshotRingBuffer.ts', 'snapshotRingBuffer', rewriteAliases);
 
 const engine = require(join(OUT_DIR, 'syntheticEngine.cjs'));
 const cluster = require(join(OUT_DIR, 'cluster.cjs'));
 const tuning = require(join(OUT_DIR, 'telemetryTuning.cjs'));
+const ring = require(join(OUT_DIR, 'snapshotRingBuffer.cjs'));
 
 /* ========================================================================== */
 /* 2. 公共夹具                                                                  */
@@ -478,7 +480,59 @@ test('B 属性测试：200 组随机种子 × 60 tick 全程不变量成立', ()
 });
 
 /* ========================================================================== */
-/* 10. 收尾：清理转译产物                                                       */
+/* 10. A-7 · schema 版本契约                                                   */
+/* ========================================================================== */
+
+test('A-7 每一帧都携带当前 schemaVersion', () => {
+  const frames = runSequence(buildRotation().slice(0, 30));
+  for (const snapshot of frames) {
+    assert.equal(
+      snapshot.schemaVersion,
+      cluster.TELEMETRY_SCHEMA_VERSION,
+      '所有引擎产出帧都必须带当前 schema 版本（客户端据此做版本协商）',
+    );
+  }
+  /* 种子快照同样必须带版本（SSR 首屏与运行时同源） */
+  assert.equal(cluster.INITIAL_CLUSTER_SNAPSHOT.schemaVersion, cluster.TELEMETRY_SCHEMA_VERSION);
+});
+
+/* ========================================================================== */
+/* 11. B-2 · 帧环形缓冲与事故时间线                                             */
+/* ========================================================================== */
+
+test('B-2 环形缓冲保留最近 120 帧，并可从告警变化推导事故时间线', () => {
+  ring.clearFrameBuffer();
+  assert.equal(ring.getFrameBufferSize(), 0, '清空后缓冲应为 0');
+
+  /* 跑 150 帧（含 OOM 段），超过容量 30 帧 */
+  const scenarios = [...Array.from({ length: 100 }, () => 'NONE'), ...Array.from({ length: 50 }, () => 'POD_OOM_SWARM')];
+  const frames = runSequence(scenarios);
+  for (const frame of frames) ring.pushSnapshotFrame(frame);
+
+  assert.equal(ring.getFrameBufferSize(), ring.FRAME_BUFFER_CAPACITY, '缓冲应恒等于容量 120');
+  const recent = ring.getRecentFrames();
+  assert.equal(recent.length, 120, '按容量读取');
+  /* 最旧一帧应是被丢弃后的第 31 帧（150-120+1） */
+  assert.equal(recent[0].timestamp, frames[30].timestamp, '应丢弃最旧的 30 帧');
+  assert.equal(recent[recent.length - 1].timestamp, frames[frames.length - 1].timestamp, '末帧为最新帧');
+
+  /* 时间线：OOM 期间应出现 P0 告警事件 */
+  const timeline = ring.buildIncidentTimeline();
+  assert.ok(timeline.length > 0, '含故障段时应产出时间线条目');
+  assert.ok(
+    timeline.some((entry) => entry.kind === 'alert-raised' && entry.level === 'P0'),
+    '应记录到 P0 告警出现事件',
+  );
+
+  const markdown = ring.renderIncidentTimelineMarkdown();
+  assert.ok(markdown.includes('| 相对时间 | 事件 | 详情 |'), 'Markdown 应包含表头');
+
+  ring.clearFrameBuffer();
+  assert.equal(ring.buildIncidentTimeline().length, 0, '清空后时间线为空');
+});
+
+/* ========================================================================== */
+/* 12. 收尾：清理转译产物                                                       */
 /* ========================================================================== */
 
 process.on('exit', () => {

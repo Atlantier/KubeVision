@@ -383,6 +383,8 @@ function createInitialClusterState(): ClusterState {
     remediationHistory: [],
     demoAutoConfirm: false,
     isGlContextLost: false,
+    telemetryReadOnly: false,
+    telemetrySchemaNotice: null,
     demoFallbackExecuted: false,
     copilotStreaming: false,
     lastAssistantMessageId: null,
@@ -806,6 +808,17 @@ export const useClusterStore = create<ClusterStore>()(
       /** setDemoAutoConfirm —— 导演模式信号（内存态，仅路演期间为 true） */
       setDemoAutoConfirm: (enabled) => {
         set({ demoAutoConfirm: enabled });
+      },
+
+      /**
+       * setTelemetrySchemaState —— 遥测 schema 协商结果写入。
+       *
+       * 【为什么必须进 store】只读降级要驱动多处 UI（HUD 提示条、顶栏徽标），
+       * 它是低频状态（只在连接建立/首帧校验时变化），进 React 状态是合理的；
+       * 高频的「数据健康指标」则走 telemetryHealthRef 瞬态轨，两者分工明确。
+       */
+      setTelemetrySchemaState: (readOnly, notice) => {
+        set({ telemetryReadOnly: readOnly, telemetrySchemaNotice: notice });
       },
 
       /** setGlContextLost —— 由 ClusterCanvas 的 webglcontextlost/restored 回调写入 */

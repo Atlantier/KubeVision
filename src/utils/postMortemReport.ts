@@ -36,6 +36,7 @@ import type {
   RagRunbookDoc,
   RootCauseAlertProps,
 } from '@/types/ai';
+import { renderIncidentTimelineMarkdown } from '@/utils/snapshotRingBuffer';
 
 /* ========================================================================== */
 /* 对外类型契约                                                                */
@@ -56,6 +57,18 @@ export interface PostMortemInput {
   readonly startedAtMs: number;
   /** 生成报告的时刻（ms），由调用方传入以保证可测试性 */
   readonly nowMs: number;
+  /**
+   * 可选：遥测帧事故时间线（Markdown 表格）。
+   *
+   * 【来源】utils/snapshotRingBuffer.ts 的 renderIncidentTimelineMarkdown()，
+   * 它从最近 120 帧（约 2 分钟）遥测快照推导「告警出现/解除、健康分骤降/回升」。
+   *
+   * 【为什么由调用方传入而不是函数内部读】本函数承诺是**纯函数**
+   * （不读 Date.now、不碰 DOM、不改入参）。环形缓冲是模块级可变单例，
+   * 直接读进来会破坏可测试性与确定性。需要"自动带上时间线"的调用方
+   * 可以用下面导出的 buildPostMortemMarkdownWithLiveTimeline 包装器。
+   */
+  readonly incidentTimelineMarkdown?: string;
 }
 
 /* ========================================================================== */
@@ -1128,6 +1141,29 @@ function buildImpactSection(input: PostMortemInput, model: SessionModel): string
  * @param model 会话模型
  * @returns Markdown 行数组
  */
+/**
+ * buildIncidentBufferSection —— 遥测帧事故时间线章节（可选）。
+ *
+ * 【与「会话时间线」的区别】前面的时间线来自 Copilot 对话消息（人做了什么），
+ * 这一节来自**遥测帧**（系统发生了什么）：告警何时出现、健康分何时跌破、
+ * 何时回升。复盘时两者对照，才能回答"是人没看到，还是数据没报出来"。
+ *
+ * @param input 复盘输入
+ * @returns 章节行数组；没有时间线时返回空数组（不输出空章节）
+ */
+function buildIncidentBufferSection(input: PostMortemInput): string[] {
+  const markdown = input.incidentTimelineMarkdown ?? '';
+  if (markdown.trim().length === 0) return [];
+  return [
+    '## 遥测帧事故时间线',
+    '',
+    '> 由最近 120 帧遥测快照自动推导（每秒 1 帧，约 2 分钟窗口），相对时间为缓冲内偏移。',
+    '',
+    markdown,
+    '',
+  ];
+}
+
 function buildTimelineSection(model: SessionModel): string[] {
   const lines: string[] = [];
   lines.push('## 3. 时间线 (Timeline)');
@@ -1581,6 +1617,7 @@ export function buildPostMortemMarkdown(input: PostMortemInput): string {
     buildSummarySection(input, model),
     buildImpactSection(input, model),
     buildTimelineSection(model),
+    buildIncidentBufferSection(input),
     buildRootCauseSection(model),
     buildKnowledgeSection(model),
     buildRemediationSection(model),
@@ -1621,6 +1658,25 @@ export function buildPostMortemMarkdown(input: PostMortemInput): string {
  * @param nowMs 生成时刻的毫秒时间戳
  * @returns 形如 `kubevision-postmortem-20261108-133045.md` 的文件名
  */
+/**
+ * buildPostMortemMarkdownWithLiveTimeline —— 自动附带遥测帧时间线的复盘报告。
+ *
+ * 【与本文件其余部分的边界】这是**唯一有副作用的入口**：它会读取模块级
+ * 环形缓冲（最近 120 帧）。保留纯函数版本给测试与可复现场景使用，
+ * 现场导出报告时用这个包装器即可自动附上事故时间线。
+ *
+ * @param input 复盘输入（无需提供 incidentTimelineMarkdown）
+ * @returns Markdown 全文
+ */
+export function buildPostMortemMarkdownWithLiveTimeline(
+  input: Omit<PostMortemInput, 'incidentTimelineMarkdown'>,
+): string {
+  return buildPostMortemMarkdown({
+    ...input,
+    incidentTimelineMarkdown: renderIncidentTimelineMarkdown(),
+  });
+}
+
 export function buildPostMortemFilename(nowMs: number): string {
   const safeMs = Number.isFinite(nowMs) ? nowMs : 0;
   return `kubevision-postmortem-${formatTimestampCompact(safeMs)}.md`;

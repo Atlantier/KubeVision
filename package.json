@@ -28,6 +28,8 @@
     "probe:blackout": "node scripts/probe-blackout.mjs",
     "probe:r13": "node scripts/probe-r13.mjs",
     "verify:telemetry": "node scripts/verify-telemetry.mjs",
+    "verify:parity": "node scripts/verify-mode-parity.mjs",
+    "probe:health": "node scripts/probe-data-health.mjs",
     "docs:metrics": "node scripts/sync-docs-metrics.mjs",
     "docs:evidence": "node scripts/capture-evidence.mjs",
     "benchmark:consistency": "node scripts/benchmark-consistency.mjs",

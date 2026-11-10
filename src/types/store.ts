@@ -258,6 +258,18 @@ export interface ClusterState {
    */
   readonly isGlContextLost: boolean;
   /**
+   * 遥测是否处于「只读降级」。
+   *
+   * 【触发条件】收到 schemaVersion 缺失或高于客户端支持版本的帧。
+   * 此时停止应用新帧（保留最后一帧合法画面），HUD 显示明确提示。
+   * 为什么要「只读」而不是「尽力解析」：字段语义不确定时继续渲染，
+   * 会得到"画面在动但数字明显不对"的状态——这比停更更难排查，
+   * 也更损害可信度。
+   */
+  readonly telemetryReadOnly: boolean;
+  /** 只读降级的提示文案（null = 正常） */
+  readonly telemetrySchemaNotice: string | null;
+  /**
    * 导演是否已绕过动作卡直接执行（C 项）。
    *
    * 【解决什么矛盾】8 秒内动作卡未挂载时导演降级直调 healEntity，而旁白
@@ -331,6 +343,14 @@ export interface ClusterState {
 export interface ClusterActions {
   /** 选中实体（entityId=null 即取消选中，entityType 同步清空） */
   selectEntity: (entityId: string | null, entityType?: SelectedEntityType | null) => void;
+  /**
+   * setTelemetrySchemaState —— 写入遥测只读降级状态（schema 版本不匹配时）。
+   *
+   * @param readOnly 是否只读降级
+   * @param notice 提示文案（null 表示恢复正常）
+   */
+  setTelemetrySchemaState: (readOnly: boolean, notice: string | null) => void;
+
   /** 切换 demo/live 数据源模式 */
   setConnectionMode: (mode: ConnectionMode) => void;
   /** 触发/解除混沌工程场景 */

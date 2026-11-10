@@ -31,6 +31,13 @@ import { Activity, Cpu, Gauge, Layers, Radio, Triangle, X } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { useClusterStore } from '@/store/useClusterStore';
+import {
+  HEALTH_JITTER_WARN_MS,
+  HEALTH_NODE_DRIFT_WARN,
+  HEALTH_QPS_DEVIATION_WARN,
+  SUPPORTED_SCHEMA_VERSION,
+  telemetryHealthRef,
+} from '@/utils/telemetryHealth';
 
 /* ========================================================================== */
 /* 常量                                                                       */
@@ -129,6 +136,127 @@ function FpsSparkline({ values }: { readonly values: readonly number[] }) {
         strokeDasharray="2 3"
       />
     </svg>
+  );
+}
+
+/* ========================================================================== */
+/* 子组件：数据健康区块（零重渲染）                                              */
+/* ========================================================================== */
+
+/**
+ * DataHealthBlock —— 「我们连自己的数据都要监控」区块。
+ *
+ * 【零重渲染实现】本子组件**只订阅两个低频字段**（只读提示），
+ * 五个实时指标全部通过 rAF/定时器直接写 DOM 的 textContent 与 className，
+ * 不经过任何 setState —— 因此每 250ms 刷新一次也不会触发 React 渲染。
+ * 这与主 HUD 的 2Hz setState 采样是两套策略：主 HUD 字段少、可接受低频渲染；
+ * 数据健康区块要证明"监控自身数据不等于给自己增加负担"。
+ *
+ * 【为什么必须监控自己】QPS 复利漂移、节点随机游走、免疫改写、SSE 重连——
+ * 这些异常在 3D 画面上都"看不出来"。把偏差直接量化到 HUD 上，
+ * 才能在演示现场第一时间发现"画面还活着，但数据已经不对了"。
+ */
+function DataHealthBlock() {
+  const readOnly = useClusterStore((s): boolean => s.telemetryReadOnly);
+  const notice = useClusterStore((s): string | null => s.telemetrySchemaNotice);
+
+  const qpsRef = useRef<HTMLSpanElement | null>(null);
+  const driftRef = useRef<HTMLSpanElement | null>(null);
+  const jitterRef = useRef<HTMLSpanElement | null>(null);
+  const reconnectRef = useRef<HTMLSpanElement | null>(null);
+  const immuneRef = useRef<HTMLSpanElement | null>(null);
+  const schemaRef = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    /**
+     * 把数值写进对应 DOM 节点并同步告警配色。
+     *
+     * @param node 目标节点
+     * @param text 文本
+     * @param warn 是否告警（琥珀）
+     */
+    const paint = (node: HTMLSpanElement | null, text: string, warn: boolean): void => {
+      if (node === null) return;
+      node.textContent = text;
+      node.className = warn
+        ? 'font-mono text-[10px] font-bold tabular-nums text-amber-400'
+        : 'font-mono text-[10px] font-bold tabular-nums text-slate-200';
+    };
+
+    const update = (): void => {
+      const health = telemetryHealthRef.current;
+      const qpsPct = health.qpsDeviationRatio * 100;
+      paint(
+        qpsRef.current,
+        `${qpsPct >= 0 ? '+' : ''}${qpsPct.toFixed(1)}%`,
+        Math.abs(health.qpsDeviationRatio) > HEALTH_QPS_DEVIATION_WARN,
+      );
+      paint(driftRef.current, `${health.nodeDriftPct.toFixed(1)}pp`, health.nodeDriftPct > HEALTH_NODE_DRIFT_WARN);
+      paint(jitterRef.current, `${Math.round(health.frameJitterMs)}ms`, health.frameJitterMs > HEALTH_JITTER_WARN_MS);
+      paint(reconnectRef.current, `${health.sseReconnects}`, health.sseReconnects > 0);
+      paint(immuneRef.current, `${health.immuneRewrites}`, health.immuneRewrites > 0);
+      paint(
+        schemaRef.current,
+        health.schemaVersion === 0 ? '--' : `v${health.schemaVersion}`,
+        health.schemaVersion !== 0 && health.schemaVersion !== SUPPORTED_SCHEMA_VERSION,
+      );
+    };
+
+    update();
+    const timer = window.setInterval(update, 250);
+    return (): void => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="mt-1.5 rounded border border-slate-800 bg-slate-950/40 p-1.5" aria-label="数据健康">
+      <div className="flex items-baseline gap-1">
+        <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300/90">数据健康</span>
+        <span className="ml-auto font-mono text-[9px] text-slate-600">瞬态轨 · 零重渲染</span>
+      </div>
+
+      <div className="mt-1 space-y-0.5">
+        <div className="flex items-baseline gap-1.5">
+          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">QPS 偏差</span>
+          <span ref={qpsRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0.0%</span>
+          <span className="ml-auto font-mono text-[9px] text-slate-600">±{(HEALTH_QPS_DEVIATION_WARN * 100).toFixed(0)}%</span>
+        </div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">节点水位偏离</span>
+          <span ref={driftRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0.0pp</span>
+          <span className="ml-auto font-mono text-[9px] text-slate-600">&le;{HEALTH_NODE_DRIFT_WARN}pp</span>
+        </div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">快照间隔抖动</span>
+          <span ref={jitterRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0ms</span>
+          <span className="ml-auto font-mono text-[9px] text-slate-600">&le;{HEALTH_JITTER_WARN_MS}ms</span>
+        </div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">SSE 重连</span>
+          <span ref={reconnectRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0</span>
+          <span className="ml-auto font-mono text-[9px] text-slate-600">次</span>
+        </div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">免疫改写</span>
+          <span ref={immuneRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0</span>
+          <span className="ml-auto font-mono text-[9px] text-slate-600">条</span>
+        </div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">协议版本</span>
+          <span ref={schemaRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">--</span>
+          <span className="ml-auto font-mono text-[9px] text-slate-600">期望 v{SUPPORTED_SCHEMA_VERSION}</span>
+        </div>
+      </div>
+
+      {readOnly ? (
+        <p
+          className="mt-1 rounded border border-rose-500/40 bg-rose-500/10 px-1.5 py-1 font-mono text-[9px] leading-snug text-rose-300"
+          role="status"
+          aria-label="遥测只读提示"
+        >
+          {notice ?? '遥测协议不匹配，已切换只读'}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -343,9 +471,12 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
           : '--'}
       </div>
 
+      {/* ============ 数据健康（追问：连自己的数据都要监控） ============ */}
+      <DataHealthBlock />
+
       {/* ============ 数据来源说明 ============ */}
       <p className="mt-1 font-mono text-[10px] leading-relaxed text-slate-700">
-        数据源：telemetryTransientRef.glStats（瞬态轨 · 零重渲染采样）
+        数据源：telemetryTransientRef.glStats + telemetryHealthRef（瞬态轨 · 零重渲染采样）
       </p>
     </motion.div>
   );

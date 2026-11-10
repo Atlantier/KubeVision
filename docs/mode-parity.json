@@ -1,0 +1,134 @@
+{
+  "generatedAt": "2026-11-10T06:31:01.882Z",
+  "ticks": 40,
+  "scenarios": [
+    {
+      "scenario": "POD_OOM_SWARM",
+      "name": "OOM 风暴",
+      "pass": true,
+      "victimCount": {
+        "demo": 3,
+        "live": 3,
+        "match": true
+      },
+      "victimIdsMatch": true,
+      "nodeStatus": {
+        "demo": [
+          "0:Ready",
+          "1:Ready",
+          "2:Ready"
+        ],
+        "live": [
+          "0:Ready",
+          "1:Ready",
+          "2:Ready"
+        ],
+        "match": true
+      },
+      "alertLevels": {
+        "demo": {
+          "P0": 3,
+          "P1": 0,
+          "P2": 0
+        },
+        "live": {
+          "P0": 3,
+          "P1": 0,
+          "P2": 0
+        },
+        "match": true
+      },
+      "healthScore": {
+        "demo": 77,
+        "live": 77,
+        "match": true
+      }
+    },
+    {
+      "scenario": "NET_PACKET_LOSS",
+      "name": "网络丢包",
+      "pass": true,
+      "victimCount": {
+        "demo": 2,
+        "live": 2,
+        "match": true
+      },
+      "victimIdsMatch": true,
+      "nodeStatus": {
+        "demo": [
+          "0:Ready",
+          "1:Ready",
+          "2:NetworkPartition"
+        ],
+        "live": [
+          "0:Ready",
+          "1:Ready",
+          "2:NetworkPartition"
+        ],
+        "match": true
+      },
+      "alertLevels": {
+        "demo": {
+          "P0": 1,
+          "P1": 0,
+          "P2": 0
+        },
+        "live": {
+          "P0": 1,
+          "P1": 0,
+          "P2": 0
+        },
+        "match": true
+      },
+      "healthScore": {
+        "demo": 81,
+        "live": 81,
+        "match": true
+      }
+    },
+    {
+      "scenario": "NODE_CPU_SPIKE",
+      "name": "CPU 尖峰",
+      "pass": true,
+      "victimCount": {
+        "demo": 0,
+        "live": 0,
+        "match": true
+      },
+      "victimIdsMatch": true,
+      "nodeStatus": {
+        "demo": [
+          "0:HighLoad",
+          "1:Ready",
+          "2:Ready"
+        ],
+        "live": [
+          "0:HighLoad",
+          "1:Ready",
+          "2:Ready"
+        ],
+        "match": true
+      },
+      "alertLevels": {
+        "demo": {
+          "P0": 0,
+          "P1": 1,
+          "P2": 0
+        },
+        "live": {
+          "P0": 0,
+          "P1": 1,
+          "P2": 0
+        },
+        "match": true
+      },
+      "healthScore": {
+        "demo": 93,
+        "live": 93,
+        "match": true
+      }
+    }
+  ],
+  "matches": 3,
+  "mismatches": 0
+}

@@ -139,6 +139,35 @@ function renderVerify(summary) {
   return `**通过 ${summary.pass} · 失败 ${summary.fail} · 跳过 ${summary.skip}（共 ${summary.total} 项）**`;
 }
 
+/**
+ * 由 mode-parity.json 生成 demo/live 故障语义对照表。
+ *
+ * @param report verify-mode-parity 产出（缺失时为 null）
+ * @returns Markdown 表格文本
+ */
+function renderParity(report) {
+  if (report === null) {
+    return '未采集（先运行 `node scripts/verify-mode-parity.mjs`）';
+  }
+  const rows = [
+    '| 混沌场景 | 受害者数（demo / live） | 节点状态（demo / live） | 告警级别（demo / live） | 语义一致性 |',
+    '|---|---|---|---|---|',
+  ];
+  for (const item of report.scenarios) {
+    rows.push(
+      `| ${item.name}（${item.scenario}） | ${item.victimCount.demo} / ${item.victimCount.live} | ` +
+        `[${item.nodeStatus.demo.join(', ')}] / [${item.nodeStatus.live.join(', ')}] | ` +
+        `P0:${item.alertLevels.demo.P0}·P1:${item.alertLevels.demo.P1}·P2:${item.alertLevels.demo.P2} / ` +
+        `P0:${item.alertLevels.live.P0}·P1:${item.alertLevels.live.P1}·P2:${item.alertLevels.live.P2} | ` +
+        `${item.pass ? '一致' : '不一致'} |`,
+    );
+  }
+  rows.push('');
+  rows.push(
+    `> 采集时间 ${formatTime(report.generatedAt)} · ${report.ticks} tick 演进 · 语义一致 ${report.matches}/${report.scenarios.length} 场景。`,
+  );
+  return rows.join('\n');
+}
 /* ========================================================================== */
 /* 替换区块                                                                    */
 /* ========================================================================== */
@@ -198,6 +227,9 @@ const report = JSON.parse(readFileSync(perfPath, 'utf8'));
 const verifyPath = join(ROOT, 'docs/verify-summary.json');
 const summary = existsSync(verifyPath) ? JSON.parse(readFileSync(verifyPath, 'utf8')) : null;
 
+const parityPath = join(ROOT, 'docs/mode-parity.json');
+const parity = existsSync(parityPath) ? JSON.parse(readFileSync(parityPath, 'utf8')) : null;
+
 const metricsBlock = renderMetrics(report);
 const verifyBlock = renderVerify(summary);
 
@@ -232,6 +264,10 @@ for (const rel of TARGETS) {
   } else {
     next = afterVerify;
   }
+
+  /* PARITY 区块只存在于白皮书；缺失不算错误（README 没有这一节） */
+  const afterParity = replaceBlock(next, 'PARITY', renderParity(parity));
+  if (afterParity !== null) next = afterParity;
 
   if (next === original) {
     console.log(`  = ${rel} 已是最新`);

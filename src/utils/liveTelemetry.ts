@@ -32,6 +32,7 @@
 import os from 'node:os';
 import { readFileSync } from 'node:fs';
 
+import { TELEMETRY_SCHEMA_VERSION } from '@/types/cluster';
 import type {
   AlertEvent,
   AlertLevel,
@@ -473,6 +474,7 @@ function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
     summary,
     snapshot: {
       timestamp: timestampMs,
+      schemaVersion: TELEMETRY_SCHEMA_VERSION,
       clusterHealthScore: healthScore,
       totalQps,
       nodes,
@@ -729,6 +731,7 @@ function buildK8sSnapshot(
     summary,
     snapshot: {
       timestamp: timestampMs,
+      schemaVersion: TELEMETRY_SCHEMA_VERSION,
       clusterHealthScore: healthScore,
       totalQps: Math.max(0, Math.round(600 + pods.length * 25)),
       nodes: workerNodes,

@@ -32,7 +32,7 @@
  *   不会无界漂移，视觉上呈现自然的呼吸感而非乱跳。
  */
 
-import { INITIAL_CLUSTER_SNAPSHOT } from '@/types/cluster';
+import { INITIAL_CLUSTER_SNAPSHOT, TELEMETRY_SCHEMA_VERSION } from '@/types/cluster';
 import type {
   AlertEvent,
   ChaosScenario,
@@ -946,6 +946,7 @@ export function stepTelemetrySimulation(
   /* ---- 6. 组装中间快照（告警需要读取已演进的实体状态，故先构造再补告警） ---- */
   const intermediate: TelemetrySnapshot = {
     timestamp: prevSnapshot.timestamp + TICK_INTERVAL_MS,
+    schemaVersion: TELEMETRY_SCHEMA_VERSION,
     clusterHealthScore: HEALTH_SCORE_MAX,
     totalQps,
     nodes: nextNodes,
@@ -1078,6 +1079,7 @@ export function applyLiveChaosOverlay(
   const intermediate: TelemetrySnapshot = {
     /* 时间戳沿用真实快照：live 模式的时间基准不可被改写 */
     timestamp: snapshot.timestamp,
+    schemaVersion: TELEMETRY_SCHEMA_VERSION,
     clusterHealthScore: HEALTH_SCORE_MAX,
     totalQps,
     nodes: nextNodes,

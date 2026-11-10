@@ -40,6 +40,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useClusterStore } from '@/store/useClusterStore';
 import { syncSnapshotToTransientRef, telemetryTransientRef } from '@/store/useTelemetryRef';
 import { TICK_INTERVAL_MS, computeClusterHealthScore, stepTelemetrySimulation } from '@/utils/syntheticEngine';
+import {
+  recordImmuneRewrites,
+  recordSchemaStatus,
+  recordSseReconnect,
+  recordTelemetryFrame,
+  resetTelemetryHealthBaseline,
+} from '@/utils/telemetryHealth';
+import { clearFrameBuffer, pushSnapshotFrame } from '@/utils/snapshotRingBuffer';
+import { TELEMETRY_SCHEMA_VERSION } from '@/types/cluster';
 import type { PodEntity, TelemetrySnapshot } from '@/types/cluster';
 import type { ConnectionMode } from '@/types/store';
 import type { TelemetryStreamState, TelemetryTransport, UseTelemetryStreamOptions } from '@/types/hooks';
@@ -610,6 +619,21 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
         immuneSmoothingRef.current,
       );
 
+      /*
+       * ---- 数据健康度量（瞬态轨，零重渲染） ----
+       * 这里把「QPS 偏差 / 节点水位偏离 / 帧间隔抖动」等指标写入模块单例，
+       * Shift+P 的 HUD 用 rAF 直读、不走 React 状态。
+       * 免疫改写条数单独累计：它是"我们改过数据"的自我审计，必须可见。
+       */
+      recordTelemetryFrame(reconciled);
+      if (reconciledCount > 0) recordImmuneRewrites(reconciledCount);
+
+      /*
+       * ---- 环形缓冲：保留最近 120 帧（约 2 分钟）供复盘报告使用 ----
+       * 存的是**免疫合并后**的展示帧：复盘报告的叙事应当与观众当时看到的一致。
+       */
+      pushSnapshotFrame(reconciled);
+
       /* ---- 3. 双轨分发 ---- */
       /* 轨一：瞬态池（Float32Array 原地写入，useFrame 下一帧 Lerp，零重渲染） */
       syncSnapshotToTransientRef(reconciled);
@@ -674,6 +698,14 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
     errorCountRef.current = 0;
     setConsecutiveErrors(0);
     setTransportBothRef.current('connecting');
+
+    /*
+     * ---- 数据健康：重连计数 + 抖动基线重置 ----
+     * 每次建立新连接都记一次重连（切 chaos、降级重建都算），并把帧间隔基线清零——
+     * 否则"断流 8 秒后的首帧间隔"会被当成一次巨大抖动，污染 HUD。
+     */
+    recordSseReconnect();
+    resetTelemetryHealthBaseline();
 
     /**
      * 重置延迟统计基线：旧连接末帧与新连接首帧之间的间隔无意义
@@ -791,6 +823,31 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
         if (!Array.isArray(parsed.pods) || !Array.isArray(parsed.nodes)) {
           return;
         }
+
+        /*
+         * ---- schema 版本协商（未知版本 → 只读降级）----
+         *
+         * 只接受与客户端完全一致的版本：
+         * · 缺失（undefined）说明对端是旧协议，字段语义无法保证；
+         * · 高于支持版本说明服务端已升级，新字段/新语义客户端不认识。
+         * 两种情况都**不再应用新帧**，保留最后一帧合法画面，并由 HUD/顶栏提示。
+         * "尽力解析"在这里是错误策略——画面对但数据错比停更更危险。
+         */
+        const version = typeof parsed.schemaVersion === 'number' ? parsed.schemaVersion : 0;
+        if (version !== TELEMETRY_SCHEMA_VERSION) {
+          recordSchemaStatus(version, true);
+          useClusterStore.getState().setTelemetrySchemaState(
+            true,
+            `遥测协议版本不匹配（服务端 v${version === 0 ? '未知' : version}，客户端 v${TELEMETRY_SCHEMA_VERSION}）· 已切换只读`,
+          );
+          return;
+        }
+        /* 版本合法：清除可能残留的只读提示 */
+        if (useClusterStore.getState().telemetryReadOnly) {
+          useClusterStore.getState().setTelemetrySchemaState(false, null);
+        }
+        recordSchemaStatus(version, false);
+
         /* 成功收到有效帧：清零错误计数并确认 SSE 通道 */
         errorCountRef.current = 0;
         setConsecutiveErrors(0);
