@@ -45,6 +45,7 @@ import type {
   ActionConfirmProps,
   ChatMessage,
   ChatRequestBody,
+  PixelFeatures,
   ChatStreamEvent,
   ClusterContext,
   ClusterFaultSnapshot,
@@ -2065,6 +2066,39 @@ function emitMissingCards(params: {
  * 【为何 450ms 而非 300ms】仿真器没有真实网络耗时，骨架屏若只停留 300ms
  * 几乎无法被感知；450ms 刚好让用户看清「正在调用工具」这层信息。
  */
+/**
+ * renderPixelObservation —— 把端侧像素特征渲染成引擎 B 的"画面空间观察"。
+ *
+ * @param features 端侧统计
+ * @returns Markdown 片段
+ */
+function renderPixelObservation(features: PixelFeatures): string {
+  const regionLabel =
+    features.redRegion === 'left'
+      ? '左前（近似 worker-alpha 机架方向）'
+      : features.redRegion === 'right'
+        ? '右前（近似 worker-gamma 机架方向）'
+        : features.redRegion === 'center'
+          ? '中部（近似 worker-beta 机架方向）'
+          : '无红色区域';
+  const pct = (value: number): string => (value * 100).toFixed(1) + '%';
+  const lines = [
+    '',
+    '',
+    '### 画面空间观察（端侧像素统计，非多模态模型）',
+    '',
+    '- 红色热区：' + features.redClusters + ' 个连通块，质心位于' + regionLabel +
+      '（x=' + features.redCentroidX.toFixed(2) + ', y=' + features.redCentroidY.toFixed(2) + '）',
+    '- 颜色占比：红 ' + pct(features.redRatio) + ' · 琥珀 ' + pct(features.amberRatio) +
+      ' · 绿 ' + pct(features.greenRatio) + ' · 青 ' + pct(features.cyanRatio),
+    '- 中央带占比（机架投影近似）：' + pct(features.redCenterBandRatio),
+    '',
+    '> 以上为端侧 canvas 颜色统计的近似观察，用于无 Key 场景的快速空间定位，不替代多模态模型。',
+    '',
+  ];
+  return lines.join('\n');
+}
+
 async function streamWithSimulator(params: {
   readonly ctx: ClusterContext;
   /** 本次意图：决定产出几张卡、产出哪几张 */
@@ -2077,14 +2111,17 @@ async function streamWithSimulator(params: {
   readonly signal: AbortSignal;
   /** 工具调用账本（只补缺失卡片，避免回落时重复产出） */
   readonly ledger: ToolCallLedger;
+  /** R46：端侧像素特征（可选；缺失时绝不编造画面观察） */
+  readonly pixelFeatures?: PixelFeatures;
 }): Promise<void> {
-  const { ctx, runbooks, intent, hasImage, onFirstToolCall, emit, signal, ledger } = params;
+  const { ctx, runbooks, intent, hasImage, onFirstToolCall, emit, signal, ledger, pixelFeatures } = params;
 
   /* ---- 1. 构造报告（按意图选用不同的正文模板） ---- */
-  const report =
+  const baseReport =
     intent === 'GREETING_OR_CHITCHAT'
       ? buildGreetingReport(ctx)
       : buildSimulatorReport(ctx, runbooks, hasImage);
+  const report = pixelFeatures === undefined ? baseReport : baseReport + renderPixelObservation(pixelFeatures);
 
   /* ---- 2. 打字机推文本（按块推送，避免逐字符造成过多帧） ---- */
   const cps = Math.max(10, Number(process.env.SIM_TYPING_CPS ?? String(DEFAULT_TYPING_CPS)));
@@ -2357,6 +2394,29 @@ async function parseRequestBody(request: Request): Promise<ChatRequestBody | nul
   /* ---- customRunbooks：可选，逐字段规范化 ---- */
   const customRunbooks = normalizeCustomRunbooks(obj.customRunbooks);
 
+  /* ---- pixelFeatures：可选，逐字段收敛到 [0,1] / 非负整数 ---- */
+  let pixelFeatures: PixelFeatures | undefined;
+  if (typeof obj.pixelFeatures === 'object' && obj.pixelFeatures !== null) {
+    const pf = obj.pixelFeatures as Record<string, unknown>;
+    const ratio = (value: unknown): number =>
+      typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+    const region = pf.redRegion;
+    pixelFeatures = {
+      redRatio: ratio(pf.redRatio),
+      amberRatio: ratio(pf.amberRatio),
+      greenRatio: ratio(pf.greenRatio),
+      cyanRatio: ratio(pf.cyanRatio),
+      redCentroidX: ratio(pf.redCentroidX),
+      redCentroidY: ratio(pf.redCentroidY),
+      redClusters:
+        typeof pf.redClusters === 'number' && Number.isFinite(pf.redClusters)
+          ? Math.max(0, Math.min(64, Math.round(pf.redClusters)))
+          : 0,
+      redRegion: region === 'left' || region === 'center' || region === 'right' ? region : 'none',
+      redCenterBandRatio: ratio(pf.redCenterBandRatio),
+    };
+  }
+
   /* ---- queryEmbedding：可选，必须 384 维且全部有限（否则退回两路） ---- */
   let queryEmbedding: readonly number[] | undefined;
   if (Array.isArray(obj.queryEmbedding) && obj.queryEmbedding.length === 384) {
@@ -2372,6 +2432,7 @@ async function parseRequestBody(request: Request): Promise<ChatRequestBody | nul
     ...(viewportImage !== undefined ? { viewportImage } : {}),
     ...(customRunbooks.length > 0 ? { customRunbooks } : {}),
     ...(queryEmbedding !== undefined ? { queryEmbedding } : {}),
+    ...(pixelFeatures !== undefined ? { pixelFeatures } : {}),
   };
 }
 
@@ -2899,6 +2960,7 @@ export async function POST(request: Request): Promise<Response> {
               intent,
               runbooks,
               hasImage,
+              pixelFeatures: body.pixelFeatures,
               onFirstToolCall: ensureMcpStep,
               emit,
               signal,
@@ -2928,6 +2990,7 @@ export async function POST(request: Request): Promise<Response> {
             intent,
             runbooks,
             hasImage,
+            pixelFeatures: body.pixelFeatures,
             onFirstToolCall: ensureMcpStep,
             emit,
             signal,

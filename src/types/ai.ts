@@ -692,6 +692,24 @@ export interface ChatMessage {
  * 存在时引擎会额外推送 MULTIMODAL_VISION 推理步骤，并在有 Key 时
  * 走多模态模型通道。
  */
+/**
+ * R46：端侧像素特征（无多模态 Key 时引擎 B 的"看图"依据）。
+ *
+ * 【来源】客户端在发送前用 canvas 对 3D 视口截图做颜色统计；全部为近似值，
+ * 其中 redCenterBandRatio 以屏幕中央 40% 横向带作为"机架投影区"的代理。
+ */
+export interface PixelFeatures {
+  readonly redRatio: number;
+  readonly amberRatio: number;
+  readonly greenRatio: number;
+  readonly cyanRatio: number;
+  readonly redCentroidX: number;
+  readonly redCentroidY: number;
+  readonly redClusters: number;
+  readonly redRegion: 'left' | 'center' | 'right' | 'none';
+  readonly redCenterBandRatio: number;
+}
+
 export interface ChatRequestBody {
   /** 对话历史（至少一条 user 消息） */
   readonly messages: readonly ChatMessage[];
@@ -705,6 +723,8 @@ export interface ChatRequestBody {
    * 【降级】端侧模型未就绪 / 300ms 超时 → 不发送；服务端自动退回两路召回。
    */
   readonly queryEmbedding?: readonly number[];
+  /** R46：端侧像素特征（可选；缺失时引擎 B 不编造画面观察） */
+  readonly pixelFeatures?: PixelFeatures;
   /**
    * 客户端携带的自定义 Runbook 语料（可选）。
    *

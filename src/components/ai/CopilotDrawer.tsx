@@ -76,6 +76,7 @@ import { cn } from '@/utils/cn';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
 import AgentTracePanel from '@/components/ai/AgentTracePanel';
 import { embedQueryText } from '@/utils/edgeEmbedding';
+import { computeViewportPixelFeatures } from '@/utils/pixelFeatures';
 import TraceIdChip from '@/components/hud/TraceIdChip';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
@@ -1567,6 +1568,10 @@ export default function CopilotDrawer() {
         setCapturedViewport(null);
       }
 
+      /* R46：无 Key 也能真看图 —— 端侧计算像素特征（无截图则跳过） */
+      const pixelFeatures =
+        viewportForSend === null ? null : await computeViewportPixelFeatures(viewportForSend);
+
       /* ---- 1. 用户消息入列 ---- */
       const userMessage: CopilotMessage = {
         id: makeId('user'),
@@ -1630,6 +1635,7 @@ export default function CopilotDrawer() {
             messages: history,
             clusterContext: buildClusterContext(),
             ...(viewportForSend !== null ? { viewportImage: viewportForSend } : {}),
+            ...(pixelFeatures !== null ? { pixelFeatures } : {}),
             /*
              * 【自定义语料随请求上送】
              *
