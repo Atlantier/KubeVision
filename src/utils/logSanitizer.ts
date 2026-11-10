@@ -60,13 +60,239 @@ export interface SanitizeResult {
  * 变得不可回答；抽成表后，新增一类敏感信息只是往表里加一项，
  * 且顺序即优先级，一眼可见。
  */
-interface SanitizerRule {
+export interface SanitizerRule {
   /** 规则可读名（用于诊断与文档） */
   readonly name: string;
   /** 匹配模式（必须带 g 标志以支持全局替换与计数） */
   readonly pattern: RegExp;
   /** 替换为的语义化占位符 */
   readonly placeholder: string;
+}
+
+/* ========================================================================== */
+/* 可配置化与 ReDoS 防护（Q6）                                                   */
+/* ========================================================================== */
+
+/** 单次脱敏允许处理的最大字符数（超出部分截断，防止超长输入放大回溯成本） */
+export const MAX_SANITIZER_INPUT_CHARS = 65_536;
+
+/** 单条规则的执行时间预算（毫秒）——超出后该规则会被禁用 */
+export const CUSTOM_RULE_TIMEOUT_MS = 100;
+
+/** 自定义规则条数上限（避免用户塞进一整套正则库拖慢每条日志） */
+export const MAX_CUSTOM_RULES = 10;
+
+/** 自定义正则的源码长度上限 */
+export const MAX_RULE_PATTERN_LENGTH = 500;
+
+/** 自定义规则 —— 用户/插件提供的额外脱敏规则 */
+export interface CustomSanitizerRule {
+  /** 规则可读名（必须唯一，用于分类计数与违规上报） */
+  readonly name: string;
+  /** 正则源码字符串（不接受已有 RegExp，避免跨 realm 的 lastIndex 污染） */
+  readonly pattern: string;
+  /** 替换为的占位符（可含 $1/$2 捕获组引用） */
+  readonly placeholder: string;
+}
+
+/** 脱敏引擎的一次违规记录 */
+export interface SanitizerViolation {
+  /** 规则名 */
+  readonly rule: string;
+  /** 违规类型 */
+  readonly kind:
+    | 'invalid-pattern'
+    | 'redos-suspect'
+    | 'too-many-rules'
+    | 'pattern-too-long'
+    | 'rule-budget-exceeded'
+    | 'input-truncated';
+  /** 人类可读说明 */
+  readonly detail: string;
+}
+
+/** 引擎选项 */
+export interface SanitizerEngineOptions {
+  /** 自定义规则（在内置规则之后执行） */
+  readonly customRules?: readonly CustomSanitizerRule[];
+  /** 输入长度上限，缺省 MAX_SANITIZER_INPUT_CHARS */
+  readonly maxInputChars?: number;
+  /** 单条规则时间预算，缺省 CUSTOM_RULE_TIMEOUT_MS */
+  readonly ruleTimeoutMs?: number;
+}
+
+/**
+ * looksLikeRedos —— 静态识别高危正则结构。
+ *
+ * 【为什么必须做静态检查】JavaScript 的正则在同一线程内**不可抢占**，
+ * 一旦遇到灾难性回溯，任何"运行中熔断"都来不及生效（线程已被占住）。
+ * 因此唯一可靠的第一道防线是**编译前拒绝**已知的危险结构：
+ *
+ * 1. 嵌套量词：`(a+)+` / `(a*)*` / `(?:\w+)++` —— 经典 ReDoS 形态；
+ * 2. 带量词的分组内部存在歧义交替：`(a|aa)+`；
+ * 3. 连续量词（`a**`、`a+?` 之外的 `a++` 等）在 JS 中本就非法，无需处理。
+ *
+ * 启发式无法覆盖所有 ReDoS，因此还有第二道防线（输入上限）与第三道
+ * （时间预算 + 超预算禁用规则），三层叠加把风险压到可接受范围。
+ *
+ * @param source 正则源码
+ * @returns 疑似 ReDoS 时返回 true
+ */
+function looksLikeRedos(source: string): boolean {
+  /* 嵌套量词：分组内容里出现量词，分组本身又被量词修饰 */
+  const nestedQuantifier = new RegExp(String.raw`\((?:\?:)?[^()]*[+*]\)[+*]`);
+  /* 分组内歧义交替 + 外层量词 */
+  const ambiguousAlternation = new RegExp(String.raw`\((?:\?:)?[^()]*\|[^()]*\)[+*]`);
+  /* 量词出现在分组中段、外层再套量词 */
+  const mixedNested = new RegExp(String.raw`\((?:\?:)?[^()]*[+*][^()]*\)[+*]`);
+
+  return nestedQuantifier.test(source) || ambiguousAlternation.test(source) || mixedNested.test(source);
+}
+/**
+ * buildCustomRules —— 校验并编译自定义规则。
+ *
+ * @param customRules 用户规则
+ * @param violations 违规收集器（原地追加）
+ * @returns 可执行规则数组
+ */
+function buildCustomRules(
+  customRules: readonly CustomSanitizerRule[],
+  violations: SanitizerViolation[],
+): SanitizerRule[] {
+  const compiled: SanitizerRule[] = [];
+
+  if (customRules.length > MAX_CUSTOM_RULES) {
+    violations.push({
+      rule: '*',
+      kind: 'too-many-rules',
+      detail: `自定义规则 ${customRules.length} 条，超过上限 ${MAX_CUSTOM_RULES}；仅前 ${MAX_CUSTOM_RULES} 条生效`,
+    });
+  }
+
+  for (const rule of customRules.slice(0, MAX_CUSTOM_RULES)) {
+    if (rule.pattern.length > MAX_RULE_PATTERN_LENGTH) {
+      violations.push({
+        rule: rule.name,
+        kind: 'pattern-too-long',
+        detail: `正则长度 ${rule.pattern.length} 超过上限 ${MAX_RULE_PATTERN_LENGTH}`,
+      });
+      continue;
+    }
+    if (looksLikeRedos(rule.pattern)) {
+      violations.push({
+        rule: rule.name,
+        kind: 'redos-suspect',
+        detail: '检测到嵌套量词/歧义交替结构，已拒绝该规则',
+      });
+      continue;
+    }
+    try {
+      /* 统一补 g 标志：替换与计数都依赖全局匹配；不保留用户的其他标志，避免 y/u 带来的行为差异 */
+      compiled.push({ name: rule.name, pattern: new RegExp(rule.pattern, 'g'), placeholder: rule.placeholder });
+    } catch {
+      violations.push({
+        rule: rule.name,
+        kind: 'invalid-pattern',
+        detail: '正则编译失败（语法错误）',
+      });
+    }
+  }
+  return compiled;
+}
+
+/** 脱敏引擎实例 */
+export interface SanitizerEngine {
+  /** 当前生效的规则（内置 + 通过校验的自定义规则） */
+  readonly rules: readonly SanitizerRule[];
+  /** 引擎构建期与运行期的违规记录（只增） */
+  readonly violations: readonly SanitizerViolation[];
+  /** 执行脱敏 */
+  readonly sanitize: (raw: string) => SanitizeResult;
+}
+
+/**
+ * createSanitizerEngine —— 构建带 ReDoS 防护的可配置脱敏引擎。
+ *
+ * 【三层防护】
+ * 1. 静态拒绝高危正则（见 looksLikeRedos）；
+ * 2. 输入长度上限（默认 64K 字符，超出截断并记违规）；
+ * 3. 单规则 100ms 预算：超预算的规则被**永久禁用**（后续日志不再执行），
+ *    并记录 rule-budget-exceeded。
+ *
+ * 【诚实边界】第 3 层无法中止**已经在跑**的那一次正则（JS 同步正则不可抢占），
+ * 它保证的是"不重复付出代价"。真正彻底的方案是把自定义规则放进 Worker 并在
+ * 100ms 后 terminate，本模块保留该扩展点。
+ *
+ * @param options 引擎选项
+ * @returns 引擎实例
+ */
+export function createSanitizerEngine(options: SanitizerEngineOptions = {}): SanitizerEngine {
+  const violations: SanitizerViolation[] = [];
+  const customRules = buildCustomRules(options.customRules ?? [], violations);
+  const disabledRules = new Set<string>();
+  const maxInputChars = options.maxInputChars ?? MAX_SANITIZER_INPUT_CHARS;
+  const ruleTimeoutMs = options.ruleTimeoutMs ?? CUSTOM_RULE_TIMEOUT_MS;
+
+  const allRules: SanitizerRule[] = [...SANITIZER_RULES, ...customRules];
+
+  const sanitize = (raw: string): SanitizeResult => {
+    if (typeof raw !== 'string' || raw.length === 0) {
+      return { sanitized: typeof raw === 'string' ? raw : '', maskedCount: 0 };
+    }
+
+    let input = raw;
+    if (input.length > maxInputChars) {
+      input = input.slice(0, maxInputChars);
+      violations.push({
+        rule: '*',
+        kind: 'input-truncated',
+        detail: `输入 ${raw.length} 字符超过上限 ${maxInputChars}，仅处理前 ${maxInputChars} 字符`,
+      });
+    }
+
+    let sanitized = input;
+    let maskedCount = 0;
+    const maskedByRule: Record<string, number> = {};
+
+    for (const rule of allRules) {
+      if (disabledRules.has(rule.name)) continue;
+
+      const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      let ruleMasked = 0;
+      sanitized = sanitized.replace(rule.pattern, (...args: unknown[]): string => {
+        const match = String(args[0] ?? '');
+        if (PLACEHOLDER_TEST.test(match)) return match;
+        ruleMasked += 1;
+        return rule.placeholder.replace(/\$(\d)/g, (_token, index: string): string => {
+          const group = args[Number(index)];
+          return group === undefined ? '' : String(group);
+        });
+      });
+      const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt;
+
+      if (ruleMasked > 0) {
+        maskedCount += ruleMasked;
+        maskedByRule[rule.name] = (maskedByRule[rule.name] ?? 0) + ruleMasked;
+      }
+
+      /*
+       * 时间预算：本轮已经跑完无法中止，但超预算规则从下一次开始禁用，
+       * 避免每条日志都重复付出 100ms+ 的代价。
+       */
+      if (elapsed > ruleTimeoutMs) {
+        disabledRules.add(rule.name);
+        violations.push({
+          rule: rule.name,
+          kind: 'rule-budget-exceeded',
+          detail: `单次执行 ${elapsed.toFixed(1)}ms 超过预算 ${ruleTimeoutMs}ms，该规则已禁用`,
+        });
+      }
+    }
+
+    return { sanitized, maskedCount, maskedByRule };
+  };
+
+  return { rules: allRules, violations, sanitize };
 }
 
 /* ========================================================================== */

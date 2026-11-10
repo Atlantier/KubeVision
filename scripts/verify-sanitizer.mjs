@@ -217,6 +217,103 @@ console.log('▸ 4. Unicode / 超长 / 批量');
   is('20.1 hasSensitiveData 与 sanitizeRawLog 口径一致', consistent, true);
 }
 
+
+/* ========================================================================== */
+/* 5. Q6 · 可配置规则 + ReDoS 防护                                               */
+/* ========================================================================== */
+
+const { createSanitizerEngine } = require(join(OUT, 'logSanitizer.cjs'));
+
+console.log('\n▸ 5. 可配置规则（自定义正则 + ReDoS 防护）');
+
+/* 5.1 自定义规则生效并计数 */
+{
+  const engine = createSanitizerEngine({
+    customRules: [{ name: 'ticket-id', pattern: 'TICKET-\\d{6}', placeholder: '[REDACTED_TICKET]' }],
+  });
+  const r = engine.sanitize('incident TICKET-123456 opened by peer 10.0.0.9');
+  is('5.1 自定义规则命中并替换', r.sanitized.includes('[REDACTED_TICKET]'), true);
+  is('5.1b 自定义规则计入分类计数', r.maskedByRule['ticket-id'], 1);
+  is('5.1c 内置 IP 规则同时生效', r.sanitized.includes('[REDACTED_IP]'), true);
+}
+
+/* 5.2 自定义规则幂等（占位符不重复计数） */
+{
+  const engine = createSanitizerEngine({
+    customRules: [{ name: 'ticket-id', pattern: 'TICKET-\\d{6}', placeholder: '[REDACTED_TICKET]' }],
+  });
+  const once = engine.sanitize('incident TICKET-123456');
+  const twice = engine.sanitize(once.sanitized);
+  is('5.2 自定义规则二次脱敏文本不变', twice.sanitized, once.sanitized);
+  is('5.2b 自定义规则二次脱敏计数为 0', twice.maskedCount, 0);
+}
+
+/* 5.3 嵌套量词 ReDoS 被拒绝 */
+{
+  const engine = createSanitizerEngine({
+    customRules: [{ name: 'evil', pattern: '(a+)+$', placeholder: '[X]' }],
+  });
+  const violations = engine.violations.filter((v) => v.rule === 'evil');
+  is('5.3 嵌套量词被拒绝', violations.map((v) => v.kind), ['redos-suspect']);
+  is('5.3b 被拒绝规则未进入生效列表', engine.rules.some((r) => r.name === 'evil'), false);
+}
+
+/* 5.4 歧义交替 ReDoS 被拒绝 */
+{
+  const engine = createSanitizerEngine({
+    customRules: [{ name: 'evil2', pattern: '(a|aa)+$', placeholder: '[X]' }],
+  });
+  is('5.4 歧义交替被拒绝', engine.violations.some((v) => v.rule === 'evil2' && v.kind === 'redos-suspect'), true);
+}
+
+/* 5.5 非法正则被拒绝且不抛错 */
+{
+  const engine = createSanitizerEngine({
+    customRules: [{ name: 'bad', pattern: '[', placeholder: '[X]' }],
+  });
+  is('5.5 非法正则被拒绝', engine.violations.some((v) => v.rule === 'bad' && v.kind === 'invalid-pattern'), true);
+  const r = engine.sanitize('peer 10.0.0.1 down');
+  is('5.5b 引擎仍可正常脱敏', r.sanitized.includes('[REDACTED_IP]'), true);
+}
+
+/* 5.6 规则条数上限 */
+{
+  const rules = Array.from({ length: 12 }, (_, i) => ({
+    name: 'rule-' + i,
+    pattern: 'R' + i + '-\\d+',
+    placeholder: '[R' + i + ']',
+  }));
+  const engine = createSanitizerEngine({ customRules: rules });
+  is('5.6 超出条数上限被记录', engine.violations.some((v) => v.kind === 'too-many-rules'), true);
+  is('5.6b 仅前 10 条生效', engine.rules.filter((r) => r.name.startsWith('rule-')).length, 10);
+}
+
+/* 5.7 正则长度上限 */
+{
+  const engine = createSanitizerEngine({
+    customRules: [{ name: 'long', pattern: 'a'.repeat(600), placeholder: '[X]' }],
+  });
+  is('5.7 超长正则被拒绝', engine.violations.some((v) => v.rule === 'long' && v.kind === 'pattern-too-long'), true);
+}
+
+/* 5.8 输入长度上限（截断并记录） */
+{
+  const engine = createSanitizerEngine({ maxInputChars: 1000 });
+  const head = 'peer 10.0.0.1 failed. '.repeat(200);
+  const tail = 'TAIL-CANARY-SHOULD-NOT-BE-PROCESSED';
+  const r = engine.sanitize(head + tail);
+  is('5.8 超长输入被截断（尾部标记未进入结果）', r.sanitized.includes('TAIL-CANARY'), false);
+  is('5.8b 截断被记录为违规', engine.violations.some((v) => v.kind === 'input-truncated'), true);
+}
+
+/* 5.9 内置规则优先于自定义规则 */
+{
+  const engine = createSanitizerEngine({
+    customRules: [{ name: 'catch-all', pattern: '10\\.0\\.0\\.1', placeholder: '[CUSTOM_CATCH]' }],
+  });
+  const r = engine.sanitize('peer 10.0.0.1 failed');
+  is('5.9 内置 IP 规则先执行（自定义规则不再命中）', r.sanitized.includes('[REDACTED_IP]'), true);
+}
 rmSync(OUT, { recursive: true, force: true });
 console.log(`\n汇总: 通过 ${pass} · 失败 ${fail}`);
 process.exit(fail === 0 ? 0 : 1);

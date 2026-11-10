@@ -40,6 +40,8 @@ import { motion } from 'framer-motion';
 import { CheckCircle2, CircleAlert, Loader2, ShieldAlert, Terminal, Wrench } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { verifyReceiptDigest } from '@/utils/mcpReceiptDigest';
+import type { McpExecuteReceipt } from '@/types/mcp';
 import { useClusterStore } from '@/store/useClusterStore';
 import MarkdownLite from '@/components/ai/MarkdownLite';
 import type { ActionConfirmProps, RemediationActionType } from '@/types/ai';
@@ -49,28 +51,13 @@ import type { RemediationDiff, SelectedEntityType } from '@/types/store';
 /* 类型                                                                       */
 /* ========================================================================== */
 
-/**
- * McpExecuteReceipt —— 与服务端 /api/mcp/execute 返回的 result 结构一致。
+/*
+ * McpExecuteReceipt 从 src/types/mcp.ts 导入（唯一类型源）。
  *
- * 【为何在前端重新声明而不从 route 导入】Next.js App Router 的 route.ts
- * 只应导出 HTTP 方法与段配置（导出别的成员会让 .next/types 的生成式校验报错，
- * 这一点在本项目 chat 路由的注释里已有记录）。因此契约在两侧各声明一份，
- * 字段名保持严格一致；若服务端改了结构，前端这里的读取会立刻显示异常，
- * 属于可接受的显式耦合。
+ * 【为什么改】Q5 的"校验回执"要求前端按与服务端**完全相同的字段顺序**
+ * 复算 auditDigest；两边各写一份 interface 时，字段增删只会在运行时
+ * 表现为"校验总是失败"，很难定位。现在类型集中在 types/mcp.ts。
  */
-interface McpExecuteReceipt {
-  readonly executionId: string;
-  readonly timestamp: string;
-  readonly toolUri: string;
-  readonly actionType: string;
-  readonly targetId: string;
-  readonly targetName: string;
-  readonly kubectlCommand: string;
-  readonly latencyMs: number;
-  readonly auditDigest: string;
-  readonly mode: 'real' | 'simulated';
-  readonly note: string;
-}
 
 /** JSON-RPC 2.0 成功响应 */
 interface McpRpcSuccess {
@@ -223,6 +210,20 @@ export default function ActionConfirm({
   /** 服务端执行回执（拿到后才允许进入 done 态） */
   const [receipt, setReceipt] = useState<McpExecuteReceipt | null>(null);
 
+  /**
+   * 回执摘要校验状态（Q5）。
+   *
+   * 【为什么需要它】auditDigest 只是一个字符串，用户无法判断它是否与回执
+   * 字段一致；"校验回执"按钮现场用同一公式复算，不一致即红色报警——
+   * 这才让"防篡改"从口号变成可点击的动作。
+   */
+  const [digestCheck, setDigestCheck] = useState<
+    | { readonly state: 'idle' }
+    | { readonly state: 'checking' }
+    | { readonly state: 'ok'; readonly expected: string }
+    | { readonly state: 'fail'; readonly expected: string; readonly actual: string }
+  >({ state: 'idle' });
+
   /** 失败原因（failed 态展示） */
   const [failureReason, setFailureReason] = useState<string>('');
 /**
@@ -291,6 +292,23 @@ export default function ActionConfirm({
    * 【回调顺序保证】onActionExecuted 放在 healEntity、日志与 selectEntity
    * 之后调用，确保父级收到回调时 store 与终端已是最新状态，避免「回调读到旧值」。
    */
+  /**
+   * handleVerifyReceipt —— 复算 auditDigest 并与回执值比对。
+   *
+   * 校验失败不改变回执本身（不回滚已执行事实），只把"摘要与字段不一致"
+   * 作为红色安全告警呈现——审计工具应有的姿态：不掩盖，只暴露。
+   */
+  const handleVerifyReceipt = useCallback(async (): Promise<void> => {
+    if (receipt === null) return;
+    setDigestCheck({ state: 'checking' });
+    const result = await verifyReceiptDigest(receipt);
+    setDigestCheck(
+      result.ok
+        ? { state: 'ok', expected: result.expected }
+        : { state: 'fail', expected: result.expected, actual: result.actual },
+    );
+  }, [receipt]);
+
   const handleExecute = useCallback((): void => {
     if (phase !== 'idle' && phase !== 'failed') return;
     if (isHighRisk && !acknowledged) return;
@@ -698,9 +716,41 @@ export default function ActionConfirm({
                 <code>$ {receipt.kubectlCommand}</code>
               </pre>
 
-              <p className="mt-1 font-mono text-[9px] text-slate-500">
-                audit digest: {receipt.auditDigest}
-              </p>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                <p className="font-mono text-[9px] text-slate-500">audit digest: {receipt.auditDigest}</p>
+                <button
+                  type="button"
+                  onClick={(): void => void handleVerifyReceipt()}
+                  disabled={digestCheck.state === 'checking'}
+                  aria-label="校验回执摘要是否与字段一致"
+                  className={cn(
+                    'ml-auto rounded border px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors',
+                    'border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:border-cyan-400/70 hover:bg-cyan-500/20',
+                    digestCheck.state === 'checking' ? 'cursor-wait opacity-60' : '',
+                  )}
+                >
+                  {digestCheck.state === 'checking' ? '校验中…' : '校验回执'}
+                </button>
+              </div>
+
+              {digestCheck.state === 'ok' ? (
+                <p
+                  data-digest-check="ok"
+                  className="mt-1 font-mono text-[9px] text-emerald-400"
+                  aria-label="回执摘要校验通过"
+                >
+                  ✓ 校验通过：摘要与字段一致（{digestCheck.expected}）
+                </p>
+              ) : null}
+              {digestCheck.state === 'fail' ? (
+                <p
+                  data-digest-check="fail"
+                  className="mt-1 font-mono text-[9px] font-bold text-rose-400"
+                  aria-label="回执摘要校验失败"
+                >
+                  ✗ 校验失败：回执字段被改动（期望 {digestCheck.expected} / 实际 {digestCheck.actual}）
+                </p>
+              ) : null}
             </div>
           ) : null}
 
