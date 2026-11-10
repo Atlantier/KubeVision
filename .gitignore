@@ -48,3 +48,6 @@ public/onnx
 # 故按输入材料隔离，仅保留在本地工作副本中。
 kubevision_audit_report.md
 kubevision_championship_blueprint.md
+
+# 单测编译产物（scripts/run-demo-tests.mjs 生成）
+tmp-demo-test/

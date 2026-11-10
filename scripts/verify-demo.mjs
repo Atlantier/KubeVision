@@ -25,7 +25,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /* ========================================================================== */
@@ -35,8 +35,17 @@ import { join } from 'node:path';
 /** 基础 URL（可由 --base= 覆盖） */
 const BASE_URL = readArg('--base') ?? 'http://127.0.0.1:3000';
 
-/** 是否跳过"连跑两遍"（第二遍耗时约 40s） */
-const SKIP_REPEAT = process.argv.includes('--skip-repeat');
+/**
+ * 压力场景开关。
+ *
+ * 【为什么默认关闭】压力矩阵要跑慢网、强制 500、GL 丢失、连点、停止清理
+ * 五个场景，额外约 3 分钟。日常回归要快，压测按需触发。
+ */
+const STRESS = process.argv.includes('--stress');
+
+/** 是否跳过"连跑两遍"（第二遍耗时约 40s）；--stress 模式默认跳过以控制总时长 */
+const SKIP_REPEAT =
+  process.argv.includes('--skip-repeat') || (STRESS && !process.argv.includes('--with-repeat'));
 
 /** CDP 调试端口（与 verify.mjs 的 9333 错开，避免并行冲突） */
 const CDP_PORT = 9334;
@@ -89,6 +98,132 @@ function section(title) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* ========================================================================== */
+/* 截图与 canvas 亮度探针（R01 黑屏回归并入本脚本）                              */
+/* ========================================================================== */
+
+/**
+ * 亮度阈值（0~255，Rec.709 加权）。
+ *
+ * 【为什么是 2.0】3D 背景本身是近黑的深空色（#020611 量级），正常画面里
+ * 机架的高光与告警光带会把平均亮度顶到 5~20；而真正的黑屏（上下文丢失 /
+ * 渲染中断 / NaN 短路）整帧几乎全 0。实测基线见 docs/summit/blackout-baseline.md，
+ * 2.0 在"近黑但有内容"与"真黑"之间留了足够余量。
+ */
+const BRIGHTNESS_THRESHOLD = 2.0;
+
+/** 截图输出目录（按轮次归档） */
+const SHOT_DIR = join(process.cwd(), 'docs', 'summit', 'shots', 'r10-verify');
+
+/**
+ * 采样 canvas 平均亮度（只读，不改变页面状态）。
+ *
+ * 【实现要点】复用 probe-blackout.mjs 的 readPixels 方案：
+ * 1. 必须 `st.gl.getContext()` 取原始 WebGL 上下文——THREE.WebGLRenderer
+ *    本身没有 readPixels 方法，误用会抛 "is not a function" 被误判成黑屏；
+ * 2. 只在 rAF 回调里读，才能读到 R3F 本帧渲染结果；
+ * 3. 16×16 等距采样 + Rec.709 加权，避免用 RGB 平均误判蓝/绿画面。
+ *
+ * @param {object} cdp CDP 会话
+ * @returns {Promise<{avg:number,max:number,min:number,points:number,lost:boolean}|{error:string}>}
+ */
+async function sampleCanvasBrightness(cdp) {
+  return evaluate(
+    cdp,
+    `(() => {
+      const st = window.__KUBEVISION_R3F__ ? window.__KUBEVISION_R3F__.get() : null;
+      if (st === null) return { error: 'no R3F store' };
+      const gl = st.gl;
+      const ctx = gl.getContext();
+      const canvas = gl.domElement;
+
+      return new Promise((resolve) => {
+        requestAnimationFrame(() => {
+          if (ctx.isContextLost()) {
+            resolve({ lost: true, avg: 0, max: 0, min: 0, points: 0 });
+            return;
+          }
+          const w = canvas.width;
+          const h = canvas.height;
+          if (w === 0 || h === 0) { resolve({ error: 'zero-sized canvas' }); return; }
+          const buffer = new Uint8Array(w * h * 4);
+          try {
+            ctx.readPixels(0, 0, w, h, ctx.RGBA, ctx.UNSIGNED_BYTE, buffer);
+          } catch (e) {
+            resolve({ error: 'readPixels threw: ' + String(e).slice(0, 80) });
+            return;
+          }
+          const GRID = 16;
+          let sum = 0;
+          let max = 0;
+          let min = 255;
+          let points = 0;
+          for (let gy = 0; gy < GRID; gy += 1) {
+            for (let gx = 0; gx < GRID; gx += 1) {
+              const px = Math.min(w - 1, Math.floor(((gx + 0.5) * w) / GRID));
+              const py = Math.min(h - 1, Math.floor(((gy + 0.5) * h) / GRID));
+              const idx = (py * w + px) * 4;
+              const r = buffer[idx];
+              const g = buffer[idx + 1];
+              const b = buffer[idx + 2];
+              const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+              sum += lum;
+              if (lum > max) max = lum;
+              if (lum < min) min = lum;
+              points += 1;
+            }
+          }
+          resolve({ lost: false, avg: sum / points, max, min, points });
+        });
+      });
+    })()`,
+  );
+}
+
+/**
+ * 采集一张 PNG 截图并落盘。
+ *
+ * 【为什么失败不抛】截图是证据而不是断言前提：磁盘满、路径不可写都不该
+ * 让整轮回归失败。失败时返回 null 并由调用方记录一条 warn。
+ *
+ * @param {object} cdp CDP 会话
+ * @param {string} name 文件名（不含扩展名）
+ * @returns {Promise<string|null>} 落盘路径；失败返回 null
+ */
+async function captureScreenshot(cdp, name) {
+  try {
+    if (!existsSync(SHOT_DIR)) mkdirSync(SHOT_DIR, { recursive: true });
+    const res = await cdp.send('Page.captureScreenshot', { format: 'png' });
+    const base64 = res?.result?.data;
+    if (typeof base64 !== 'string' || base64.length === 0) return null;
+    const file = join(SHOT_DIR, `${name}.png`);
+    writeFileSync(file, Buffer.from(base64, 'base64'));
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 采一次亮度并记录到样本表（供末尾统一断言）。
+ *
+ * @param {object} cdp CDP 会话
+ * @param {string} label 采样时点标签
+ * @param {Array<{label:string,avg:number,lost:boolean,error?:string}>} sink 样本表
+ * @returns {Promise<object>} 采样结果
+ */
+async function recordBrightness(cdp, label, sink) {
+  const sample = await sampleCanvasBrightness(cdp);
+  const entry = {
+    label,
+    avg: typeof sample?.avg === 'number' ? Number(sample.avg.toFixed(2)) : null,
+    lost: sample?.lost === true,
+    error: typeof sample?.error === 'string' ? sample.error : undefined,
+  };
+  sink.push(entry);
+  return entry;
+}
+
 function readArg(flag) {
   const hit = process.argv.find((a) => a.startsWith(`${flag}=`));
   return hit === undefined ? null : hit.slice(flag.length + 1);
@@ -115,6 +250,8 @@ async function connectCdp(wsUrl) {
   const pending = new Map();
   const consoleErrors = [];
   const pageErrors = [];
+  /** 事件钩子（同一时刻只允许一个消费者，够用且避免多路抢答） */
+  let eventHandler = null;
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
@@ -127,6 +264,14 @@ async function connectCdp(wsUrl) {
     }
     if (msg.method === 'Runtime.exceptionThrown') {
       pageErrors.push(String(msg.params?.exceptionDetails?.text ?? '').slice(0, 200));
+    }
+    if (typeof msg.method === 'string' && eventHandler !== null) {
+      /* 事件钩子用于 Fetch 拦截等需要主动应答的场景；异常不得中断消息循环 */
+      try {
+        eventHandler(msg);
+      } catch {
+        /* 忽略：钩子失败不应影响断言主流程 */
+      }
     }
     if (msg.id !== undefined && pending.has(msg.id)) {
       pending.get(msg.id)(msg);
@@ -150,6 +295,14 @@ async function connectCdp(wsUrl) {
     close: () => ws.close(),
     consoleErrors,
     pageErrors,
+    /**
+     * 注册事件钩子（用于 Fetch.requestPaused 等需要应答的 CDP 事件）。
+     *
+     * @param {(msg: object) => void|Promise<void>} fn 事件回调；传 null 解除
+     */
+    setEventHandler: (fn) => {
+      eventHandler = fn;
+    },
   };
 }
 
@@ -185,8 +338,13 @@ const READ_STATE = `(() => {
   const snap = s.snapshotSummary;
   const bar = document.querySelector('[aria-label^="剧本路演进行中"]');
   const logs = s.terminalLogs ?? [];
+  const barText = bar === null ? '' : (bar.textContent || '');
+  const elapsedHit = barText.match(/([0-9.]+)s\\s*\\/\\s*([0-9]+)s/);
   return {
     phase: bar ? bar.getAttribute('aria-label') : null,
+    barText,
+    barElapsedSec: elapsedHit === null ? null : Number(elapsedHit[1]),
+    barTotalSec: elapsedHit === null ? null : Number(elapsedHit[2]),
     status: s.demoAutoConfirm,
     chaos: s.activeChaos,
     selected: s.selectedEntityId,
@@ -242,6 +400,382 @@ const READ_CARDS = `(() => {
 /* ========================================================================== */
 /* 主流程                                                                      */
 /* ========================================================================== */
+
+/* ========================================================================== */
+/* 压力场景矩阵（--stress）                                                     */
+/* ========================================================================== */
+
+/**
+ * 跑压力场景矩阵。
+ *
+ * 【为什么单列一节】常规断言验证"顺利路径"，而答辩现场真正会翻车的是
+ * 慢网、上游 500、GL 上下文丢失、手抖连点、演示中组件卸载这些异常路径。
+ * 这些场景在生产里低频、在演示现场却一次就致命，必须脚本化。
+ *
+ * @param {object} cdp CDP 会话
+ * @returns {Promise<Array<{scenario:string,result:string,actual:object}>>} 矩阵行
+ */
+async function runStressMatrix(cdp) {
+  section('压力场景矩阵（--stress）');
+
+  const rows = [];
+  /**
+   * 记录一行矩阵结果。
+   *
+   * @param {string} scenario 场景名
+   * @param {boolean} pass 是否通过
+   * @param {object} actual 实际观测值（失败时必填，成功时也打印关键量）
+   * @param {string} detail 通过时展示的摘要
+   */
+  const judge = (scenario, pass, actual, detail = '') => {
+    rows.push({ scenario, result: pass ? '通过' : '失败', actual });
+    if (pass) ok(`S·${scenario}`, detail);
+    else bad(`S·${scenario}`, actual);
+  };
+
+  /* ---- 工具：启动 OOM 剧本（单次点击） ---- */
+  const startDemo = async () =>
+    evaluate(
+      cdp,
+      `(async () => {
+        const b = Array.from(document.querySelectorAll('button')).find((x) =>
+          (x.getAttribute('aria-label') || '').startsWith('启动全自动剧本路演'));
+        if (!b) return { error: 'start button missing' };
+        b.click();
+        await new Promise((r) => setTimeout(r, 800));
+        const item = Array.from(document.querySelectorAll('[role="menu"][aria-label="选择路演剧本"] button'))
+          .find((x) => (x.textContent || '').includes(${JSON.stringify(SCRIPT_LABEL_PREFIX)}));
+        if (!item) return { error: 'menu item missing' };
+        item.click();
+        return { ok: true };
+      })()`,
+    );
+
+  /* ---- 工具：点停止 ---- */
+  const stopDemo = async () => {
+    await evaluate(
+      cdp,
+      `(() => {
+        const b = Array.from(document.querySelectorAll('button')).find((x) =>
+          (x.getAttribute('aria-label') || '').includes('停止剧本路演'));
+        if (b) b.click();
+        return true;
+      })()`,
+    );
+    await sleep(1500);
+  };
+
+  /* ====================================================================== */
+  /* S1 · 慢网 300ms                                                         */
+  /* ====================================================================== */
+  await stopDemo();
+  await cdp.send('Network.enable');
+  await cdp.send('Network.emulateNetworkConditions', {
+    offline: false,
+    latency: 300,
+    downloadThroughput: Math.round((1.5 * 1024 * 1024) / 8),
+    uploadThroughput: Math.round((750 * 1024) / 8),
+  });
+  await sleep(600);
+
+  const s1Start = await startDemo();
+  let s1Cards = null;
+  let s1Brightness = null;
+  if (s1Start?.ok === true) {
+    /* 慢网下给足时间：等到动作卡出现或 100 秒 */
+    for (let i = 0; i < 200; i += 1) {
+      await sleep(500);
+      const c = await evaluate(cdp, READ_CARDS);
+      if ((c?.actionCard ?? 0) >= 1) {
+        await sleep(1200);
+        s1Cards = await evaluate(cdp, READ_CARDS);
+        break;
+      }
+    }
+    s1Brightness = await sampleCanvasBrightness(cdp);
+  }
+  await cdp.send('Network.emulateNetworkConditions', {
+    offline: false,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
+  await cdp.send('Network.disable');
+
+  judge(
+    '慢网300ms：卡片仍恰好各一份且画面不黑',
+    s1Start?.ok === true &&
+      s1Cards?.metricsCard === 1 &&
+      s1Cards?.rootCauseCard === 1 &&
+      s1Cards?.actionCard === 1 &&
+      (s1Brightness?.avg ?? 0) > BRIGHTNESS_THRESHOLD,
+    { start: s1Start, cards: s1Cards, brightness: s1Brightness },
+    `cards=${s1Cards?.metricsCard}/${s1Cards?.rootCauseCard}/${s1Cards?.actionCard} avg=${s1Brightness?.avg?.toFixed?.(2)}`,
+  );
+  await stopDemo();
+
+  /* ====================================================================== */
+  /* S2 · 上游 500：不崩、给重试、重试后卡片不重复                              */
+  /* ====================================================================== */
+  let forcedCount = 0;
+  cdp.setEventHandler(async (msg) => {
+    if (msg.method !== 'Fetch.requestPaused') return;
+    const { requestId, request } = msg.params;
+    if (request.url.includes('/api/chat') && forcedCount === 0) {
+      forcedCount += 1;
+      await cdp.send('Fetch.fulfillRequest', {
+        requestId,
+        responseCode: 500,
+        responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+        body: Buffer.from(JSON.stringify({ error: 'forced-upstream-500' })).toString('base64'),
+      });
+      return;
+    }
+    await cdp.send('Fetch.continueRequest', { requestId });
+  });
+  await cdp.send('Fetch.enable', {
+    patterns: [{ urlPattern: '*/api/chat*', requestStage: 'Request' }],
+  });
+
+  const s2Start = await startDemo();
+  let s2FailureUi = null;
+  for (let i = 0; i < 120; i += 1) {
+    await sleep(500);
+    s2FailureUi = await evaluate(
+      cdp,
+      `(() => {
+        const drawer = document.querySelector('[aria-label="AI Copilot 抽屉"]');
+        const text = drawer === null ? '' : (drawer.textContent || '');
+        return {
+          hasFailureNotice: text.includes('诊断流意外中断'),
+          hasRetry: text.includes('一键重试'),
+          crashed: document.querySelector('canvas') === null,
+          storeAlive: typeof window.__KUBEVISION_STORE__ !== 'undefined',
+        };
+      })()`,
+    );
+    if (s2FailureUi?.hasFailureNotice === true) break;
+  }
+
+  /* 点一键重试：第二次请求放行（forcedCount 已为 1） */
+  const retried = await evaluate(
+    cdp,
+    `(() => {
+      const drawer = document.querySelector('[aria-label="AI Copilot 抽屉"]');
+      if (!drawer) return { error: 'no drawer' };
+      const btn = Array.from(drawer.querySelectorAll('button')).find((b) =>
+        (b.textContent || '').includes('一键重试'));
+      if (!btn) return { error: 'retry button missing' };
+      btn.click();
+      return { ok: true };
+    })()`,
+  );
+  let s2Cards = null;
+  if (retried?.ok === true) {
+    for (let i = 0; i < 160; i += 1) {
+      await sleep(500);
+      const c = await evaluate(cdp, READ_CARDS);
+      if ((c?.actionCard ?? 0) >= 1) {
+        await sleep(1500);
+        s2Cards = await evaluate(cdp, READ_CARDS);
+        break;
+      }
+    }
+  }
+  await cdp.send('Fetch.disable');
+
+  judge(
+    '上游500：不崩、暴露重试、重试后卡片不重复',
+    forcedCount === 1 &&
+      s2FailureUi?.hasFailureNotice === true &&
+      s2FailureUi?.hasRetry === true &&
+      s2FailureUi?.crashed === false &&
+      s2FailureUi?.storeAlive === true &&
+      retried?.ok === true &&
+      s2Cards?.metricsCard === 1 &&
+      s2Cards?.rootCauseCard === 1 &&
+      s2Cards?.actionCard === 1,
+    { forcedCount, failureUi: s2FailureUi, retried, cardsAfterRetry: s2Cards },
+    `forced=${forcedCount} notice=${s2FailureUi?.hasFailureNotice} cardsAfterRetry=${s2Cards?.metricsCard}/${s2Cards?.rootCauseCard}/${s2Cards?.actionCard}`,
+  );
+  await stopDemo();
+
+  /* ====================================================================== */
+  /* S3 · webglcontextlost 页面不崩                                          */
+  /* ====================================================================== */
+  const s3PrevErrors = cdp.pageErrors.length;
+  const s3Before = await evaluate(
+    cdp,
+    `(() => ({
+      canvas: document.querySelector('canvas') !== null,
+      storeAlive: typeof window.__KUBEVISION_STORE__ !== 'undefined',
+    }))()`,
+  );
+  const s3Dispatched = await evaluate(
+    cdp,
+    `(() => {
+      const c = document.querySelector('canvas');
+      if (!c) return { error: 'no canvas' };
+      c.dispatchEvent(new Event('webglcontextlost', { cancelable: true }));
+      return { ok: true };
+    })()`,
+  );
+  await sleep(3000);
+  const s3After = await evaluate(
+    cdp,
+    `(() => ({
+      canvas: document.querySelector('canvas') !== null,
+      storeAlive: typeof window.__KUBEVISION_STORE__ !== 'undefined',
+      glLostFlag: window.__KUBEVISION_STORE__.getState().isGlContextLost,
+      rootChildren: document.body.querySelectorAll('*').length,
+    }))()`,
+  );
+  const s3NewErrors = cdp.pageErrors.length - s3PrevErrors;
+  judge(
+    'webglcontextlost：页面不崩、GL 丢失状态被记录',
+    s3Dispatched?.ok === true &&
+      s3Before.canvas === true &&
+      s3After.canvas === true &&
+      s3After.storeAlive === true &&
+      s3After.glLostFlag === true &&
+      s3NewErrors === 0,
+    { before: s3Before, dispatch: s3Dispatched, after: s3After, newPageErrors: s3NewErrors },
+    `glLostFlag=${s3After.glLostFlag} newErrors=${s3NewErrors}`,
+  );
+
+  /* 让上下文恢复：重载页面，避免后续场景受污染 */
+  await cdp.send('Page.navigate', { url: BASE_URL });
+  for (let i = 0; i < 240; i += 1) {
+    const ready = await evaluate(cdp, 'document.querySelector("canvas") !== null');
+    if (ready === true) break;
+    await sleep(400);
+  }
+  await sleep(9000);
+
+  /* ====================================================================== */
+  /* S4 · 连点 5 次只产生一个实例                                             */
+  /* ====================================================================== */
+  await evaluate(cdp, 'window.__KUBEVISION_STORE__.getState().clearTerminalLogs()');
+  const burst = await evaluate(
+    cdp,
+    `(async () => {
+      const b = Array.from(document.querySelectorAll('button')).find((x) =>
+        (x.getAttribute('aria-label') || '').startsWith('启动全自动剧本路演'));
+      if (!b) return { error: 'start button missing' };
+      b.click();
+      await new Promise((r) => setTimeout(r, 800));
+      const item = Array.from(document.querySelectorAll('[role="menu"][aria-label="选择路演剧本"] button'))
+        .find((x) => (x.textContent || '').includes(${JSON.stringify(SCRIPT_LABEL_PREFIX)}));
+      if (!item) return { error: 'menu item missing' };
+      for (let i = 0; i < 5; i += 1) item.click();
+      return { ok: true };
+    })()`,
+  );
+  await sleep(2500);
+  const burstState = await evaluate(
+    cdp,
+    `(() => {
+      const dbg = window.__demoDirectorDebug__;
+      const logs = window.__KUBEVISION_STORE__.getState().terminalLogs ?? [];
+      return {
+        timerCount: dbg === undefined ? null : dbg.timerCount,
+        startLogs: logs.filter((l) => typeof l === 'string' && l.includes('▶ 启动剧本')).length,
+        status: dbg === undefined ? null : dbg.status,
+      };
+    })()`,
+  );
+  judge(
+    '连点5次：仅一个实例',
+    burst?.ok === true && burstState.startLogs === 1 && (burstState.timerCount ?? 0) > 0,
+    { burst, burstState },
+    `startLogs=${burstState.startLogs} timerCount=${burstState.timerCount}`,
+  );
+
+  /* ====================================================================== */
+  /* S5 · 停止后无游离定时器与 Store 写入                                     */
+  /* ====================================================================== */
+  const s5BeforeStop = await evaluate(
+    cdp,
+    `(() => {
+      const dbg = window.__demoDirectorDebug__;
+      const st = window.__KUBEVISION_STORE__.getState();
+      return {
+        timerCount: dbg === undefined ? null : dbg.timerCount,
+        directorLogs: (st.terminalLogs ?? []).filter((l) => typeof l === 'string' && l.includes('DEMO-DIRECTOR')).length,
+        healed: Object.keys(st.healedPodIds ?? {}).length,
+        streaming: st.copilotStreaming,
+      };
+    })()`,
+  );
+  await evaluate(
+    cdp,
+    `(() => {
+      const b = Array.from(document.querySelectorAll('button')).find((x) =>
+        (x.getAttribute('aria-label') || '').includes('停止剧本路演'));
+      if (b) b.click();
+      return true;
+    })()`,
+  );
+  await sleep(900);
+  const s5Settled = await evaluate(
+    cdp,
+    `(() => {
+      const dbg = window.__demoDirectorDebug__;
+      const st = window.__KUBEVISION_STORE__.getState();
+      return {
+        timerCount: dbg === undefined ? null : dbg.timerCount,
+        directorLogs: (st.terminalLogs ?? []).filter((l) => typeof l === 'string' && l.includes('DEMO-DIRECTOR')).length,
+        healed: Object.keys(st.healedPodIds ?? {}).length,
+        streaming: st.copilotStreaming,
+      };
+    })()`,
+  );
+  /* stop 自身会写 1~2 条收尾日志，以此为基线再看 5 秒 */
+  await sleep(5000);
+  const s5After = await evaluate(
+    cdp,
+    `(() => {
+      const dbg = window.__demoDirectorDebug__;
+      const st = window.__KUBEVISION_STORE__.getState();
+      return {
+        timerCount: dbg === undefined ? null : dbg.timerCount,
+        directorLogs: (st.terminalLogs ?? []).filter((l) => typeof l === 'string' && l.includes('DEMO-DIRECTOR')).length,
+        healed: Object.keys(st.healedPodIds ?? {}).length,
+        streaming: st.copilotStreaming,
+      };
+    })()`,
+  );
+  /*
+   * 【关于"演示中卸载 TopBar"】真正的 React 卸载无法从 CDP 直接触发，
+   * 而 useDemoDirector 的卸载清理调用的正是同一个 stopDemoDirector('unmount')。
+   * 因此这里断言 stop 之后的**可观测契约**：定时器归零、导演日志不再新增、
+   * Store 不再被写。报告里如实标注该等价关系，不假称已做过组件卸载。
+   */
+  judge(
+    '停止后：定时器归零、5秒无日志新增、无 AI 流',
+    s5BeforeStop.timerCount !== null &&
+      s5Settled.timerCount === 0 &&
+      s5After.timerCount === 0 &&
+      s5After.directorLogs === s5Settled.directorLogs &&
+      s5After.streaming === false,
+    { beforeStop: s5BeforeStop, settled: s5Settled, after5s: s5After },
+    `timers ${s5BeforeStop.timerCount}→0，logs ${s5Settled.directorLogs}→${s5After.directorLogs}，streaming=${s5After.streaming}`,
+  );
+
+  /* ====================================================================== */
+  /* 矩阵输出                                                                */
+  /* ====================================================================== */
+  console.log('\n' + '-'.repeat(78));
+  console.log('压力场景 × 结果');
+  console.log('-'.repeat(78));
+  console.log('| 场景 | 结果 | 关键实际值 |');
+  console.log('|---|---|---|');
+  for (const row of rows) {
+    console.log(`| ${row.scenario} | ${row.result} | ${JSON.stringify(row.actual).slice(0, 160)} |`);
+  }
+
+  return rows;
+}
 
 async function main() {
   console.log('KubeVision AI — 自动路演回归（verify-demo）');
@@ -354,6 +888,56 @@ async function main() {
     process.exit(1);
   }
 
+  /*
+   * ---- 演示就绪轮询（R08 预检引入后的必要前置） ----
+   *
+   * 【为什么必须有】R08 给 startDemoDirector 加了启动预检，其中两项依赖
+   * 运行时就绪：Copilot 抽屉已挂载、SSE 数据已流动（totalQps > 0）。
+   * 冷启动（.next 刚重建）时首屏 10 秒内抽屉的懒加载 chunk 可能还没到，
+   * 预检会直接拒绝启动——表现为"点了路演但什么都没发生"，断言全部读到 null。
+   *
+   * 这里显式等到"抽屉 + 数据"都就绪再开跑，把环境准备与业务断言分开。
+   */
+  let demoReady = null;
+  for (let i = 0; i < 120; i += 1) {
+    demoReady = await evaluate(
+      cdp,
+      `(() => {
+        const store = window.__KUBEVISION_STORE__;
+        if (!store) return { store: false };
+        const qps = store.getState().snapshotSummary.totalQps;
+        return {
+          store: true,
+          drawer: document.querySelector('[aria-label="AI Copilot 抽屉"]') !== null,
+          viewport: document.querySelector('[aria-label="3D 集群拓扑视口"]') !== null,
+          qps,
+          glLost: store.getState().isGlContextLost,
+        };
+      })()`,
+    );
+    if (
+      demoReady &&
+      demoReady.drawer === true &&
+      demoReady.viewport === true &&
+      demoReady.qps > 0 &&
+      demoReady.glLost !== true
+    ) {
+      break;
+    }
+    await sleep(500);
+  }
+  console.log(`  → 就绪检查: ${JSON.stringify(demoReady)}`);
+  if (
+    !demoReady ||
+    demoReady.drawer !== true ||
+    demoReady.viewport !== true ||
+    !(demoReady.qps > 0)
+  ) {
+    bad('演示环境就绪（抽屉/视口/SSE 数据）', demoReady);
+  } else {
+    ok('演示环境就绪（抽屉/视口/SSE 数据）', `qps=${demoReady.qps}`);
+  }
+
   /* ====================================================================== */
   /* 第一遍：主链路                                                          */
   /* ====================================================================== */
@@ -427,16 +1011,53 @@ async function main() {
     }
   }
 
+  /*
+   * ---- §J-1 附加：阶段 2 截图存档 + 亮度采样 ----
+   *
+   * 【为什么要在这里采】阶段 2 是"故障已注入、镜头已锁定"的画面峰值，
+   * 既是最该存档的证据，也是黑屏最容易被发现的时点（大量告警光带应可见）。
+   */
+  const brightnessSamples = [];
+  const shotPhase2 = await captureScreenshot(cdp, 'phase2-lock');
+  const b2 = await recordBrightness(cdp, '阶段2', brightnessSamples);
+  console.log(
+    `  → 阶段2 截图=${shotPhase2 === null ? '(失败)' : shotPhase2} 亮度 avg=${b2.avg} lost=${b2.lost}`,
+  );
+  if (shotPhase2 !== null) ok('J-1 阶段 2 截图已存档', shotPhase2);
+  else bad('J-1 阶段 2 截图已存档', { shotPhase2 });
+
   /* ---- 等阶段 3 + AI 流结束（卡片挂载） ---- */
   let phase3 = null;
   let cards = null;
   for (let i = 0; i < 220; i += 1) {
     await sleep(500);
     const s = await evaluate(cdp, READ_STATE);
-    if (s && typeof s.phase === 'string' && s.phase.includes('阶段 4/4')) {
-      /* 进入阶段 4 后再给 AI 一点收尾时间 */
-      await sleep(1500);
-      cards = await evaluate(cdp, READ_CARDS);
+    /*
+     * 【判定要放宽】只盯字幕条 aria-label 会偶发错过窗口：
+     * 阶段 4 一旦结束，aria 立刻变成"已完成"，而轮询间隔 500ms。
+     * 因此只要满足任一条即认定已进入阶段 4：
+     *   · 字幕条显示阶段 4/4；
+     *   · 导演日志出现过"阶段 4/4"（不会被后续覆盖）；
+     *   · healedPodIds 已非空（自愈只发生在阶段 4）。
+     */
+    const reachedPhase4 =
+      s !== null &&
+      s !== undefined &&
+      ((typeof s.phase === 'string' && s.phase.includes('阶段 4/4')) ||
+        (typeof s.lastDirectorLog === 'string' && s.lastDirectorLog.includes('阶段 4/4')) ||
+        (s.healedIds ?? []).length > 0);
+    if (reachedPhase4) {
+      /*
+       * 【有界轮询等动作卡水合】R08 把阶段 3→4 改成事件驱动后，进入阶段 4
+       * 的那一刻卡片通常已挂载；但慢环境/冷启动下仍有几秒偏差。固定等 1.5 秒
+       * 会偶发读到 actionCard=0（实测踩到），而随后 J-3 又能通过——说明只是
+       * 采样太早。这里改为最多等 10 秒直到动作卡出现。
+       */
+      for (let k = 0; k < 20; k += 1) {
+        cards = await evaluate(cdp, READ_CARDS);
+        if ((cards?.actionCard ?? 0) >= 1) break;
+        await sleep(500);
+      }
       phase3 = { ...s };
       break;
     }
@@ -454,6 +1075,9 @@ async function main() {
     } else {
       bad('J-2 三张 GenUI 卡片齐全', cards);
     }
+
+    const b3 = await recordBrightness(cdp, '阶段3', brightnessSamples);
+    console.log(`  → 阶段3 亮度 avg=${b3.avg}`);
 
     /* §J-2：AI 正文中的宿主节点 == 选中节点对应节点名 */
     const selectedNodeName =
@@ -551,6 +1175,29 @@ async function main() {
     bad('J-4 结束态环绕巡检开启', { orbit: final?.orbit ?? null });
   }
 
+  /* ---- §J-4 附加：canvas 亮度探针（把 R01 黑屏回归并进来） ---- */
+  const b4 = await recordBrightness(cdp, '结束态', brightnessSamples);
+  const shotFinal = await captureScreenshot(cdp, 'finished');
+  const dimSamples = brightnessSamples.filter(
+    (s) => s.lost === true || s.error !== undefined || (s.avg ?? 0) <= BRIGHTNESS_THRESHOLD,
+  );
+  console.log(
+    `  → 亮度样本 ${brightnessSamples.map((s) => `${s.label}=${s.avg}`).join(' ')} 阈值=${BRIGHTNESS_THRESHOLD} 截图=${shotFinal === null ? '(失败)' : shotFinal}`,
+  );
+  if (dimSamples.length === 0) {
+    ok(
+      'J-4 canvas 亮度探针全程高于阈值（R01 黑屏回归）',
+      `${brightnessSamples.length} 次采样最小值=${Math.min(...brightnessSamples.map((s) => s.avg ?? 0)).toFixed(2)} > ${BRIGHTNESS_THRESHOLD}`,
+    );
+  } else {
+    bad('J-4 canvas 亮度探针全程高于阈值（R01 黑屏回归）', {
+      threshold: BRIGHTNESS_THRESHOLD,
+      dimSamples,
+      allSamples: brightnessSamples,
+    });
+  }
+  if (shotFinal !== null) ok('J-4 结束态截图已存档', shotFinal);
+
   /* §J-4：零 console error */
   if (cdp.consoleErrors.length === 0 && cdp.pageErrors.length === 0) {
     ok('J-4 全流程零 console.error / 零未捕获异常');
@@ -574,6 +1221,12 @@ async function main() {
     const firstHealedCount = healedIds.length;
     const firstVictimCount = victimIds.length;
 
+    /*
+     * 【基线】终端日志是跨轮累积的：第一遍若产生过 1 条 QUEUED，直接读总数
+     * 会把它算到第二遍头上（实测踩到）。必须比增量。
+     */
+    const queuedBeforeSecond = (await evaluate(cdp, READ_STATE))?.queuedLogs ?? 0;
+
     const restarted = await evaluate(
       cdp,
       `(async () => {
@@ -595,9 +1248,26 @@ async function main() {
       bad('J-5 第二遍可启动', restarted);
     } else {
       let second = null;
+      /* 第二遍的阶段 2 受害者集合：用于"两遍受害数一致"的对比 */
+      let secondVictims = null;
       for (let i = 0; i < 280; i += 1) {
         await sleep(500);
         const s = await evaluate(cdp, READ_STATE);
+        if (
+          secondVictims === null &&
+          s &&
+          typeof s.phase === 'string' &&
+          s.phase.includes('阶段 2/4')
+        ) {
+          /*
+           * 【等到注入生效再采】阶段 2 刚进入的那一瞬异常 Pod 还没回传，
+           * 立刻采样会得到空数组（实测踩到 secondVictims=[]）。
+           * 与第一遍一致：等 2.6 秒再读。
+           */
+          await sleep(2600);
+          const settled = await evaluate(cdp, READ_STATE);
+          secondVictims = (settled?.abnormalPods ?? []).map((p) => p.id).sort();
+        }
         if (s && typeof s.lastDirectorLog === 'string' && s.lastDirectorLog.includes('剧本已完整跑完')) {
           await sleep(1200);
           second = await evaluate(cdp, READ_STATE);
@@ -621,13 +1291,33 @@ async function main() {
             secondHealedIds: second.healedIds,
           });
         }
-        if ((second.queuedLogs ?? 0) === 0) {
-          ok('J-5 第二遍无 QUEUED 免疫日志', 'queued=0');
+        const queuedDelta = (second.queuedLogs ?? 0) - queuedBeforeSecond;
+        if (queuedDelta === 0) {
+          ok(
+            'J-5 第二遍无 QUEUED 免疫日志',
+            `增量=0（基线 ${queuedBeforeSecond} → ${second.queuedLogs}）`,
+          );
         } else {
-          bad('J-5 第二遍无 QUEUED 免疫日志', { queuedLogs: second.queuedLogs });
+          bad('J-5 第二遍无 QUEUED 免疫日志', {
+            queuedBeforeSecond,
+            queuedAfterSecond: second.queuedLogs,
+            delta: queuedDelta,
+          });
         }
-        if (firstVictimCount === 0) {
-          ok('J-5 受害者数量可比较（首遍受害者=0，跳过一致性）', 'n/a');
+        const firstVictims = victimIds.slice().sort();
+        if (
+          secondVictims !== null &&
+          secondVictims.length === firstVictims.length &&
+          firstVictims.length > 0
+        ) {
+          ok('J-5 连跑两遍受害者数量一致', `${firstVictims.length} → ${secondVictims.length}`);
+        } else {
+          bad('J-5 连跑两遍受害者数量一致', {
+            firstVictims,
+            secondVictims,
+            firstCount: firstVictims.length,
+            secondCount: secondVictims === null ? null : secondVictims.length,
+          });
         }
       }
     }
@@ -702,7 +1392,9 @@ async function main() {
       })()`,
     );
     await sleep(4000);
-    const stillPaused = (await evaluate(cdp, READ_STATE))?.phase ?? null;
+    const pausedState = await evaluate(cdp, READ_STATE);
+    const stillPaused = pausedState?.phase ?? null;
+    const pausedElapsedSec = pausedState?.barElapsedSec ?? null;
 
     if (pausedPhase === stillPaused) {
       ok('J-6 暂停期间阶段序号不推进', String(pausedPhase));
@@ -720,7 +1412,18 @@ async function main() {
       })()`,
     );
     await sleep(2500);
-    const resumedPhase = (await evaluate(cdp, READ_STATE))?.phase ?? null;
+    const resumedState = await evaluate(cdp, READ_STATE);
+    const resumedPhase = resumedState?.phase ?? null;
+    const resumedElapsedSec = resumedState?.barElapsedSec ?? null;
+
+    /* 进度单调不回退：恢复后的已用时长不得小于暂停时 */
+    if (pausedElapsedSec === null || resumedElapsedSec === null) {
+      bad('J-6 恢复后进度单调不回退', { pausedElapsedSec, resumedElapsedSec });
+    } else if (resumedElapsedSec + 0.05 >= pausedElapsedSec) {
+      ok('J-6 恢复后进度单调不回退', `${pausedElapsedSec}s → ${resumedElapsedSec}s`);
+    } else {
+      bad('J-6 恢复后进度单调不回退', { pausedElapsedSec, resumedElapsedSec });
+    }
     const phaseNumber = (p) => {
       const hit = typeof p === 'string' ? p.match(/阶段\s*(\d)\/4/) : null;
       return hit === null ? -1 : Number(hit[1]);
@@ -745,6 +1448,13 @@ async function main() {
     })()`,
   );
   await sleep(1200);
+
+  /* ====================================================================== */
+  /* 压力场景矩阵（--stress）                                                  */
+  /* ====================================================================== */
+  if (STRESS) {
+    await runStressMatrix(cdp);
+  }
 
   /* ====================================================================== */
   /* 汇总                                                                    */
