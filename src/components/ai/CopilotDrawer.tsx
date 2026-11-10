@@ -75,6 +75,7 @@ import RootCauseAlert from '@/components/ai/GenUI/RootCauseAlert';
 import { cn } from '@/utils/cn';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
 import AgentTracePanel from '@/components/ai/AgentTracePanel';
+import { embedQueryText } from '@/utils/edgeEmbedding';
 import TraceIdChip from '@/components/hud/TraceIdChip';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
@@ -1619,6 +1620,9 @@ export default function CopilotDrawer() {
       let finalize: () => void = (): void => {};
 
       try {
+        /* R45：端侧模型就绪时带查询句向量（三路召回）；未就绪/300ms 超时自动两路 */
+        const queryEmbedding = await embedQueryText(text);
+
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1640,6 +1644,7 @@ export default function CopilotDrawer() {
             ...(getCustomRunbooks().length > 0
               ? { customRunbooks: getCustomRunbooks() }
               : {}),
+            ...(queryEmbedding !== null ? { queryEmbedding } : {}),
           }),
           signal: controller.signal,
         });

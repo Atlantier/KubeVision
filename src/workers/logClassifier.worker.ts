@@ -773,6 +773,9 @@ function isClassifierRequest(value: unknown): value is ClassifierRequest {
   if (rec.type === 'classify') {
     return Array.isArray(rec.logs);
   }
+  if (rec.type === 'embed') {
+    return Array.isArray(rec.texts);
+  }
   return false;
 }
 
@@ -806,6 +809,33 @@ self.addEventListener('message', (event: MessageEvent<unknown>): void => {
         message: error instanceof Error ? error.message : 'model init failed',
       });
     });
+    return;
+  }
+
+  if (request.type === 'embed') {
+    /*
+     * 【未就绪契约】模型还在下载 / 已降级 → 立即返回 null，绝不等待。
+     * 主线程据此退回两路召回（不阻塞对话）。
+     */
+    if (modelHandle === null || modelHandle.extractor === null) {
+      post({ type: 'embed-result', vectors: null });
+      return;
+    }
+    const extractor = modelHandle.extractor;
+    const texts = request.texts.slice(0, 8);
+    void (async (): Promise<void> => {
+      try {
+        const vectors: number[][] = [];
+        for (const text of texts) {
+          const output = await extractor(String(text), { pooling: 'mean', normalize: true });
+          vectors.push(Array.from(output.data));
+        }
+        post({ type: 'embed-result', vectors });
+      } catch {
+        /* 任何推理异常 → null，主线程走两路；不把 0 向量当结果 */
+        post({ type: 'embed-result', vectors: null });
+      }
+    })();
     return;
   }
 

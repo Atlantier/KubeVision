@@ -2357,11 +2357,21 @@ async function parseRequestBody(request: Request): Promise<ChatRequestBody | nul
   /* ---- customRunbooks：可选，逐字段规范化 ---- */
   const customRunbooks = normalizeCustomRunbooks(obj.customRunbooks);
 
+  /* ---- queryEmbedding：可选，必须 384 维且全部有限（否则退回两路） ---- */
+  let queryEmbedding: readonly number[] | undefined;
+  if (Array.isArray(obj.queryEmbedding) && obj.queryEmbedding.length === 384) {
+    const values: unknown[] = obj.queryEmbedding;
+    if (values.every((value): boolean => typeof value === 'number' && Number.isFinite(value))) {
+      queryEmbedding = values as number[];
+    }
+  }
+
   return {
     messages,
     clusterContext,
     ...(viewportImage !== undefined ? { viewportImage } : {}),
     ...(customRunbooks.length > 0 ? { customRunbooks } : {}),
+    ...(queryEmbedding !== undefined ? { queryEmbedding } : {}),
   };
 }
 
@@ -2509,6 +2519,7 @@ export async function POST(request: Request): Promise<Response> {
            * 显式按请求传参是唯一安全做法。
            */
           body.customRunbooks ?? [],
+          body.queryEmbedding,
         );
   pendingSpanEvents.push(
     endSpan(ragSpan, { status: 'ok', attrs: { hits: runbooks.length } }),

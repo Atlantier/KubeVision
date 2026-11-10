@@ -700,6 +700,12 @@ export interface ChatRequestBody {
   /** 3D 视口快照（Base64 DataURL，可选） */
   readonly viewportImage?: string;
   /**
+   * R45：端侧 MiniLM 查询句向量（384 维，可选）。
+   *
+   * 【降级】端侧模型未就绪 / 300ms 超时 → 不发送；服务端自动退回两路召回。
+   */
+  readonly queryEmbedding?: readonly number[];
+  /**
    * 客户端携带的自定义 Runbook 语料（可选）。
    *
    * 【为何必须随请求体上送】自定义语料存在浏览器 localStorage 里，
@@ -969,8 +975,18 @@ export interface ClassifierInitRequest {
   readonly type: 'init';
 }
 
+/** R45：主线程 → Worker 的句向量请求（复用已初始化的 feature-extraction 管道） */
+export interface ClassifierEmbedRequest {
+  readonly type: 'embed';
+  /** 待编码文本（最多 8 条，Worker 侧截断） */
+  readonly texts: readonly string[];
+}
+
 /** 主线程 → Worker 的全部请求消息 */
-export type ClassifierRequest = ClassifierClassifyRequest | ClassifierInitRequest;
+export type ClassifierRequest =
+  | ClassifierClassifyRequest
+  | ClassifierInitRequest
+  | ClassifierEmbedRequest;
 
 /**
  * ClassifierWorkerStatus —— Worker 运行状态机的四态。
@@ -1059,12 +1075,19 @@ export interface ClassifierErrorMessage {
   readonly message: string;
 }
 
+/** R45：Worker → 主线程的句向量结果（模型未就绪时 vectors=null，不填 0 冒充） */
+export interface ClassifierEmbedResultMessage {
+  readonly type: 'embed-result';
+  readonly vectors: readonly (readonly number[])[] | null;
+}
+
 /** Worker → 主线程的全部响应消息 */
 export type ClassifierResponse =
   | ClassifierStatusMessage
   | ClassifierProgressMessage
   | ClassifierReadyMessage
   | ClassifierResultMessage
+  | ClassifierEmbedResultMessage
   | ClassifierErrorMessage;
 
 /**
