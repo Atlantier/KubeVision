@@ -39,6 +39,7 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { streamText, tool, type CoreMessage } from 'ai';
 import { createTrace, elapsedMs, endSpan, startSpan, type AgentSpan, type AgentTrace, type EndedSpan } from '@/utils/agentTrace';
+import { annotateUngrounded, clampConfidence } from '@/utils/grounding';
 import { z } from 'zod';
 
 import type {
@@ -1309,6 +1310,16 @@ async function streamWithLLM(params: {
           }
         }
 
+        /* R47 grounding：根因卡置信度不得超过证据强度（观测 + RAG 命中） */
+        if (finalPayload !== null && toolName === 'renderRootCauseAnalysis') {
+          const card = finalPayload as RootCauseAlertProps;
+          const hasObservation = clusterContext.faultyPods.length > 0 || clusterContext.nodes.length > 0;
+          const cap = clampConfidence(hasObservation, runbooks.length);
+          if (card.confidence > cap) {
+            finalPayload = { ...card, confidence: cap };
+          }
+        }
+
         /*
          * 【无载荷 ⇒ 不发 tool-start】宁可少一张卡，也绝不留悬空骨架。
          * 未登记到 emittedToolNames，因此流尾的补全会再尝试补齐，
@@ -1894,7 +1905,7 @@ function buildRootCauseArgs(
   return {
     severity,
     title,
-    confidence: runbooks.length > 0 ? 0.92 : 0.74,
+    confidence: clampConfidence(target !== null || nodeTarget !== null, runbooks.length),
     rootCauseSummary:
       runbooks[0] !== undefined
         ? `${runbooks[0].rootCauseMechanism}`
@@ -2121,7 +2132,20 @@ async function streamWithSimulator(params: {
     intent === 'GREETING_OR_CHITCHAT'
       ? buildGreetingReport(ctx)
       : buildSimulatorReport(ctx, runbooks, hasImage);
-  const report = pixelFeatures === undefined ? baseReport : baseReport + renderPixelObservation(pixelFeatures);
+  const combinedReport = pixelFeatures === undefined ? baseReport : baseReport + renderPixelObservation(pixelFeatures);
+  /*
+   * R47 grounding：正文里每个 Pod/节点/机架名与百分比都必须能在观测或 RAG 命中里
+   * 找到出处；找不到的当场标注 [未证实]，并在报告末尾给出汇总。
+   */
+  const grounded = annotateUngrounded(combinedReport, ctx, runbooks);
+  const report =
+    grounded.unverified.length === 0
+      ? grounded.text
+      : grounded.text +
+        [
+          '',
+          '> grounding：' + grounded.unverified.length + ' 处实体/数字未在观测或知识库中找到出处，已标注 [未证实]。',
+        ].join('\n');
 
   /* ---- 2. 打字机推文本（按块推送，避免逐字符造成过多帧） ---- */
   const cps = Math.max(10, Number(process.env.SIM_TYPING_CPS ?? String(DEFAULT_TYPING_CPS)));
