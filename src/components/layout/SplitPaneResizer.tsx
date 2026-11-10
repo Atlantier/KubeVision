@@ -456,6 +456,3 @@ export function useDrawerWidth(): readonly [number, (next: number) => void] {
 
   return [widthPct, setWidth] as const;
 }
-
-/** 供其他模块复用的默认宽度（与 useDrawerWidth 初始值同源） */
-export const DEFAULT_DRAWER_PCT = RESIZE_CONFIG.defaultPct;

@@ -128,32 +128,3 @@ export function useInViewPause(
 /* 辅助 Hook：自适应降级因子                                                     */
 /* ========================================================================== */
 
-/**
- * useAdaptiveQualityFactor —— 把活跃状态映射为「工作量倍率」。
- *
- * 【核心思想】后台/离屏时不必粗暴地完全停止（那会在切回瞬间需要重建
- * 全部状态），而应按倍率降低非必要的高频计算。倍率语义：
- * - **1.0**：完全活跃，全速运行；
- * - **0.25**：降频运行（粒子/波纹等纯视觉计算按 1/4 步长推进），
- *   既省电又保持画面"活着"，切回时无需突变。
- *
- * 为何选 0.25 而非 0：视觉元素（如扩散波纹、流动粒子）若完全冻结，
- * 切回时会出现明显的"时间跳跃"（相位突然前进一大段）。降频到 1/4
- * 既降低约 75% 的计算量，又让相位连续——这是性能与观感的折中。
- *
- * @param isActive useInViewPause().isActive
- * @returns 工作量倍率 [0.25, 1.0]
- */
-export function useAdaptiveQualityFactor(isActive: boolean): number {
-  /** 记录上一帧倍率，用于平滑过渡（避免倍率突变造成视觉跳变） */
-  const factorRef = useRef<number>(1);
-  const [, forceRender] = useState<number>(0);
-
-  useEffect(() => {
-    factorRef.current = isActive ? 1 : 0.25;
-    /* 触发一次重渲染让消费方拿到新倍率（倍率变化本身是低频事件） */
-    forceRender((n): number => n + 1);
-  }, [isActive]);
-
-  return factorRef.current;
-}

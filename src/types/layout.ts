@@ -234,15 +234,6 @@ export interface RightDrawerSlotProps {
   readonly children?: ReactNode;
 }
 
-/** ChaosScenarioOption —— 混沌控制台场景选项（含中文释义，答辩可解释性） */
-export interface ChaosScenarioOption {
-  /** 场景枚举值 */
-  readonly scenario: ChaosScenario;
-  /** 场景短标题 */
-  readonly label: string;
-  /** 故障影响面说明 */
-  readonly description: string;
-}
 
 /**
  * ViewportToolbarProps —— 3D 视口右下角玻璃态相机/多模态控制工具条 Props。
@@ -272,21 +263,3 @@ export interface ViewportToolbarProps {
   readonly onCaptureDiagnose: () => void;
 }
 
-/**
- * PerfHudSample —— 性能 HUD 单次采样载荷。
- *
- * 【数据来源】前六项直读瞬态引用池 telemetryTransientRef.glStats（渲染循环写入），
- * 后三项来自响应轨 snapshotSummary 的实体计数，二者在一次采样中合并，
- * 使 HUD 同屏呈现「渲染性能 × 集群规模」的完整观测面。
- */
-export interface PerfHudSample {
-  readonly fps: number;
-  readonly frameTimeMs: number;
-  readonly drawCalls: number;
-  readonly triangles: number;
-  readonly sseLatencyMs: number;
-  readonly workerStatus: string;
-  readonly podCount: number;
-  readonly nodeCount: number;
-  readonly alertCount: number;
-}

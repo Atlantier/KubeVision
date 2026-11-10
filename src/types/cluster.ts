@@ -78,11 +78,6 @@ export type RackIndex = 0 | 1 | 2;
  */
 export type NodeHealthStatus = 'healthy' | 'warning' | 'critical';
 
-/** 初始化自检清单条目：label 展示文案 + status 徽标状态 */
-export interface BootstrapChecklistItem {
-  readonly label: string;
-  readonly status: NodeHealthStatus;
-}
 
 /* ========================================================================== */
 /* 告警实体                                                                    */

@@ -133,25 +133,6 @@
       0 16px 40px -12px rgba(0, 0, 0, 0.65);
   }
 
-  /**
-   * 状态徽标基座：小圆点 + 等宽小字，颜色由状态修饰类叠加
-   */
-  .kv-status-dot {
-    @apply inline-block h-2 w-2 rounded-full;
-  }
-
-  .kv-status-dot--healthy {
-    @apply bg-emerald-400 shadow-glow-emerald;
-  }
-
-  .kv-status-dot--warning {
-    @apply bg-amber-400;
-    box-shadow: 0 0 12px 0 rgba(251, 191, 36, 0.45);
-  }
-
-  .kv-status-dot--critical {
-    @apply bg-rose-500 shadow-glow-rose animate-glow-pulse;
-  }
 }
 
 @layer utilities {
@@ -161,7 +142,7 @@
    * 【设计意图】以两条微弱青色透明的线性渐变（横/纵各 1px）在 48px 周期上
    * 交叉叠加，形成「深空坐标系」质感；透明度压到 0.07 保证不干扰前景数据可读性，
    * 再叠加径向暗角让网格向视口边缘自然消隐。
-   * 可选配合 animate-grid-pan（tailwind.config.ts 中定义）实现缓慢平移的扫描感。
+   * 网格静态呈现（不依赖已删除的旧扫描动画）。
    */
   .bg-cyber-grid {
     background-image:
@@ -178,25 +159,7 @@
       0 0;
   }
 
-  /* 发光阴影工具类（与 tailwind.config.ts boxShadow 同名令牌一致，
-     此处提供 arbitrary 场景下的直接引用入口） */
-  .text-glow-cyan {
-    text-shadow: 0 0 12px rgba(34, 211, 238, 0.6);
-  }
 
-  .text-glow-emerald {
-    text-shadow: 0 0 12px rgba(52, 211, 153, 0.6);
-  }
-
-  .text-glow-rose {
-    text-shadow: 0 0 12px rgba(244, 63, 94, 0.6);
-  }
-
-  /* drei <Html> 标注容器：默认穿透射线与点击，防止遮挡 UI（AGENTS.md 第 6 条） */
-  .kv-html-label {
-    pointer-events: none;
-    user-select: none;
-  }
 }
 
 

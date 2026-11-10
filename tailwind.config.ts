@@ -94,20 +94,11 @@ const config: Config = {
         // 面板抬升阴影：深空环境下用近黑投影而非灰色
         panel: '0 8px 32px -8px rgba(0, 0, 0, 0.6)',
       },
-      backgroundImage: {
-        // 与 globals.css 的 .bg-cyber-grid 互补：径向暗角叠加，聚焦视口中心
-        'radial-fade':
-          'radial-gradient(ellipse 80% 60% at 50% 0%, rgba(34, 211, 238, 0.08), transparent 70%)',
-      },
       keyframes: {
         // 主题流光：沿边框缓慢扫过的高光，用于加载态与 Copilot 思考指示
         'glow-pulse': {
           '0%, 100%': { opacity: '0.4' },
           '50%': { opacity: '1' },
-        },
-        'grid-pan': {
-          '0%': { backgroundPosition: '0 0' },
-          '100%': { backgroundPosition: '48px 48px' },
         },
         'scan-line': {
           '0%': { transform: 'translateY(-100%)' },
@@ -130,7 +121,6 @@ const config: Config = {
       },
       animation: {
         'glow-pulse': 'glow-pulse 2.4s ease-in-out infinite',
-        'grid-pan': 'grid-pan 8s linear infinite',
         'scan-line': 'scan-line 4s linear infinite',
         'laser-scan': 'laser-scan 2.6s ease-in-out infinite',
       },

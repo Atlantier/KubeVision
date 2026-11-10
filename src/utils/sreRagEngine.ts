@@ -1492,15 +1492,3 @@ function applyIdfWeights(termFrequency: ReadonlyMap<string, number>): Map<string
   return weighted;
 }
 
-/**
- * getRunbookById —— 按 ID 精确取回知识库条目（溯源链接与详情展开用）。
- *
- * @param id Runbook 编号（如 'RUNBOOK-K8S-042'）
- * @returns 命中文档（无 similarityScore）；未找到返回 null
- */
-export function getRunbookById(id: string): RagRunbookDoc | null {
-  for (const doc of SRE_RUNBOOK_CORPUS) {
-    if (doc.id === id) return doc;
-  }
-  return null;
-}

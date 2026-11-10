@@ -1552,7 +1552,7 @@ export default function MasterNode3D() {
        * 放大，整颗晶体被糊成浅蓝棉花糖。现在只保留一枚紧凑锐利的星核辉光
        * （2.15 / 0.62）：它的职责是给中心白炽点一层薄光晕，而非覆盖整颗晶体。
        */}
-      {/* R25：7 层封闭光学结构（替代 godray / pillar / flare） */}
+      {/* R25：7 层封闭光学结构（替代旧光柱 / 焦点光晕） */}
       <CrystalOptics />
 
       <GlowHalo3D color={GLOW_CYAN} scale={2.15} opacity={0.62} falloff={2.6} pulse pulsePeriod={2.6} />

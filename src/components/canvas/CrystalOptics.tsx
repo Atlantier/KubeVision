@@ -12,7 +12,7 @@
  *
  * 【7 层结构（由内向外）】
  *  1. 内核奇点 r≈0.40：二十面体 + 3 倍频 simplex 噪声流动，中心近白→电光青→深蓝
- *  2. 体积雾球 r≈0.95：BackSide + Additive，pow(dot(N,V),2.6)，替代 godray 的光感
+ *  2. 体积雾球 r≈0.95：BackSide + Additive，pow(dot(N,V),2.6)，替代旧光锥的光感
  *  3. 晶体主体：八面体半透明折射感（法线+菲涅尔），透明度 ≤ 0.28
  *  4. 棱线两层 r=1.42/1.54 + 顶点高光点，沿边 t 的流光
  *  5. 内部星云 360 粒子，轨道 r<1.15，多轨道涡旋 + 闪烁相位差
@@ -651,7 +651,7 @@ export default function CrystalOptics(): React.ReactElement {
       0.72 + 0.28 * Math.max(0, Math.sin(t * MOTION_BREATH_OMEGA + Math.PI / 3));
     const star = starRef.current;
     if (star !== null) {
-      /* billboard：复制相机四元数（与旧 flare 相同的零滞后做法） */
+      /* billboard：复制相机四元数（与旧镜头光晕相同的零滞后做法） */
       star.quaternion.copy(state.camera.quaternion);
       star.updateMatrixWorld(true);
     }

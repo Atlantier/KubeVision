@@ -517,52 +517,6 @@ export function sanitizeRawLog(raw: string): SanitizeResult {
   return { sanitized, maskedCount, maskedByRule };
 }
 
-/**
- * sanitizeBatch —— 批量脱敏（日志审计面板的常用入口）。
- *
- * 【设计意图】调用方通常一次处理多条日志，需要「逐条的脱敏结果」
- * 与「整批累计脱敏数」两个层级的统计。逐条结果用于构造 LogEntry，
- * 整批累计用于 HUD 的隐私审计角标。
- *
- * @param raws 原始日志数组
- * @returns 逐条结果数组与整批累计脱敏数
- */
-export function sanitizeBatch(raws: readonly string[]): {
-  readonly results: readonly SanitizeResult[];
-  readonly totalMasked: number;
-} {
-  const results: SanitizeResult[] = [];
-  let totalMasked = 0;
-  for (const raw of raws) {
-    const result = sanitizeRawLog(raw);
-    results.push(result);
-    totalMasked += result.maskedCount;
-  }
-  return { results, totalMasked };
-}
-
-/**
- * hasSensitiveData —— 快速探测文本是否含敏感信息（不执行替换）。
- *
- * 【用途】用于在 UI 上给出「此条日志含敏感字段」的预警标记，
- * 无需承担字符串重建的开销。注意它复用了同一套规则表，
- * 因此与 sanitizeRawLog 的判定口径天然一致，不会出现
- * 「标记说有敏感信息但脱敏后一个字没变」的矛盾。
- *
- * @param raw 待检测文本
- * @returns 是否命中任一敏感规则
- */
-export function hasSensitiveData(raw: string): boolean {
-  if (typeof raw !== 'string' || raw.length === 0) return false;
-  for (const rule of SANITIZER_RULES) {
-    /* 重置 lastIndex 以防全局正则残留状态导致漏判 */
-    rule.pattern.lastIndex = 0;
-    const detected = rule.pattern.test(raw);
-    rule.pattern.lastIndex = 0;
-    if (detected) return true;
-  }
-  return false;
-}
 
 /**
  * getSanitizerRuleNames —— 导出规则名清单（供文档、诊断与测试断言使用）。
