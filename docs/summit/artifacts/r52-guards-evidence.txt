@@ -1,0 +1,18 @@
+R52 治理脚本验收证据
+=== check-layering ===
+扫描 120 个文件 / 522 条模块引用；utils-no-components / canvas-no-ai / api-no-react-dom 均 0 违规；白名单 0 条。
+探针 src/utils/__layer_probe.ts 引入 @/components/hud/TraceIdChip → exit 1，报告明确指向该行；删除探针后复跑通过。
+=== check-dead-exports ===
+扫描 120 个文件 / 512 个具名导出；基线 18 条存量；当前 18 条；新增 0 条。
+探针 src/utils/__dead_probe.ts 导出 DeadProbeSymbol → exit 1（新增死导出 1 条）；删除探针后复跑通过。
+基线文件：docs/dead-exports-baseline.json（--update-baseline 可重建）。
+=== audit-deps（pnpm build 后读取 .next/）===
+运行时依赖 17 个；未使用 0 个；devDependencies 未判明用途 0 个。
+首屏 JS gzip 172.2 KB / 预算 200 KB → PASS
+3D chunk gzip 166.3 KB / 预算 220 KB → PASS
+AI chunk gzip 199.6 KB / 预算 240 KB → PASS（该包为按需加载的 transformers worker chunk，779.6 KB raw，不占首屏）
+全部 client chunks 916.8 KB gzip / 29 个；报告：docs/deps-audit.md
+=== dev 产物保护（回归发现的真实问题）===
+dev server 重启会覆盖 .next/（无 BUILD_ID），首次复跑 audit 读到 dev chunk，AI chunk 被虚报为 1156.9KB。
+已修正：audit-deps 检测 .next/BUILD_ID，缺失即视为 dev 构建 → 跳过体积测量且不覆盖 docs/deps-audit.md；
+重新执行 pnpm build 后复测：首屏 172.2 / 3D 166.3 / AI 199.6 KB gzip，均 PASS。

@@ -71,3 +71,15 @@ pnpm eval:ai-quality                 # AI 质量 20 问（需可用的 OpenAI �
 - 移动/删除文档时用 `grep -rn` 检查代码与文档引用，避免悬空链接；
 - 根目录只保留 `README.md` / `AGENTS.md` / `CONTRIBUTING.md` / `LICENSE` /
   `THIRD_PARTY_NOTICES.md`；历史报告归档到 `docs/archive/`。
+## 7. 治理脚本（CI 应全绿）
+
+```bash
+pnpm check:layering       # 分层依赖：utils 不依赖 components；canvas 不依赖 ai；api 不依赖 React
+pnpm check:dead-exports   # 死导出：仅拦截"新增"死代码（基线 docs/dead-exports-baseline.json）
+pnpm audit:deps           # 依赖未使用检查 + 首屏/3D/AI chunk 体积预算（读 .next/ 生产产物）
+```
+
+- 白名单/预算集中在一处：分层例外在 `scripts/check-layering.mjs` 的 `LAYER_ALLOWLIST`，
+  体积预算在 `scripts/audit-deps.mjs` 的 `BUDGETS`；调整必须在 PR 说明理由。
+- 新增死导出会被 `check:dead-exports` 直接拒绝；确认是存量债才允许 `--update-baseline`。
+- 体积审计需先 `pnpm build`；CI 用 `node scripts/audit-deps.mjs --strict` 让超限真正失败。

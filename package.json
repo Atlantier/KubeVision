@@ -60,7 +60,10 @@
     "sim:drift": "node scripts/sim-drift.mjs",
     "verify:demo-drill": "node scripts/verify-demo-drill.mjs",
     "lint:glsl": "node scripts/lint-glsl.mjs",
-    "docs:pdf": "node scripts/build-whitepaper-pdf.mjs"
+    "docs:pdf": "node scripts/build-whitepaper-pdf.mjs",
+    "check:layering": "node scripts/check-layering.mjs",
+    "check:dead-exports": "node scripts/check-dead-exports.mjs",
+    "audit:deps": "node scripts/audit-deps.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "0.0.66",
