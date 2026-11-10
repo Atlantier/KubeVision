@@ -48,6 +48,10 @@ import type {
 
 import TopBar from '@/components/layout/TopBar';
 import TerminalEcho from '@/components/layout/TerminalEcho';
+import PresentStatusHud from '@/components/layout/PresentStatusHud';
+import ShortcutHelpOverlay from '@/components/layout/ShortcutHelpOverlay';
+import { usePresentMode, PRESENT_DRAWER_WIDTH_PCT } from '@/store/usePresentMode';
+import { togglePauseDemoDirector } from '@/utils/demoDirector';
 import SplitPaneResizer, { useDrawerWidth } from '@/components/layout/SplitPaneResizer';
 
 /* ========================================================================== */
@@ -194,6 +198,23 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
   /* ---- 右栏可拖拽宽度（localStorage 记忆；SSR 安全见 useDrawerWidth 注释） ---- */
   const [drawerWidthPct, setDrawerWidthPct] = useDrawerWidth();
 
+  /* R32：演示模式（?present=1 或顶栏开关）——只改 DOM，不重建 Canvas */
+  const present = usePresentMode((s): boolean => s.present);
+  const [helpOpen, setHelpOpen] = useState<boolean>(false);
+  const effectiveDrawerPct = present ? PRESENT_DRAWER_WIDTH_PCT : drawerWidthPct;
+
+  useEffect((): void => {
+    const fromUrl = new URLSearchParams(window.location.search).get('present') === '1';
+    if (fromUrl) usePresentMode.getState().setPresent(true);
+  }, []);
+
+  useEffect((): (() => void) => {
+    document.body.dataset.present = present ? '1' : '0';
+    return (): void => {
+      delete document.body.dataset.present;
+    };
+  }, [present]);
+
   /** 拖拽中的标志：拖拽期间禁用宽度过渡，否则会与指针位置产生"橡皮筋"延迟 */
   const [isResizing, setIsResizing] = useState<boolean>(false);
 
@@ -218,11 +239,42 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
       if (event.shiftKey && (event.key === 'P' || event.key === 'p')) {
         event.preventDefault();
         setPerfHudOpen(!useClusterStore.getState().isPerfHudOpen);
+        return;
+      }
+
+      /* R32 追问 3：键盘可达 */
+      if (event.key === '1' || event.key === '2') {
+        event.preventDefault();
+        setActiveRightTab(event.key === '1' ? 'copilot' : 'auditor');
+        return;
+      }
+      if (event.key === 'f' || event.key === 'F') {
+        const search = document.querySelector<HTMLElement>(
+          'input[type="search"], [role="searchbox"], input[aria-label*="搜索"], input[placeholder*="搜索"]',
+        );
+        if (search !== null) {
+          event.preventDefault();
+          search.focus();
+        }
+        return;
+      }
+      if (event.key === ' ') {
+        event.preventDefault();
+        togglePauseDemoDirector();
+        return;
+      }
+      if (event.key === '?') {
+        event.preventDefault();
+        setHelpOpen((open): boolean => !open);
+        return;
+      }
+      if (event.key === 'Escape') {
+        setHelpOpen(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return (): void => window.removeEventListener('keydown', onKeyDown);
-  }, [setPerfHudOpen]);
+  }, [setPerfHudOpen, setActiveRightTab]);
 
   return (
     <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-slate-950">
@@ -285,7 +337,8 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
           {/* 事件流终端：绝对定位于视口底部，右侧避让相机工具条（z-20）
               —— right-[74px] = 工具条右距 12 + 宽 50 + 间隙 12，
               两者在右下角不再重叠，terminal 的 clear 按钮与日志区完整可点 */}
-          <TerminalEcho className="absolute bottom-3 left-3 right-[74px]" />
+          {/* R32：演示模式隐藏终端；Canvas 不卸载，切回无重建成本 */}
+          {present ? null : <TerminalEcho className="absolute bottom-3 left-3 right-[74px]" />}
 
           {/* 性能遥测 HUD 已迁出本组件：由 page.tsx 通过 next/dynamic
               懒加载 PerfTelemetryHUD 挂载（按需载入，首屏零开销）。
@@ -317,7 +370,7 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
          */}
         <section
           aria-label="AI Copilot 抽屉"
-          style={{ '--drawer-w': `${drawerWidthPct}%` } as React.CSSProperties}
+          style={{ '--drawer-w': `${effectiveDrawerPct}%` } as React.CSSProperties}
           className={cn(
             'kv-panel min-h-0 overflow-hidden rounded-lg',
             // 移动端：w-full 铺满，宽度变量不生效
@@ -337,6 +390,10 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
           )}
         </section>
       </main>
+
+      {/* R32：演示模式极简状态胶囊 + 快捷键帮助浮层 */}
+      {present ? <PresentStatusHud /> : null}
+      <ShortcutHelpOverlay open={helpOpen} onClose={(): void => setHelpOpen(false)} />
 
       {/* ============ 移动端底部浮动切换栏（< lg 可见） ============ */}
       <MobileViewSwitcher view={mobileView} onChange={setMobileView} />

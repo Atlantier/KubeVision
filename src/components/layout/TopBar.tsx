@@ -67,6 +67,7 @@ import {
   type DemoPacingKind,
   type DemoScriptId,
 } from '@/utils/demoDirector';
+import { usePresentMode } from '@/store/usePresentMode';
 import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
 import DemoReplayTimeline from '@/components/hud/DemoReplayTimeline';
 import DemoDebugPanel from '@/components/hud/DemoDebugPanel';
@@ -998,6 +999,9 @@ export default function TopBar() {
   const activeChaos = useClusterStore((s): ChaosScenario => s.activeChaos);
   const connectionMode = useClusterStore((s): ConnectionMode => s.connectionMode);
   const isPerfHudOpen = useClusterStore((s): boolean => s.isPerfHudOpen);
+  /* R32：演示模式开关（隐藏终端/极简 HUD/抽屉 34%） */
+  const presentMode = usePresentMode((s): boolean => s.present);
+  const togglePresentMode = usePresentMode((s): (() => void) => s.toggle);
   const selectFilter = useClusterStore((s): ((filter: StatusFilter) => void) => s.setStatusFilter);
   const setChaos = useClusterStore((s): ((scenario: ChaosScenario) => void) => s.setActiveChaos);
   const setMode = useClusterStore((s): ((mode: ConnectionMode) => void) => s.setConnectionMode);
@@ -1361,6 +1365,24 @@ export default function TopBar() {
           onOpenModal={handleOpenChaosModal}
           onTerminate={handleTerminateChaos}
         />
+
+        {/* R32：演示模式开关（隐藏终端/极简 HUD/抽屉 34%） */}
+        <button
+          type="button"
+          onClick={togglePresentMode}
+          aria-pressed={presentMode}
+          aria-label={`演示模式 · 当前${presentMode ? '已开启' : '已关闭'}`}
+          className={cn(
+            'flex items-center gap-1.5 rounded-lg border px-2 py-1.5',
+            'font-mono text-[11px] tracking-tight transition-colors duration-150',
+            presentMode
+              ? 'border-cyan-400/35 bg-cyan-400/[0.08] text-cyan-300'
+              : 'border-white/[0.08] bg-slate-950/70 text-slate-400 hover:border-white/[0.12] hover:text-slate-200',
+          )}
+          title="演示模式（隐藏终端/极简 HUD/抽屉 34%）"
+        >
+          <span className="hidden xl:inline">演示</span>
+        </button>
 
         {/* 性能监控 HUD 开关（快捷键 Shift+P，监听器在 ShellLayout 全局挂载） */}
         <button

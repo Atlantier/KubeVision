@@ -1,0 +1,48 @@
+{
+  "generatedAt": "2026-11-10T11:17:07.885Z",
+  "baseline": "docs/summit/visual-baseline",
+  "current": "docs/summit/visual-current",
+  "threshold": 1.5,
+  "results": [
+    {
+      "name": "01-first-screen.png",
+      "status": "fail",
+      "ratio": 3.4389870058565157,
+      "changed": 36078,
+      "total": 1049088,
+      "detail": "36078/1049088 px"
+    },
+    {
+      "name": "02-pod-selected.png",
+      "status": "fail",
+      "ratio": 12.593891074914593,
+      "changed": 132121,
+      "total": 1049088,
+      "detail": "132121/1049088 px"
+    },
+    {
+      "name": "03-oom-fault.png",
+      "status": "missing",
+      "ratio": null,
+      "detail": "当前目录缺少同名截图"
+    },
+    {
+      "name": "04-crystal.png",
+      "status": "missing",
+      "ratio": null,
+      "detail": "当前目录缺少同名截图"
+    },
+    {
+      "name": "05-genui-cards.png",
+      "status": "missing",
+      "ratio": null,
+      "detail": "当前目录缺少同名截图"
+    },
+    {
+      "name": "06-postmortem.png",
+      "status": "missing",
+      "ratio": null,
+      "detail": "当前目录缺少同名截图"
+    }
+  ]
+}
