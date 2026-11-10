@@ -174,14 +174,14 @@ export default function TerminalEcho({ className, defaultCollapsed = true }: Ter
   return (
     <div
       className={cn(
-        'pointer-events-auto z-10 flex flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-950/80 backdrop-blur-md shadow-panel transition-[height] duration-300 ease-out',
+        'pointer-events-auto z-10 flex flex-col overflow-hidden rounded-lg border border-white/[0.07] bg-slate-950/80 shadow-panel transition-[height] duration-300 ease-out',
         collapsed ? 'h-8' : 'h-32',
         className,
       )}
       aria-label="集群事件流终端"
     >
       {/* ============ 头部状态栏（恒 h-8，点击切换折叠） ============ */}
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-slate-800/80 bg-slate-900/60">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/[0.07]/80 bg-slate-900/60">
         <button
           type="button"
           onClick={(): void => setCollapsed((prev): boolean => !prev)}
@@ -198,7 +198,7 @@ export default function TerminalEcho({ className, defaultCollapsed = true }: Ter
             实时事件回显流
           </span>
           {/* 行数徽标 */}
-          <span className="shrink-0 rounded-full border border-slate-700 bg-slate-800/80 px-1.5 font-mono text-[11px] tabular-nums text-slate-400">
+          <span className="shrink-0 rounded-full border border-white/[0.07] bg-slate-800/80 px-1.5 font-mono text-[11px] tabular-nums text-slate-400">
             {terminalLogs.length}
           </span>
           {/* 折叠态：内联显示最新一行（截断），展开态隐藏 */}
@@ -219,7 +219,7 @@ export default function TerminalEcho({ className, defaultCollapsed = true }: Ter
           type="button"
           onClick={clearTerminalLogs}
           aria-label="清空终端日志"
-          className="mr-2 flex shrink-0 items-center gap-1 rounded border border-slate-700/70 bg-slate-800/50 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400 transition-colors hover:border-rose-500/50 hover:text-rose-300 active:scale-95"
+          className="mr-2 flex shrink-0 items-center gap-1 rounded border border-white/[0.07]/70 bg-slate-800/50 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400 transition-colors hover:border-rose-500/50 hover:text-rose-300 active:scale-95"
           title="清空终端滚动日志（不影响数据源偏好、脱敏计数与自愈审计历史）"
         >
           <Trash2 className="h-3 w-3" aria-hidden />
@@ -234,7 +234,7 @@ export default function TerminalEcho({ className, defaultCollapsed = true }: Ter
         className={cn('min-h-0 flex-1 overflow-y-auto py-1', collapsed && 'invisible')}
       >
         {classifiedLines.length === 0 ? (
-          <p className="px-3 py-1 font-mono text-[11px] text-slate-600">
+          <p className="px-3 py-1 font-mono text-[11px] text-slate-500">
             -- 正在监听集群实时遥测事件流…（引导完成，等待首帧数据）--
           </p>
         ) : (

@@ -8,7 +8,7 @@
  * 「打哪台机架、用什么机制、会看到什么」，点击即启动完整联动链路。
  *
  * 【视觉契约：半透明暗黑警示风格 + 红黑斜纹战术边框】
- * - 背景遮罩：slate-950/85 + backdrop-blur（比常规 Modal 更暗，强化警示）；
+ * - 背景遮罩：slate-950/85 +（比常规 Modal 更暗，强化警示）；
  * - 面板：深黑底 + 红色警示描边 + 红色外辉光；
  * - 斜纹战术边框：由 CSS `repeating-linear-gradient` 绘制的 45° 红黑条纹，
  *   上下两条作为「警戒线」装饰（不使用图片，纯 CSS，零资源开销）；
@@ -224,7 +224,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
       <button
         type="button"
         aria-label="关闭混沌演练控制台"
-        className="absolute inset-0 cursor-default bg-slate-950/85 backdrop-blur-sm"
+        className="absolute inset-0 cursor-default bg-slate-950/85"
         onClick={(): void => setChaosModalOpen(false)}
       />
 
@@ -281,7 +281,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
                   onClick={(): void => handleCardClick(card)}
                   aria-label={`${card.code} · ${card.codename} · ${card.title}`}
                   className={cn(
-                    'group relative flex flex-col gap-1.5 rounded-md border border-slate-800 bg-slate-900/60 p-3 text-left transition-all duration-150 active:scale-[0.985]',
+                    'group relative flex flex-col gap-1.5 rounded-md border border-white/[0.07] bg-slate-900/60 p-3 text-left transition-all duration-150 active:scale-[0.985]',
                     card.accentBorderClass,
                   )}
                 >
@@ -320,7 +320,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
 
                   {/* 受灾机架徽标（恢复卡不显示） */}
                   {card.targetRackIndex !== null ? (
-                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-slate-700/70 bg-slate-800/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-slate-400">
+                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-white/[0.07]/70 bg-slate-800/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-slate-400">
                       target&nbsp;·&nbsp;rack-{card.targetRackIndex}
                     </span>
                   ) : (
@@ -334,7 +334,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
           </div>
 
           {/* ======== 底部提示 ======== */}
-          <p className="mt-3.5 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-slate-600">
+          <p className="mt-3.5 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-slate-500">
             <AlertTriangle className="h-2.5 w-2.5" aria-hidden />
             drills run against the simulated engine · no real cluster is harmed · ESC to abort
           </p>

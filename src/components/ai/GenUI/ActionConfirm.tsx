@@ -540,7 +540,7 @@ export default function ActionConfirm({
   return (
     <div
       className={cn(
-        'w-full overflow-hidden rounded-md border bg-slate-900/70 backdrop-blur-sm',
+        'w-full overflow-hidden rounded-md border bg-slate-900/70',
         isHighRisk ? 'border-rose-500/60 shadow-glow-rose' : 'border-cyan-500/40',
       )}
       aria-label={`自愈操作确认：${ACTION_LABEL[actionType]} ${targetName}${
@@ -602,7 +602,7 @@ export default function ActionConfirm({
 
       {/* ============ MCP 协议端点标识 ============ */}
       <div className="px-2.5 pb-2">
-        <div className="flex items-center gap-1 rounded border border-slate-700/70 bg-slate-800/50 px-1.5 py-1">
+        <div className="flex items-center gap-1 rounded border border-white/[0.07]/70 bg-slate-800/50 px-1.5 py-1">
           <Terminal className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
           <code className="truncate font-mono text-[11px] text-slate-400">{mcpEndpoint}</code>
         </div>
@@ -659,7 +659,7 @@ export default function ActionConfirm({
               : isExecuting
                 ? 'cursor-wait border-cyan-500/50 bg-cyan-500/15 text-cyan-200'
                 : buttonDisabled
-                  ? 'cursor-not-allowed border-slate-700 bg-slate-800/50 text-slate-600'
+                  ? 'cursor-not-allowed border-white/[0.07] bg-slate-800/50 text-slate-500'
                   : isHighRisk
                     ? 'border-rose-500/60 bg-rose-500/15 text-rose-200 hover:border-rose-400 hover:bg-rose-500/25 active:scale-[0.985]'
                     : 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200 hover:border-cyan-400 hover:bg-cyan-500/25 active:scale-[0.985]',
@@ -724,7 +724,7 @@ export default function ActionConfirm({
 
       {/* ============ 已执行态：服务端回执 + 自愈前后指标对比 ============ */}
       {isDone ? (
-        <div className="border-t border-slate-800 px-2.5 py-1.5">
+        <div className="border-t border-white/[0.07] px-2.5 py-1.5">
           <p className="font-mono text-[11px] tracking-wider text-emerald-400/80">
             [OK] 自愈指令已下发 → 免疫窗口已登记 → 3D 视口已同步更新
           </p>
@@ -758,14 +758,14 @@ export default function ActionConfirm({
               </pre>
 
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                <p className="font-mono text-[9px] text-slate-500">audit digest: {receipt.auditDigest}</p>
+                <p className="font-mono text-[10px] text-slate-500">audit digest: {receipt.auditDigest}</p>
                 <button
                   type="button"
                   onClick={(): void => void handleVerifyReceipt()}
                   disabled={digestCheck.state === 'checking'}
                   aria-label="校验回执摘要是否与字段一致"
                   className={cn(
-                    'ml-auto rounded border px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors',
+                    'ml-auto rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
                     'border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:border-cyan-400/70 hover:bg-cyan-500/20',
                     digestCheck.state === 'checking' ? 'cursor-wait opacity-60' : '',
                   )}
@@ -777,7 +777,7 @@ export default function ActionConfirm({
               {digestCheck.state === 'ok' ? (
                 <p
                   data-digest-check="ok"
-                  className="mt-1 font-mono text-[9px] text-emerald-400"
+                  className="mt-1 font-mono text-[10px] text-emerald-400"
                   aria-label="回执摘要校验通过"
                 >
                   ✓ 校验通过：摘要与字段一致（{digestCheck.expected}）
@@ -786,7 +786,7 @@ export default function ActionConfirm({
               {digestCheck.state === 'fail' ? (
                 <p
                   data-digest-check="fail"
-                  className="mt-1 font-mono text-[9px] font-bold text-rose-400"
+                  className="mt-1 font-mono text-[10px] font-bold text-rose-400"
                   aria-label="回执摘要校验失败"
                 >
                   ✗ 校验失败：回执字段被改动（期望 {digestCheck.expected} / 实际 {digestCheck.actual}）
@@ -862,7 +862,7 @@ function MetricDelta({
         {before.toFixed(unit === '' ? 0 : 1)}
         {unit}
       </span>
-      <span className="text-slate-600">→</span>
+      <span className="text-slate-500">→</span>
       <span className={toneClass}>
         {after.toFixed(unit === '' ? 0 : 1)}
         {unit} {arrow}
@@ -893,7 +893,7 @@ function StatusDelta({ before, after }: { readonly before: string; readonly afte
     <span className="flex items-baseline gap-1 whitespace-nowrap">
       <span className="text-slate-500">状态</span>
       <span className="text-slate-400">{before}</span>
-      <span className="text-slate-600">→</span>
+      <span className="text-slate-500">→</span>
       <span className={toneClass}>{after}</span>
     </span>
   );

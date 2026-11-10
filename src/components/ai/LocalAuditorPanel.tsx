@@ -308,8 +308,8 @@ function MaskedTypeChips({
           <span
             key={rule}
             className={cn(
-              'rounded border px-1 py-0.5 font-mono text-[9px] font-bold leading-none tabular-nums',
-              meta?.className ?? 'border-slate-600/50 bg-slate-600/10 text-slate-400',
+              'rounded border px-1 py-0.5 font-mono text-[10px] font-bold leading-none tabular-nums',
+              meta?.className ?? 'border-white/[0.07]/50 bg-slate-500/10 text-slate-400',
             )}
             title={`规则 ${rule} 命中 ${count} 次`}
           >
@@ -363,7 +363,7 @@ function LabelDistributionBar({
           );
         })}
       </div>
-      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[9px] uppercase tracking-wider text-slate-500">
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
         {labels.map((label): React.ReactElement | null => {
           const count = counts[label];
           if (count === 0) return null;
@@ -463,7 +463,7 @@ function SensitiveLogProbe({
         <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300">
           自定义敏感日志现场测试
         </span>
-        <span className="ml-auto font-mono text-[9px] uppercase tracking-wider text-slate-600">
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-500">
           全程零出域
         </span>
       </div>
@@ -476,7 +476,7 @@ function SensitiveLogProbe({
             type="button"
             onClick={(): void => setDraft(preset.text)}
             aria-label={`填入预设样本：${preset.label}`}
-            className="rounded border border-white/[0.08] bg-white/[0.02] px-1 py-0.5 font-mono text-[9px] tracking-wide text-slate-400 transition-colors hover:border-cyan-400/40 hover:text-cyan-300"
+            className="rounded border border-white/[0.08] bg-white/[0.02] px-1 py-0.5 font-mono text-[10px] tracking-wide text-slate-400 transition-colors hover:border-cyan-400/40 hover:text-cyan-300"
           >
             {preset.label}
           </button>
@@ -490,7 +490,7 @@ function SensitiveLogProbe({
         spellCheck={false}
         aria-label="粘贴待测试的原始日志（含敏感信息）"
         placeholder="粘贴一行含凭证 / 内网 IP / 报错的原始日志…"
-        className="mt-1 w-full resize-none rounded border border-white/[0.08] bg-slate-950/70 px-1.5 py-1 font-mono text-[10px] leading-relaxed text-slate-200 placeholder:text-slate-600 focus:border-cyan-400/50 focus:outline-none"
+        className="mt-1 w-full resize-none rounded border border-white/[0.08] bg-slate-950/70 px-1.5 py-1 font-mono text-[10px] leading-relaxed text-slate-200 placeholder:text-slate-500 focus:border-cyan-400/50 focus:outline-none"
       />
 
       <div className="mt-1 flex items-center gap-1">
@@ -503,7 +503,7 @@ function SensitiveLogProbe({
             'flex items-center gap-1 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             canSubmit
               ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-300 hover:border-cyan-400/70 hover:bg-cyan-500/25'
-              : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-600',
+              : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-500',
           )}
         >
           {busy ? (
@@ -514,7 +514,7 @@ function SensitiveLogProbe({
           {busy ? '推理中' : '端侧推理测试'}
         </button>
         {disabled ? (
-          <span className="font-mono text-[9px] uppercase tracking-wider text-amber-500/80">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-amber-500/80">
             引擎未就绪
           </span>
         ) : null}
@@ -564,7 +564,7 @@ function AuditCard({
       </div>
 
       {/* ---- 命名空间 + 脱敏计数 ---- */}
-      <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-600">
+      <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
         <span className="truncate">{record.namespace}</span>
         <span>·</span>
         <span className={record.maskedCount > 0 ? 'text-amber-500' : ''}>
@@ -597,7 +597,7 @@ function AuditCard({
           {showRaw ? '原始日志（含敏感凭证）' : '脱敏后日志（零信任安全）'}
         </button>
         {record.maskedCount > 0 ? (
-          <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-600">
+          <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-500">
             点击切换对比
           </span>
         ) : null}
@@ -1209,13 +1209,13 @@ export default function LocalAuditorPanel() {
         {/* 累计脱敏凭证数 + 平均推理延迟 */}
         <div className="mt-1 grid grid-cols-2 gap-1">
           <div className="rounded border border-white/[0.06] bg-white/[0.03] px-1 py-0.5">
-            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">累计脱敏项</p>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-500">累计脱敏项</p>
             <p className="font-mono text-[10px] font-bold tabular-nums text-amber-300">
               {totalMaskedSecrets}
             </p>
           </div>
           <div className="rounded border border-white/[0.06] bg-white/[0.03] px-1 py-0.5">
-            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">平均推理耗时</p>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-500">平均推理耗时</p>
             <p className="font-mono text-[10px] font-bold tabular-nums text-cyan-300">
               {avgLatency !== null ? `${avgLatency.toFixed(2)}ms` : '--'}
             </p>
@@ -1247,7 +1247,7 @@ export default function LocalAuditorPanel() {
           className={cn(
             'flex min-w-0 flex-1 items-center justify-center gap-1 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             isFetching || !classifier.isReady
-              ? 'cursor-not-allowed border-white/[0.05] bg-white/[0.02] text-slate-600'
+              ? 'cursor-not-allowed border-white/[0.05] bg-white/[0.02] text-slate-500'
               : 'border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:border-cyan-400/70 hover:bg-cyan-500/20',
           )}
         >
@@ -1276,7 +1276,7 @@ export default function LocalAuditorPanel() {
           className={cn(
             'flex shrink-0 items-center gap-1 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             isFetching || !classifier.isReady
-              ? 'cursor-not-allowed border-white/[0.05] bg-white/[0.02] text-slate-600'
+              ? 'cursor-not-allowed border-white/[0.05] bg-white/[0.02] text-slate-500'
               : 'border-cyan-400/60 bg-cyan-400/15 text-cyan-200 shadow-glow-cyan hover:border-cyan-300 hover:bg-cyan-400/25',
           )}
         >
@@ -1386,7 +1386,7 @@ export default function LocalAuditorPanel() {
             </span>
             <span
               className={cn(
-                'ml-auto rounded border px-1 py-0.5 font-mono text-[9px] font-bold leading-none',
+                'ml-auto rounded border px-1 py-0.5 font-mono text-[10px] font-bold leading-none',
                 LABEL_META[probeResult.result.label].badge,
               )}
             >
@@ -1395,7 +1395,7 @@ export default function LocalAuditorPanel() {
           </div>
 
           {/* 三项硬指标：耗时 / 置信度 / 脱敏数 */}
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[9px] uppercase tracking-wider text-slate-500">
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
             <span className="tabular-nums text-cyan-400/90">
               推理耗时 {probeResult.result.inferenceLatencyMs.toFixed(2)}ms
             </span>
@@ -1414,7 +1414,7 @@ export default function LocalAuditorPanel() {
           {/* 脱敏前后对照 */}
           <div className="mt-1 space-y-1">
             <div>
-              <p className="font-mono text-[9px] uppercase tracking-wider text-rose-400/70">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-rose-400/70">
                 原始（含敏感信息 · 仅存于本机）
               </p>
               <div className="mt-0.5 max-h-16 overflow-y-auto rounded border border-rose-500/30 bg-rose-950/20 p-1">
@@ -1422,7 +1422,7 @@ export default function LocalAuditorPanel() {
               </div>
             </div>
             <div>
-              <p className="font-mono text-[9px] uppercase tracking-wider text-emerald-400/70">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-400/70">
                 脱敏后（可安全外发 · 端侧模型输入）
               </p>
               <div className="mt-0.5 max-h-16 overflow-y-auto rounded border border-emerald-500/25 bg-slate-950/60 p-1">
@@ -1437,9 +1437,9 @@ export default function LocalAuditorPanel() {
       <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto" aria-live="polite" aria-label="审计结果列表">
         {records.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-1.5 px-4 text-center">
-            <ShieldCheck className="h-6 w-6 text-slate-700" aria-hidden />
-            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-600">等待抓取日志</p>
-            <p className="text-[11px] leading-relaxed text-slate-600">
+            <ShieldCheck className="h-6 w-6 text-slate-500" aria-hidden />
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-500">等待抓取日志</p>
+            <p className="text-[11px] leading-relaxed text-slate-500">
               点击上方按钮抓取集群日志，端侧将完成脱敏与语义分类，
               <br />
               原始敏感信息永不离开本机。

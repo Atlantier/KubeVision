@@ -24,7 +24,44 @@ const config: Config = {
   darkMode: 'class',
   theme: {
     extend: {
+      spacing: {
+        kv1: '4px',
+        kv2: '8px',
+        kv3: '12px',
+        kv4: '16px',
+        kv5: '20px',
+        kv6: '24px',
+        kv8: '32px',
+      },
+      borderRadius: {
+        kv: '4px',
+        'kv-md': '6px',
+        'kv-lg': '8px',
+        'kv-xl': '12px',
+      },
+      transitionDuration: {
+        fast: '140ms',
+        base: '200ms',
+        slow: '320ms',
+      },
+      transitionTimingFunction: {
+        kv: 'cubic-bezier(0.22, 1, 0.36, 1)',
+      },
+
       colors: {
+        kv: {
+          void: 'var(--kv-void)',
+          panel: 'var(--kv-panel)',
+          border: 'var(--kv-border)',
+          primary: 'var(--kv-text-primary)',
+          secondary: 'var(--kv-text-secondary)',
+          tertiary: 'var(--kv-text-tertiary)',
+          muted: 'var(--kv-text-muted)',
+          emerald: 'var(--kv-emerald)',
+          amber: 'var(--kv-amber)',
+          rose: 'var(--kv-rose)',
+          cyan: 'var(--kv-cyan)',
+        },
         // 深空基底：比 slate-950 更深一档，用于 3D 画布背后的无限纵深
         void: {
           DEFAULT: '#020617',

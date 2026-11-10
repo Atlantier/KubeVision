@@ -189,7 +189,7 @@ export default function AgentThoughtChain({
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-md border border-slate-800 bg-slate-900/50 backdrop-blur-sm',
+        'overflow-hidden rounded-md border border-white/[0.07] bg-slate-900/50',
         className,
       )}
       aria-label="AI 思考与规划过程"
@@ -217,7 +217,7 @@ export default function AgentThoughtChain({
 
         {/* 摘要徽标：步数 + 总耗时 */}
         <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums text-slate-500">
-          <span className="rounded-full border border-slate-700 bg-slate-800/70 px-1.5 py-0.5 text-slate-400">
+          <span className="rounded-full border border-white/[0.07] bg-slate-800/70 px-1.5 py-0.5 text-slate-400">
             {ordered.sorted.length} 步
           </span>
           <span>{ordered.total} ms</span>
@@ -231,10 +231,10 @@ export default function AgentThoughtChain({
 
       {/* ============ 展开态：时间轴 ============ */}
       {expanded ? (
-        <ol className="relative space-y-0 border-t border-slate-800 px-2.5 py-2">
+        <ol className="relative space-y-0 border-t border-white/[0.07] px-2.5 py-2">
           {/* 纵向时间轴主线（absolute 贯穿，视觉上把各步骤串成一条推理链） */}
           <span
-            className="pointer-events-none absolute bottom-3 left-[15px] top-3 w-px bg-gradient-to-b from-cyan-500/40 via-slate-700 to-transparent"
+            className="pointer-events-none absolute bottom-3 left-[15px] top-3 w-px bg-gradient-to-b from-cyan-500/40 via-slate-500 to-transparent"
             aria-hidden
           />
 
@@ -307,7 +307,7 @@ export default function AgentThoughtChain({
                         />
                       ) : null}
 
-                      <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-600">
+                      <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-500">
                         {step.latencyMs} ms
                       </span>
                     </div>
@@ -348,7 +348,7 @@ export default function AgentThoughtChain({
                         aria-label="RAG 融合检索信号构成"
                       >
                         <div className="flex items-center gap-1.5">
-                          <span className="shrink-0 font-mono text-[9px] uppercase tracking-wider text-emerald-400/70">
+                          <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-emerald-400/70">
                             融合检索
                           </span>
                           {/* 三色微型条 */}
@@ -365,7 +365,7 @@ export default function AgentThoughtChain({
                             )}
                           </div>
                           <span
-                            className="shrink-0 font-mono text-[9px] font-bold tabular-nums text-emerald-300"
+                            className="shrink-0 font-mono text-[10px] font-bold tabular-nums text-emerald-300"
                             title="校准后的置信度"
                           >
                             {formatSharePercent(ragBreakdown.calibratedScore)}
@@ -376,7 +376,7 @@ export default function AgentThoughtChain({
                           {ragBreakdown.signals.map((signal) => (
                             <span
                               key={`legend-${signal.key}`}
-                              className="flex items-center gap-0.5 font-mono text-[9px] tabular-nums text-slate-500"
+                              className="flex items-center gap-0.5 font-mono text-[10px] tabular-nums text-slate-500"
                               title={signal.description}
                             >
                               <span
@@ -387,7 +387,7 @@ export default function AgentThoughtChain({
                               {formatSharePercent(signal.share)}
                             </span>
                           ))}
-                          <span className="ml-auto shrink-0 font-mono text-[9px] tabular-nums text-slate-600">
+                          <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-slate-500">
                             RRF {formatScore(ragBreakdown.fusedScore)}
                           </span>
                         </div>

@@ -285,7 +285,7 @@ export function HealthRingBadge({
  * 3. **数字角标恒显示（含 0）**：早期实现把 0 计数项的数字**隐藏**了，
  *    结果用户无从知道「调度中 / 崩溃重启 / 内存溢出」当前到底是 0 个还是没统计——
  *    看上去像三个坏掉的按钮。现在始终展示数字：
- *    - 0 → 低对比 `text-slate-600` + 极淡底色（明确"这里是 0"，不抢视线）；
+ *    - 0 → 低对比 `text-slate-500` + 极淡底色（明确"这里是 0"，不抢视线）；
  *    - >0 的异常态 → 对应状态色（琥珀/绯红）+ 呼吸脉冲（提示"这里有东西"）。
  * 4. **点击即时反馈**：点击由父级统一处理（切换过滤器 + 终端审计回显），
  *    本组件只负责视觉与无障碍语义。
@@ -313,7 +313,7 @@ export function StatusFilterPill({ filter, label, count, active, onSelect }: Sta
           ? 'text-slate-100'
           : // ---- 零计数：低对比但仍可点（点了会看到"无匹配"说明） ----
             isZero
-            ? 'text-slate-600 hover:text-slate-400'
+            ? 'text-slate-500 hover:text-slate-400'
             : // ---- 有数据未选中：常规次级文字，异常态带强调色 ----
               cn('text-slate-400 hover:text-slate-200', alertClass),
       )}
@@ -328,7 +328,7 @@ export function StatusFilterPill({ filter, label, count, active, onSelect }: Sta
         className={cn(
           'rounded px-1 py-px text-[10px] tabular-nums transition-colors',
           count === 0
-            ? 'bg-white/[0.03] text-slate-600'
+            ? 'bg-white/[0.03] text-slate-500'
             : active
               ? 'bg-white/[0.08] text-slate-200'
               : alertBadgeClass ?? 'bg-white/[0.04] text-emerald-300/90',
@@ -677,7 +677,7 @@ export function ModeToggle({ mode, onChange, disabled = false }: ModeToggleProps
           role="status"
           aria-label="实时遥测模式已启用：数据来自宿主机 OS 硬件探针或 K8s API 实时数据流"
           title="实时遥测模式：已连接宿主机 OS 硬件探针 / K8s API 实时数据流"
-          className="flex shrink-0 cursor-help items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider text-emerald-300"
+          className="flex shrink-0 cursor-help items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wider text-emerald-300"
         >
           <span className="relative flex h-1.5 w-1.5" aria-hidden>
             {/* animate-ping 外环 + 实心内点 = 真实的"心跳"而非静态圆点 */}
@@ -722,7 +722,7 @@ function DemoScriptMenuItem({
         <span className="block truncate font-mono text-[11px] tracking-tight text-slate-200">
           {label}
         </span>
-        <span className="mt-0.5 block font-mono text-[9px] tabular-nums text-slate-500">
+        <span className="mt-0.5 block font-mono text-[10px] tabular-nums text-slate-500">
           约 {Math.round(durationMs / 1000)} 秒 · 4 阶段
         </span>
       </span>
@@ -803,7 +803,7 @@ function DemoDirectorBar({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8 }}
       transition={{ duration: 0.28, ease: 'easeOut' }}
-      className="pointer-events-auto w-full max-w-[54rem] overflow-hidden rounded-md border border-cyan-400/25 bg-slate-950/72 backdrop-blur-xl"
+      className="pointer-events-auto w-full max-w-[54rem] overflow-hidden rounded-md border border-cyan-400/25 bg-slate-950/72"
       style={{ boxShadow: '0 10px 34px rgba(2,6,23,0.72), inset 0 0 24px rgba(34,211,238,0.06)' }}
       role="status"
       aria-live="polite"
@@ -856,7 +856,7 @@ function DemoDirectorBar({
         <div className="flex min-w-0 flex-1 flex-col leading-tight">
           <span
             className={cn(
-              'truncate font-mono text-[9px] tracking-[0.14em]',
+              'truncate font-mono text-[10px] tracking-[0.14em]',
               isPreflightError ? 'text-rose-300' : 'text-cyan-300/80',
             )}
           >
@@ -883,7 +883,7 @@ function DemoDirectorBar({
                 aria-pressed={demo.pacing === kind}
                 title={`${PACING_LABEL[kind]}节奏`}
                 className={cn(
-                  'h-4 px-1 font-mono text-[9px] leading-none transition-colors',
+                  'h-4 px-1 font-mono text-[10px] leading-none transition-colors',
                   demo.pacing === kind
                     ? 'bg-cyan-400/20 text-cyan-200'
                     : 'text-slate-500 hover:text-slate-300',
@@ -894,7 +894,7 @@ function DemoDirectorBar({
             ))}
           </span>
 
-          <span className="font-mono text-[9px] tabular-nums text-slate-500">
+          <span className="font-mono text-[10px] tabular-nums text-slate-500">
             {elapsedSec}s / {totalSec}s
           </span>
 
@@ -1334,9 +1334,9 @@ export default function TopBar() {
             <div
               role="menu"
               aria-label="选择路演剧本"
-              className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/92 p-1 shadow-[0_16px_40px_rgba(2,6,23,0.85)] backdrop-blur-xl"
+              className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/92 p-1 shadow-[0_16px_40px_rgba(2,6,23,0.85)]"
             >
-              <p className="px-2 pb-1 pt-1 font-mono text-[9px] uppercase tracking-[0.16em] text-slate-500">
+              <p className="px-2 pb-1 pt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
                 自动路演剧本
               </p>
               {DEMO_SCRIPTS.map((script): ReactNode => (

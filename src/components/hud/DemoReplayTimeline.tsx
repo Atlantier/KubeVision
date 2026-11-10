@@ -86,11 +86,11 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
         onClick={enterDemoReplay}
         aria-label={`打开事故回放（已录 ${recorder.frames.length} 帧）`}
         title="事故回放（只读）"
-        className="pointer-events-auto flex items-center gap-1.5 rounded border border-cyan-400/30 bg-slate-950/80 px-2.5 py-1 font-mono text-[10px] text-cyan-200 backdrop-blur-md transition-colors hover:border-cyan-300/60 hover:text-cyan-100"
+        className="pointer-events-auto flex items-center gap-1.5 rounded border border-cyan-400/30 bg-slate-950/80 px-2.5 py-1 font-mono text-[10px] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:text-cyan-100"
       >
         <History className="h-3 w-3" aria-hidden />
         事故回放
-        <span className="text-[9px] text-cyan-400/70">{recorder.frames.length} 帧</span>
+        <span className="text-[10px] text-cyan-400/70">{recorder.frames.length} 帧</span>
       </button>
     );
   }
@@ -102,7 +102,7 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
     <div
       role="region"
       aria-label="事故回放时间轴（只读）"
-      className="pointer-events-auto w-full max-w-[54rem] overflow-hidden rounded-md border border-amber-400/40 bg-slate-950/88 backdrop-blur-xl"
+      className="pointer-events-auto w-full max-w-[54rem] overflow-hidden rounded-md border border-amber-400/40 bg-slate-950/88"
       style={{ boxShadow: '0 10px 34px rgba(2,6,23,0.8), inset 0 0 24px rgba(251,191,36,0.05)' }}
     >
       {/* 顶缘：回放态醒目标识 —— 琥珀色与运行态青色区分开 */}
@@ -116,7 +116,7 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
       />
 
       <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-1.5">
-        <span className="flex items-center gap-1.5 rounded border border-amber-400/50 bg-amber-400/12 px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em] text-amber-300">
+        <span className="flex items-center gap-1.5 rounded border border-amber-400/50 bg-amber-400/12 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300" aria-hidden />
           回放中 · 只读
         </span>
@@ -201,7 +201,7 @@ function Field({
 }): React.ReactElement {
   return (
     <span className="flex items-baseline gap-1.5 truncate">
-      <span className="shrink-0 text-[9px] uppercase tracking-wider text-slate-500">{label}</span>
+      <span className="shrink-0 text-[10px] uppercase tracking-wider text-slate-500">{label}</span>
       <span
         className={cn(
           'truncate',

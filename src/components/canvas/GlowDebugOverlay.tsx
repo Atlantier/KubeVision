@@ -26,7 +26,7 @@ export default function GlowDebugOverlay(): React.ReactElement | null {
   return (
     <div
       aria-label="glow debug"
-      className="pointer-events-none fixed left-3 top-16 z-40 w-[360px] rounded border border-cyan-500/25 bg-slate-950/85 p-3 font-mono text-[10px] text-slate-300 backdrop-blur-md"
+      className="pointer-events-none fixed left-3 top-16 z-40 w-[360px] rounded border border-cyan-500/25 bg-slate-950/85 p-3 font-mono text-[10px] text-slate-300"
     >
       <div className="mb-1 text-[11px] font-semibold tracking-wider text-cyan-300">
         GLOW BUDGET · additive alpha
@@ -39,10 +39,10 @@ export default function GlowDebugOverlay(): React.ReactElement | null {
               {zone.current.toFixed(2)} / {zone.budget.toFixed(2)}
             </span>
           </div>
-          <div className="text-[9px] leading-tight text-slate-500">{zone.note}</div>
+          <div className="text-[10px] leading-tight text-slate-500">{zone.note}</div>
         </div>
       ))}
-      <div className="mt-2 text-[9px] text-slate-500">
+      <div className="mt-2 text-[10px] text-slate-500">
         运行时扫描结果见 console（[glowBudget]），开发期超预算会 warn。
       </div>
     </div>

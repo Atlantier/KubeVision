@@ -1686,12 +1686,12 @@ export default function MasterNode3D() {
          * 【废除闭合边框】上一版是 `border border-cyan-400/35` 的完整闭合框 +
          * `bg-slate-950/90` 近不透明深底，观感是"贴在场景上的一块黑牌"。
          * 本版改为与机架铭牌统一的光学玻璃语言：
-         *   · 基底 `bg-slate-950/50 backdrop-blur-xl`——半通透，
+         *   · 基底 `bg-slate-950/50 kv-blur-panel`——半通透，
          *     背后的墨色晶体与光纤总线仍隐约可见；
          *   · 无闭合边，结构由上下 1px 折射亮边 + 四角发光靶标表达；
          *   · 斜向折射高光 + 顶部毫米微标尺，把面板从"标题牌"升级为"仪表台"。
          */}
-        <div className="relative flex flex-col items-center gap-1 overflow-hidden whitespace-nowrap bg-slate-950/50 px-3 py-1 backdrop-blur-xl">
+        <div className="relative flex flex-col items-center gap-1 overflow-hidden whitespace-nowrap bg-slate-950/50 px-3 py-1 kv-blur-panel">
           <HoloSpecularSheen />
           <HoloRefractionEdges accent="#22d3ee" />
           <HoloCorners color="#22d3ee" />
@@ -1731,7 +1731,7 @@ export default function MasterNode3D() {
            * 左侧七道发光刻度（中间高），后接 SYS.CORE 标识，
            * 像仪器面板上的量程标记。
            */}
-          <span className="flex items-center gap-1 text-[8px] uppercase tracking-[0.32em] text-cyan-400/60">
+          <span className="flex items-center gap-1 text-[10px] uppercase tracking-[0.32em] text-cyan-400/60">
             {[3, 2, 1, 0, 1, 2, 3].map((tier, index): ReactNode => (
               <span
                 key={`scale-${index}`}

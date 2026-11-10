@@ -1,0 +1,155 @@
+{
+  "baseline": {
+    "commit": "533301e",
+    "tag": "r31-1366",
+    "generatedAt": "2026-11-10T11:06:30.829Z"
+  },
+  "scenes": {
+    "overview@1920x1080": {
+      "scene": "overview",
+      "sceneLabel": "全景稳态（三机架 + 控制平面 + 地面拓扑）",
+      "file": "overview-1920x1080.png",
+      "timestamp": "2026-11-10T11:06:09.408Z",
+      "commit": "533301e",
+      "tag": "r31-1920",
+      "gpuMode": "swiftshader",
+      "viewport": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "metrics": {
+        "glStats": {
+          "fps": 3,
+          "frameTimeMs": 290.9,
+          "drawCalls": 420,
+          "triangles": 205932,
+          "sseLatencyMs": 1009,
+          "workerStatus": "idle"
+        },
+        "dpr": 1,
+        "devicePixelRatio": 1,
+        "contextLost": false,
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "canvas": {
+          "width": 1244,
+          "height": 1014
+        },
+        "store": {
+          "activeChaos": "NONE",
+          "selectedEntityId": null,
+          "connectionMode": "demo",
+          "clusterHealthScore": 100,
+          "runningPods": 24,
+          "totalPods": 24,
+          "activeAlerts": 0,
+          "isOrbitPatrolActive": false
+        }
+      },
+      "luminance": {
+        "bins": [
+          1587464,
+          198318,
+          72684,
+          51909,
+          37027,
+          33457,
+          19103,
+          28552,
+          10771,
+          9520,
+          9516,
+          5690,
+          3153,
+          2269,
+          1945,
+          2222
+        ],
+        "mean": 20.61176588331164,
+        "overexposed": 1013,
+        "overexposedRatio": 0.048852237654320986,
+        "totalPixels": 2073600
+      },
+      "consoleErrors": 0,
+      "consoleWarns": 1,
+      "consoleErrorSamples": [],
+      "consoleWarnSamples": [
+        "[DEPRECATED] Use `createWithEqualityFn` instead of `create` or use `useStoreWithEqualityFn` instead of `useStore`. They can be imported from 'zustand/traditional'. https://github.com/pmndrs/zustand/di"
+      ],
+      "note": "dpr 取自 renderer.getPixelRatio()，是该构建下唯一可观测的\"自适应画质档位\"代理；glStats 的 fps/frameTime 来自 SwiftShader 软件光栅化，不代表真机 GPU 性能，drawCalls/triangles 与硬件无关。"
+    },
+    "overview@1366x768": {
+      "scene": "overview",
+      "sceneLabel": "全景稳态（三机架 + 控制平面 + 地面拓扑）",
+      "file": "overview-1366x768.png",
+      "timestamp": "2026-11-10T11:06:30.829Z",
+      "commit": "533301e",
+      "tag": "r31-1366",
+      "gpuMode": "swiftshader",
+      "viewport": {
+        "width": 1366,
+        "height": 768,
+        "deviceScaleFactor": 1
+      },
+      "metrics": {
+        "glStats": {
+          "fps": 4,
+          "frameTimeMs": 251.2,
+          "drawCalls": 420,
+          "triangles": 205932,
+          "sseLatencyMs": 864,
+          "workerStatus": "idle"
+        },
+        "dpr": 1,
+        "devicePixelRatio": 1,
+        "contextLost": false,
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "canvas": {
+          "width": 879,
+          "height": 702
+        },
+        "store": {
+          "activeChaos": "NONE",
+          "selectedEntityId": null,
+          "connectionMode": "demo",
+          "clusterHealthScore": 100,
+          "runningPods": 24,
+          "totalPods": 24,
+          "activeAlerts": 0,
+          "isOrbitPatrolActive": false
+        }
+      },
+      "luminance": {
+        "bins": [
+          753845,
+          131253,
+          44243,
+          27734,
+          17959,
+          17998,
+          9249,
+          19609,
+          4871,
+          5057,
+          5469,
+          3664,
+          2511,
+          2189,
+          1943,
+          1494
+        ],
+        "mean": 22.44672695585401,
+        "overexposed": 611,
+        "overexposedRatio": 0.05824106271351879,
+        "totalPixels": 1049088
+      },
+      "consoleErrors": 0,
+      "consoleWarns": 1,
+      "consoleErrorSamples": [],
+      "consoleWarnSamples": [
+        "[DEPRECATED] Use `createWithEqualityFn` instead of `create` or use `useStoreWithEqualityFn` instead of `useStore`. They can be imported from 'zustand/traditional'. https://github.com/pmndrs/zustand/di"
+      ],
+      "note": "dpr 取自 renderer.getPixelRatio()，是该构建下唯一可观测的\"自适应画质档位\"代理；glStats 的 fps/frameTime 来自 SwiftShader 软件光栅化，不代表真机 GPU 性能，drawCalls/triangles 与硬件无关。"
+    }
+  }
+}

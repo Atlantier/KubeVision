@@ -1310,7 +1310,7 @@ export default function PodInstancedMesh() {
                 </span>
                 <span
                   className={cn(
-                    'ml-1 font-mono text-[8px] uppercase tracking-[0.14em]',
+                    'ml-1 font-mono text-[10px] uppercase tracking-[0.14em]',
                     POD_STATUS_BADGE[hoverLabelData.status].extraClass,
                   )}
                   style={{ color: POD_STATUS_BADGE[hoverLabelData.status].color }}
@@ -1320,7 +1320,7 @@ export default function PodInstancedMesh() {
               </span>
 
               {/* 槽位编码：与 spatialLayout 的 rackIndex / slotIndex 同源 */}
-              <span className="mt-0.5 block font-mono text-[8px] tracking-[0.16em] text-slate-500">
+              <span className="mt-0.5 block font-mono text-[10px] tracking-[0.16em] text-slate-500">
                 RACK-{hoverLabelData.rackIndex} {'//'} SLOT-{String(hoverLabelData.slotIndex).padStart(2, '0')}
               </span>
 

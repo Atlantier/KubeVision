@@ -35,7 +35,7 @@
   }
 
   * {
-    @apply border-slate-800;
+    @apply border-white/[0.07];
   }
 
   html {
@@ -93,7 +93,7 @@
   /**
    * 运维面板：黑曜石高定玻璃（Obsidian Glass）
    *
-   * 【设计意图】此前的 .kv-panel 是 `bg-slate-900/75 + border-slate-800`——
+   * 【设计意图】此前的 .kv-panel 是 `bg-slate-900/75 + border-white/[0.07]`——
    * 一个纯度很高的深色块加一圈蓝灰描边。问题在于：
    * 1. **平涂感**：单一色值没有任何纵向层次，面板看起来是"贴"在背景上的一张纸；
    * 2. **边框偏重**：slate-800 描边在深空背景上对比度偏高，形成"廉价青框"；
@@ -114,7 +114,7 @@
    *     inset 用 0.09 而非旧的 0.06，因为白色描边本身更淡，需要更亮的内高光配对。
    *
    * 【为何不用 @apply 写 backdrop-filter / box-shadow】
-   * Tailwind 的 backdrop-blur-* 粒度只能到预设档位（md/lg/xl），
+   * Tailwind 的-* 粒度只能到预设档位（md/lg/xl），
    * 无法表达 saturate 组合与精确的 rgba 值；直接写 CSS 属性更精确且更易读。
    * 注意：`backdrop-filter` 需同时写 `-webkit-` 前缀以兼容 Safari。
    */
@@ -196,5 +196,71 @@
   .kv-html-label {
     pointer-events: none;
     user-select: none;
+  }
+}
+
+
+/* ==========================================================================
+ * R31 设计令牌（与 src/constants/tokens.ts 同源）
+ * ========================================================================== */
+:root {
+  --kv-void: #020617;
+  --kv-panel: #0b1220;
+  --kv-border: rgba(255, 255, 255, 0.075);
+  --kv-border-active: rgba(255, 255, 255, 0.14);
+  --kv-text-primary: #e2e8f0;
+  --kv-text-secondary: #94a3b8;
+  --kv-text-tertiary: #64748b;
+  --kv-text-muted: #475569;
+  --kv-emerald: #34d399;
+  --kv-amber: #fbbf24;
+  --kv-rose: #f43f5e;
+  --kv-cyan: #22d3ee;
+  --: 20px;
+  --: 8px;
+  --kv-blur-overlay: 30px;
+  --kv-motion-fast: 140ms;
+  --kv-motion-base: 200ms;
+  --kv-motion-slow: 320ms;
+  --kv-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --kv-inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* 玻璃三层：blur 只能来自这里 */
+.kv-panel {
+  background: color-mix(in srgb, var(--kv-panel) 72%, transparent);
+  backdrop-filter: blur(var(--));
+  -webkit-backdrop-filter: blur(var(--));
+  border: 1px solid var(--kv-border);
+  box-shadow: var(--kv-inset-highlight);
+}
+.kv-chip {
+  background: color-mix(in srgb, var(--kv-panel) 55%, transparent);
+  backdrop-filter: blur(var(--));
+  -webkit-backdrop-filter: blur(var(--));
+  border: 1px solid var(--kv-border);
+  box-shadow: var(--kv-inset-highlight);
+}
+.kv-overlay {
+  background: color-mix(in srgb, var(--kv-void) 78%, transparent);
+  backdrop-filter: blur(var(--kv-blur-overlay));
+  -webkit-backdrop-filter: blur(var(--kv-blur-overlay));
+}
+/* 供 Tailwind class 直接引用的两个 blur token */
+. { backdrop-filter: blur(var(--)); -webkit-backdrop-filter: blur(var(--)); }
+. { backdrop-filter: blur(var(--)); -webkit-backdrop-filter: blur(var(--)); }
+
+/* 焦点环统一（可访问性） */
+*:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.6);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
   }
 }

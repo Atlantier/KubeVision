@@ -357,7 +357,7 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.14 }}
-      className="fixed inset-0 z-[60] flex items-start justify-center bg-slate-950/70 pt-[12vh] backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-start justify-center bg-slate-950/70 pt-[12vh]"
       role="dialog"
       aria-modal="true"
       aria-label="运维命令面板"
@@ -371,10 +371,10 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: -12, scale: 0.98 }}
         transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-        className="w-[min(640px,92vw)] overflow-hidden rounded-xl border border-slate-700 bg-slate-900/95 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06),0_24px_64px_-12px_rgba(2,6,23,0.95)]"
+        className="w-[min(640px,92vw)] overflow-hidden rounded-xl border border-white/[0.07] bg-slate-900/95 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06),0_24px_64px_-12px_rgba(2,6,23,0.95)]"
       >
         {/* ---- 搜索输入行 ---- */}
-        <div className="flex items-center gap-2 border-b border-slate-800 px-3 py-2.5">
+        <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-2.5">
           <Search className="h-4 w-4 shrink-0 text-cyan-400" aria-hidden />
           <input
             ref={inputRef}
@@ -384,7 +384,7 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
             onKeyDown={handleKeyDown}
             placeholder="搜索 Pod / 节点，或输入运维动作…"
             aria-label="命令面板搜索"
-            className="min-w-0 flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-600"
+            className="min-w-0 flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
           />
           <button
             type="button"
@@ -399,7 +399,7 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
         {/* ---- 结果列表 ---- */}
         <div ref={listRef} className="max-h-[52vh] overflow-y-auto py-1">
           {filtered.length === 0 ? (
-            <p className="px-3 py-6 text-center font-mono text-[11px] text-slate-600">
+            <p className="px-3 py-6 text-center font-mono text-[11px] text-slate-500">
               未找到匹配的命令
             </p>
           ) : (
@@ -424,7 +424,7 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
                       <span className="block truncate font-mono text-[10px] text-slate-500">{cmd.hint}</span>
                     ) : null}
                   </span>
-                  <span className="shrink-0 rounded border border-slate-700 bg-slate-800/60 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+                  <span className="shrink-0 rounded border border-white/[0.07] bg-slate-800/60 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
                     {KIND_LABEL[cmd.kind]}
                   </span>
                 </button>
@@ -434,18 +434,18 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
         </div>
 
         {/* ---- 底部快捷键提示 ---- */}
-        <div className="flex items-center gap-3 border-t border-slate-800 px-3 py-1.5 font-mono text-[10px] text-slate-600">
+        <div className="flex items-center gap-3 border-t border-white/[0.07] px-3 py-1.5 font-mono text-[10px] text-slate-500">
           <span className="flex items-center gap-1">
-            <kbd className="rounded border border-slate-700 bg-slate-800 px-1">↑</kbd>
-            <kbd className="rounded border border-slate-700 bg-slate-800 px-1">↓</kbd>
+            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1">↑</kbd>
+            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1">↓</kbd>
             选择
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="rounded border border-slate-700 bg-slate-800 px-1">Enter</kbd>
+            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1">Enter</kbd>
             执行
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="rounded border border-slate-700 bg-slate-800 px-1">Esc</kbd>
+            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1">Esc</kbd>
             关闭
           </span>
           <span className="ml-auto flex items-center gap-1">

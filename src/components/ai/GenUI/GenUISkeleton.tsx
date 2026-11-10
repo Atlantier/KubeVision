@@ -33,7 +33,7 @@ export default function GenUISkeleton({ toolName, mcpUri, className }: GenUISkel
   return (
     <div
       className={cn(
-        'relative overflow-hidden rounded-md border border-cyan-500/30 bg-slate-900/60 p-2.5 backdrop-blur-sm',
+        'relative overflow-hidden rounded-md border border-cyan-500/30 bg-slate-900/60 p-2.5',
         className,
       )}
       aria-label="AI 正在调用工具"
@@ -69,20 +69,20 @@ export default function GenUISkeleton({ toolName, mcpUri, className }: GenUISkel
       </div>
 
       {/* ============ MCP URI 提示 ============ */}
-      <div className="relative mt-1.5 flex items-center gap-1 rounded border border-slate-700/70 bg-slate-800/50 px-1.5 py-1">
+      <div className="relative mt-1.5 flex items-center gap-1 rounded border border-white/[0.07]/70 bg-slate-800/50 px-1.5 py-1">
         <Plug className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
         <code className="truncate font-mono text-[11px] text-slate-400">{mcpUri}</code>
       </div>
 
       {/* ============ 骨架块（模拟即将出现的卡片结构） ============ */}
       <div className="relative mt-2 space-y-1.5">
-        <div className="h-2 w-3/5 animate-pulse rounded-sm bg-slate-700/60" />
-        <div className="h-2 w-4/5 animate-pulse rounded-sm bg-slate-700/40 [animation-delay:150ms]" />
-        <div className="h-8 w-full animate-pulse rounded-sm bg-slate-700/25 [animation-delay:300ms]" />
+        <div className="h-2 w-3/5 animate-pulse rounded-sm bg-slate-500/60" />
+        <div className="h-2 w-4/5 animate-pulse rounded-sm bg-slate-500/40 [animation-delay:150ms]" />
+        <div className="h-8 w-full animate-pulse rounded-sm bg-slate-500/25 [animation-delay:300ms]" />
       </div>
 
       {/* ============ 底部提示 ============ */}
-      <p className="relative mt-2 font-mono text-[11px] uppercase tracking-wider text-slate-600">
+      <p className="relative mt-2 font-mono text-[11px] uppercase tracking-wider text-slate-500">
         正在调用 MCP 工具 · 等待结果…
       </p>
     </div>

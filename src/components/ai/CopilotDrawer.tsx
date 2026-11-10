@@ -424,7 +424,7 @@ function ContextPill({
   if (resolved === null) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.06] bg-white/[0.02] px-2 py-0.5 font-mono text-[10px] tracking-wide text-slate-500">
-        <span className="h-1 w-1 shrink-0 rounded-full bg-slate-600" aria-hidden />
+        <span className="h-1 w-1 shrink-0 rounded-full bg-slate-500" aria-hidden />
         全局集群视角
       </span>
     );
@@ -592,7 +592,7 @@ function ToolCardSlot({
 
   /* 未知工具：友好降级，不崩溃 */
   return (
-    <div className="rounded-md border border-slate-700 bg-slate-800/50 px-2 py-1.5 font-mono text-[12px] text-slate-400">
+    <div className="rounded-md border border-white/[0.07] bg-slate-800/50 px-2 py-1.5 font-mono text-[12px] text-slate-400">
       未知工具 {card.toolName}
     </div>
   );
@@ -678,7 +678,7 @@ function ProactiveAnomalyBanner({
               className={cn(
                 'rounded border px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider transition-colors',
                 isBusy
-                  ? 'cursor-not-allowed border-slate-600 bg-slate-800/60 text-slate-500'
+                  ? 'cursor-not-allowed border-white/[0.07] bg-slate-800/60 text-slate-500'
                   : tone.btn,
               )}
             >
@@ -802,7 +802,7 @@ function MessageBubble({
 
       {/* 正文：经 MarkdownLite 渲染（此前直接输出纯文本，会裸露 ## / ** 等语法） */}
       {message.text.length > 0 ? (
-        <div className="rounded-lg rounded-bl-sm border border-slate-800 bg-slate-900/60 px-2.5 py-2">
+        <div className="rounded-lg rounded-bl-sm border border-white/[0.07] bg-slate-900/60 px-2.5 py-2">
           <MarkdownLite markdown={message.text} isStreaming={message.isStreaming} />
         </div>
       ) : null}
@@ -885,7 +885,7 @@ function MessageBubble({
               'flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-wide transition-colors',
               isSpeaking === true
                 ? 'border-cyan-400/50 bg-cyan-400/15 text-cyan-200'
-                : 'border-slate-700/60 bg-slate-800/40 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
+                : 'border-white/[0.07]/60 bg-slate-800/40 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
             )}
           >
             {/* 朗读中：跳动的声波条；静止：喇叭图标 */}
@@ -917,7 +917,7 @@ function MessageBubble({
 
       {/* 引擎来源标注（诚实标注，仅在流结束后显示） */}
       {!message.isStreaming && message.engine !== undefined ? (
-        <p className="font-mono text-[10px] uppercase tracking-wider text-slate-600">
+        <p className="font-mono text-[10px] uppercase tracking-wider text-slate-500">
             推理引擎 · {message.engine === 'llm' ? '云端大模型' : '本地确定性容灾引擎'}
         </p>
       ) : null}
@@ -2390,11 +2390,11 @@ export default function CopilotDrawer() {
               onClick={(): void => setRagModalOpen(true)}
               aria-label="打开 SRE 领域知识库"
               title="SRE 领域知识库：浏览语料、实时检索沙盒、现场新增 Runbook"
-              className="flex shrink-0 items-center gap-1 rounded border border-cyan-400/25 bg-cyan-400/[0.07] px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wide text-cyan-300 transition-colors hover:border-cyan-300/60 hover:bg-cyan-400/15"
+              className="flex shrink-0 items-center gap-1 rounded border border-cyan-400/25 bg-cyan-400/[0.07] px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wide text-cyan-300 transition-colors hover:border-cyan-300/60 hover:bg-cyan-400/15"
             >
               <BookOpen className="h-2.5 w-2.5" aria-hidden />
               RAG 知识库
-              <span className="rounded-sm bg-cyan-400/20 px-1 text-[8px] tabular-nums text-cyan-200">
+              <span className="rounded-sm bg-cyan-400/20 px-1 text-[10px] tabular-nums text-cyan-200">
                 12+
               </span>
             </button>
@@ -2416,7 +2416,7 @@ export default function CopilotDrawer() {
                 onClick={handleExportPostMortem}
                 aria-label="导出 SRE 故障复盘报告"
                 title="基于本次会话的时间线、推理链、RAG 引用与自愈动作生成复盘报告"
-                className="flex shrink-0 items-center gap-1 rounded border border-emerald-400/25 bg-emerald-400/[0.07] px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wide text-emerald-300 transition-colors hover:border-emerald-300/60 hover:bg-emerald-400/15"
+                className="flex shrink-0 items-center gap-1 rounded border border-emerald-400/25 bg-emerald-400/[0.07] px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wide text-emerald-300 transition-colors hover:border-emerald-300/60 hover:bg-emerald-400/15"
               >
                 <FileText className="h-2.5 w-2.5" aria-hidden />
                 复盘报告
@@ -2561,12 +2561,12 @@ export default function CopilotDrawer() {
                             <span className="font-mono text-[10px] tracking-wider text-slate-500">
                               {prompt.id}
                             </span>
-                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-800 bg-slate-900/80 text-cyan-400 transition-colors group-hover:border-cyan-400/40 group-hover:text-cyan-300">
+                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-white/[0.07] bg-slate-900/80 text-cyan-400 transition-colors group-hover:border-cyan-400/40 group-hover:text-cyan-300">
                               <Icon className="h-3.5 w-3.5" aria-hidden />
                             </span>
                           </div>
                           <ArrowUpRight
-                            className="mt-0.5 h-3 w-3 shrink-0 text-slate-600 transition-colors group-hover:text-cyan-400/80"
+                            className="mt-0.5 h-3 w-3 shrink-0 text-slate-500 transition-colors group-hover:text-cyan-400/80"
                             aria-hidden
                           />
                         </div>
@@ -2618,7 +2618,7 @@ export default function CopilotDrawer() {
                 transition={{ duration: 0.16 }}
                 onClick={jumpToLatest}
                 aria-label="回到最新诊断"
-                className="absolute bottom-[104px] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-cyan-500/50 bg-slate-900/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-cyan-300 shadow-glow-cyan backdrop-blur-md transition-colors hover:border-cyan-400 hover:bg-slate-800/90 active:scale-95"
+                className="absolute bottom-[104px] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-cyan-500/50 bg-slate-900/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-cyan-300 shadow-glow-cyan kv-blur-panel transition-colors hover:border-cyan-400 hover:bg-slate-800/90 active:scale-95"
               >
                 <ChevronDown className="h-3 w-3" aria-hidden />
                 回到最新诊断
@@ -2659,13 +2659,13 @@ export default function CopilotDrawer() {
                      */}
                     <div className="flex items-center gap-1.5 rounded-md border border-cyan-400/25 bg-cyan-400/[0.07] px-2 py-1">
                       <Crosshair className="h-2.5 w-2.5 shrink-0 text-cyan-300/90" aria-hidden />
-                      <span className="font-mono text-[9px] tracking-wider text-cyan-400/70">
+                      <span className="font-mono text-[10px] tracking-wider text-cyan-400/70">
                         上下文
                       </span>
                       <span className="min-w-0 flex-1 truncate font-mono text-[10px] font-semibold tracking-wide text-cyan-100">
                         {selectedContextLabel}
                       </span>
-                      <span className="shrink-0 font-mono text-[8px] uppercase tracking-wider text-cyan-400/50">
+                      <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-cyan-400/50">
                         auto
                       </span>
                     </div>
@@ -2780,7 +2780,7 @@ export default function CopilotDrawer() {
                   {/* 模式标签：如实标注云端 / 端侧 */}
                   <span
                     className={cn(
-                      'shrink-0 rounded px-1 py-0.5 font-mono text-[9px] tracking-wider',
+                      'shrink-0 rounded px-1 py-0.5 font-mono text-[10px] tracking-wider',
                       speechInput.mode === 'cloud'
                         ? 'bg-sky-500/15 text-sky-300'
                         : 'bg-amber-500/15 text-amber-300',
@@ -2873,12 +2873,12 @@ export default function CopilotDrawer() {
                             className={cn(
                               'flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-tight transition-colors',
                               isStreaming
-                                ? 'cursor-not-allowed border-white/[0.04] text-slate-600'
+                                ? 'cursor-not-allowed border-white/[0.04] text-slate-500'
                                 : 'border-white/[0.07] text-slate-400 hover:border-cyan-400/40 hover:bg-white/[0.03] hover:text-cyan-300',
                             )}
                           >
                             <Icon className="h-2.5 w-2.5 shrink-0" aria-hidden />
-                            <span className="text-slate-600">{prompt.code}</span>
+                            <span className="text-slate-500">{prompt.code}</span>
                             {prompt.short}
                           </button>
                         );
@@ -2995,7 +2995,7 @@ export default function CopilotDrawer() {
                     <button
                       type="button"
                       onClick={(): void => void speechInput.start()}
-                      className="rounded border border-amber-400/50 px-1 text-[9px] font-bold uppercase tracking-wider hover:bg-amber-500/20"
+                      className="rounded border border-amber-400/50 px-1 text-[10px] font-bold uppercase tracking-wider hover:bg-amber-500/20"
                       aria-label="重试语音输入"
                     >
                       重试
@@ -3065,11 +3065,11 @@ export default function CopilotDrawer() {
                       'flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] font-semibold transition-colors',
                       canSend
                         ? 'border-cyan-400/50 bg-cyan-400/15 text-cyan-300 shadow-glow-cyan hover:bg-cyan-400/25'
-                        : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-600',
+                        : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-500',
                     )}
                   >
                     发送
-                    <kbd className="text-[9px] opacity-70">↵</kbd>
+                    <kbd className="text-[10px] opacity-70">↵</kbd>
                   </button>
                 )}
               </div>
@@ -3085,7 +3085,7 @@ export default function CopilotDrawer() {
        * 由本组件持有最内聚；提到 ShellLayout 会让「知识库属于 Copilot」
        * 这层语义在代码结构上消失。
        *
-       * 【层级】模态自带 fixed inset-0 z-50 + backdrop-blur，打开时覆盖
+       * 【层级】模态自带 fixed inset-0 z-50 + kv-blur-panel，打开时覆盖
        * 包括顶栏在内的全部内容，符合 AGENTS.md 第 6 条层级契约
        * （drei <Html> 恒为 [10,0]，绝不会盖住它）。
        */}

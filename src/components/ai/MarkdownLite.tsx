@@ -225,7 +225,7 @@ function renderInline(segments: readonly InlineSegment[], keyPrefix: string): Re
            * 两个坏处相权，溢出比中间折行严重得多。
            * 配合 break-words 兜底（长英文单词场景），保证任何输入都不溢出。
            */
-          className="break-all rounded border border-slate-700/60 bg-slate-800/90 px-1 py-0.5 font-mono text-[0.92em] text-cyan-300"
+          className="break-all rounded border border-white/[0.07]/60 bg-slate-800/90 px-1 py-0.5 font-mono text-[0.92em] text-cyan-300"
         >
           {seg.text}
         </code>
@@ -644,9 +644,9 @@ function CodeBlock({ code, lang }: { readonly code: string; readonly lang?: stri
   }, [code, writeToClipboard]);
 
   return (
-    <div className="my-1.5 overflow-hidden rounded border border-slate-700/70 bg-slate-950/80">
+    <div className="my-1.5 overflow-hidden rounded border border-white/[0.07]/70 bg-slate-950/80">
       {/* 头部：左侧语言标识，右侧一键复制 */}
-      <div className="flex items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/60 px-2 py-0.5">
+      <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] bg-slate-900/60 px-2 py-0.5">
         <span className="min-w-0 truncate font-mono text-[10px] uppercase tracking-wider text-slate-500">
           {(lang ?? '').length > 0 ? lang : 'code'}
         </span>
@@ -749,7 +749,7 @@ export default function MarkdownLite({
                 key={key}
                 className="mt-1 flex items-center gap-1 font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-400 first:mt-0"
               >
-                <span className="h-2.5 w-px shrink-0 bg-slate-600" aria-hidden />
+                <span className="h-2.5 w-px shrink-0 bg-slate-500" aria-hidden />
                 {renderInline(parseInline(block.lines[0]), `${key}-h`)}
               </h5>
             );
@@ -842,7 +842,7 @@ export default function MarkdownLite({
                  * 看不到滚动条——因为容器自己也被撑宽了。
                  * `min-w-full + w-auto` 才能让"容器窄于内容时出现滚动"生效。
                  */
-                className="my-1.5 overflow-x-auto rounded border border-slate-800 bg-slate-950/60"
+                className="my-1.5 overflow-x-auto rounded border border-white/[0.07] bg-slate-950/60"
               >
                 <table className="min-w-full border-collapse text-left">
                   <thead>
@@ -855,7 +855,7 @@ export default function MarkdownLite({
                            * （"编号" / "标题" / "匹配度"），换行会让表头变成
                            * 两行高、破坏对齐。数据单元格则允许换行。
                            */
-                          className="whitespace-nowrap border-b border-slate-800 px-2 py-1 font-mono text-[11px] font-bold text-slate-300"
+                          className="whitespace-nowrap border-b border-white/[0.07] px-2 py-1 font-mono text-[11px] font-bold text-slate-300"
                         >
                           {renderInline(parseInline(header), `${key}-th-${i}`)}
                         </th>
@@ -864,7 +864,7 @@ export default function MarkdownLite({
                   </thead>
                   <tbody>
                     {(block.rows ?? []).map((row, rowIndex): ReactNode => (
-                      <tr key={`${key}-tr-${rowIndex}`} className="border-b border-slate-800/60 last:border-b-0">
+                      <tr key={`${key}-tr-${rowIndex}`} className="border-b border-white/[0.07]/60 last:border-b-0">
                         {row.map((cell, cellIndex): ReactNode => (
                           <td
                             key={`${key}-td-${rowIndex}-${cellIndex}`}
@@ -882,7 +882,7 @@ export default function MarkdownLite({
 
           /* ---- 分隔线 ---- */
           case 'hr':
-            return <hr key={key} className="my-2 border-slate-800" />;
+            return <hr key={key} className="my-2 border-white/[0.07]" />;
 
           /* ---- 围栏代码块：等宽 + 深底 + 一键复制 ---- */
           case 'codeblock':

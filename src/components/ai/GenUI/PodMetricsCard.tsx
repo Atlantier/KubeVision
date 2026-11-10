@@ -137,7 +137,7 @@ export default function PodMetricsCard({
 
   return (
     <div
-      className="w-full overflow-hidden rounded-md border border-slate-800 bg-slate-900/60 p-2.5 backdrop-blur-sm"
+      className="w-full overflow-hidden rounded-md border border-white/[0.07] bg-slate-900/60 p-2.5"
       aria-label={`Pod 指标卡：${podName}`}
     >
       {/* ============ 头部：图标 + 可点击名称 + 命名空间 ============ */}
@@ -154,7 +154,7 @@ export default function PodMetricsCard({
           </button>
           <p className="mt-0.5 flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
             <span className="truncate">{namespace}</span>
-            <span className="text-slate-700">·</span>
+            <span className="text-slate-500">·</span>
             <RefreshCw className="h-2.5 w-2.5 shrink-0" aria-hidden />
             <span className={cn('tabular-nums', restarts > 0 ? 'text-amber-400' : 'text-slate-500')}>
               {restarts} 次重启
@@ -230,7 +230,7 @@ export default function PodMetricsCard({
       </div>
 
       {/* ============ 近 6 周期 SVG 面积折线图（双序列叠加） ============ */}
-      <div className="mt-2 rounded border border-slate-800/80 bg-slate-950/40 p-1">
+      <div className="mt-2 rounded border border-white/[0.07]/80 bg-slate-950/40 p-1">
         <svg
           viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
           width="100%"
@@ -295,7 +295,7 @@ export default function PodMetricsCard({
 
       {/* ============ 底部：数据周期提示 + 聚焦按钮 ============ */}
       <div className="mt-1.5 flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-600">
+        <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
           <Activity className="h-2.5 w-2.5" aria-hidden />
           近 6 轮采样趋势
         </span>

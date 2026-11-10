@@ -77,7 +77,7 @@ const FPS_WARN = 40;
 function FpsSparkline({ values }: { readonly values: readonly number[] }) {
   if (values.length < 2) {
     return (
-      <div className="flex h-[22px] items-center justify-center font-mono text-[10px] text-slate-700">
+      <div className="flex h-[22px] items-center justify-center font-mono text-[10px] text-slate-500">
         采样预热中…
       </div>
     );
@@ -208,48 +208,48 @@ function DataHealthBlock() {
   }, []);
 
   return (
-    <div className="mt-1.5 rounded border border-slate-800 bg-slate-950/40 p-1.5" aria-label="数据健康">
+    <div className="mt-1.5 rounded border border-white/[0.07] bg-slate-950/40 p-1.5" aria-label="数据健康">
       <div className="flex items-baseline gap-1">
         <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300/90">数据健康</span>
-        <span className="ml-auto font-mono text-[9px] text-slate-600">瞬态轨 · 零重渲染</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-500">瞬态轨 · 零重渲染</span>
       </div>
 
       <div className="mt-1 space-y-0.5">
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">QPS 偏差</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">QPS 偏差</span>
           <span ref={qpsRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0.0%</span>
-          <span className="ml-auto font-mono text-[9px] text-slate-600">±{(HEALTH_QPS_DEVIATION_WARN * 100).toFixed(0)}%</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-500">±{(HEALTH_QPS_DEVIATION_WARN * 100).toFixed(0)}%</span>
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">节点水位偏离</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">节点水位偏离</span>
           <span ref={driftRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0.0pp</span>
-          <span className="ml-auto font-mono text-[9px] text-slate-600">&le;{HEALTH_NODE_DRIFT_WARN}pp</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-500">&le;{HEALTH_NODE_DRIFT_WARN}pp</span>
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">快照间隔抖动</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">快照间隔抖动</span>
           <span ref={jitterRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0ms</span>
-          <span className="ml-auto font-mono text-[9px] text-slate-600">&le;{HEALTH_JITTER_WARN_MS}ms</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-500">&le;{HEALTH_JITTER_WARN_MS}ms</span>
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">SSE 重连</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">SSE 重连</span>
           <span ref={reconnectRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0</span>
-          <span className="ml-auto font-mono text-[9px] text-slate-600">次</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-500">次</span>
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">免疫改写</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">免疫改写</span>
           <span ref={immuneRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0</span>
-          <span className="ml-auto font-mono text-[9px] text-slate-600">条</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-500">条</span>
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[9px] text-slate-500">协议版本</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">协议版本</span>
           <span ref={schemaRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">--</span>
-          <span className="ml-auto font-mono text-[9px] text-slate-600">期望 v{SUPPORTED_SCHEMA_VERSION}</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-500">期望 v{SUPPORTED_SCHEMA_VERSION}</span>
         </div>
       </div>
 
       {readOnly ? (
         <p
-          className="mt-1 rounded border border-rose-500/40 bg-rose-500/10 px-1.5 py-1 font-mono text-[9px] leading-snug text-rose-300"
+          className="mt-1 rounded border border-rose-500/40 bg-rose-500/10 px-1.5 py-1 font-mono text-[10px] leading-snug text-rose-300"
           role="status"
           aria-label="遥测只读提示"
         >
@@ -326,27 +326,27 @@ function RenderPathBlock() {
   }, []);
 
   return (
-    <div className="mt-1.5 rounded border border-slate-800 bg-slate-950/40 p-1.5" aria-label="渲染路径">
+    <div className="mt-1.5 rounded border border-white/[0.07] bg-slate-950/40 p-1.5" aria-label="渲染路径">
       <div className="flex items-baseline gap-1">
         <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300/90">渲染路径</span>
-        <span className="ml-auto font-mono text-[9px] text-slate-600">瞬态轨 · 零重渲染</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-500">瞬态轨 · 零重渲染</span>
       </div>
       <div className="mt-1 flex items-baseline gap-1.5">
-        <span className="w-[3.5rem] shrink-0 font-mono text-[9px] text-slate-500">当前档位</span>
+        <span className="w-[3.5rem] shrink-0 font-mono text-[10px] text-slate-500">当前档位</span>
         <span ref={tierRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">T0</span>
-        <span className="ml-auto font-mono text-[9px] text-slate-600">T3/T2/T1/T0</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-500">T3/T2/T1/T0</span>
       </div>
       <div className="mt-0.5 flex items-baseline gap-1.5">
-        <span className="w-[3.5rem] shrink-0 font-mono text-[9px] text-slate-500">曝光</span>
+        <span className="w-[3.5rem] shrink-0 font-mono text-[10px] text-slate-500">曝光</span>
         <span ref={exposureRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">1.000</span>
-        <span className="ml-auto font-mono text-[9px] text-slate-600">[1.00, 1.18]</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-500">[1.00, 1.18]</span>
       </div>
       <div className="mt-0.5 flex items-baseline gap-1.5">
-        <span className="w-[3.5rem] shrink-0 font-mono text-[9px] text-slate-500">亮度估计</span>
+        <span className="w-[3.5rem] shrink-0 font-mono text-[10px] text-slate-500">亮度估计</span>
         <span ref={glowRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0.00</span>
-        <span className="ml-auto font-mono text-[9px] text-slate-600">0~1</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-500">0~1</span>
       </div>
-      <p ref={reasonRef} className="mt-0.5 font-mono text-[9px] leading-relaxed text-slate-500" />
+      <p ref={reasonRef} className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-500" />
     </div>
   );
 }
@@ -419,7 +419,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
   /** FPS 分档色 */
   const fpsTone =
     sample === null || sample.fps === 0
-      ? 'text-slate-600'
+      ? 'text-slate-500'
       : sample.fps >= FPS_GOOD
         ? 'text-emerald-400'
         : sample.fps >= FPS_WARN
@@ -442,7 +442,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
         <span className="font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-cyan-300">
           WebGL 渲染与遥测性能
         </span>
-        <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-600">2hz</span>
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-500">2hz</span>
         <button
           type="button"
           onClick={onClose}
@@ -454,7 +454,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       </div>
 
       {/* ============ FPS 区块（数值 + 迷你折线） ============ */}
-      <div className="mt-2 rounded border border-slate-800 bg-slate-950/50 p-1.5">
+      <div className="mt-2 rounded border border-white/[0.07] bg-slate-950/50 p-1.5">
         <div className="flex items-baseline gap-1.5">
           <Gauge className={cn('h-3 w-3 shrink-0', fpsTone)} aria-hidden />
           <span className="font-mono text-[10px] uppercase tracking-wider text-slate-500">fps</span>
@@ -471,20 +471,20 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       {/* ============ 指标网格 ============ */}
       <div className="mt-1.5 grid grid-cols-2 gap-1">
         {/* Frame Time */}
-        <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
+        <div className="rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
             <Cpu className="h-2 w-2" aria-hidden />
             帧耗时
           </p>
           <p className="font-mono text-[11px] font-bold tabular-nums text-slate-200">
             {sample !== null && sample.frameTimeMs > 0 ? `${sample.frameTimeMs.toFixed(1)}` : '--'}
-            <span className="ml-0.5 text-[10px] font-normal text-slate-600">ms</span>
+            <span className="ml-0.5 text-[10px] font-normal text-slate-500">ms</span>
           </p>
         </div>
 
         {/* Draw Calls */}
-        <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
+        <div className="rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
             <Layers className="h-2 w-2" aria-hidden />
             draws
           </p>
@@ -494,8 +494,8 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
         </div>
 
         {/* Triangles */}
-        <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
+        <div className="rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
             <Triangle className="h-2 w-2" aria-hidden />
             三角面
           </p>
@@ -505,21 +505,21 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
         </div>
 
         {/* SSE Latency */}
-        <div className="rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-600">
+        <div className="rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
             <Radio className="h-2 w-2" aria-hidden />
             遥测流
           </p>
           <p className="font-mono text-[11px] font-bold tabular-nums text-slate-200">
             {sample !== null && sample.sseLatencyMs > 0 ? `${sample.sseLatencyMs}` : '--'}
-            <span className="ml-0.5 text-[10px] font-normal text-slate-600">ms</span>
+            <span className="ml-0.5 text-[10px] font-normal text-slate-500">ms</span>
           </p>
         </div>
       </div>
 
       {/* ============ 端侧 Worker 状态 ============ */}
-      <div className="mt-1.5 flex items-center gap-1 rounded border border-slate-800 bg-slate-950/40 px-1.5 py-1">
-        <span className="font-mono text-[10px] tracking-wider text-slate-600">端侧</span>
+      <div className="mt-1.5 flex items-center gap-1 rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
+        <span className="font-mono text-[10px] tracking-wider text-slate-500">端侧</span>
         <span
           className={cn(
             'ml-auto truncate font-mono text-[11px] font-bold tabular-nums',
@@ -538,7 +538,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       </div>
 
       {/* ============ 实体计数 ============ */}
-      <div className="mt-1.5 border-t border-slate-800 pt-1 font-mono text-[10px] uppercase tracking-wider text-slate-600">
+      <div className="mt-1.5 border-t border-white/[0.07] pt-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
         {sample !== null
           ? `${sample.nodeCount} 节点 / ${sample.podCount} Pod / ${sample.alertCount} 告警`
           : '--'}
@@ -549,7 +549,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       <RenderPathBlock />
 
       {/* ============ 数据来源说明 ============ */}
-      <p className="mt-1 font-mono text-[10px] leading-relaxed text-slate-700">
+      <p className="mt-1 font-mono text-[10px] leading-relaxed text-slate-500">
         数据源：telemetryTransientRef.glStats + telemetryHealthRef（瞬态轨 · 零重渲染采样）
       </p>
     </motion.div>

@@ -165,7 +165,7 @@ const TONE_RING_CLASS: Readonly<Record<InspectTone, string>> = {
  * 这类大面积彩色模糊阴影：在深色画布上那不是"发光"，而是一团脏荧光雾，
  * 边界糊掉、颜色发闷、还随状态在三色间跳变。
  *
- * 【修复什么 · 本轮】上一版改成"单像素 slate-700 描边 + 88% 不透明深底"，
+ * 【修复什么 · 本轮】上一版改成"单像素 hairline 描边 + 88% 不透明深底"，
  * 边框问题解决了，但它和 3D 视口里的机架/控制平面铭牌**不是同一套语言**：
  *   · 3D HUD：border 0px · radius 0px · 底色 50% 通透
  *   · 本卡片：border 1px · radius 8px · 底色 88% 近乎不透明
@@ -182,7 +182,7 @@ const TONE_RING_CLASS: Readonly<Record<InspectTone, string>> = {
  * 而本卡片是浮在 3D 视口上的仪表，应当跟随 3D HUD 而非应用外壳。
  */
 const CARD_SHELL_CLASS =
-  'rounded-none border-0 bg-slate-950/50 backdrop-blur-xl shadow-[0_12px_36px_rgba(2,6,23,0.7)]';
+  'rounded-none border-0 bg-slate-950/50 shadow-[0_12px_36px_rgba(2,6,23,0.7)]';
 
 /* ========================================================================== */
 /* 空态静态表                                                                  */
@@ -703,7 +703,7 @@ function Sparkline({ series, width = SPARKLINE_WIDTH, height = SPARKLINE_HEIGHT 
  * 原先套的是通用 `.kv-panel`（含纵向渐变 + 大投影），在收起态像一块
  * 被截断的矩形卡片，与它自身"一行小胶囊"的体量不匹配。
  * 现改为专用胶囊外壳：`rounded-full border-white/[0.08] bg-slate-950/75
- * backdrop-blur-md`——半透明深底 + 毛玻璃让背后的 3D 场景仍隐约可见，
+ *`——半透明深底 + 毛玻璃让背后的 3D 场景仍隐约可见，
  * 视觉上像一枚浮在视口上的精致徽章，而不是又一个面板。
  *
  * 【圆角随展开态切换】收起态 `rounded-full` 是胶囊；展开后高度达到
@@ -716,7 +716,7 @@ function TopologyLegendPanel() {
   return (
     <div
       className={cn(
-        'pointer-events-auto relative max-w-full overflow-hidden border border-white/[0.08] bg-slate-950/75 backdrop-blur-md',
+        'pointer-events-auto relative max-w-full overflow-hidden border border-white/[0.08] bg-slate-950/75',
         'transition-[border-radius] duration-200',
         expanded ? 'rounded-2xl' : 'rounded-full',
       )}
@@ -800,7 +800,7 @@ function TopologyLegendPanel() {
               </ul>
 
               {/* 分隔 */}
-              <div className="my-2 border-t border-slate-800" />
+              <div className="my-2 border-t border-white/[0.07]" />
 
               {/* 手势提示 */}
               <div className="mb-1.5 flex items-center gap-1.5">
@@ -811,16 +811,16 @@ function TopologyLegendPanel() {
                 {GESTURE_HINTS.map((hint) => (
                   <li key={hint.key} className="flex items-center gap-1">
                     {hint.key === 'rotate' ? (
-                      <RotateCcw className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
+                      <RotateCcw className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
                     ) : hint.key === 'pan' ? (
-                      <Move3d className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
+                      <Move3d className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
                     ) : hint.key === 'zoom' ? (
-                      <ZoomIn className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
+                      <ZoomIn className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
                     ) : (
-                      <MousePointerClick className="h-2.5 w-2.5 shrink-0 text-slate-600" aria-hidden />
+                      <MousePointerClick className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
                     )}
                     <span className="truncate font-mono text-[10px] text-slate-500">
-                      {hint.label} <span className="text-slate-600">·</span>{' '}
+                      {hint.label} <span className="text-slate-500">·</span>{' '}
                       <span className="text-slate-400">{hint.effect}</span>
                     </span>
                   </li>
@@ -965,7 +965,7 @@ function EntityProbeCard({
         {/* 内联状态徽标胶囊 */}
         <span
           className={cn(
-            'shrink-0 rounded border px-1 py-0.5 font-mono text-[9px] font-bold leading-none tracking-wide',
+            'shrink-0 rounded border px-1 py-0.5 font-mono text-[10px] font-bold leading-none tracking-wide',
             TONE_RING_CLASS[view.statusTone],
             TONE_TEXT_CLASS[view.statusTone],
           )}
@@ -980,15 +980,15 @@ function EntityProbeCard({
          * 【修复什么】旧实现只在 restarts > 0 时渲染，看似省空间，实则让
          * "0 次重启"这一关键稳态信息完全不可见——用户无法确认集群是否真的干净。
          *
-         * 【改为】始终显示：0 次时用沉稳灰青（slate-600 边框 + slate-400 文字），
+         * 【改为】始终显示：0 次时用沉稳灰青（hairline 边框 + slate-400 文字），
          * 传达"读过了，就是 0"而不是"没有这项数据"；> 0 才升级为琥珀/玫瑰告警色。
          * 灰徽章在视觉上安静，不会与健康态的绿色状态徽标抢注意力。
          */}
         <span
           className={cn(
-            'shrink-0 rounded border px-1 py-0.5 font-mono text-[9px] font-bold leading-none tabular-nums tracking-wide',
+            'shrink-0 rounded border px-1 py-0.5 font-mono text-[10px] font-bold leading-none tabular-nums tracking-wide',
             view.restarts === 0
-              ? 'border-slate-600/50 text-slate-400'
+              ? 'border-white/[0.07]/50 text-slate-400'
               : restartsTone === 'critical'
                 ? 'border-rose-500/50 text-rose-300'
                 : 'border-amber-500/50 text-amber-300',
@@ -1027,12 +1027,12 @@ function EntityProbeCard({
        */}
       <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1.5">
         {view.metaRows.length === 0 ? (
-          <span className="col-span-2 font-mono text-[10px] text-slate-600">—</span>
+          <span className="col-span-2 font-mono text-[10px] text-slate-500">—</span>
         ) : (
           view.metaRows.slice(0, 4).map((row): ReactNode => (
             <div key={row.label} className="flex min-w-0 items-baseline gap-1.5">
               <span
-                className="shrink-0 font-mono text-[9px] uppercase tracking-wider text-slate-500"
+                className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-slate-500"
                 title={row.label}
               >
                 {row.label}
@@ -1072,7 +1072,7 @@ function EntityProbeCard({
             type="button"
             disabled
             aria-disabled
-            className="flex cursor-not-allowed items-center justify-center gap-1 rounded border border-white/[0.06] bg-white/[0.02] px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-slate-600"
+            className="flex cursor-not-allowed items-center justify-center gap-1 rounded border border-white/[0.06] bg-white/[0.02] px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-slate-500"
             title="控制面为只读保护对象，不提供破坏性运维动作"
           >
             <ShieldCheck className="h-2.5 w-2.5 shrink-0" aria-hidden />

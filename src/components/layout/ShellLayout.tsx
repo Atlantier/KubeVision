@@ -77,7 +77,7 @@ export function RightDrawerSlot({ activeTab, onTabChange, children }: RightDrawe
   return (
     <div className="kv-panel flex h-full min-h-0 flex-col overflow-hidden rounded-none border-y-0 border-r-0 lg:rounded-lg lg:border">
       {/* 页签栏 */}
-      <div role="tablist" aria-label="AI 抽屉页签" className="flex h-10 shrink-0 items-stretch gap-1 border-b border-slate-800 px-2">
+      <div role="tablist" aria-label="AI 抽屉页签" className="flex h-10 shrink-0 items-stretch gap-1 border-b border-white/[0.07] px-2">
         {tabs.map((tab) => {
           const active = activeTab === tab.key;
           return (
@@ -258,7 +258,7 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
         <section
           aria-label="3D 集群拓扑视口"
           className={cn(
-            'relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40',
+            'relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-white/[0.07] bg-slate-900/40',
             // 移动端：copilot 视图时隐藏左栏（常驻 DOM，不卸载画布）
             mobileView === 'copilot' && 'hidden lg:block',
           )}
@@ -361,11 +361,11 @@ function ViewportPlaceholder() {
   return (
     <div className="bg-cyber-grid pointer-events-none absolute inset-0 flex items-center justify-center">
       <div className="pointer-events-none flex flex-col items-center gap-2 text-center">
-        <TerminalSquare className="h-8 w-8 text-slate-700" aria-hidden />
-        <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-slate-600">
+        <TerminalSquare className="h-8 w-8 text-slate-500" aria-hidden />
+        <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-slate-500">
           3d viewport slot
         </p>
-        <p className="max-w-xs text-[11px] leading-relaxed text-slate-700">
+        <p className="max-w-xs text-[11px] leading-relaxed text-slate-500">
           R3F Canvas（next/dynamic · ssr:false）将于下一轮接入此槽位
         </p>
       </div>
@@ -377,11 +377,11 @@ function ViewportPlaceholder() {
 function DrawerPlaceholder({ tab }: { readonly tab: RightPanelTab }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-      {tab === 'copilot' ? <Bot className="h-8 w-8 text-slate-700" aria-hidden /> : <ShieldCheck className="h-8 w-8 text-slate-700" aria-hidden />}
-      <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-slate-600">
+      {tab === 'copilot' ? <Bot className="h-8 w-8 text-slate-500" aria-hidden /> : <ShieldCheck className="h-8 w-8 text-slate-500" aria-hidden />}
+      <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-slate-500">
         {tab === 'copilot' ? 'sre copilot slot' : 'edge auditor slot'}
       </p>
-      <p className="max-w-[240px] text-[11px] leading-relaxed text-slate-700">
+      <p className="max-w-[240px] text-[11px] leading-relaxed text-slate-500">
         {tab === 'copilot'
           ? 'NDJSON 流式对话 + 生成式 UI 卡片将于后续轮次接入'
           : 'Transformers.js 端侧日志审计台将于后续轮次接入'}

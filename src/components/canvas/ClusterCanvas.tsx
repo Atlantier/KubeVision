@@ -1385,7 +1385,7 @@ export default function ClusterCanvas() {
           role="status"
           aria-live="polite"
         >
-          <div className="flex items-center gap-2 rounded px-3 py-1.5 font-mono text-[11px] tracking-tight backdrop-blur-md"
+          <div className="flex items-center gap-2 rounded px-3 py-1.5 font-mono text-[11px] tracking-tight"
             style={{
               background: contextRestoreFailed ? 'rgba(76,5,25,0.86)' : 'rgba(69,26,3,0.86)',
               border: `1px solid ${contextRestoreFailed ? 'rgba(244,63,94,0.5)' : 'rgba(251,191,36,0.45)'}`,

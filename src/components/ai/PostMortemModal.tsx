@@ -223,7 +223,7 @@ export default function PostMortemModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-md sm:p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 kv-blur-panel sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="SRE 故障复盘报告"
@@ -237,7 +237,7 @@ export default function PostMortemModal({
       />
 
       {/* ============ 主面板：深空毛玻璃 ============ */}
-      <div className="relative flex h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-cyan-400/30 bg-slate-950/95 shadow-[0_24px_80px_rgba(2,6,23,0.9)] backdrop-blur-2xl">
+      <div className="relative flex h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-cyan-400/30 bg-slate-950/95 shadow-[0_24px_80px_rgba(2,6,23,0.9)] kv-blur-panel">
         {/* ---- 顶部主题流光细线 ---- */}
         <div
           className="h-px w-full shrink-0 bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent"
@@ -245,7 +245,7 @@ export default function PostMortemModal({
         />
 
         {/* ==================== 标题栏：标题 + 字数统计 + 关闭 ==================== */}
-        <header className="flex shrink-0 items-center gap-2 border-b border-slate-800 px-3 py-2 sm:px-4">
+        <header className="flex shrink-0 items-center gap-2 border-b border-white/[0.07] px-3 py-2 sm:px-4">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-cyan-400/40 bg-cyan-400/10">
             <FileText className="h-3.5 w-3.5 text-cyan-400" aria-hidden />
           </span>
@@ -254,14 +254,14 @@ export default function PostMortemModal({
             <h2 className="truncate text-[13px] font-semibold tracking-wide text-slate-100">
               SRE 故障复盘报告
             </h2>
-            <p className="mt-0.5 truncate font-mono text-[9px] tracking-[0.16em] text-slate-500">
+            <p className="mt-0.5 truncate font-mono text-[10px] tracking-[0.16em] text-slate-500">
               incident post-mortem · markdown export
             </p>
           </div>
 
           {/* 字数统计：字符数是交付给用户的第一手感指标（太短说明会话没内容） */}
           <span
-            className="shrink-0 rounded border border-slate-700 bg-slate-900/70 px-2 py-0.5 font-mono text-[10px] tabular-nums text-slate-400"
+            className="shrink-0 rounded border border-white/[0.07] bg-slate-900/70 px-2 py-0.5 font-mono text-[10px] tabular-nums text-slate-400"
             title={`${charCount} 个字符 · ${lineCount} 行`}
           >
             {charCount} 字符
@@ -271,7 +271,7 @@ export default function PostMortemModal({
             type="button"
             onClick={onClose}
             aria-label="关闭复盘报告弹窗"
-            className="shrink-0 rounded-md border border-slate-800 p-1.5 text-slate-500 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95"
+            className="shrink-0 rounded-md border border-white/[0.07] p-1.5 text-slate-500 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95"
           >
             <X className="h-3.5 w-3.5" aria-hidden />
           </button>
@@ -281,7 +281,7 @@ export default function PostMortemModal({
         <div
           role="tablist"
           aria-label="报告视图切换"
-          className="flex shrink-0 items-center gap-1 border-b border-slate-800 bg-slate-900/50 px-3 py-1.5 sm:px-4"
+          className="flex shrink-0 items-center gap-1 border-b border-white/[0.07] bg-slate-900/50 px-3 py-1.5 sm:px-4"
         >
           {VIEW_TABS.map((tab): React.ReactElement => {
             const isActive = tab.key === mode;
@@ -304,7 +304,7 @@ export default function PostMortemModal({
             );
           })}
 
-          <span className="ml-auto hidden font-mono text-[9px] text-slate-600 sm:inline">
+          <span className="ml-auto hidden font-mono text-[10px] text-slate-500 sm:inline">
             {lineCount} 行
           </span>
         </div>
@@ -313,7 +313,7 @@ export default function PostMortemModal({
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {isPreview ? (
             markdown.trim() === '' ? (
-              <p className="rounded border border-dashed border-slate-800 px-3 py-6 text-center text-[11px] text-slate-500">
+              <p className="rounded border border-dashed border-white/[0.07] px-3 py-6 text-center text-[11px] text-slate-500">
                 报告内容为空：请先在 Copilot 中完成至少一轮排障对话。
               </p>
             ) : (
@@ -330,7 +330,7 @@ export default function PostMortemModal({
         </div>
 
         {/* ==================== 底部操作栏 ==================== */}
-        <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-slate-800 bg-slate-900/40 px-3 py-2 sm:px-4">
+        <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-white/[0.07] bg-slate-900/40 px-3 py-2 sm:px-4">
           <button
             type="button"
             onClick={handleDownload}
@@ -349,7 +349,7 @@ export default function PostMortemModal({
               'flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors active:scale-[0.985]',
               copied
                 ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
-                : 'border-slate-700 bg-slate-800/50 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
+                : 'border-white/[0.07] bg-slate-800/50 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
             )}
           >
             {copied ? (
@@ -364,18 +364,18 @@ export default function PostMortemModal({
           {copyError !== null ? (
             <span
               role="status"
-              className="min-w-0 flex-1 truncate font-mono text-[9px] leading-relaxed text-amber-400/90"
+              className="min-w-0 flex-1 truncate font-mono text-[10px] leading-relaxed text-amber-400/90"
               title={copyError}
             >
               {copyError}
             </span>
           ) : (
             <span
-              className="ml-auto hidden min-w-0 items-center gap-1 font-mono text-[9px] text-slate-600 sm:flex"
+              className="ml-auto hidden min-w-0 items-center gap-1 font-mono text-[10px] text-slate-500 sm:flex"
               title={filename ?? '下载时按当前时刻生成文件名'}
             >
               <span className="truncate">{filename ?? 'kubevision-postmortem-*.md'}</span>
-              <span className="shrink-0 text-slate-700">·</span>
+              <span className="shrink-0 text-slate-500">·</span>
               <span className="shrink-0">端侧生成，原始凭证未离开浏览器</span>
             </span>
           )}

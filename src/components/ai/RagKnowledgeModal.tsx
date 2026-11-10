@@ -88,7 +88,7 @@ const CUSTOM_TAGS_LIMIT = 3;
 
 /** 表单输入框通用样式（input / textarea 共用，保证视觉一致） */
 const FIELD_CLASS =
-  'w-full rounded-md border border-slate-700 bg-slate-950/80 px-2.5 py-1.5 text-xs text-slate-200 outline-none transition-colors placeholder:text-slate-600 focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30';
+  'w-full rounded-md border border-white/[0.07] bg-slate-950/80 px-2.5 py-1.5 text-xs text-slate-200 outline-none transition-colors placeholder:text-slate-500 focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30';
 
 /**
  * 知识分类 → 胶囊配色映射。
@@ -108,7 +108,7 @@ const CATEGORY_TONE: Readonly<Record<string, string>> = {
 };
 
 /** 未登记分类的兜底胶囊样式（中性 slate，不臆断语义） */
-const CATEGORY_TONE_FALLBACK = 'border-slate-700 bg-slate-800/60 text-slate-400';
+const CATEGORY_TONE_FALLBACK = 'border-white/[0.07] bg-slate-800/60 text-slate-400';
 
 /* ========================================================================== */
 /* 表单状态与示例模板                                                            */
@@ -258,7 +258,7 @@ function formatPercent(score: number | undefined): string {
  */
 function confidenceToneClass(score: number | undefined): string {
   if (score === undefined || !Number.isFinite(score)) {
-    return 'border-slate-700 bg-slate-800/60 text-slate-400';
+    return 'border-white/[0.07] bg-slate-800/60 text-slate-400';
   }
   if (score >= 0.8) return 'border-emerald-400/50 bg-emerald-400/10 text-emerald-300';
   if (score >= 0.55) return 'border-cyan-400/50 bg-cyan-400/10 text-cyan-300';
@@ -283,7 +283,7 @@ function CategoryTag({ category }: { readonly category: string }): React.ReactEl
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center rounded border px-1.5 py-px font-mono text-[9px] tracking-[0.06em]',
+        'inline-flex shrink-0 items-center rounded border px-1.5 py-px font-mono text-[10px] tracking-[0.06em]',
         tone,
       )}
     >
@@ -337,7 +337,7 @@ function ScoreBar({
     <div className="flex items-center gap-2" title={hint}>
       <span
         className={cn(
-          'w-14 shrink-0 font-mono text-[9px] uppercase tracking-[0.06em]',
+          'w-14 shrink-0 font-mono text-[10px] uppercase tracking-[0.06em]',
           labelClassName,
         )}
       >
@@ -359,7 +359,7 @@ function ScoreBar({
           style={{ width: `${percent}%` }}
         />
       </div>
-      <span className="w-8 shrink-0 text-right font-mono text-[9px] tabular-nums text-slate-500">
+      <span className="w-8 shrink-0 text-right font-mono text-[10px] tabular-nums text-slate-500">
         {percent}%
       </span>
     </div>
@@ -384,7 +384,7 @@ function DetailSection({
   readonly children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <section className="mt-4 border-t border-slate-800/80 pt-3">
+    <section className="mt-4 border-t border-white/[0.07]/80 pt-3">
       <h4 className="mb-1.5 flex items-center gap-1.5 font-mono text-[10px] tracking-[0.2em] text-cyan-400/80">
         <span className="h-2.5 w-0.5 shrink-0 rounded-full bg-cyan-400/60" aria-hidden />
         {title}
@@ -640,7 +640,7 @@ export default function RagKnowledgeModal({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.18, ease: 'easeOut' }}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-md sm:p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 kv-blur-panel sm:p-4"
         role="dialog"
         aria-modal="true"
         aria-label="SRE 领域知识库"
@@ -659,7 +659,7 @@ export default function RagKnowledgeModal({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.96, y: 14 }}
           transition={{ type: 'spring', stiffness: 320, damping: 30 }}
-          className="relative flex h-[80vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-cyan-400/30 bg-slate-950/95 shadow-[0_24px_80px_rgba(2,6,23,0.9)] backdrop-blur-2xl"
+          className="relative flex h-[80vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-cyan-400/30 bg-slate-950/95 shadow-[0_24px_80px_rgba(2,6,23,0.9)] kv-blur-panel"
         >
           {/* ---- 顶部主题流光细线 ---- */}
           <div
@@ -668,7 +668,7 @@ export default function RagKnowledgeModal({
           />
 
           {/* ============ 标题栏 ============ */}
-          <header className="flex shrink-0 items-center gap-3 border-b border-slate-800 px-4 py-3 sm:px-5">
+          <header className="flex shrink-0 items-center gap-3 border-b border-white/[0.07] px-4 py-3 sm:px-5">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-cyan-400/40 bg-cyan-400/10">
               <Database className="h-4 w-4 text-cyan-400" aria-hidden />
             </span>
@@ -698,7 +698,7 @@ export default function RagKnowledgeModal({
               type="button"
               onClick={(): void => onClose()}
               aria-label="关闭知识库弹窗"
-              className="shrink-0 rounded-md border border-slate-800 p-1.5 text-slate-500 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95"
+              className="shrink-0 rounded-md border border-white/[0.07] p-1.5 text-slate-500 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95"
             >
               <X className="h-4 w-4" aria-hidden />
             </button>
@@ -709,17 +709,17 @@ export default function RagKnowledgeModal({
             {/* ---------------- C. 顶部实时混合检索沙盒 ---------------- */}
             <section
               aria-label="实时混合检索沙盒"
-              className="shrink-0 rounded-lg border border-slate-800 bg-slate-900/60 px-3.5 py-3"
+              className="shrink-0 rounded-lg border border-white/[0.07] bg-slate-900/60 px-3.5 py-3"
             >
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <Search className="h-3.5 w-3.5 shrink-0 text-cyan-400" aria-hidden />
                 <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-500">
                   retrieval sandbox
                 </span>
-                <span className="rounded border border-cyan-400/30 bg-cyan-400/10 px-1.5 py-px font-mono text-[9px] text-cyan-300">
+                <span className="rounded border border-cyan-400/30 bg-cyan-400/10 px-1.5 py-px font-mono text-[10px] text-cyan-300">
                   vector + bm25 + context
                 </span>
-                <span className="ml-auto font-mono text-[9px] text-slate-600">
+                <span className="ml-auto font-mono text-[10px] text-slate-500">
                   top-{SANDBOX_TOP_K}
                 </span>
               </div>
@@ -738,7 +738,7 @@ export default function RagKnowledgeModal({
 
               <div className="mt-2.5">
                 {isQueryEmpty ? (
-                  <p className="rounded border border-dashed border-slate-800 px-3 py-4 text-center text-[11px] text-slate-500">
+                  <p className="rounded border border-dashed border-white/[0.07] px-3 py-4 text-center text-[11px] text-slate-500">
                     输入故障描述开始检索
                   </p>
                 ) : !hasResults ? (
@@ -752,11 +752,11 @@ export default function RagKnowledgeModal({
                       return (
                         <li
                           key={doc.id}
-                          className="rounded-md border border-slate-800 bg-slate-950/80 p-2.5"
+                          className="rounded-md border border-white/[0.07] bg-slate-950/80 p-2.5"
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
-                              <p className="truncate font-mono text-[9px] uppercase tracking-[0.1em] text-slate-500">
+                              <p className="truncate font-mono text-[10px] uppercase tracking-[0.1em] text-slate-500">
                                 {doc.id}
                               </p>
                               <p
@@ -808,7 +808,7 @@ export default function RagKnowledgeModal({
                               {doc.matchedTerms.map((term: string): React.ReactElement => (
                                 <span
                                   key={`${doc.id}-term-${term}`}
-                                  className="rounded border border-cyan-400/60 bg-cyan-400/10 px-1.5 py-px font-mono text-[9px] text-cyan-300"
+                                  className="rounded border border-cyan-400/60 bg-cyan-400/10 px-1.5 py-px font-mono text-[10px] text-cyan-300"
                                 >
                                   {term}
                                 </span>
@@ -826,12 +826,12 @@ export default function RagKnowledgeModal({
             {/* ---------------- A + B. 语料列表 与 详情 ---------------- */}
             <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
               {/* ---- A. 左侧语料列表（桌面 280px 固定宽，移动端定高横置） ---- */}
-              <aside className="flex h-[190px] min-h-0 w-full shrink-0 flex-col rounded-lg border border-slate-800 bg-slate-900/50 lg:h-auto lg:w-[280px]">
-                <div className="flex shrink-0 items-center justify-between border-b border-slate-800 px-3 py-2">
+              <aside className="flex h-[190px] min-h-0 w-full shrink-0 flex-col rounded-lg border border-white/[0.07] bg-slate-900/50 lg:h-auto lg:w-[280px]">
+                <div className="flex shrink-0 items-center justify-between border-b border-white/[0.07] px-3 py-2">
                   <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-500">
                     corpus index
                   </span>
-                  <span className="font-mono text-[10px] tabular-nums text-slate-600">
+                  <span className="font-mono text-[10px] tabular-nums text-slate-500">
                     {corpus.length}
                   </span>
                 </div>
@@ -851,10 +851,10 @@ export default function RagKnowledgeModal({
                             isCustom ? 'pr-8' : '',
                             isSelected
                               ? 'border-cyan-400/60 bg-cyan-400/10'
-                              : 'border-slate-800 bg-slate-950/50 hover:border-slate-700 hover:bg-slate-900/70',
+                              : 'border-white/[0.07] bg-slate-950/50 hover:border-white/[0.07] hover:bg-slate-900/70',
                           )}
                         >
-                          <p className="truncate font-mono text-[9px] uppercase tracking-[0.1em] text-slate-500">
+                          <p className="truncate font-mono text-[10px] uppercase tracking-[0.1em] text-slate-500">
                             {doc.id}
                           </p>
                           <p
@@ -869,7 +869,7 @@ export default function RagKnowledgeModal({
                           <div className="mt-1.5 flex flex-wrap items-center gap-1">
                             <CategoryTag category={doc.category} />
                             {isCustom ? (
-                              <span className="inline-flex shrink-0 items-center rounded border border-cyan-400/50 bg-cyan-400/15 px-1.5 py-px font-mono text-[9px] text-cyan-300">
+                              <span className="inline-flex shrink-0 items-center rounded border border-cyan-400/50 bg-cyan-400/15 px-1.5 py-px font-mono text-[10px] text-cyan-300">
                                 自定义
                               </span>
                             ) : null}
@@ -883,7 +883,7 @@ export default function RagKnowledgeModal({
                             onClick={(): void => handleRemoveCustom(doc.id)}
                             aria-label="删除该自定义 Runbook"
                             title="删除该自定义 Runbook"
-                            className="absolute right-1 top-1 rounded border border-transparent p-1 text-slate-600 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300"
+                            className="absolute right-1 top-1 rounded border border-transparent p-1 text-slate-500 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300"
                           >
                             <Trash2 className="h-3 w-3" aria-hidden />
                           </button>
@@ -895,7 +895,7 @@ export default function RagKnowledgeModal({
               </aside>
 
               {/* ---- B. 右侧详情（选中项的完整内容） ---- */}
-              <section className="flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border border-slate-800 bg-slate-900/50">
+              <section className="flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border border-white/[0.07] bg-slate-900/50">
                 <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-3.5">
                   {selectedDoc === null ? (
                     <div className="flex flex-1 items-center justify-center px-4 text-center">
@@ -912,7 +912,7 @@ export default function RagKnowledgeModal({
                           {selectedDoc.title}
                         </h3>
                         {selectedDoc.isCustom === true ? (
-                          <span className="inline-flex shrink-0 items-center rounded border border-cyan-400/50 bg-cyan-400/15 px-1.5 py-px font-mono text-[9px] text-cyan-300">
+                          <span className="inline-flex shrink-0 items-center rounded border border-cyan-400/50 bg-cyan-400/15 px-1.5 py-px font-mono text-[10px] text-cyan-300">
                             自定义
                           </span>
                         ) : null}
@@ -924,13 +924,13 @@ export default function RagKnowledgeModal({
                         </span>
                         <CategoryTag category={selectedDoc.category} />
                         {selectedDoc.customCreatedAt !== undefined ? (
-                          <span className="font-mono text-[9px] text-slate-600">
+                          <span className="font-mono text-[10px] text-slate-500">
                             写入于 {selectedDoc.customCreatedAt.slice(0, 19).replace('T', ' ')}
                           </span>
                         ) : null}
                         {selectedDoc.relatedChaos !== undefined &&
                         selectedDoc.relatedChaos.length > 0 ? (
-                          <span className="font-mono text-[9px] text-slate-600">
+                          <span className="font-mono text-[10px] text-slate-500">
                             关联演练 {selectedDoc.relatedChaos.join(' / ')}
                           </span>
                         ) : null}
@@ -946,7 +946,7 @@ export default function RagKnowledgeModal({
                       {/* 底层根因机理（等宽小字：这是“原理摘录”，与叙述性症状区分） */}
                       <DetailSection title="底层根因机理">
                         {selectedDoc.rootCauseMechanism.trim() === '' ? (
-                          <p className="text-[11px] text-slate-600">该条目尚未填写底层根因机理。</p>
+                          <p className="text-[11px] text-slate-500">该条目尚未填写底层根因机理。</p>
                         ) : (
                           <p className="whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-slate-400">
                             {selectedDoc.rootCauseMechanism}
@@ -957,13 +957,13 @@ export default function RagKnowledgeModal({
                       {/* 标准修复 SOP（有序列表 + 序号圆点） */}
                       <DetailSection title="标准修复 SOP">
                         {selectedDoc.remediationSteps.length === 0 ? (
-                          <p className="text-[11px] text-slate-600">该条目尚未提供处置步骤。</p>
+                          <p className="text-[11px] text-slate-500">该条目尚未提供处置步骤。</p>
                         ) : (
                           <ol className="space-y-1.5">
                             {selectedDoc.remediationSteps.map(
                               (step: string, index: number): React.ReactElement => (
                                 <li key={`${selectedDoc.id}-step-${index}`} className="flex gap-2">
-                                  <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-cyan-400/40 bg-cyan-400/10 font-mono text-[9px] tabular-nums text-cyan-300">
+                                  <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-cyan-400/40 bg-cyan-400/10 font-mono text-[10px] tabular-nums text-cyan-300">
                                     {index + 1}
                                   </span>
                                   <span className="min-w-0 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-slate-300">
@@ -979,7 +979,7 @@ export default function RagKnowledgeModal({
                       {/* 特征词（前 12 个，小胶囊） */}
                       <DetailSection title="特征词">
                         {selectedDoc.featureVocabulary.length === 0 ? (
-                          <p className="text-[11px] text-slate-600">该条目未提供特征词。</p>
+                          <p className="text-[11px] text-slate-500">该条目未提供特征词。</p>
                         ) : (
                           <div className="flex flex-wrap gap-1">
                             {selectedDoc.featureVocabulary
@@ -987,7 +987,7 @@ export default function RagKnowledgeModal({
                               .map((term: string, index: number): React.ReactElement => (
                                 <span
                                   key={`${selectedDoc.id}-feature-${index}`}
-                                  className="rounded border border-slate-700 bg-slate-800/70 px-1.5 py-0.5 font-mono text-[10px] text-slate-300"
+                                  className="rounded border border-white/[0.07] bg-slate-800/70 px-1.5 py-0.5 font-mono text-[10px] text-slate-300"
                                 >
                                   {term}
                                 </span>
@@ -995,7 +995,7 @@ export default function RagKnowledgeModal({
                           </div>
                         )}
                         {selectedDoc.featureVocabulary.length > MAX_VISIBLE_FEATURE_TERMS ? (
-                          <p className="mt-1 font-mono text-[9px] text-slate-600">
+                          <p className="mt-1 font-mono text-[10px] text-slate-500">
                             另有 {selectedDoc.featureVocabulary.length - MAX_VISIBLE_FEATURE_TERMS}{' '}
                             个特征词参与检索
                           </p>
@@ -1008,7 +1008,7 @@ export default function RagKnowledgeModal({
             </div>
 
             {/* ---------------- D. 底部新增自定义 Runbook 表单 ---------------- */}
-            <section className="shrink-0 rounded-lg border border-slate-800 bg-slate-900/60">
+            <section className="shrink-0 rounded-lg border border-white/[0.07] bg-slate-900/60">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3.5 py-2">
                 <button
                   type="button"
@@ -1026,12 +1026,12 @@ export default function RagKnowledgeModal({
                   新增自定义 Runbook
                 </button>
 
-                <span className="min-w-0 truncate font-mono text-[9px] text-slate-600">
+                <span className="min-w-0 truncate font-mono text-[10px] text-slate-500">
                   localStorage 持久化 · 入库后立即参与混合检索
                 </span>
 
                 {formNotice !== '' ? (
-                  <span className="ml-auto flex min-w-0 items-center gap-1 font-mono text-[9px] text-emerald-300">
+                  <span className="ml-auto flex min-w-0 items-center gap-1 font-mono text-[10px] text-emerald-300">
                     <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden />
                     <span className="truncate">{formNotice}</span>
                   </span>
@@ -1051,11 +1051,11 @@ export default function RagKnowledgeModal({
                   >
                     <form
                       onSubmit={handleSubmit}
-                      className="max-h-[32vh] overflow-y-auto border-t border-slate-800 px-3.5 py-3"
+                      className="max-h-[32vh] overflow-y-auto border-t border-white/[0.07] px-3.5 py-3"
                     >
                       <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                         <label className="block">
-                          <span className="mb-1 block font-mono text-[9px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
                             标题
                           </span>
                           <input
@@ -1070,7 +1070,7 @@ export default function RagKnowledgeModal({
                         </label>
 
                         <label className="block">
-                          <span className="mb-1 block font-mono text-[9px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
                             分类
                           </span>
                           <input
@@ -1085,7 +1085,7 @@ export default function RagKnowledgeModal({
                         </label>
 
                         <label className="block">
-                          <span className="mb-1 block font-mono text-[9px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
                             故障症状
                           </span>
                           <textarea
@@ -1100,7 +1100,7 @@ export default function RagKnowledgeModal({
                         </label>
 
                         <label className="block">
-                          <span className="mb-1 block font-mono text-[9px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
                             根因机理
                           </span>
                           <textarea
@@ -1115,7 +1115,7 @@ export default function RagKnowledgeModal({
                         </label>
 
                         <label className="block md:col-span-2">
-                          <span className="mb-1 block font-mono text-[9px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
                             特征词（逗号分隔，前 3 个将成为检索标签）
                           </span>
                           <input
@@ -1130,7 +1130,7 @@ export default function RagKnowledgeModal({
                         </label>
 
                         <label className="block md:col-span-2">
-                          <span className="mb-1 block font-mono text-[9px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
                             修复步骤（每行一条，按换行分割为有序 SOP）
                           </span>
                           <textarea
@@ -1168,7 +1168,7 @@ export default function RagKnowledgeModal({
                         <button
                           type="button"
                           onClick={handleFillExample}
-                          className="flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 font-mono text-[10px] tracking-[0.08em] text-slate-300 transition-colors hover:border-slate-600 hover:bg-slate-800"
+                          className="flex items-center gap-1.5 rounded-md border border-white/[0.07] bg-slate-800/60 px-3 py-1.5 font-mono text-[10px] tracking-[0.08em] text-slate-300 transition-colors hover:border-white/[0.07] hover:bg-slate-800"
                         >
                           <Sparkles className="h-3.5 w-3.5" aria-hidden />
                           填入示例
@@ -1182,7 +1182,7 @@ export default function RagKnowledgeModal({
                         >
                           收起表单
                         </button>
-                        <span className="ml-auto font-mono text-[9px] text-slate-600">
+                        <span className="ml-auto font-mono text-[10px] text-slate-500">
                           数据仅存于本地浏览器 localStorage
                         </span>
                       </div>

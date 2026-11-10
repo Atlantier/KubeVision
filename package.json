@@ -44,6 +44,7 @@
     "evidence:r23": "node scripts/r23-pipeline-evidence.mjs",
     "evidence:r24": "node scripts/r24-evidence.mjs",
     "quality:matrix": "node scripts/quality-matrix.mjs",
+    "check:a11y": "node scripts/check-a11y.mjs",
     "opening:frames": "node scripts/opening-frames.mjs",
     "soak": "node scripts/soak.mjs",
     "strictmode:audit": "node scripts/strictmode-audit.mjs",

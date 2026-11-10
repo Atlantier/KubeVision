@@ -118,7 +118,7 @@ function DrawerSkeleton() {
   return (
     <div className="flex h-full min-h-0 flex-col" aria-label="AI 副驾加载中">
       {/* 顶部页签骨架 */}
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-slate-800 px-3">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-white/[0.07] px-3">
         <span className="h-2 w-20 animate-pulse rounded-sm bg-slate-800" />
         <span className="h-2 w-16 animate-pulse rounded-sm bg-slate-800/60 [animation-delay:150ms]" />
       </div>
@@ -140,8 +140,8 @@ function DrawerSkeleton() {
       </div>
 
       {/* 底部输入区骨架 */}
-      <div className="shrink-0 border-t border-slate-800 p-2">
-        <span className="block h-9 w-full animate-pulse rounded border border-slate-800 bg-slate-800/30" />
+      <div className="shrink-0 border-t border-white/[0.07] p-2">
+        <span className="block h-9 w-full animate-pulse rounded border border-white/[0.07] bg-slate-800/30" />
       </div>
     </div>
   );
@@ -164,7 +164,7 @@ function CanvasSkeleton() {
         <p className="font-mono text-[11px] tracking-[0.2em] text-cyan-400/80">
           正在初始化 WebGL 3D 拓扑引擎
         </p>
-        <p className="font-mono text-[11px] tracking-wider text-slate-600">
+        <p className="font-mono text-[11px] tracking-wider text-slate-500">
           加载 Three.js 场景图 · 空间布局矩阵 · 实例着色器
         </p>
         {/* 进度条：不确定态流光扫描（framer-motion 往复位移，不依赖自定义 keyframes） */}
@@ -313,13 +313,13 @@ export default function HomePage() {
       {escapeHint !== null ? (
         <div className="pointer-events-none fixed bottom-3 left-1/2 z-40 -translate-x-1/2">
           <div
-            className="kv-chip flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-slate-950/85 px-2.5 py-1 font-mono text-[10px] tracking-wider text-cyan-300 shadow-[0_0_18px_rgba(34,211,238,0.18)] backdrop-blur-md"
+            className="kv-chip flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-slate-950/85 px-2.5 py-1 font-mono text-[10px] tracking-wider text-cyan-300 shadow-[0_0_18px_rgba(34,211,238,0.18)]"
             role="status"
             aria-live="polite"
             aria-label={`Esc 关闭：${escapeHint}`}
             data-escape-hint={escapeHint}
           >
-            <kbd className="rounded border border-slate-600 bg-slate-800 px-1 text-[9px] text-slate-300">Esc</kbd>
+            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1 text-[10px] text-slate-300">Esc</kbd>
             <span>关闭：{escapeHint}</span>
           </div>
         </div>

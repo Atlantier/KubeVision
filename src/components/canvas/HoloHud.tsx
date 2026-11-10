@@ -235,7 +235,7 @@ export function HoloMicroRuler({
     <div className={cn('pointer-events-none flex items-center gap-1.5', className)} aria-hidden>
       {/* ---- 等宽遥测编号 ---- */}
       <span
-        className="shrink-0 font-mono text-[7px] uppercase leading-none tracking-[0.18em]"
+        className="shrink-0 font-mono text-[10px] uppercase leading-none tracking-[0.18em]"
         style={{ color: `${accent}99` }}
       >
         {label}
@@ -408,11 +408,11 @@ export function MiniBar({
   };
   return (
     <span className="flex items-center gap-1">
-      <span className="font-mono text-[8px] uppercase tracking-[0.16em] text-slate-500">
+      <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
         {label}
       </span>
       <span
-        className="w-[24px] text-right font-mono text-[9.5px] font-semibold tabular-nums leading-none"
+        className="w-[24px] text-right font-mono text-[10px] font-semibold tabular-nums leading-none"
         style={{ color }}
       >
         {Math.round(clamped)}%
@@ -462,13 +462,13 @@ export function MiniBar({
  * 【本轮重构：废除闭合边框】
  * 上一版用 `bg-slate-950/85` 深底 + 4px 折角，观感是"贴在场景上的黑牌"。
  * 本版改为：
- *   · 基底 `bg-slate-950/50 backdrop-blur-xl` —— 半通透光学玻璃，
+ *   · 基底 `bg-slate-950/50 kv-blur-panel` —— 半通透光学玻璃，
  *     背后的 3D 场景仍隐约可见，面板"嵌在场景里"而非盖在场景上；
  *   · **没有任何一条闭合边**，结构完全由上下 1px 折射亮边 + 四角靶标表达；
  *   · 叠一层斜向折射高光，这是"玻璃"与"塑料"的分界；
  *   · 可选顶部微标尺，把面板从"信息卡片"变成"测量仪表"。
  *
- * 【为何 backdrop-blur-xl 而不是 md】xl（24px）的模糊半径让背后的
+ * 【为何 kv-blur-panel 而不是 md】xl（24px）的模糊半径让背后的
  * 高对比几何（机架棱线）彻底糊成色块，文字可读性才有保障；
  * md（12px）下机架的锐利棱线会透出来干扰读数。
  *
@@ -496,7 +496,7 @@ export function HoloFrame({
       className={cn(
         'pointer-events-none relative overflow-hidden px-2 py-1',
         /* 光学玻璃基底：半通透 + 强模糊，无边框/无圆角闭合 */
-        'bg-slate-950/50 backdrop-blur-xl',
+        'bg-slate-950/50 kv-blur-panel',
         className,
       )}
       style={glow ? { boxShadow: `0 0 12px ${accent}2e, inset 0 0 18px ${accent}14` } : undefined}

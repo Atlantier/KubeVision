@@ -113,7 +113,7 @@ function RetrievalSignalBar({
 
   return (
     <div className="px-2.5 pb-2">
-      <div className="rounded border border-slate-800 bg-slate-950/40 p-1.5">
+      <div className="rounded border border-white/[0.07] bg-slate-950/40 p-1.5">
         {/* ---- 标题行：标题 + 融合终值 ---- */}
         <div className="flex items-center gap-1.5">
           <Layers className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
@@ -158,16 +158,16 @@ function RetrievalSignalBar({
             >
               <span className="flex items-center gap-1">
                 <span className={cn('h-1 w-1 shrink-0 rounded-full', signal.dotClass)} aria-hidden />
-                <span className="truncate font-mono text-[9px] tracking-tight text-slate-500">
+                <span className="truncate font-mono text-[10px] tracking-tight text-slate-500">
                   {signal.term}
                 </span>
                 <span
-                  className={cn('shrink-0 font-mono text-[9px] font-bold tabular-nums', signal.textClass)}
+                  className={cn('shrink-0 font-mono text-[10px] font-bold tabular-nums', signal.textClass)}
                 >
                   {formatSharePercent(signal.share)}
                 </span>
               </span>
-              <span className="truncate font-mono text-[9px] tabular-nums text-slate-600">
+              <span className="truncate font-mono text-[10px] tabular-nums text-slate-500">
                 {formatScore(signal.score)}
               </span>
             </div>
@@ -176,7 +176,7 @@ function RetrievalSignalBar({
 
         {/* ---- 一行结论：主导信号 + 校准置信度 ---- */}
         {dominant !== undefined ? (
-          <p className="mt-1 truncate font-mono text-[9px] leading-relaxed text-slate-600">
+          <p className="mt-1 truncate font-mono text-[10px] leading-relaxed text-slate-500">
             主导证据 · <span className={dominant.textClass}>{dominant.term}</span>
             {' · '}校准置信度 {formatSharePercent(breakdown.calibratedScore)}
             {breakdown.topDocId !== null ? ` · ${breakdown.topDocId}` : ''}
@@ -194,7 +194,7 @@ function RetrievalSignalBar({
          */}
         {breakdown.rrfIsRankPerfect ? (
           <p
-            className="mt-0.5 font-mono text-[9px] leading-relaxed text-slate-600/80"
+            className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-500/80"
             title="RRF 归一化基准为「每条路由均排第 1 名」，1.000 表示排名完全一致，不代表三路得分都高"
           >
             RRF 1.000 = 三路排名完全一致（非得分满分）
@@ -275,7 +275,7 @@ export default function RootCauseAlert({
   return (
     <div
       className={cn(
-        'w-full overflow-hidden rounded-md border bg-slate-900/70 backdrop-blur-sm',
+        'w-full overflow-hidden rounded-md border bg-slate-900/70',
         SEVERITY_BORDER[severity],
         SEVERITY_GLOW[severity],
       )}
@@ -348,7 +348,7 @@ export default function RootCauseAlert({
                     ? 'border-cyan-400/60 bg-cyan-400/15 font-bold text-cyan-200'
                     : term.weight === 2
                       ? 'border-cyan-400/40 bg-cyan-400/[0.09] text-cyan-300'
-                      : 'border-slate-600/60 bg-slate-800/50 text-slate-400',
+                      : 'border-white/[0.07]/60 bg-slate-800/50 text-slate-400',
                 )}
                 title={
                   term.source === 'engine'
@@ -373,7 +373,7 @@ export default function RootCauseAlert({
           <Target className="mt-[2px] h-2.5 w-2.5 shrink-0" aria-hidden />
           核心根因判定
         </p>
-        <div className="mt-1 border-l-2 border-slate-700 pl-2">
+        <div className="mt-1 border-l-2 border-white/[0.07] pl-2">
           <MarkdownLite markdown={rootCauseSummary} className="text-[11px] leading-relaxed text-slate-300" />
         </div>
       </div>
@@ -391,7 +391,7 @@ export default function RootCauseAlert({
 
       {/* ============ 时间轴证据链 ============ */}
       {evidenceChain.length > 0 ? (
-        <div className="border-t border-slate-800 px-2.5 py-2">
+        <div className="border-t border-white/[0.07] px-2.5 py-2">
           <p className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
             <ListTree className="h-2.5 w-2.5" aria-hidden />
             可观测性证据链 · {evidenceChain.length}
@@ -399,7 +399,7 @@ export default function RootCauseAlert({
           <ol className="relative mt-1.5 space-y-1">
             {/* 纵向时间轴主线 */}
             <span
-              className="pointer-events-none absolute bottom-1 left-[3px] top-1 w-px bg-gradient-to-b from-rose-500/40 via-slate-700 to-transparent"
+              className="pointer-events-none absolute bottom-1 left-[3px] top-1 w-px bg-gradient-to-b from-rose-500/40 via-slate-500 to-transparent"
               aria-hidden
             />
             {evidenceChain.map((evidence, index) => (
@@ -423,7 +423,7 @@ export default function RootCauseAlert({
 
       {/* ============ 深层内核机理与 SOP 溯源（折叠区） ============ */}
       {ragReferences.length > 0 ? (
-        <div className="border-t border-slate-800">
+        <div className="border-t border-white/[0.07]">
           <button
             type="button"
             onClick={(): void => setMechanismOpen((prev): boolean => !prev)}
@@ -440,7 +440,7 @@ export default function RootCauseAlert({
             <span className="min-w-0 flex-1 truncate font-mono text-[10px] uppercase tracking-wider text-slate-400">
               深层内核机理与 SOP 溯源
             </span>
-            <span className="shrink-0 rounded-full border border-slate-700 bg-slate-800/60 px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-slate-400">
+            <span className="shrink-0 rounded-full border border-white/[0.07] bg-slate-800/60 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-slate-400">
               {ragReferences.length} 篇
             </span>
           </button>
@@ -458,14 +458,14 @@ export default function RootCauseAlert({
                   {ragReferences.map((doc, docIndex): ReactNode => (
                     <div
                       key={`mech-${doc.id}`}
-                      className="rounded border border-slate-800 bg-slate-950/50 p-1.5"
+                      className="rounded border border-white/[0.07] bg-slate-950/50 p-1.5"
                     >
                       {/* 溯源编号 + 标题 */}
                       <div className="flex items-start gap-1.5">
-                        <span className="shrink-0 rounded bg-slate-700/60 px-1 py-0.5 font-mono text-[9px] font-bold tracking-wider text-slate-300">
+                        <span className="shrink-0 rounded bg-slate-500/60 px-1 py-0.5 font-mono text-[10px] font-bold tracking-wider text-slate-300">
                           {docIndex + 1}/{ragReferences.length}
                         </span>
-                        <span className="shrink-0 rounded bg-emerald-500/15 px-1 py-0.5 font-mono text-[9px] font-bold text-emerald-300">
+                        <span className="shrink-0 rounded bg-emerald-500/15 px-1 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
                           {doc.id}
                         </span>
                         <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-slate-400">
@@ -475,7 +475,7 @@ export default function RootCauseAlert({
 
                       {/* 内核机理 */}
                       <div className="mt-1">
-                        <p className="font-mono text-[9px] uppercase tracking-wider text-emerald-400/60">
+                        <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-400/60">
                           内核 / Cgroup / CNI 层机理
                         </p>
                         <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-400">
@@ -486,7 +486,7 @@ export default function RootCauseAlert({
                       {/* 完整 SOP 步骤（此处不截断，因为是折叠区，用户主动展开即想看全） */}
                       {doc.remediationSteps.length > 0 ? (
                         <div className="mt-1">
-                          <p className="font-mono text-[9px] uppercase tracking-wider text-emerald-400/60">
+                          <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-400/60">
                             标准处置 SOP · {doc.remediationSteps.length} 步
                           </p>
                           <ol className="mt-0.5 space-y-0.5">
@@ -509,7 +509,7 @@ export default function RootCauseAlert({
 
                       {/* 分类与关联演练场景 */}
                       {doc.tags.length > 0 || doc.relatedChaos !== undefined ? (
-                        <p className="mt-1 font-mono text-[9px] tracking-wider text-slate-600">
+                        <p className="mt-1 font-mono text-[10px] tracking-wider text-slate-500">
                           分类 {doc.category}
                           {doc.relatedChaos !== undefined && doc.relatedChaos.length > 0
                             ? ` · 关联演练 ${doc.relatedChaos.join(' / ')}`
@@ -526,7 +526,7 @@ export default function RootCauseAlert({
       ) : null}
 
       {/* ============ RAG 检索增强知识库溯源（折叠区） ============ */}
-      <div className="border-t border-slate-800">
+      <div className="border-t border-white/[0.07]">
         <button
           type="button"
           onClick={(): void => setCitationsOpen((prev): boolean => !prev)}
@@ -571,7 +571,7 @@ export default function RootCauseAlert({
             >
               <ul className="space-y-1 px-2.5 pb-2">
                 {ragReferences.length === 0 ? (
-                  <li className="font-mono text-[12px] text-slate-600">— 暂未匹配到排障手册 —</li>
+                  <li className="font-mono text-[12px] text-slate-500">— 暂未匹配到排障手册 —</li>
                 ) : (
                   ragReferences.map((doc) => {
                     /* similarityScore ∈ [0,1]，展示为百分比（如 0.964 → 96.4%） */
@@ -582,7 +582,7 @@ export default function RootCauseAlert({
                     return (
                       <li
                         key={doc.id}
-                        className="rounded border border-slate-800 bg-slate-950/50 transition-colors hover:border-emerald-500/40"
+                        className="rounded border border-white/[0.07] bg-slate-950/50 transition-colors hover:border-emerald-500/40"
                       >
                         {/*
                          * ---- 引用条（可点击展开详情）----
@@ -602,7 +602,7 @@ export default function RootCauseAlert({
                               {doc.id}
                             </span>
                             {doc.isCustom === true ? (
-                              <span className="shrink-0 rounded border border-cyan-400/40 bg-cyan-400/10 px-1 py-0.5 font-mono text-[9px] font-bold text-cyan-300">
+                              <span className="shrink-0 rounded border border-cyan-400/40 bg-cyan-400/10 px-1 py-0.5 font-mono text-[10px] font-bold text-cyan-300">
                                 自定义
                               </span>
                             ) : null}
@@ -621,7 +621,7 @@ export default function RootCauseAlert({
                             )}
                           </div>
                           <p className="mt-1 text-[10px] font-medium leading-snug text-slate-300">{doc.title}</p>
-                          <p className="mt-0.5 font-mono text-[10px] tracking-wider text-slate-600">
+                          <p className="mt-0.5 font-mono text-[10px] tracking-wider text-slate-500">
                             {doc.category} · {doc.tags.slice(0, 3).join(' / ')}
                           </p>
 
@@ -635,7 +635,7 @@ export default function RootCauseAlert({
                            * 说明只靠上下文先验——评委一眼可辨。
                            */}
                           {breakdown !== undefined ? (
-                            <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[9px] tabular-nums">
+                            <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[10px] tabular-nums">
                               <span
                                 className="rounded bg-emerald-500/10 px-1 py-0.5 text-emerald-400/90"
                                 title="TF-IDF 加权词元 + 双字 N-Gram 的余弦相似度（稠密侧）"
@@ -671,7 +671,7 @@ export default function RootCauseAlert({
                               {doc.matchedTerms.map((term): ReactNode => (
                                 <span
                                   key={term}
-                                  className="rounded border border-cyan-400/35 bg-cyan-400/[0.08] px-1 py-0.5 font-mono text-[9px] text-cyan-200"
+                                  className="rounded border border-cyan-400/35 bg-cyan-400/[0.08] px-1 py-0.5 font-mono text-[10px] text-cyan-200"
                                 >
                                   {term}
                                 </span>
@@ -697,9 +697,9 @@ export default function RootCauseAlert({
                               transition={{ type: 'spring', stiffness: 420, damping: 36 }}
                               className="overflow-hidden"
                             >
-                              <div className="space-y-1.5 border-t border-slate-800 px-1.5 py-2">
+                              <div className="space-y-1.5 border-t border-white/[0.07] px-1.5 py-2">
                                 <div>
-                                  <p className="font-mono text-[9px] uppercase tracking-wider text-emerald-400/70">
+                                  <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-400/70">
                                     根因机理
                                   </p>
                                   <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-400">
@@ -708,7 +708,7 @@ export default function RootCauseAlert({
                                 </div>
                                 {doc.remediationSteps.length > 0 ? (
                                   <div>
-                                    <p className="font-mono text-[9px] uppercase tracking-wider text-emerald-400/70">
+                                    <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-400/70">
                                       标准修复步骤
                                     </p>
                                     <ol className="mt-0.5 space-y-0.5">
@@ -722,7 +722,7 @@ export default function RootCauseAlert({
                                       ))}
                                     </ol>
                                     {doc.remediationSteps.length > 3 ? (
-                                      <p className="mt-1 font-mono text-[9px] text-slate-600">
+                                      <p className="mt-1 font-mono text-[10px] text-slate-500">
                                         另有 {doc.remediationSteps.length - 3} 步，见知识库完整手册
                                       </p>
                                     ) : null}

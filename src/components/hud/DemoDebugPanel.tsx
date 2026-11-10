@@ -66,14 +66,14 @@ export default function DemoDebugPanel(): React.ReactElement | null {
   return (
     <div
       aria-label="路演可观测性自检面板"
-      className="pointer-events-none fixed bottom-3 left-3 z-40 w-[19rem] select-none rounded border border-cyan-400/25 bg-slate-950/88 p-2 font-mono text-[9px] leading-relaxed text-slate-300 backdrop-blur-md"
+      className="pointer-events-none fixed bottom-3 left-3 z-40 w-[19rem] select-none rounded border border-cyan-400/25 bg-slate-950/88 p-2 font-mono text-[10px] leading-relaxed text-slate-300"
       style={{ boxShadow: '0 8px 28px rgba(2,6,23,0.7)' }}
     >
       <div className="mb-1 flex items-center justify-between">
         <span className="tracking-[0.18em] text-cyan-300/90">DEMO · OBSERVE</span>
         <span
           className={cn(
-            'rounded px-1 py-[1px] text-[8px] uppercase tracking-wider',
+            'rounded px-1 py-[1px] text-[10px] uppercase tracking-wider',
             demo.status === 'running'
               ? 'bg-emerald-400/15 text-emerald-300'
               : demo.status === 'paused'
@@ -110,7 +110,7 @@ export default function DemoDebugPanel(): React.ReactElement | null {
       ) : null}
 
       {/* ---- effects 调用序列 ---- */}
-      <div className="mt-1.5 border-t border-white/[0.07] pt-1 text-[8px] uppercase tracking-[0.16em] text-slate-500">
+      <div className="mt-1.5 border-t border-white/[0.07] pt-1 text-[10px] uppercase tracking-[0.16em] text-slate-500">
         effects 调用序列（新→旧）
       </div>
       <div className="mt-0.5 space-y-[1px]">
