@@ -47,6 +47,8 @@ import MasterNode3D from '@/components/canvas/MasterNode3D';
 import NetworkStream3D from '@/components/canvas/NetworkStream3D';
 import GroundHorizonFade from '@/components/canvas/GroundHorizonFade';
 import ArcStartGlow3D from '@/components/canvas/ArcStartGlow3D';
+import ReturnStream3D from '@/components/canvas/ReturnStream3D';
+import RackGroundReflection from '@/components/canvas/RackGroundReflection';
 import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
 import ClusterTopologyFloor3D from '@/components/canvas/ClusterTopologyFloor3D';
 import { HalfFloatType } from 'three';
@@ -1205,8 +1207,13 @@ export default function ClusterCanvas() {
         {/* ---- 集群网络通信流（MASTER→三机架拱形贝塞尔光缆 + 54 个流动数据包；
            吞吐驱动推进速率，故障车道切换警示红并断续卡顿） ---- */}
         <NetworkStream3D />
+        {/* R28：回程粒子（机架→控制平面，淡蓝；Pod 异常时缺失，传达"响应回不来"） */}
+        <ReturnStream3D />
         {/* R25：三条弧线起点的 0.15s 汇聚光斑（能量从晶体赤道抽出，而非插在空中） */}
         <ArcStartGlow3D />
+
+        {/* R28：低档位（无镜面反射）时的机架底部近场反射带，替代真实反射 pass */}
+        {reflectorEnabled ? null : <RackGroundReflection />}
 
         {/* ---- 机架故障警示涟漪（仅故障机架激活：崩溃 Pod 或节点非 Ready；
            自定义 ShaderMaterial 三环由内向外扩散，加色混合贴地辉光） ---- */}

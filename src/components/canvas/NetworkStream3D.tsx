@@ -367,7 +367,7 @@ const COLOR_FAULT = new THREE.Color('#f43f5e'); // 警示红：链路故障
  * 【不可变契约】曲线控制点由机架拓扑唯一确定（拓扑静态），构建后永不修改；
  * getPointAt 内部弧长缓存随之只计算一次，热路径纯查表。
  */
-const LANE_CURVES: readonly THREE.CubicBezierCurve3[] = (() => {
+export const LANE_CURVES: readonly THREE.CubicBezierCurve3[] = (() => {
   const master = new THREE.Vector3(MASTER_POSITION[0], MASTER_POSITION[1], MASTER_POSITION[2]);
   const curves: THREE.CubicBezierCurve3[] = [];
   for (let k = 0; k < LANE_COUNT; k++) {

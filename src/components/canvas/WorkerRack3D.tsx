@@ -97,8 +97,24 @@ const COLOR_LERP_RATE = 3.5;
 /** 单帧 Δt 钳制上限（秒）：掉帧时限制变色步长，防颜色跳变 */
 const MAX_FRAME_DELTA = 0.1;
 
+/**
+ * R28：全局动效节拍 MOTION_BEAT = 3.6s。
+ *
+ * 【为什么统一】三座机架的状态灯此前各自用 2.8 / 3.9 / 4.0 rad/s 的不同频率
+ * 呼吸，并排时像三块互不相关的钟表——"杂乱感"由此而来。现在所有周期性亮度
+ * 都取 3.6s 的整数分之一：
+ *   - 呼吸（导光柱 / 棱线 / 落束光斑）：周期 1.8s = 3.6/2；
+ *   - 告警脉冲：周期 1.2s = 3.6/3；
+ * 并用 rackIndex 的 1/3 节拍相位错开，三座机架成为"同一拍子上的三声部"。
+ */
+const MOTION_BEAT_S = 3.6;
+/** 呼吸角频率（1.8s 周期） */
+const RACK_BREATH_RATE = (Math.PI * 2) / (MOTION_BEAT_S / 2);
+/** 告警脉冲角频率（1.2s 周期） */
+const RACK_ALERT_RATE = (Math.PI * 2) / (MOTION_BEAT_S / 3);
+
 /** 警示红呼吸脉冲参数（NetworkPartition 时导光柱透明度脉动，告警呼吸感） */
-const CRITICAL_PULSE_RATE = 4.0;
+const CRITICAL_PULSE_RATE = RACK_ALERT_RATE;
 const CRITICAL_PULSE_MIN = 0.55;
 const CRITICAL_PULSE_MAX = 1.0;
 
@@ -186,7 +202,7 @@ const EDGE_HOVER_OPACITY = 0.72;
  * 告警脉冲（4.0 rad/s），二者在视觉上可区分：慢呼吸 = 已选中的稳定强调，
  * 快脉冲 = 分区故障的紧急告警。
  */
-const EDGE_BREATH_RATE = 2.8;
+const EDGE_BREATH_RATE = RACK_BREATH_RATE;
 const EDGE_BREATH_OPACITY_MIN = 0.62;
 const EDGE_BREATH_OPACITY_MAX = 1.0;
 const EDGE_BREATH_WIDTH_MIN = 1.6;
@@ -483,7 +499,7 @@ const FIBER_RING_SEGMENTS = 32;
 const BEAM_BLOOM_SIZE = 0.85;
 
 /** 落束光斑的脉动角速度（rad/s，约 1.6 秒一次，与导光柱呼吸同一节奏档位） */
-const BEAM_BLOOM_PULSE_RATE = 3.9;
+const BEAM_BLOOM_PULSE_RATE = RACK_BREATH_RATE;
 
 /**
  * 落束光斑的顶点着色器：传递平面 UV。
@@ -1494,7 +1510,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       current.status === 'NetworkPartition' && !isSelected
         ? CRITICAL_PULSE_MIN +
           (CRITICAL_PULSE_MAX - CRITICAL_PULSE_MIN) *
-            (0.5 + 0.5 * Math.sin(state.clock.getElapsedTime() * CRITICAL_PULSE_RATE))
+            (0.5 + 0.5 * Math.sin(state.clock.getElapsedTime() * CRITICAL_PULSE_RATE + node.rackIndex * ((Math.PI * 2) / 3)))
         : GUIDE_BASE_OPACITY;
 
     /*
