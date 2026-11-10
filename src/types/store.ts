@@ -249,7 +249,59 @@ export interface ClusterState {
    * 【为何必须是内存态、非持久化】它是"当前正在演示"的运行时标志，
    * 刷新后不该残留；若被持久化，用户下次手动打开卡片会莫名其妙地自动执行。
    */
+  /**
+   * WebGL 上下文是否已丢失（G 项预检第 5 项，接 R01 的状态）。
+   *
+   * 【为什么要进 store】R01 之前它在 ClusterCanvas 的局部 state 里，
+   * 只有画布自己知道；而启动预检发生在导演引擎侧，必须能读到它。
+   * 上下文丢失时画面完全静止，此时启动路演等于演一场静止的戏。
+   */
+  readonly isGlContextLost: boolean;
+  /**
+   * 导演是否已绕过动作卡直接执行（C 项）。
+   *
+   * 【解决什么矛盾】8 秒内动作卡未挂载时导演降级直调 healEntity，而旁白
+   * 已在讲"自愈完成"。若卡片随后才挂载，它内部仍是"待执行"态，同一屏会出现
+   * 「字幕说已完成 / 卡片说待执行」——规格明令禁止的矛盾。
+   * 该标记置位后，后挂载的卡片直接渲染为已执行态。
+   */
+  readonly demoFallbackExecuted: boolean;
+
   readonly demoAutoConfirm: boolean;
+
+  /*
+   * ===== Copilot 活动状态（A 项）=====
+   *
+   * 【为什么需要】阶段 3→4 原本靠固定定时器推进，与 AI 流真实进度无关。
+   * 改成事件驱动后，导演必须能观察到"流是否结束""动作卡是否已挂载"，
+   * 这要求 Copilot 侧把内部事件写到 store 上。
+   *
+   * 【订阅纪律】全部为低频标量，组件必须用细粒度选择器读取
+   * （如 s => s.copilotStreaming），禁止订阅整个 store 对象——
+   * 流式增量每秒可达数十次，整树订阅会把渲染打爆。
+   */
+
+  /** Copilot 是否正在流式生成（流开始 true；结束/出错/abort false） */
+  readonly copilotStreaming: boolean;
+  /** 最近一条 assistant 消息 ID（流开始时写入） */
+  readonly lastAssistantMessageId: string | null;
+  /** 已挂载的动作卡所属消息 ID（动作卡水合完成写入，卸载清空） */
+  readonly actionCardMountedId: string | null;
+  /**
+   * Copilot 流中止请求计数（D 项）。
+   *
+   * 【为何用自增计数而非布尔】布尔需要"置 true → 消费方复位 false"两次写，
+   * 期间第二次请求会被吞掉。自增每次都是新值，消费方观察数值变化即可中止，
+   * 天然幂等且不丢请求。
+   */
+  readonly copilotAbortToken: number;
+  /**
+   * 环绕巡检是否由程序化方式开启（E 项）。
+   *
+   * · true  → 编排的一部分，选中态变化**不得**解除；
+   * · false → 用户自己开的，进入聚焦时可以解除。
+   */
+  readonly patrolLockedByProgram: boolean;
   /**
    * 等待退避后重试的自愈队列（非持久化）。
    *
@@ -326,6 +378,43 @@ export interface ClusterActions {
   resetDemoEphemeralState: () => void;
   /** 设置导演自动确认标志（start 置 true / stop 与 finished 置 false） */
   setDemoAutoConfirm: (enabled: boolean) => void;
+  /** 标记 WebGL 上下文丢失/恢复（由 ClusterCanvas 事件回调写入） */
+  setGlContextLost: (lost: boolean) => void;
+  /**
+   * 标记"导演已绕过动作卡直接执行"（C 项的卡片状态统一）。
+   *
+   * 【解决什么矛盾】8 秒内动作卡没挂载时导演降级直调 healEntity，
+   * 而此时旁白已经在讲"自愈完成"。若卡片随后才挂载，它内部状态仍是
+   * "待执行"，于是同一屏出现「字幕说已完成 / 卡片说待执行」——这正是
+   * 规格明令禁止的矛盾。写入本标记后，后挂载的卡片直接渲染为已执行态。
+   */
+  setDemoFallbackExecuted: (value: boolean) => void;
+  /**
+   * 写入 Copilot 流式状态。
+   *
+   * 【必须在事件回调里调用】若写在 setMessages updater 内部，StrictMode 下
+   * updater 会执行两次，导致重复副作用。只能由流事件回调显式调用。
+   */
+  setCopilotStreaming: (streaming: boolean) => void;
+  /** 写入最近一条 assistant 消息 ID */
+  setLastAssistantMessageId: (messageId: string | null) => void;
+  /** 写入已挂载的动作卡消息 ID（null 表示无卡挂载） */
+  setActionCardMountedId: (messageId: string | null) => void;
+  /**
+   * 请求中止当前 Copilot 流（自增计数）。
+   *
+   * 【用途】导演 stop 时必须切断进行中的 AI 流，否则停止后屏幕继续吐 token，
+   * 与"已停止并复位"的日志直接矛盾。
+   */
+  requestCopilotAbort: () => void;
+  /**
+   * 清除待消费的快捷指令（D 项）。
+   *
+   * 【为什么需要】triggerQuickPrompt 把指令写进 store，由 Copilot 消费后才
+   * 置回 null。若路演在 Copilot 尚未消费时就停止，指令会残留，
+   * 下次挂载抽屉时被重放——表现为"点了停止，结果又跑了一次诊断"。
+   */
+  clearQuickPromptTrigger: () => void;
   /** 设置/清除 3D 视口多模态截图（dataUrl=null 即清除） */
   setCapturedViewport: (dataUrl: string | null) => void;
   /** 累加端侧脱敏计数（负数/小数防御：截断为非负整数） */
@@ -345,7 +434,18 @@ export interface ClusterActions {
   /** 手动切换右侧抽屉页签（copilot / auditor） */
   setActiveRightTab: (tab: RightPanelTab) => void;
   /** 切换环绕巡检自动旋转（视口工具条 / CameraRig 拖拽让位共用） */
-  setOrbitPatrolActive: (active: boolean) => void;
+  /**
+   * 开关 3D 环绕巡检。
+   *
+   * @param active 是否开启
+   * @param reason 触发来源（默认 'user'）
+   *   · `'user'`         用户点工具条 → 允许 CameraRig 在进入聚焦时解除；
+   *   · `'programmatic'` 导演引擎编排 → CameraRig **不得**擅自解除。
+   *
+   * 【为什么需要 reason】阶段 4 是「先 selectEntity(null) 再开巡检」，
+   * 旧 CameraRig 会在选中变化时无条件解除，于是刚开的巡检立刻被关掉。
+   */
+  setOrbitPatrolActive: (active: boolean, reason?: 'user' | 'programmatic') => void;
   /** 切换小屏视图（底部浮动切换栏；triggerQuickPrompt 亦会调用） */
   setActiveMobileView: (view: MobileViewKey) => void;
   /** 消费侧复位快捷指令载荷（Copilot 读取后置回 null，防重复触发） */

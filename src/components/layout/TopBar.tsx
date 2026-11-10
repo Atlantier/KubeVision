@@ -40,6 +40,7 @@ import {
   Play,
   Radar,
   Radio,
+  RotateCcw,
   Search,
   Square,
   Terminal,
@@ -51,7 +52,11 @@ import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
   DEMO_SCRIPTS,
+  FINISHED_AUTO_COLLAPSE_MS,
+  clearPreflightError,
+  dismissFinishedDemo,
   registerDemoNarrator,
+  replayDemoDirector,
   startDemoDirector,
   stopDemoDirector,
   togglePauseDemoDirector,
@@ -735,15 +740,50 @@ function DemoDirectorBar({
   demo,
   onStop,
   onTogglePause,
+  onReplay,
+  onDismiss,
+  onClearPreflight,
 }: {
   readonly demo: DemoDirectorSnapshot;
   readonly onStop: () => void;
   readonly onTogglePause: () => void;
+  readonly onReplay: () => void;
+  readonly onDismiss: () => void;
+  readonly onClearPreflight: () => void;
 }): React.ReactElement {
   const elapsedSec = (demo.elapsedMs / 1000).toFixed(1);
   const totalSec = Math.round(demo.durationMs / 1000);
   const progressPct = Math.round(demo.progress * 100);
   const isPaused = demo.status === 'paused';
+  const isFinished = demo.status === 'finished';
+  /** G 项：启动预检失败态（status 仍为 idle，靠 preflightError 显示） */
+  const isPreflightError = demo.preflightError !== null;
+
+  /**
+   * 字幕正文（F 项）。
+   *
+   * 【为什么暂停时要覆盖正文】用户切走标签页回来看到条还在，但不知道
+   * 是程序卡了还是自己切走导致的。明确写出"已暂停，点击继续"才算交代清楚。
+   * 被动暂停（pausedByVisibility）额外说明原因。
+   */
+  const narrationText = isPreflightError
+    ? `演示环境自检未通过：${demo.preflightError ?? ''}`
+    : isPaused
+      ? demo.pausedByVisibility
+        ? '已暂停（页面切至后台触发），点击继续'
+        : '已暂停，点击继续'
+      : demo.narration;
+
+  /**
+   * 阶段剩余时间提示（B 项）。
+   *
+   * 【只读引擎给的 deadline】字幕条不自己计时——那样会与暂停/恢复错位。
+   * phaseDeadline 仅事件驱动阶段（3→4）会被填上，其余阶段为 null。
+   */
+  const phaseRemainSec =
+    demo.phaseDeadline !== null && demo.phaseStartedAt !== null
+      ? Math.max(0, Math.ceil((demo.phaseDeadline - Date.now()) / 1000))
+      : null;
 
   return (
     <motion.div
@@ -755,7 +795,11 @@ function DemoDirectorBar({
       style={{ boxShadow: '0 10px 34px rgba(2,6,23,0.72), inset 0 0 24px rgba(34,211,238,0.06)' }}
       role="status"
       aria-live="polite"
-      aria-label={`剧本路演进行中：${demo.badge}`}
+      aria-label={
+        isPreflightError
+          ? `演示环境自检未通过：${demo.preflightError ?? ''}`
+          : `剧本路演${isFinished ? '已完成' : '进行中'}：${demo.badge}`
+      }
     >
       {/* 顶缘 1px 折射亮边（与 3D HUD 同一套玻璃语言） */}
       <span
@@ -798,11 +842,17 @@ function DemoDirectorBar({
 
         {/* ---- 中：徽标 + 字幕正文 ---- */}
         <div className="flex min-w-0 flex-1 flex-col leading-tight">
-          <span className="truncate font-mono text-[9px] tracking-[0.14em] text-cyan-300/80">
-            {demo.badge}
+          <span
+            className={cn(
+              'truncate font-mono text-[9px] tracking-[0.14em]',
+              isPreflightError ? 'text-rose-300' : 'text-cyan-300/80',
+            )}
+          >
+            {isPreflightError ? 'DEMO-PREFLIGHT · 未通过' : demo.badge}
+            {phaseRemainSec !== null ? ` · 等待诊断 ${phaseRemainSec}s` : ''}
           </span>
           <span className="mt-0.5 truncate text-[11px] font-medium tracking-tight text-slate-100">
-            {demo.narration}
+            {narrationText}
           </span>
         </div>
 
@@ -823,29 +873,71 @@ function DemoDirectorBar({
             />
           </span>
 
-          <button
-            type="button"
-            onClick={onTogglePause}
-            aria-label={isPaused ? '继续剧本路演' : '暂停剧本路演'}
-            title={isPaused ? '继续' : '暂停'}
-            className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200"
-          >
-            {isPaused ? (
-              <Play className="h-2.5 w-2.5" aria-hidden />
-            ) : (
-              <Pause className="h-2.5 w-2.5" aria-hidden />
-            )}
-          </button>
+          {/*
+            * ---- H 项：完成态提供「重播 / 关闭」 ----
+            *
+            * 【为什么不在完成态继续显示暂停/停止】跑完之后再"暂停"是没有
+            * 意义的操作；观众此刻只有两个意图：再看一遍，或者收起字幕条
+            * 去看 3D 稳态画面。把按钮换成对应语义，比保留一对无效按钮好。
+            */}
+          {isPreflightError ? (
+            <button
+              type="button"
+              onClick={onClearPreflight}
+              aria-label="关闭自检失败提示"
+              title="关闭"
+              className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
+            >
+              <X className="h-2.5 w-2.5" aria-hidden />
+            </button>
+          ) : isFinished ? (
+            <>
+              <button
+                type="button"
+                onClick={onReplay}
+                aria-label="重播上一套剧本路演"
+                title="重播"
+                className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200"
+              >
+                <RotateCcw className="h-2.5 w-2.5" aria-hidden />
+              </button>
+              <button
+                type="button"
+                onClick={onDismiss}
+                aria-label="收起剧本路演字幕条（保留当前稳态画面）"
+                title="关闭并保留画面"
+                className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
+              >
+                <X className="h-2.5 w-2.5" aria-hidden />
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onTogglePause}
+                aria-label={isPaused ? '继续剧本路演' : '暂停剧本路演'}
+                title={isPaused ? '继续' : '暂停'}
+                className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200"
+              >
+                {isPaused ? (
+                  <Play className="h-2.5 w-2.5" aria-hidden />
+                ) : (
+                  <Pause className="h-2.5 w-2.5" aria-hidden />
+                )}
+              </button>
 
-          <button
-            type="button"
-            onClick={onStop}
-            aria-label="停止剧本路演并复位集群"
-            title="停止并复位"
-            className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
-          >
-            <Square className="h-2.5 w-2.5" aria-hidden />
-          </button>
+              <button
+                type="button"
+                onClick={onStop}
+                aria-label="停止剧本路演并复位集群"
+                title="停止并复位"
+                className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
+              >
+                <Square className="h-2.5 w-2.5" aria-hidden />
+              </button>
+            </>
+          )}
         </div>
       </div>
     </motion.div>
@@ -1036,6 +1128,28 @@ export default function TopBar() {
     togglePauseDemoDirector();
   }, []);
 
+  /** H 项：重播上一套剧本（完整重跑，非续播） */
+  const handleReplayDemo = useCallback((): void => {
+    replayDemoDirector();
+  }, []);
+
+  /** H 项：收起完成态字幕条，保留当前稳态画面 */
+  const handleDismissDemo = useCallback((): void => {
+    dismissFinishedDemo();
+  }, []);
+
+  /** G 项：关闭自检失败提示 */
+  const handleClearPreflight = useCallback((): void => {
+    clearPreflightError();
+  }, []);
+
+  /*
+   * H 项：完成态自动收起由**引擎侧**计时（见 demoDirector.finishDemoDirector）。
+   * 早期版本把 setTimeout 放在这里的 useEffect 里，实测会被重渲染打断，
+   * 收起时间从 8s 漂移到 12.8s。自动收起属于时间轴的一部分，应与其它
+   * 定时器同源管理，组件只负责渲染。
+   */
+
   const handleToggleDemoMenu = useCallback((): void => {
     /* 路演进行中时按钮语义是"停止"，不展开菜单 */
     if (demo.status === 'running' || demo.status === 'paused' || demo.status === 'finished') {
@@ -1045,7 +1159,11 @@ export default function TopBar() {
     setIsDemoMenuOpen((open): boolean => !open);
   }, [demo.status, handleStopDemo]);
 
-  const isDemoActive = demo.status !== 'idle';
+  /**
+   * G 项：预检失败时 status 仍是 idle，但字幕位必须显示失败原因——
+   * 否则用户点了启动"什么都没发生"，是最坏的静默失败。
+   */
+  const isDemoActive = demo.status !== 'idle' || demo.preflightError !== null;
 
   const healthScore = snapshot.clusterHealthScore;
   const healthTier = resolveHealthTier(
@@ -1268,6 +1386,9 @@ export default function TopBar() {
             demo={demo}
             onStop={handleStopDemo}
             onTogglePause={handleToggleDemoPause}
+            onReplay={handleReplayDemo}
+            onDismiss={handleDismissDemo}
+            onClearPreflight={handleClearPreflight}
           />
         </div>
       ) : null}

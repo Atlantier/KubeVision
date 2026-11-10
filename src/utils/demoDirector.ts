@@ -114,6 +114,33 @@ export interface DemoDirectorSnapshot {
   readonly badge: string;
   /** 当前导演字幕；idle 时为空串 */
   readonly narration: string;
+
+  /*
+   * ===== 时间与外显状态（B / G / H 项）=====
+   */
+
+  /**
+   * 当前阶段开始时刻（epoch ms）；idle 时 null。
+   *
+   * 【为什么由引擎对外暴露而非字幕条自己计时】B 项要求字幕条"读取而非
+   * 自行计时"。若字幕条自己起计时器，会与引擎的暂停/恢复不同步：
+   * 暂停时它继续走，恢复后两边错位。唯一时钟必须只有引擎这一个。
+   */
+  readonly phaseStartedAt: number | null;
+  /** 当前阶段推进截止时刻（epoch ms）；null 表示等事件、无硬截止 */
+  readonly phaseDeadline: number | null;
+  /** 启动预检失败原因（G 项）；null 表示通过或尚未自检 */
+  readonly preflightError: string | null;
+  /** 本轮完成时刻（H 项）；null 表示未完成。用于"8 秒无操作自动收起"计时 */
+  readonly finishedAt: number | null;
+  /**
+   * 是否因页面隐藏而自动暂停（F 项）。
+   *
+   * 【为什么要单独标记】用户主动暂停与"切走标签页被动暂停"要给不同提示：
+   * 前者显示「已暂停」，后者恢复可见时要明确告诉用户"是你切走导致的"，
+   * 否则用户回来看到暂停会以为程序卡了。
+   */
+  readonly pausedByVisibility: boolean;
 }
 
 /* ========================================================================== */
@@ -169,7 +196,44 @@ const FAULT_VERIFY_POLL_MS = 250;
  *
  * 【超时仍然如实降级】超时后走 healEntity 直调并记明日志，绝不假装执行过。
  */
-const ACTION_CARD_TIMEOUT_MS = 24_000;
+const ACTION_CARD_TIMEOUT_MS = 8_000;
+
+/**
+ * 阶段 3→4 事件门的超时兜底（毫秒）。
+ *
+ * 【25 秒的依据】本地小模型 + SwiftShader 下 AI 流式生成 4 步推理与 3 张卡片
+ * 实测约 28~39 秒；但事件门只等"动作卡挂载"，通常在流结束前 1~2 秒就满足。
+ * 25 秒给足余量，同时保证总时长仍在 30~40 秒区间。
+ */
+const PHASE3_EVENT_GATE_TIMEOUT_MS = 25_000;
+
+/** 事件门轮询间隔（毫秒）——200ms 对观感足够，成本可忽略 */
+const PHASE3_EVENT_GATE_POLL_MS = 200;
+
+/** 完成后自动收起字幕条的等待时长（H 项） */
+export const FINISHED_AUTO_COLLAPSE_MS = 8_000;
+
+/**
+ * 事件门未决时，收尾定时器的重新检查间隔（毫秒）。
+ *
+ * 【为什么需要它】B 项的实测暴露了一个真实缺陷：剧本 durationMs=34000，
+ * 而事件门 25 秒兜底是从阶段 3（约 11 秒）起算的，即 36 秒才到点。
+ * 于是**时间轴抢在门之前结束了整场路演**——门既没等到事件、也没等到超时，
+ * 阶段 4 反而由固定 atMs 定时器推进，事件驱动形同虚设。
+ *
+ * 修法：收尾定时器到点时若门仍未决，就推迟收尾并重新检查。
+ * 门自身有 25 秒兜底，不会无限等待。
+ */
+const FINISH_DEFER_RECHECK_MS = 6_000;
+
+/**
+ * 收尾最短宽限期（毫秒）。
+ *
+ * 【为什么需要】事件门推进到阶段 4 时，时间轴可能已经"超时"（elapsed >
+ * durationMs）。此时若立刻收尾，阶段 4 的 HITL 与自愈根本没机会跑。
+ * 给一段宽限，让最后阶段至少能开始并等待动作卡。
+ */
+const FINISH_MIN_GRACE_MS = 6_000;
 
 /**
  * 阶段 4 点击「立即执行」后等待自愈回执落库的超时上限。
@@ -423,6 +487,61 @@ let currentScript: DemoScript | null = null;
 /** 已经触达的阶段下标（-1 表示尚未进入任何阶段） */
 let phaseIndex = -1;
 
+/*
+ * ===== B / G / H 项的模块级状态 =====
+ */
+
+/** 当前阶段开始时刻（epoch ms） */
+let phaseStartedAt: number | null = null;
+
+/** 当前阶段推进截止时刻（epoch ms）；null 表示等事件 */
+let phaseDeadline: number | null = null;
+
+/** 事件门轮询定时器 */
+let phaseGateTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 事件门超时兜底定时器 */
+let phaseGateDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * 阶段下标 → 该阶段固定定时器句柄。
+ *
+ * 【为什么需要这张表】事件门若先于固定定时器触发，必须能**定点取消**
+ * 下一阶段那个 atMs 定时器，否则事件与定时器会各推进一次（阶段被跳过或重入）。
+ * 单个数组无法按阶段定位，因此额外维护索引表。
+ */
+const phaseTimerByIndex = new Map<number, ReturnType<typeof setTimeout>>();
+
+/** 启动预检失败原因（G 项） */
+let preflightError: string | null = null;
+
+/** 本轮完成时刻（H 项） */
+let finishedAt: number | null = null;
+
+/**
+ * 完成态自动收起定时器（H 项）。
+ *
+ * 【为什么由引擎持有而不是组件】实测发现放在组件 useEffect 里会被
+ * 重渲染/重复 finish 打断，收起时间从 8s 漂移到 12.8s。
+ * 自动收起本质是**时间轴的一部分**，应与其它定时器同源管理，
+ * 这样 stop / 重播时能一并取消，也不会受 React 渲染节奏影响。
+ */
+let finishedCollapseTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 是否因页面隐藏而自动暂停（F 项） */
+let pausedByVisibility = false;
+
+/**
+ * 上一次启动的剧本 id（H 项「重播」需要）。
+ *
+ * 【为什么单独记】stop 会把 currentScript 置 null（避免残留状态被误读），
+ * 但完成态的重播按钮仍要知道"刚才是哪套剧本"。
+ */
+let lastScriptId: DemoScriptId | null = null;
+
+/** visibilitychange 守卫是否已绑定（幂等，避免重复注册） */
+let visibilityBound = false;
+
 /**
  * 运行时旁白覆盖（null 表示回落到剧本里的静态兜底文案）。
  *
@@ -587,6 +706,11 @@ let cachedSnapshot: DemoDirectorSnapshot = {
   progress: 0,
   badge: '',
   narration: '',
+  phaseStartedAt: null,
+  phaseDeadline: null,
+  preflightError: null,
+  finishedAt: null,
+  pausedByVisibility: false,
 };
 
 /**
@@ -636,13 +760,68 @@ function actions(): ReturnType<typeof useClusterStore.getState> {
 }
 
 /** 清空所有定时器（幂等） */
+/**
+ * bindVisibilityGuard —— 页面隐藏时自动暂停（F 项）。
+ *
+ * 【为什么必须暂停而不是放任】浏览器会把后台标签页的 setTimeout 节流到
+ * 最低约 1 次/分钟。若不暂停，用户切走 30 秒再回来，恢复瞬间所有积压的
+ * 阶段定时器会**同时到期**，表现为"阶段连跳"——直接毁掉演示节奏。
+ *
+ * 【幂等】模块级单例只需绑定一次；重复调用立即返回。
+ */
+function bindVisibilityGuard(): void {
+  if (visibilityBound) return;
+  if (typeof document === 'undefined') return;
+  visibilityBound = true;
+
+  document.addEventListener('visibilitychange', (): void => {
+    if (document.visibilityState !== 'hidden') return;
+    if (status !== 'running') return;
+    pausedByVisibility = true;
+    pauseDemoDirector();
+    actions().appendTerminalLog(
+      '[DEMO-DIRECTOR] 页面切至后台，已自动暂停（恢复可见后点击继续）',
+    );
+  });
+}
+
 function clearAllTimers(): void {
   for (const handle of phaseTimers) clearTimeout(handle);
   phaseTimers = [];
+  phaseTimerByIndex.clear();
   if (tickTimer !== null) {
     clearInterval(tickTimer);
     tickTimer = null;
   }
+  /* 事件门的两个定时器同样必须清理，否则停止后仍会推进阶段 */
+  if (phaseGateTimer !== null) {
+    clearTimeout(phaseGateTimer);
+    phaseGateTimer = null;
+  }
+  if (phaseGateDeadlineTimer !== null) {
+    clearTimeout(phaseGateDeadlineTimer);
+    phaseGateDeadlineTimer = null;
+  }
+  /* 完成态自动收起定时器也必须随停止/重播一起取消 */
+  if (finishedCollapseTimer !== null) {
+    clearTimeout(finishedCollapseTimer);
+    finishedCollapseTimer = null;
+  }
+}
+
+/**
+ * 定点取消某个阶段已排好的固定定时器。
+ *
+ * 【用途】事件门若先满足，必须把下一阶段的 atMs 定时器撤掉，
+ * 否则两条推进路径会各触发一次 enterPhase。
+ *
+ * @param index 阶段下标
+ */
+function cancelScheduledPhase(index: number): void {
+  const handle = phaseTimerByIndex.get(index);
+  if (handle === undefined) return;
+  clearTimeout(handle);
+  phaseTimerByIndex.delete(index);
 }
 
 /** 取消进行中的 MCP 请求（幂等） */
@@ -682,8 +861,12 @@ function publish(): void {
         : Math.min(1, Math.max(0, elapsed / script.durationMs)),
     badge: activePhase?.badge ?? '',
     /* 优先用当帧事实渲染的旁白，其次才是剧本静态兜底文案 */
-    /* 优先用当帧事实渲染的旁白，其次才是剧本静态兜底文案 */
     narration: narrationOverride ?? activePhase?.fallback ?? '',
+    phaseStartedAt,
+    phaseDeadline,
+    preflightError,
+    finishedAt,
+    pausedByVisibility,
   };
 
   for (const listener of listeners) listener();
@@ -839,7 +1022,7 @@ function enterCruise(): void {
   const api = actions();
   api.setActiveChaos('NONE');
   api.selectEntity(null);
-  api.setOrbitPatrolActive(true);
+  api.setOrbitPatrolActive(true, 'programmatic');
   api.appendTerminalLog('[DEMO-DIRECTOR] 阶段 1/4 · 已重置集群稳态并开启 3D 环绕巡检');
 }
 
@@ -967,6 +1150,15 @@ function enterAiDiagnosis(
   api.triggerQuickPrompt(prompt);
   api.appendTerminalLog(`[DEMO-DIRECTOR] ${label} · 已唤醒 AI 运维副驾`);
   api.appendTerminalLog(`[DEMO-DIRECTOR] 诊断提示词：${prompt}`);
+
+  /*
+   * ---- B 项：启动阶段 3→4 的事件门 ----
+   *
+   * 【旧行为】阶段 4 挂在剧本固定 atMs=26000 的定时器上，与 AI 流真实进度无关。
+   * 【新行为】等 copilotStreaming===false 且动作卡已挂载即推进；25s 超时兜底。
+   * 事件先到时由 cancelScheduledPhase 撤掉阶段 4 的固定定时器，避免双触发。
+   */
+  armPhaseAdvanceGate(runGeneration);
 }
 
 /**
@@ -1054,7 +1246,7 @@ function enterHeal(label: string): void {
   if (victimIds.length === 0) {
     api.setActiveChaos('NONE');
     api.selectEntity(null);
-    api.setOrbitPatrolActive(true);
+    api.setOrbitPatrolActive(true, 'programmatic');
     setNarration('已解除混沌并恢复稳态，但未捕获到可自愈的异常容器（自愈未验证）。');
     api.appendTerminalLog('[DEMO-DIRECTOR] 阶段 4/4 · 无受害 Pod，已终止演练并如实降级旁白');
     return;
@@ -1135,6 +1327,18 @@ function enterHeal(label: string): void {
       );
     }
 
+    /*
+     * ---- C 项：统一卡片状态，禁止"字幕已完成 / 卡片待执行"并存 ----
+     *
+     * 若本次没走通 UI（卡片 8 秒内未挂载），导演已直调 healEntity。
+     * 但卡片可能**稍后**才挂载——那时它内部仍是"待执行"，同一屏就会
+     * 出现「字幕说自愈完成」+「卡片说请点击执行」的矛盾。
+     * 置该标记后，后挂载的卡片直接渲染为已执行态并注明"由导演代为执行"。
+     */
+    if (!executedViaUi) {
+      actions().setDemoFallbackExecuted(true);
+    }
+
     /* ---- 5. 等自愈回执落库 ---- */
     await pollUntil(
       (): boolean => Object.keys(actions().healedPodIds).length > 0,
@@ -1160,7 +1364,7 @@ function enterHeal(label: string): void {
     /* ---- 7. 复位画面并给出**与事实一致**的终态旁白 ---- */
     actions().setActiveChaos('NONE');
     actions().selectEntity(null);
-    actions().setOrbitPatrolActive(true);
+    actions().setOrbitPatrolActive(true, 'programmatic');
 
     /*
      * 【用事实模板重渲染终态旁白】enterPhase 时的事实是"自愈前"的；
@@ -1205,7 +1409,12 @@ function enterHeal(label: string): void {
     /* ---- 8. MCP 回执：target 用首个受害 Pod（不是节点），targetName 用可读名 ---- */
     repairMcpReceipt(primaryId, primaryName, podAction, generation);
 
-    actions().setDemoAutoConfirm(false);
+    /*
+     * 【不在这里清除 demoAutoConfirm】实测发现：一旦在 HITL 执行完就置 false，
+     * 动作卡上的 data-demo-auto 会立刻翻成 "false"，评委看到的卡片再也无法
+     * 证明"这次是编排执行的"。规格 C 项要求该标识可被察觉，因此改为在整个
+     * 路演期间保持 true，只在 finish / stop 两个终态清除。
+     */
     void nodeLabel;
   })();
 }
@@ -1318,6 +1527,224 @@ const PHASE_ACTIONS: Readonly<Record<DemoScriptId, readonly (() => void)[]>> = {
 /* ========================================================================== */
 
 /**
+ * 阶段 3 → 4 的事件门（B 项）。
+ *
+ * 【它替代了什么】旧实现把阶段 4 挂在剧本的固定 `atMs = 26000` 上，与 AI 流的
+ * 真实进度完全脱钩。慢环境（本地小模型、SwiftShader）里诊断还没出卡片就被切到
+ * 自愈阶段，画面与旁白同时开始说谎；快环境里则白等十几秒，评委看到"卡住"。
+ *
+ * 【门的判定条件（严格）】
+ *   `copilotStreaming === false && actionCardMountedId !== null`
+ * 两个条件缺一不可：
+ *   · 只看 streaming===false 不够——流刚结束那一瞬卡片可能还没 commit；
+ *   · 只看卡片挂载也不够——卡片可能在流式过程中就渲染了骨架。
+ *
+ * 【为什么还要 25 秒超时】任何事件驱动都必须有兜底，否则一次网络异常就让整场
+ * 路演永远停在 3/4。超时后**如实降级旁白**并继续，让评委看到完整自愈流程，
+ * 而不是一个卡死的界面。
+ *
+ * 【关键设计：门一旦装上，就独占下一阶段的推进权】
+ * 装门的同时**立即取消**下一阶段的固定 atMs 定时器。早期实现只在门成功推进时
+ * 才取消，结果固定定时器常常抢先进了阶段 4，而门此后既等不到事件、又在
+ * `advance()` 里因"phaseIndex 已到 4"而静默返回——门永远挂着，收尾定时器
+ * 因此被无限推迟，整场路演再也结束不了（实测跑满 121 秒仍未收尾）。
+ *
+ * 【所有退出路径都必须释放门】无论推进成功、发现已推进、还是剧本已无下一阶段，
+ * 都要清掉两个定时器与 phaseDeadline。否则收尾侧的"门未决则推迟"会一直等。
+ *
+ * @param generation 发起时的运行代次
+ */
+function armPhaseAdvanceGate(generation: number): void {
+  /** 释放门的所有资源（幂等） */
+  const releaseGate = (): void => {
+    if (phaseGateTimer !== null) {
+      clearTimeout(phaseGateTimer);
+      phaseGateTimer = null;
+    }
+    if (phaseGateDeadlineTimer !== null) {
+      clearTimeout(phaseGateDeadlineTimer);
+      phaseGateDeadlineTimer = null;
+    }
+    phaseDeadline = null;
+  };
+
+  /* 先取消上一轮可能残留的门，避免重复推进 */
+  releaseGate();
+
+  const script = currentScript;
+  if (script === null) return;
+
+  const nextIndex = phaseIndex + 1;
+  if (nextIndex >= script.phases.length) return;
+
+  /*
+   * 【独占推进权】立刻撤销下一阶段的固定定时器。
+   * 这是本函数最重要的一行：不撤掉它，固定定时器会在 atMs 处抢先进入阶段 4，
+   * 门随即失去意义（详见函数头注释里的实测故障）。
+   */
+  cancelScheduledPhase(nextIndex);
+
+  phaseDeadline = Date.now() + PHASE3_EVENT_GATE_TIMEOUT_MS;
+
+  let advanced = false;
+
+  /**
+   * 推进到下一阶段。
+   *
+   * @param reason 'event' 事件满足 / 'timeout' 超时兜底
+   */
+  const advance = (reason: 'event' | 'timeout'): void => {
+    if (advanced) return;
+    advanced = true;
+
+    /* 无论走哪条路，门都必须释放，否则收尾会被永久推迟 */
+    releaseGate();
+
+    if (generation !== runGeneration) return;
+    if (status !== 'running') return;
+
+    const activeScript = currentScript;
+    if (activeScript === null) return;
+
+    const targetIndex = phaseIndex + 1;
+    if (targetIndex >= activeScript.phases.length) return;
+
+    if (reason === 'timeout') {
+      /*
+       * 【超时旁白必须如实】不能假装诊断已完成。系统知道自己在兜底，
+       * 而不是悄悄把没跑完的流程说成跑完了。
+       */
+      narrationOverride = '诊断未在预期时间内完成，继续演示自愈流程。';
+      const api = actions();
+      api.appendTerminalLog(
+        '[DEMO-DIRECTOR] 诊断等待超时（25s），已按兜底推进至阶段 4，旁白已如实标注',
+      );
+      if (narrator !== null) narrator(narrationOverride);
+      publish();
+    }
+
+    enterPhase(targetIndex);
+
+    /*
+     * 【推进后重排时间轴】门可能在 durationMs 之后才决断，此时 elapsed 已超出
+     * 总时长。剩余阶段与收尾定时器都要按新基准重排，否则阶段 4 会因"已过点"
+     * 被立即补触发、收尾则根本不排（remain<=0），整场路演停不下来。
+     */
+    scheduleFrom(currentElapsedMs());
+  };
+
+  /* ---- 事件轮询 ---- */
+  const poll = (): void => {
+    if (generation !== runGeneration || status !== 'running') {
+      releaseGate();
+      return;
+    }
+    if (advanced) return;
+
+    const state = actions();
+    if (state.copilotStreaming === false && state.actionCardMountedId !== null) {
+      actions().appendTerminalLog(
+        '[DEMO-DIRECTOR] 检测到 Copilot 流已结束且动作卡已挂载，按事件推进至阶段 4',
+      );
+      advance('event');
+      return;
+    }
+
+    phaseGateTimer = setTimeout(poll, PHASE3_EVENT_GATE_POLL_MS);
+  };
+
+  poll();
+  if (advanced) return;
+
+  /* ---- 超时兜底 ---- */
+  phaseGateDeadlineTimer = setTimeout((): void => {
+    phaseGateDeadlineTimer = null;
+    advance('timeout');
+  }, PHASE3_EVENT_GATE_TIMEOUT_MS);
+}
+
+/**
+ * runPreflight —— 启动前自检（G 项）。
+ *
+ * 【为什么需要在启动前检查】路演是"现场演出"：一旦开始，任何环境缺陷都会
+ * 以"功能坏了"的形式暴露给评委。这些缺陷（WebGL 上下文丢失、Copilot 未挂载、
+ * 视口不存在）在启动后才发现就只能中途崩掉。启动前拦截，字幕位给出明确原因，
+ * 评委看到的是"环境没准备好"，而不是"功能不能用"。
+ *
+ * 【五项检查（顺序即代价由低到高）】
+ *   1. 3D 视口存在          —— 没有它路演的镜头语言全部落空；
+ *   2. store 可用           —— 引擎所有写动作都依赖它；
+ *   3. Copilot 抽屉已挂载   —— 没有它阶段 3 的诊断无处呈现；
+ *   4. SSE 传输非 fallback  —— fallback 下数据不流动，故障注入无视觉效果；
+ *   5. WebGL 上下文未丢失   —— 接 R01 的状态，上下文丢失时画面静止。
+ *
+ * 【关于第 2 项的工程细节】生产构建会按设计剔除 window.__KUBEVISION_STORE__
+ * 调试钩子。若在生产里也硬性要求它存在，路演将永远无法启动。因此该项在
+ * 生产环境只校验 store 本身可用（快照可读），开发环境才额外校验调试钩子——
+ * 后者是排查链路，不是功能前提。
+ *
+ * 【失败时的行为】不启动剧本，字幕位显示原因，终端打 [DEMO-PREFLIGHT]。
+ * 绝不"带病启动然后中途崩"。
+ *
+ * @returns 通过返回 null；失败返回人类可读的原因
+ */
+function runPreflight(): string | null {
+  if (typeof document === 'undefined') return '当前环境没有 DOM（服务端渲染上下文）';
+
+  /* 1. 3D 视口 */
+  if (document.querySelector('[aria-label="3D 集群拓扑视口"]') === null) {
+    return '未找到 3D 集群拓扑视口';
+  }
+
+  /* 2. store 可用 */
+  const state = actions();
+  if (state.snapshotSummary.nodes.length === 0) {
+    return '遥测快照为空，请等待数据源接入';
+  }
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    typeof window !== 'undefined' &&
+    (window as unknown as { __KUBEVISION_STORE__?: unknown }).__KUBEVISION_STORE__ === undefined
+  ) {
+    return '开发调试钩子未就绪（window.__KUBEVISION_STORE__ 缺失）';
+  }
+
+  /* 3. Copilot 抽屉 */
+  if (document.querySelector('[aria-label="AI Copilot 抽屉"]') === null) {
+    return 'Copilot 抽屉未挂载';
+  }
+
+  /* 4. SSE 传输：fallback 下 totalQps 会被置 0 或长时间不更新 */
+  if (state.snapshotSummary.totalQps <= 0) {
+    return 'SSE 数据未流动（fallback 传输中），故障注入不会有视觉效果';
+  }
+
+  /* 5. WebGL 上下文 */
+  if (state.isGlContextLost) {
+    return 'WebGL 上下文已丢失，请刷新页面后重试';
+  }
+
+  return null;
+}
+
+/**
+ * applyPreflightFailure —— 自检失败时的统一落地。
+ *
+ * 【为什么不做成"静默 return"】静默失败是这类功能最坏的行为：用户点了启动、
+ * 屏幕毫无反应、终端没有任何记录，只能靠猜。这里必须同时给出可见原因
+ * （字幕位）与可查记录（终端 [DEMO-PREFLIGHT]）。
+ *
+ * @param reason 失败原因
+ */
+function applyPreflightFailure(reason: string): void {
+  preflightError = reason;
+  status = 'idle';
+  const api = actions();
+  api.appendTerminalLog(`[DEMO-PREFLIGHT] 演示环境自检未通过：${reason}`);
+  publish();
+}
+
+/**
  * 进入某个阶段（触发该阶段动作 + 说话）。
  *
  * @param index 阶段下标
@@ -1330,6 +1757,11 @@ function enterPhase(index: number): void {
   const phase = script.phases[index];
   /* 进入新阶段先清空上一阶段的事实旁白，避免串到本阶段 */
   narrationOverride = null;
+
+  /* B 项：写入本阶段开始时刻（字幕条读取此值，不自行计时） */
+  phaseStartedAt = Date.now();
+  /* 事件驱动阶段的截止时刻由事件门填写，进入新阶段先清空 */
+  phaseDeadline = null;
 
   /*
    * 【阶段 4 健康分基线】必须在执行阶段动作**之前**采样：
@@ -1389,20 +1821,34 @@ function scheduleFrom(elapsed: number): void {
     const delay = phase.atMs - elapsed;
     const handle = setTimeout((): void => {
       if (status !== 'running') return;
+      phaseTimerByIndex.delete(i);
       enterPhase(i);
     }, delay);
     phaseTimers.push(handle);
+    phaseTimerByIndex.set(i, handle);
   }
 
-  /* 收尾定时器：到总时长后标记完成 */
-  const remain = script.durationMs - elapsed;
-  if (remain > 0) {
-    const finishHandle = setTimeout((): void => {
-      if (status !== 'running') return;
-      finishDemoDirector();
-    }, remain);
-    phaseTimers.push(finishHandle);
-  }
+  /* 收尾定时器：到总时长后标记完成（但不得抢跑仍未决的事件门） */
+  const remain = Math.max(script.durationMs - elapsed, FINISH_MIN_GRACE_MS);
+  const finishHandle = setTimeout((): void => {
+    if (status !== 'running') return;
+    /*
+     * 阶段 3→4 的事件门还在等（流未结束或卡片未挂载）→ 推迟收尾。
+     * 门自身有 25 秒兜底，最长只会把总时长拉长到"门的截止点 + 阶段 4"，
+     * 不会无限等待。若不这样处理，时间轴会抢在门之前结束整场路演。
+     */
+    if (phaseGateTimer !== null || phaseGateDeadlineTimer !== null) {
+      const deferHandle = setTimeout((): void => {
+        if (status !== 'running') return;
+        if (phaseGateTimer !== null || phaseGateDeadlineTimer !== null) return;
+        finishDemoDirector();
+      }, FINISH_DEFER_RECHECK_MS);
+      phaseTimers.push(deferHandle);
+      return;
+    }
+    finishDemoDirector();
+  }, remain);
+  phaseTimers.push(finishHandle);
 }
 
 /** 启动进度心跳 */
@@ -1447,6 +1893,22 @@ export function startDemoDirector(id: DemoScriptId): void {
    * 若用户在 live 模式点路演，画面不会有任何变化，评委看到的是"功能坏了"。
    * 因此启动首步强制切回 demo，并写审计行说明原因。
    */
+  /*
+   * ---- G 项：启动预检 ----
+   *
+   * 【为什么放在最前面】环境缺陷（无 3D 视口 / Copilot 未挂载 / GL 上下文丢失）
+   * 一旦启动后才暴露，就只能中途崩掉并让评委看到"功能坏了"。
+   * 启动前拦住，字幕位给出明确原因，评委看到的是"环境没准备好"。
+   */
+  const preflightReason = runPreflight();
+  if (preflightReason !== null) {
+    applyPreflightFailure(preflightReason);
+    return;
+  }
+
+  /* 绑定可见性守卫（幂等，只会真正注册一次） */
+  bindVisibilityGuard();
+
   const bootApi = actions();
   if (bootApi.connectionMode !== 'demo') {
     bootApi.setConnectionMode('demo');
@@ -1462,6 +1924,8 @@ export function startDemoDirector(id: DemoScriptId): void {
   bootApi.resetDemoEphemeralState();
   bootApi.clearHealedPodIds();
   bootApi.setDemoAutoConfirm(false);
+  /* C 项：清掉上一轮"降级直执行"标记，避免新卡的卡片一挂载就显示已执行 */
+  bootApi.setDemoFallbackExecuted(false);
 
   /*
    * 【启动前自检】校验 CHAOS_TARGETS 的每个 nodeId 都真实存在于快照。
@@ -1482,8 +1946,12 @@ export function startDemoDirector(id: DemoScriptId): void {
   runGeneration += 1;
   lastInjectedChaos = null;
   narrationOverride = null;
+  preflightError = null;
+  finishedAt = null;
+  pausedByVisibility = false;
 
   currentScript = script;
+  lastScriptId = script.id;
   status = 'running';
   phaseIndex = -1;
   accumulatedMs = 0;
@@ -1506,6 +1974,10 @@ export function startDemoDirector(id: DemoScriptId): void {
  */
 export function pauseDemoDirector(): void {
   if (status !== 'running') return;
+  /*
+   * 注意：这里的 pausedByVisibility 由调用方（visibilitychange 守卫）设置，
+   * 用户主动暂停时不置位。resume 时统一清除。
+   */
   /* 冻结本段已用时间 */
   accumulatedMs += performance.now() - segmentStartedAt;
   status = 'paused';
@@ -1524,11 +1996,57 @@ export function pauseDemoDirector(): void {
 export function resumeDemoDirector(): void {
   if (status !== 'paused' || currentScript === null) return;
   status = 'running';
+  pausedByVisibility = false;
   segmentStartedAt = performance.now();
   /* 以当前累计时长为基准重新排程（含补触发已错过的阶段） */
   scheduleFrom(accumulatedMs);
   startTick();
   actions().appendTerminalLog('[DEMO-DIRECTOR] ▶ 已恢复');
+  publish();
+}
+
+/**
+ * replayDemoDirector —— 重播上一套剧本（H 项）。
+ *
+ * 【为什么不是"从头再跑一遍当前进度"】观众按「重播」的意图是"我想重看一遍"，
+ * 所以必须是**完整重跑**：stop 复位集群 → start 重新开始时间轴。
+ * 直接 resume 会接着上一次的位置，等于没重播。
+ */
+export function replayDemoDirector(): void {
+  const id = lastScriptId;
+  if (id === null) return;
+  startDemoDirector(id);
+}
+
+/**
+ * dismissFinishedDemo —— 收起完成态字幕条（H 项）。
+ *
+ * 【与 stop 的区别】stop 会复位集群并把状态清成 idle；这里只收起字幕条，
+ * 保留"刚跑完"后的巡检与稳态画面——评委还想看几眼 3D 场景时不该被复位。
+ */
+export function dismissFinishedDemo(): void {
+  if (status !== 'finished') return;
+  status = 'idle';
+  currentScript = null;
+  phaseIndex = -1;
+  accumulatedMs = 0;
+  segmentStartedAt = 0;
+  phaseStartedAt = null;
+  phaseDeadline = null;
+  finishedAt = null;
+  publish();
+}
+
+/**
+ * clearPreflightError —— 关闭自检失败提示（G 项）。
+ *
+ * 【为什么单独一个入口】预检失败时 status 仍是 idle，字幕条靠
+ * preflightError 才显示出来；用户看清原因后需要能关掉它，
+ * 否则这条错误会一直悬在视口上方。
+ */
+export function clearPreflightError(): void {
+  if (preflightError === null) return;
+  preflightError = null;
   publish();
 }
 
@@ -1568,8 +2086,39 @@ function finishDemoDirector(): void {
     phaseIndex = currentScript.phases.length - 1;
   }
   accumulatedMs = currentScript?.durationMs ?? 0;
-  actions().appendTerminalLog('[DEMO-DIRECTOR] ■ 剧本已完整跑完');
+  finishedAt = Date.now();
+  pausedByVisibility = false;
+
+  /*
+   * ---- H 项：收尾后保持环绕巡检 ----
+   *
+   * 【为什么在 finish 里再开一次】阶段 4 可能在中途把巡检关过（例如用户拖拽
+   * 接管了镜头）。完成态应该回到"全景缓缓旋转"的收官画面，这是路演的
+   * 视觉句点。用 programmatic 开启，CameraRig 不会再把它关掉。
+   */
+  const finishApi = actions();
+  /* 路演结束才关闭自动演示标识（见阶段 4 末尾的说明） */
+  finishApi.setDemoAutoConfirm(false);
+  finishApi.setActiveChaos('NONE');
+  finishApi.selectEntity(null);
+  finishApi.setOrbitPatrolActive(true, 'programmatic');
+  finishApi.appendTerminalLog('[DEMO-DIRECTOR] ■ 剧本已完整跑完');
   publish();
+
+  /*
+   * H 项：完成态 8 秒无操作自动收起。
+   *
+   * 【为什么放在引擎】见 finishedCollapseTimer 的说明：组件侧计时会被
+   * 重渲染打断。放在这里后，收起时刻严格等于「完成 + 8s」，
+   * 且 stop / 重播时由 clearAllTimers 与 start 一并清理。
+   */
+  if (finishedCollapseTimer !== null) clearTimeout(finishedCollapseTimer);
+  const collapseGeneration = runGeneration;
+  finishedCollapseTimer = setTimeout((): void => {
+    finishedCollapseTimer = null;
+    if (runGeneration !== collapseGeneration) return;
+    dismissFinishedDemo();
+  }, FINISHED_AUTO_COLLAPSE_MS);
 }
 
 /**
@@ -1588,7 +2137,27 @@ export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user')
   clearAllTimers();
   abortMcp();
   if (narratorStop !== null) narratorStop();
-  actions().setDemoAutoConfirm(false);
+
+  /*
+   * ---- D 项：停止后不得再有 AI 输出 ----
+   *
+   * 三件事缺一不可：
+   * 1. 中止进行中的 Copilot 流：否则停止后屏幕继续吐 token，
+   *    与"已停止并复位"的日志直接矛盾；
+   * 2. 清空 quickPromptTrigger：否则下次挂载抽屉时会把上一轮的诊断指令重放；
+   * 3. 复位路演临时态：healedPodIds / pendingRemediations / 弹层 / 页签，
+   *    修复"30 秒内重复路演被免疫窗口吞掉"。
+   *
+   * 顺序要求：必须在 status 置 idle 之前发起中止，因为中止链路会读当前状态。
+   */
+  const stopApi = actions();
+  stopApi.requestCopilotAbort();
+  stopApi.clearQuickPromptTrigger();
+  stopApi.setDemoFallbackExecuted(false);
+  stopApi.resetDemoEphemeralState();
+  stopApi.clearHealedPodIds();
+  stopApi.setDemoAutoConfirm(false);
+
   /* 代次自增：停止后任何在飞异步链都不得再写 store / 改旁白 */
   runGeneration += 1;
   lastInjectedChaos = null;
@@ -1596,6 +2165,10 @@ export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user')
   healHealthBaseline = null;
 
   status = 'idle';
+  finishedAt = null;
+  pausedByVisibility = false;
+  phaseStartedAt = null;
+  phaseDeadline = null;
   currentScript = null;
   phaseIndex = -1;
   accumulatedMs = 0;

@@ -567,6 +567,14 @@ export default function ClusterCanvas() {
      * canvas 透明/丢失/首帧未到时，用户看到的是深空色而不是纯黑。
      */
     <div
+      /*
+       * 【aria-label 的双重用途】
+       * 1. 无障碍：屏幕阅读器把整块 3D 拓扑识别为"3D 集群拓扑视口"；
+       * 2. 组件寻址：顶栏字幕条要"居中于视口而非全屏"，它靠这个选择器量
+       *    getBoundingClientRect；导演引擎的启动预检（G 项）也靠它判断视口
+       *    是否已挂载。缺了它字幕条定位与预检会双重失效。
+       */
+      aria-label="3D 集群拓扑视口"
       className="absolute inset-0"
       ref={containerRef}
       style={{ background: VOID_FALLBACK_COLOR }}
@@ -638,6 +646,8 @@ export default function ClusterCanvas() {
             event.preventDefault();
             setContextLost(true);
             setContextRestoreFailed(false);
+            /* G 项：把 GL 上下文状态同步进 store，供启动预检读取 */
+            useClusterStore.getState().setGlContextLost(true);
             if (contextLostTimerRef.current !== null) {
               clearTimeout(contextLostTimerRef.current);
             }
@@ -652,6 +662,7 @@ export default function ClusterCanvas() {
             }
             setContextLost(false);
             setContextRestoreFailed(false);
+            useClusterStore.getState().setGlContextLost(false);
             setCanvasRemountKey((prev): number => prev + 1);
             useClusterStore.getState().appendTerminalLog('[GL] context restored');
           };

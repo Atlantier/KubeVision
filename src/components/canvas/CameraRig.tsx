@@ -182,14 +182,36 @@ export default function CameraRig() {
    */
   const disengagePatrolIfActive = (): void => {
     const state = useClusterStore.getState();
+
+    /*
+     * ---- E 项：程序化锁生效时不解除 ----
+     *
+     * 【修复的缺陷】导演阶段 4 收尾是「先 selectEntity(null) 再
+     * setOrbitPatrolActive(true)」。两者落在同一批更新里时，选中变化 effect
+     * 会调用本函数，把**刚开启**的巡检立刻关掉——表现为"巡检开了又被关"，
+     * 收尾的环绕仪式感直接消失。
+     *
+     * 现在：导演用 programmatic 开启的巡检带锁，本函数遇到锁直接返回。
+     * 用户自己开的巡检（无锁）仍可被聚焦/拖拽打断，原有交互语义不变。
+     */
+    if (state.patrolLockedByProgram) return;
+
     if (state.isOrbitPatrolActive) {
-      state.setOrbitPatrolActive(false);
+      state.setOrbitPatrolActive(false, 'user');
     }
   };
 
   /* ---- 飞行触发通道 1：选中实体变更（含取消选中 → 全景鸟瞰） ---- */
   useEffect(() => {
-    disengagePatrolIfActive();
+    /*
+     * 【只在进入聚焦时解除巡检】selectedEntityId === null 表示"回到全景"，
+     * 其语义是"不再聚焦某个实体"，而不是"停止自转"。用户从特写退回全景时
+     * 通常仍希望看到环绕巡检；更重要的是导演阶段 4 正是以 selectEntity(null)
+     * 收尾后再开巡检，无条件解除会把它刚开的巡检关掉。
+     */
+    if (selectedEntityId !== null) {
+      disengagePatrolIfActive();
+    }
     // getState() 按需读取最新快照（不订阅：1Hz 快照流不触发本组件重渲染）
     const snapshot = useClusterStore.getState().snapshotSummary;
     focusRef.current = resolveCameraFocus(selectedEntityId, selectedEntityType, snapshot);

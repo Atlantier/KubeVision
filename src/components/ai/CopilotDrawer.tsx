@@ -1046,6 +1046,52 @@ export default function CopilotDrawer() {
   /** 是否应贴底滚动（用户手动上滑查看历史时置 false） */
   const stickToBottomRef = useRef<boolean>(true);
 
+  /*
+   * ===== A 项：Copilot 活动状态写入器 =====
+   *
+   * 【为什么用细粒度选择器而非解构整个 store】本组件是流式渲染热点
+   * （每帧可能多次更新），订阅整棵 store 会让任何无关字段变化都触发重渲染。
+   * 这三个 setter 引用恒定，订阅成本为零。
+   *
+   * 【写入位置纪律】只在流事件回调（开始 / 结束 / 出错 / abort）里写，
+   * 绝不写在 render 或 setMessages 的 updater 内——StrictMode 下 updater
+   * 会执行两次，放在里面会导致重复副作用。
+   */
+  const setCopilotStreaming = useClusterStore(
+    (s): ((v: boolean) => void) => s.setCopilotStreaming,
+  );
+  const setLastAssistantMessageId = useClusterStore(
+    (s): ((v: string | null) => void) => s.setLastAssistantMessageId,
+  );
+  const copilotAbortToken = useClusterStore((s): number => s.copilotAbortToken);
+
+  /**
+   * 上一次观察到的中止计数。
+   *
+   * 【为什么需要】effect 首次挂载也会执行一次，若不加比较就会把初始值
+   * 当作一次中止请求，导致刚打开抽屉就把流掐断。
+   */
+  const lastAbortTokenRef = useRef<number>(copilotAbortToken);
+
+  /**
+   * D 项：观察到中止请求时切断当前流。
+   *
+   * 【为何由 store 计数驱动而非直接调用】导演引擎在 utils 层，不能反向
+   * import React 组件；用计数当信号源，Copilot 侧自行观察，职责单向。
+   */
+  useEffect((): void => {
+    if (copilotAbortToken === lastAbortTokenRef.current) return;
+    lastAbortTokenRef.current = copilotAbortToken;
+
+    abortRef.current?.abort();
+    abortRef.current = null;
+    /*
+     * 中止后必须把活动状态复位，否则阶段 3→4 的事件门会一直等
+     * copilotStreaming === false 而永远不推进。
+     */
+    setCopilotStreaming(false);
+  }, [copilotAbortToken, setCopilotStreaming]);
+
   /* ========================================================================== */
   /* 滚动跟随                                                                   */
   /* ========================================================================== */
@@ -1352,6 +1398,10 @@ export default function CopilotDrawer() {
       setMessages((prev) => [...prev, userMessage, assistantMessage]);
       setInputValue('');
       setIsStreaming(true);
+
+      /* A 项：流开始 → 写入活动状态（事件回调处，非渲染期） */
+      setCopilotStreaming(true);
+      setLastAssistantMessageId(assistantId);
       stickToBottomRef.current = true;
 
       try {
@@ -1546,6 +1596,12 @@ export default function CopilotDrawer() {
         setIsStreaming(false);
         abortRef.current = null;
 
+        /*
+         * A 项：流结束（正常 / 出错 / abort 三条路径都汇聚到这里）→ 置 false。
+         * 这是阶段 3→4 事件门的一个判定条件，漏掉任何一条路径都会让导演卡在 3/4。
+         */
+        setCopilotStreaming(false);
+
         /**
          * ============ 骨架屏兜底清理（前端防卡死第二道保险）============
          *
@@ -1572,7 +1628,10 @@ export default function CopilotDrawer() {
         });
       }
     },
-    [buildClusterContext, capturedViewportDataUrl, isStreaming, messages, patchMessage, setCapturedViewport, speakMessage, ttsEnabled],
+    [buildClusterContext, capturedViewportDataUrl, isStreaming, messages, patchMessage, setCapturedViewport,
+      setCopilotStreaming,
+      setLastAssistantMessageId,
+      speakMessage, ttsEnabled],
   );
 
   /**
@@ -1901,7 +1960,12 @@ export default function CopilotDrawer() {
   const canSend = inputValue.trim().length > 0 && !isStreaming;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    /*
+     * 【aria-label 的双重用途】无障碍标识 + 导演引擎启动预检（G 项）的
+     * 挂载探测点。预检若找不到它，说明抽屉还没加载完，此时启动路演会导致
+     * 阶段 3 的诊断无处呈现。
+     */
+    <div aria-label="AI Copilot 抽屉" className="flex h-full min-h-0 flex-col">
       {/* ============ 顶部：单行页签（图标 + 纯中文标题） ============ *
        * 【为何改成单行】此前是"中文主标 + 英文副标"上下两行的堆叠布局，
        * 视觉上像两个小标签叠在一起，既占高度又显得啰嗦。

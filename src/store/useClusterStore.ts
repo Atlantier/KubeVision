@@ -382,6 +382,13 @@ function createInitialClusterState(): ClusterState {
     totalMaskedSecrets: 0,
     remediationHistory: [],
     demoAutoConfirm: false,
+    isGlContextLost: false,
+    demoFallbackExecuted: false,
+    copilotStreaming: false,
+    lastAssistantMessageId: null,
+    actionCardMountedId: null,
+    copilotAbortToken: 0,
+    patrolLockedByProgram: false,
   };
 }
 
@@ -801,6 +808,41 @@ export const useClusterStore = create<ClusterStore>()(
         set({ demoAutoConfirm: enabled });
       },
 
+      /** setGlContextLost —— 由 ClusterCanvas 的 webglcontextlost/restored 回调写入 */
+      setGlContextLost: (lost) => {
+        set({ isGlContextLost: lost });
+      },
+
+      /** setDemoFallbackExecuted —— 导演降级直执行后置位，供后挂载卡片显示已执行 */
+      setDemoFallbackExecuted: (value) => {
+        set({ demoFallbackExecuted: value });
+      },
+
+      /** setCopilotStreaming —— 由 Copilot 流事件回调写入，非渲染期调用 */
+      setCopilotStreaming: (streaming) => {
+        set({ copilotStreaming: streaming });
+      },
+
+      /** setLastAssistantMessageId —— 流开始时写入当前 assistant 消息 ID */
+      setLastAssistantMessageId: (messageId) => {
+        set({ lastAssistantMessageId: messageId });
+      },
+
+      /** setActionCardMountedId —— 动作卡水合完成写入，卸载置 null */
+      setActionCardMountedId: (messageId) => {
+        set({ actionCardMountedId: messageId });
+      },
+
+      /** requestCopilotAbort —— 自增计数，Copilot 侧观察变化后中止流 */
+      requestCopilotAbort: () => {
+        set((current) => ({ copilotAbortToken: current.copilotAbortToken + 1 }));
+      },
+
+      /** clearQuickPromptTrigger —— 主动清空待消费的快捷指令 */
+      clearQuickPromptTrigger: () => {
+        set({ quickPromptTrigger: null });
+      },
+
       /** setCapturedViewport —— 设置/清除 3D 视口多模态截图（非持久化，体积敏感） */
       setCapturedViewport: (dataUrl) => {
         set({ capturedViewportDataUrl: dataUrl });
@@ -899,11 +941,19 @@ export const useClusterStore = create<ClusterStore>()(
        * 巡检期间用户拖拽鼠标时，CameraRig 的 'start' 监听会自动关闭巡检
        * （手动操作优先），同样经由本 Action 回写，保持状态一致。
        */
-      setOrbitPatrolActive: (active) => {
-        set({ isOrbitPatrolActive: active });
+      setOrbitPatrolActive: (active, reason = 'user') => {
+        /*
+         * 【E 项：记录"是谁开的巡检"】programmatic 表示这是导演编排的一部分，
+         * CameraRig 看到锁就不再因选中态变化解除它。
+         * 关闭巡检时一律清锁，恢复原有交互语义。
+         */
+        const lockedByProgram = active && reason === 'programmatic';
+        set({ isOrbitPatrolActive: active, patrolLockedByProgram: lockedByProgram });
         get().appendTerminalLog(
           active
-            ? '[system] orbit patrol engaged → auto-rotate ON (drag to take over)'
+            ? lockedByProgram
+              ? '[system] orbit patrol engaged by demo director (programmatic)'
+              : '[system] orbit patrol engaged → auto-rotate ON (drag to take over)'
             : '[system] orbit patrol disengaged → auto-rotate OFF',
         );
       },
