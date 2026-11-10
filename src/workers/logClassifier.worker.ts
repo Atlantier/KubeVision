@@ -49,6 +49,8 @@ const MODEL_LOAD_TIMEOUT_MS = 3500;
 
 /** 镜像站（国内网络访问 HF 官方站常不可达） */
 const MODEL_REMOTE_HOST = 'https://hf-mirror.com/';
+/** R49：Worker 启动时刻（冷启动计时起点） */
+const WORKER_STARTED_AT = performance.now();
 
 /** 模型标识（Xenova 发布的 ONNX 量化版 MiniLM） */
 const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
@@ -448,7 +450,12 @@ async function initModelWithTimeout(
     const transformers = await import('@huggingface/transformers');
 
     /* ---- 环境配置：禁用本地模型、指向国内镜像 ---- */
-    transformers.env.allowLocalModels = false;
+    /*
+     * R49：权重随包（public/models/），优先本地路径；本地缺失时仍回退 CDN。
+     * localModelPath 只影响解析根；allowRemoteModels 保持默认 true 作为兜底。
+     */
+    transformers.env.allowLocalModels = true;
+    transformers.env.localModelPath = '/models/';
     transformers.env.remoteHost = MODEL_REMOTE_HOST;
 
     /* ---- 建管道（WebGPU 或 WASM） ---- */
@@ -510,6 +517,7 @@ async function initModelWithTimeout(
             runtimeLabel: label,
             modelName: MODEL_ID,
             fallback: false,
+            coldStartMs: Math.round(performance.now() - WORKER_STARTED_AT),
           });
           postStatus('READY');
         })
@@ -824,13 +832,18 @@ self.addEventListener('message', (event: MessageEvent<unknown>): void => {
     const extractor = modelHandle.extractor;
     const texts = request.texts.slice(0, 8);
     void (async (): Promise<void> => {
+      const inferenceStartedAt = performance.now();
       try {
         const vectors: number[][] = [];
         for (const text of texts) {
           const output = await extractor(String(text), { pooling: 'mean', normalize: true });
           vectors.push(Array.from(output.data));
         }
-        post({ type: 'embed-result', vectors });
+        post({
+          type: 'embed-result',
+          vectors,
+          latencyMs: Math.round(performance.now() - inferenceStartedAt),
+        });
       } catch {
         /* 任何推理异常 → null，主线程走两路；不把 0 向量当结果 */
         post({ type: 'embed-result', vectors: null });

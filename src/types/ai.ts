@@ -1075,6 +1075,8 @@ export interface ClassifierProgressMessage {
 /** Worker → 主线程：模型就绪（或已降级为内置分类器） */
 export interface ClassifierReadyMessage {
   readonly type: 'ready';
+  /** R49：从 Worker 启动到模型就绪的冷启动耗时（毫秒） */
+  readonly coldStartMs?: number;
   readonly runtime: ClassifierRuntime;
   readonly runtimeLabel: string;
   readonly modelName: string;
@@ -1099,6 +1101,8 @@ export interface ClassifierErrorMessage {
 export interface ClassifierEmbedResultMessage {
   readonly type: 'embed-result';
   readonly vectors: readonly (readonly number[])[] | null;
+  /** R49：本次句向量编码的热推理耗时（毫秒） */
+  readonly latencyMs?: number;
 }
 
 /** Worker → 主线程的全部响应消息 */

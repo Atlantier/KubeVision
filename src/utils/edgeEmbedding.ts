@@ -51,12 +51,16 @@ function ensureWorker(): Worker | null {
     const message = data as Record<string, unknown>;
     if (message.type === 'ready' && message.fallback !== true) {
       workerReady = true;
+      console.info(
+        '[edge-embed] ready coldStart=' + String(message.coldStartMs ?? 'n/a') + 'ms',
+      );
       return;
     }
     if (message.type === 'embed-result') {
       const vectors = Array.isArray(message.vectors)
         ? (message.vectors as number[][])
         : null;
+      console.info('[edge-embed] warm inference=' + String(message.latencyMs ?? 'n/a') + 'ms');
       const resolvers = pendingResolvers;
       pendingResolvers = [];
       for (const resolve of resolvers) resolve(vectors);
