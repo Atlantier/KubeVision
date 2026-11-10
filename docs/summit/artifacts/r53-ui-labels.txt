@@ -1,0 +1,24 @@
+R53 真实 UI 文案抓取证据（headless Edge + CDP，node scripts/dump-ui-labels.mjs）
+顶栏：故障演练 / 搜索拓扑⌘K / 剧本路演 / 演示 / 性能 / 读图说明
+故障演练弹窗 aria：混沌工程故障演练控制台
+场景卡：A · POD_OOM_SWARM · 内存溢出雪崩；B · NODE_CPU_SPIKE · 计算节点算力打满；C · NET_PACKET_LOSS · CNI 网络插件分区丢包；D · NONE · 一键恢复集群稳态
+注入后顶栏：演练中：OOM 风暴（实测 textContent）；终止按钮 aria：终止故障演练，恢复稳态
+视口工具条：aria=3D 视口多模态快照诊断（图标按钮，无可见文字）
+RAG：按钮 RAG 知识库；弹窗 aria=SRE 领域知识库；输入 placeholder=输入任意故障描述，如：容器内存爆了 exit 137 / 跨节点丢包
+RAG 正例实测：RUNBOOK-K8S-042 90% / K8S-043 76% / K8S-051 73%，并显示 Vector/BM25/Context 占比
+RAG 负例实测：未命中任何 Runbook（查询缺乏区分度）
+页签：AI 运维副驾 / 端侧日志审计；审计按钮：抓取并审计日志流 / 实时日志 / 自动 / 端侧推理测试；预设：Bearer JWT 凭证泄露 / 数据库连接串泄露 / OOM 致命报错（无敏感信息）
+命令面板：按钮 搜索拓扑⌘K；aria=运维命令面板；placeholder=搜索 Pod / 节点，或输入运维动作…
+动作卡实测：按钮 立即执行自愈方案（OOM restart_pod 非高危，无复选框）；执行后文案 已执行 · 3D 拓扑已自愈恢复
+高危动作源码：复选框 aria=确认已知晓高危操作风险；label=我已知晓该操作将影响生产环境，确认立即执行（此操作会记录审计日志）；未勾选按钮=需二次确认（disabled）
+复盘：按钮 复盘报告（aria 导出 SRE 故障复盘报告）；弹窗 aria=SRE 故障复盘报告；tab 预览/源码；按钮 复制 Markdown / 下载 .md
+引擎行：推理引擎 · 云端大模型 或 推理引擎 · 本地确定性容灾引擎
+自定义 Runbook：按钮 新增自定义 Runbook；说明 localStorage 持久化 · 入库后立即参与混合检索；提交按钮 提交入库；成功 已写入语料池并选中：<id>
+Esc 优先级：命令面板 100 > 混沌控制台 90 > SRE 领域知识库 80 > 复盘报告 70 > 页面 0
+剧本路演菜单：OOM 全链路自愈约 34 秒 · 4 阶段 / CNI 网络延迟追踪约 32 秒 · 4 阶段 / 节点 CPU 尖刺扩缩容约 34 秒 · 4 阶段
+路演阶段徽标：阶段 1/4 · 全景稳态巡航；2/4 · 故障注入与空间锁定；3/4 · RAG 混合检索与多卡诊断；4/4 · MCP 闭环自愈
+=== 实测：断网（连接拒绝）回落 ===
+elapsed_to_trace_summary=26207ms；trace-summary ttftMs=6688.66 totalMs=25633.18 engine=simulator；engine reason=llm invocation failed (network / quota / model unsupported)
+结论：不是“1 秒回落”；话术改成“几秒内（本次约 6.7 秒，含重试）”。
+=== 数字来源（本轮重采）===
+performance.json generatedAt=2026-11-10T14:27:38.757Z；drawCalls mean 421.5/median 423；meshes 322；instanced 25/1026；triangles 205980；FPS 3.45(SwiftShader，禁讲)；RAG mean 7.93ms/p95 10.05ms；sanitizer 100 条 6.46ms→15481/s；edge runtime=builtin fallback

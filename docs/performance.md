@@ -1,6 +1,6 @@
 # KubeVision AI — 性能实测数据
 
-> 采集时间：2026-11-10T06:02:53.589Z
+> 采集时间：2026-11-10T14:27:38.757Z
 > 所有数字均为实测值，未做理论填充。
 
 ## 运行环境
@@ -23,10 +23,10 @@
 
 | 指标 | 均值 | 中位数 | P95 | 最小 | 最大 |
 |---|---|---|---|---|---|
-| FPS | 1.8 | 2 | 4 | 1 | 4 |
-| Frame Time (ms) | 655.02 | 458.9 | 1548.4 | 226.5 | 1548.4 |
-| Draw Calls | 402.25 | 403 | 403 | 400 | 403 |
-| Triangles | 188714 | 188738 | 188738 | 188642 | 188738 |
+| FPS | 3.45 | 4 | 7 | 1 | 7 |
+| Frame Time (ms) | 368.82 | 286.1 | 1129 | 139.3 | 1129 |
+| Draw Calls | 421.5 | 423 | 423 | 420 | 423 |
+| Triangles | 205980 | 206028 | 206028 | 205932 | 206028 |
 
 **视口休眠**：前台 `frameloop=always` → 后台 `frameloop=demand` 已生效
 
@@ -34,15 +34,15 @@
 
 | 项目 | 数量 |
 |---|---|
-| 普通 Mesh | 311 |
-| InstancedMesh | 24 |
-| 实例总数 | 972 |
-| Points | 4 |
-| Lines | 3 |
-| **实际 Draw Calls** | **400** |
+| 普通 Mesh | 322 |
+| InstancedMesh | 25 |
+| 实例总数 | 1026 |
+| Points | 6 |
+| Lines | 5 |
+| **实际 Draw Calls** | **420** |
 
-> 972 个实例通过 24 个 InstancedMesh 批量提交，
-> 若逐个 Mesh 渲染需 1283 次 draw call，实际仅 400 次。
+> 1026 个实例通过 25 个 InstancedMesh 批量提交，
+> 若逐个 Mesh 渲染需 1348 次 draw call，实际仅 420 次。
 
 ## 端侧推理性能
 
@@ -52,34 +52,37 @@
 
 | 指标 | 均值 | 中位数 | P95 | 最小 | 最大 |
 |---|---|---|---|---|---|
-| 单条分类延迟 (ms) | 0.18 | 0.2 | 0.2 | 0.1 | 0.2 |
+| 单条分类延迟 (ms) | 0.14 | 0.15 | 0.2 | 0 | 0.2 |
 
 ## API 延迟
 
 | 项目 | 均值 | 中位数 | P95 |
 |---|---|---|---|
-| RAG 混合检索 (ms) | 6.33 | 6.12 | 9.09 |
+| RAG 混合检索 (ms) | 7.93 | 7.84 | 10.05 |
 
 ## 隐私脱敏吞吐
 
-批量 100 条，实测吞吐 **19232 条/秒**
-（均值延迟 5.2 ms）。
+批量 100 条，实测吞吐 **15481 条/秒**
+（均值延迟 6.46 ms）。
 
 ## 构建产物与包体积
 
 ```
 Route (app)                              Size     First Load JS
-┌ ○ /                                    84.8 kB         172 kB
+┌ ○ /                                    88.9 kB         176 kB
 ├ ○ /_not-found                          873 B          88.4 kB
 ├ ƒ /api/chat                            0 B                0 B
+├ ƒ /api/dev/corpus                      0 B                0 B
+├ ƒ /api/dev/rag-eval                    0 B                0 B
 ├ ƒ /api/logs/live                       0 B                0 B
+├ ƒ /api/mcp                             0 B                0 B
 ├ ƒ /api/mcp/execute                     0 B                0 B
 ├ ƒ /api/telemetry                       0 B                0 B
 ├ ƒ /api/verify/rag                      0 B                0 B
 └ ƒ /api/verify/sanitize                 0 B                0 B
 + First Load JS shared by all            87.5 kB
-├ chunks/671-757fc8b8d981d414.js       31.6 kB
-├ chunks/c070312d-fc6b0a6ac19fa687.js  53.6 kB
+├ chunks/671-4d40437f8264c8b6.js       31.6 kB
+├ chunks/c070312d-5aa631408e1f09fd.js  53.6 kB
 └ other shared chunks (total)          2.27 kB
 ```
 
