@@ -32,6 +32,7 @@
 import { spawn, execSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { inflateSync } from 'node:zlib';
 import { basename, extname, join, resolve } from 'node:path';
 
 /* ========================================================================== */
@@ -512,7 +513,27 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
   const fileName = `${scene}-${viewportWidth}x${viewportHeight}.png`;
   const filePath = join(outDir, fileName);
-  writeFileSync(filePath, Buffer.from(shot.result.data, 'base64'));
+  const pngBuffer = Buffer.from(shot.result.data, 'base64');
+  writeFileSync(filePath, pngBuffer);
+
+  /* R30 · 追问 3：亮度直方图 + 过曝告警（>250 像素占比 >3% 即告警） */
+  let luminance = null;
+  try {
+    luminance = computeLuminanceStats(pngBuffer);
+  } catch (error) {
+    console.warn('[WARN] 亮度直方图计算失败: ' + String(error));
+  }
+  const OVEREXPOSED_RATIO_LIMIT = 3;
+  if (luminance !== null && luminance.overexposedRatio > OVEREXPOSED_RATIO_LIMIT) {
+    console.warn(
+      '[直方图] 过曝告警：亮度>250 像素占比 ' +
+        luminance.overexposedRatio.toFixed(2) +
+        '% > ' +
+        OVEREXPOSED_RATIO_LIMIT +
+        '%（回归门槛）',
+    );
+    process.exitCode = 2;
+  }
 
   /* ---- 读 commit 与时间戳 ---- */
   const commit = readCommit();
@@ -528,6 +549,7 @@ async function main() {
     gpuMode,
     viewport: { width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1 },
     metrics,
+    luminance,
     consoleErrors: cdp.consoleErrors.length,
     consoleWarns: cdp.consoleWarns.length,
     consoleErrorSamples: cdp.consoleErrors.slice(0, 5),
@@ -573,6 +595,18 @@ async function main() {
   console.log(`  DPR       : ${String(metrics?.dpr)} (devicePixelRatio=${metrics?.devicePixelRatio})`);
   console.log(`  canvas    : ${JSON.stringify(metrics?.canvas ?? null)}`);
   console.log(`  renderer  : ${String(metrics?.renderer)}`);
+  if (luminance !== null) {
+    const bar = luminance.bins
+      .map((count, index) => {
+        const ratio = (count / luminance.totalPixels) * 100;
+        const level = ratio > 12 ? '#' : ratio > 4 ? '+' : ratio > 1 ? '.' : ' ';
+        return level;
+      })
+      .join('');
+    console.log(
+      `  亮度直方图: [${bar}] 均值=${luminance.mean.toFixed(1)} 过曝=${luminance.overexposedRatio.toFixed(2)}%`,
+    );
+  }
   console.log(`  ctxLost   : ${String(metrics?.contextLost)}`);
   console.log(`  console   : error=${cdp.consoleErrors.length} warn=${cdp.consoleWarns.length}`);
 
@@ -788,6 +822,114 @@ const DIFF_FN_SCRIPT = `
   return { ok: true };
 })()
 `;
+
+/* ========================================================================== */
+/* 亮度直方图（R30 · 追问 3：画面过曝回归门槛）                                    */
+/* ========================================================================== */
+
+/**
+ * decodePngRgba —— 解码 8-bit RGB/RGBA 非隔行 PNG。
+ *
+ * 【为什么自己解码】零新增依赖；截图是 Page.captureScreenshot 输出的标准 PNG，
+ * 只用 node:zlib inflate + 5 种 filter 反解即可，不需要图像库。
+ *
+ * @param buffer PNG 字节
+ * @returns 宽高与 RGBA 像素
+ */
+function decodePngRgba(buffer) {
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let colorType = 6;
+  const idat = [];
+  while (offset < buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      colorType = data[9];
+    } else if (type === 'IDAT') {
+      idat.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+    offset += 12 + length;
+  }
+  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : 0;
+  if (channels === 0) throw new Error('unsupported PNG color type: ' + colorType);
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const pixels = new Uint8Array(width * height * 4);
+  const prev = new Uint8Array(stride);
+  const cur = new Uint8Array(stride);
+  let pos = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[pos];
+    pos += 1;
+    for (let x = 0; x < stride; x += 1) cur[x] = raw[pos + x];
+    pos += stride;
+    for (let x = 0; x < stride; x += 1) {
+      const a = x >= channels ? cur[x - channels] : 0;
+      const b = prev[x];
+      const c = x >= channels ? prev[x - channels] : 0;
+      let value = cur[x];
+      if (filter === 1) value += a;
+      else if (filter === 2) value += b;
+      else if (filter === 3) value += (a + b) >> 1;
+      else if (filter === 4) {
+        const p = a + b - c;
+        const pa = Math.abs(p - a);
+        const pb = Math.abs(p - b);
+        const pc = Math.abs(p - c);
+        value += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      }
+      cur[x] = value & 0xff;
+    }
+    for (let x = 0; x < width; x += 1) {
+      const si = x * channels;
+      const di = (y * width + x) * 4;
+      pixels[di] = cur[si];
+      pixels[di + 1] = cur[si + 1];
+      pixels[di + 2] = cur[si + 2];
+      pixels[di + 3] = channels === 4 ? cur[si + 3] : 255;
+    }
+    prev.set(cur);
+  }
+  return { width, height, pixels };
+}
+
+/**
+ * computeLuminanceStats —— 计算亮度直方图与过曝比例。
+ *
+ * 【口径】亮度 L = 0.2126R + 0.7152G + 0.0722B（Rec.709，sRGB 未线性化；
+ * 作为"感知过曝"门槛足够，且与截图字节一一对应、可复现）。
+ * 过曝定义：L > 250（不是 255，给抗锯齿/压缩留 5 级余量）。
+ *
+ * @param buffer 截图 PNG 字节
+ * @returns 直方图、均值、分位与过曝比例
+ */
+function computeLuminanceStats(buffer) {
+  const { pixels } = decodePngRgba(buffer);
+  const bins = new Array(16).fill(0);
+  let sum = 0;
+  let overexposed = 0;
+  const total = pixels.length / 4;
+  for (let i = 0; i < pixels.length; i += 4) {
+    const luma = 0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2];
+    sum += luma;
+    if (luma > 250) overexposed += 1;
+    bins[Math.min(15, Math.floor(luma / 16))] += 1;
+  }
+  return {
+    bins,
+    mean: sum / total,
+    overexposed,
+    overexposedRatio: (overexposed / total) * 100,
+    totalPixels: total,
+  };
+}
 
 /* ---- 差异模式的独立浏览器启动（2D canvas 解码不需要 WebGL） ---- */
 const DIFF_CDP_PORT = 9337;

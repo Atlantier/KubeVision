@@ -1,0 +1,59 @@
+{
+  "generatedAt": "2026-11-10T10:58:12.951Z",
+  "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "isSoftware": true,
+  "summary": [
+    {
+      "tier": "T3",
+      "query": "high",
+      "label": "全特效",
+      "fps": 4.6,
+      "frameTimeMs": 286.28,
+      "drawCalls": 420,
+      "triangles": 205932,
+      "vramMB": 3.8303260803222656,
+      "post": false,
+      "glTextures": 5,
+      "glGeometries": 370
+    },
+    {
+      "tier": "T2",
+      "query": "balanced",
+      "label": "关 DoF / 中等 Bloom",
+      "fps": 4.4,
+      "frameTimeMs": 248.1,
+      "drawCalls": 420,
+      "triangles": 205932,
+      "vramMB": 3.8303260803222656,
+      "post": false,
+      "glTextures": 5,
+      "glGeometries": 370
+    },
+    {
+      "tier": "T1",
+      "query": "low",
+      "label": "关阴影/反射 + Bloom 降级",
+      "fps": 3.8,
+      "frameTimeMs": 261.36,
+      "drawCalls": 420,
+      "triangles": 205932,
+      "vramMB": 3.8303260803222656,
+      "post": false,
+      "glTextures": 5,
+      "glGeometries": 370
+    },
+    {
+      "tier": "T0",
+      "query": "off",
+      "label": "后处理全关",
+      "fps": 5.2,
+      "frameTimeMs": 200.14000000000001,
+      "drawCalls": 420,
+      "triangles": 205932,
+      "vramMB": 3.8303260803222656,
+      "post": false,
+      "glTextures": 5,
+      "glGeometries": 370
+    }
+  ]
+}

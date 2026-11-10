@@ -40,6 +40,7 @@ export function resolveInitialQuality(): { tier: QualityTier; source: QualitySou
   if (typeof window === 'undefined') return { tier: 3, source: 'auto' };
   const params = new URLSearchParams(window.location.search);
   const manual = params.get('quality');
+  if (manual === 'off') return { tier: 0, source: 'url' };
   if (manual === 'low') return { tier: 1, source: 'url' };
   if (manual === 'balanced') return { tier: 2, source: 'url' };
   if (manual === 'high') return { tier: 3, source: 'url' };

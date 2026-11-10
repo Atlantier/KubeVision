@@ -549,6 +549,19 @@ export default function ClusterCanvas() {
   const qualityTier = useQualityStore((state): number => state.tier);
   useQualityGovernor();
 
+  /*
+   * R30：质量档位 → 渲染开关（手动 ?quality= 或治理器自动）。
+   * 降档顺序（先反射 → 再阴影 → 再 Bloom → 最后后处理全关）：
+   *   T3：全开；T2：关 DoF；T1：再关阴影/反射、Bloom 降级；
+   *   T0：后处理全关。
+   * 【R01】只改开关与参数，绝不改 DPR / RenderTarget 尺寸。
+   */
+  const qualityPost = postEnabled && qualityTier > 0;
+  const qualityReflector = reflectorEnabled && qualityTier >= 2;
+  const qualitySoftShadows = envCaps.software ? 'basic' : qualityTier >= 2 ? 'soft' : false;
+  const qualityBloomLevels = qualityTier >= 3 ? 6 : qualityTier === 2 ? 5 : 4;
+  const qualityBloomIntensity = qualityTier >= 3 ? 0.72 : qualityTier === 2 ? 0.66 : 0.6;
+
   /**
    * R24 追问 3：把"当前渲染路径 + 原因"写入瞬态轨。
    *
@@ -556,7 +569,7 @@ export default function ClusterCanvas() {
    * 评委因此能直接看到是否发生降级、为什么降级，而不是靠猜。
    */
   useEffect((): void => {
-    const tier = !postEnabled ? 'T0' : RENDER_TIER;
+    const tier = !qualityPost ? 'T0' : RENDER_TIER;
     const reason = envCaps.software
       ? '软件光栅化（WebGL2 + half-float + renderer 探测命中）：后处理与反射均关闭'
       : !envCaps.webgl2
@@ -568,7 +581,7 @@ export default function ClusterCanvas() {
             : '兜底路径：运行时关闭后处理链';
     telemetryTransientRef.glStats.renderTier = tier;
     telemetryTransientRef.glStats.renderReason = reason;
-  }, [postEnabled, envCaps]);
+  }, [qualityPost, postEnabled, envCaps, qualityTier]);
 
   /**
    * L11：渲染路径一致性对比钩子（仅开发构建暴露）。
@@ -589,7 +602,7 @@ export default function ClusterCanvas() {
     return (): void => {
       delete (window as unknown as Record<string, unknown>).__KUBEVISION_RENDER__;
     };
-  }, [postEnabled, envCaps]);
+  }, [qualityPost, postEnabled, envCaps, qualityTier]);
 
   /**
    * 帧率走低：只关装饰层，不动 dpr。
@@ -649,7 +662,7 @@ export default function ClusterCanvas() {
     return (): void => {
       clearTimeout(timer);
     };
-  }, [postEnabled, reflectorEnabled]);
+  }, [qualityPost, postEnabled, qualityReflector, qualityTier]);
 
 
   /**
@@ -787,11 +800,11 @@ export default function ClusterCanvas() {
          * 软边才能让机架真正"压"在地面上。代价是每帧一次阴影贴图渲染，
          * 但场景只有 3 座机架 + 48 个实例，绝对开销可控。
          */
-        shadows={envCaps.software ? 'basic' : 'soft'}
+        shadows={qualitySoftShadows}
         camera={{ position: INITIAL_CAMERA_POSITION, fov: CAMERA_FOV }}
         gl={{
           /* L4：Composer 路径下 canvas MSAA 无效（离屏 RT 才是最终画面），关掉省带宽 */
-          antialias: !postEnabled,
+          antialias: !qualityPost,
           powerPreference: 'high-performance',
           // 多模态视觉快照前提：帧合成后仍可 toDataURL 读取绘制缓冲
           preserveDrawingBuffer: true,
@@ -1095,7 +1108,7 @@ export default function ClusterCanvas() {
          * 于是网格像蚀刻在镜面上层的坐标网，而非浮在反射之上。
          */}
         {/* L8：镜面反射地面独立开关（软渲染下整段关闭，省一次全场景重渲染） */}
-        {reflectorEnabled ? (
+        {qualityReflector ? (
         <mesh
           key={`reflector-${canvasRemountKey}`}
           rotation={[-Math.PI / 2, 0, 0]}
@@ -1226,7 +1239,7 @@ export default function ClusterCanvas() {
         <ArcStartGlow3D />
 
         {/* R28：低档位（无镜面反射）时的机架底部近场反射带，替代真实反射 pass */}
-        {reflectorEnabled ? null : <RackGroundReflection />}
+        {qualityReflector ? null : <RackGroundReflection />}
 
         {/* ---- 机架故障警示涟漪（仅故障机架激活：崩溃 Pod 或节点非 Ready；
            自定义 ShaderMaterial 三环由内向外扩散，加色混合贴地辉光） ---- */}
@@ -1283,7 +1296,7 @@ export default function ClusterCanvas() {
          * 【AA 策略】T3 = MSAA×2（禁止 ×8：HDR 8× RT > 200MB）；
          * T2 = FXAA；T1 = 不加 AA（最低端路径，DPR 已降）。
          */}
-        {postEnabled ? (
+        {qualityPost ? (
           RENDER_TIER === 'T2' ? (
             <EffectComposer
               key={`composer-${canvasRemountKey}`}
@@ -1303,12 +1316,12 @@ export default function ClusterCanvas() {
                 bokehScale={1.2}
               />
               <Bloom
-                intensity={0.72}
+                intensity={qualityBloomIntensity}
                 luminanceThreshold={0.78}
                 luminanceSmoothing={0.14}
                 mipmapBlur
                 radius={0.62}
-                levels={6}
+                levels={qualityBloomLevels}
               />
               <ExposureEffect ref={exposureEffectRef} />
               <ToneMapping mode={ToneMappingMode.NEUTRAL} />
@@ -1323,12 +1336,12 @@ export default function ClusterCanvas() {
               frameBufferType={HalfFloatType}
             >
               <Bloom
-                intensity={0.72}
+                intensity={qualityBloomIntensity}
                 luminanceThreshold={0.78}
                 luminanceSmoothing={0.14}
                 mipmapBlur
                 radius={0.62}
-                levels={6}
+                levels={qualityBloomLevels}
               />
               <ExposureEffect ref={exposureEffectRef} />
               <ToneMapping mode={ToneMappingMode.NEUTRAL} />
