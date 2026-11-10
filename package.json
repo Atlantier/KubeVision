@@ -49,6 +49,7 @@
     "visual:diff": "node scripts/visual-diff.mjs",
     "mcp:smoke": "node scripts/mcp-smoke.mjs",
     "eval:rag": "node scripts/eval-rag.mjs",
+    "eval:ai-quality": "node scripts/eval-ai-quality.mjs",
     "opening:frames": "node scripts/opening-frames.mjs",
     "soak": "node scripts/soak.mjs",
     "strictmode:audit": "node scripts/strictmode-audit.mjs",

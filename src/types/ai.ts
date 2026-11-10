@@ -726,6 +726,11 @@ export interface ChatRequestBody {
   /** R46：端侧像素特征（可选；缺失时引擎 B 不编造画面观察） */
   readonly pixelFeatures?: PixelFeatures;
   /**
+   * R51：禁用 RAG 检索（评测用，裸模型对照）。
+   * 只影响本次请求的 runbooks 注入，不改变引擎选择与其他能力。
+   */
+  readonly disableRag?: boolean;
+  /**
    * 客户端携带的自定义 Runbook 语料（可选）。
    *
    * 【为何必须随请求体上送】自定义语料存在浏览器 localStorage 里，

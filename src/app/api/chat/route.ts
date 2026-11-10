@@ -2516,6 +2516,9 @@ async function parseRequestBody(request: Request): Promise<ChatRequestBody | nul
   /* ---- customRunbooks：可选，逐字段规范化 ---- */
   const customRunbooks = normalizeCustomRunbooks(obj.customRunbooks);
 
+  /* ---- disableRag：评测用开关，必须是 boolean ---- */
+  const disableRag = obj.disableRag === true;
+
   /* ---- pixelFeatures：可选，逐字段收敛到 [0,1] / 非负整数 ---- */
   let pixelFeatures: PixelFeatures | undefined;
   if (typeof obj.pixelFeatures === 'object' && obj.pixelFeatures !== null) {
@@ -2555,6 +2558,7 @@ async function parseRequestBody(request: Request): Promise<ChatRequestBody | nul
     ...(customRunbooks.length > 0 ? { customRunbooks } : {}),
     ...(queryEmbedding !== undefined ? { queryEmbedding } : {}),
     ...(pixelFeatures !== undefined ? { pixelFeatures } : {}),
+    ...(disableRag ? { disableRag } : {}),
   };
 }
 
@@ -2683,7 +2687,7 @@ export async function POST(request: Request): Promise<Response> {
 
   const ragSpan = startSpan(trace, 'rag-retrieve');
   const runbooks =
-    intent === 'GREETING_OR_CHITCHAT'
+    intent === 'GREETING_OR_CHITCHAT' || body.disableRag === true
       ? []
       : retrieveSreRunbooks(
           ragQuery,
