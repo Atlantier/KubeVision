@@ -73,6 +73,8 @@ import MarkdownLite, { InlineMarkdown } from '@/components/ai/MarkdownLite';
 import PodMetricsCard from '@/components/ai/GenUI/PodMetricsCard';
 import RootCauseAlert from '@/components/ai/GenUI/RootCauseAlert';
 import { cn } from '@/utils/cn';
+import { useAgentTraceStore } from '@/store/useAgentTraceStore';
+import AgentTracePanel from '@/components/ai/AgentTracePanel';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
   CHAT_ERROR_COPY,
@@ -1852,6 +1854,31 @@ export default function CopilotDrawer() {
                 break;
               }
 
+              case 'span': {
+                useAgentTraceStore.getState().appendSpan({
+                  traceId: event.traceId,
+                  name: event.name,
+                  startMs: event.startMs,
+                  durationMs: event.durationMs,
+                  status: event.status,
+                  attrs: event.attrs,
+                });
+                break;
+              }
+
+              case 'trace-summary': {
+                useAgentTraceStore.getState().setSummary({
+                  traceId: event.traceId,
+                  engine: event.engine,
+                  ttftMs: event.ttftMs,
+                  totalMs: event.totalMs,
+                  promptTokens: event.promptTokens,
+                  completionTokens: event.completionTokens,
+                  costCny: event.costCny,
+                });
+                break;
+              }
+
               case 'done': {
                 /* 终止事件由循环结束后的 finalize 统一处理，这里无需动作 */
                 break;
@@ -2646,6 +2673,11 @@ export default function CopilotDrawer() {
            * 焦点态由容器统一响应（focus-within），输入框本身不再画边框，
            * 视觉上只有一个"输入舱"而不是"输入框 + 一堆按钮"。
            */}
+          {/* R36：请求链路瀑布图（无 trace 时自返回 null，不占位） */}
+          <div className="shrink-0 px-2 pt-1">
+            <AgentTracePanel />
+          </div>
+
           <div className="shrink-0 px-2 pb-2 pt-1.5">
             <div className="rounded-xl border border-white/[0.09] bg-slate-950/80 p-2 shadow-inner transition-colors focus-within:border-cyan-400/50">
               {/* ---- 顶部：选中上下文胶囊 + 视口快照缩略图 ---- */}
