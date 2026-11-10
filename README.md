@@ -55,7 +55,7 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 |---|---|---|
 | **AI 技术深度** | **35%** | 双擎流式大模型 + 四阶段 ReAct Agent + BM25/TF-IDF/RRF 混合 RAG + 端侧 Transformers.js + MCP 工具闭环 |
 | **创新性** | **25%** | 空间-语义双向绑定（3D 坐标 ↔ 数据面板）、云端推理 + 端侧隐私审计双模协同 |
-| **前端工程质量** | **10%** | 零 `any` 严格类型、32 项自动化验收、60FPS 双轨状态架构 |
+| **前端工程质量** | **10%** | 零 `any` 严格类型、<!-- VERIFY:BEGIN -->**通过 33 · 失败 0 · 跳过 0（共 33 项）**<!-- VERIFY:END -->、60FPS 双轨状态架构 |
 | **实用性** | **10%** | 覆盖真实 K8s 五大类高频故障，处置动作直连 MCP 协议 |
 | **用户体验** | **10%** | 电影级 3D 场景、生成式 UI 卡片水合、3 分钟黄金演示动线 |
 | **社会价值与商业潜力** | **10%** | 降低中小企业 K8s 运维门槛，金融/政务信创私有化合规 |
@@ -85,9 +85,25 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 | 指标 | 实测值 |
 |---|---|
 | TypeScript 严格模式 | 全仓 0 个 `any` / `@ts-ignore` |
-| 自动化验收 | **32 项检查全绿**（`node scripts/verify.mjs`） |
-| Draw Calls | **307**（10 个 InstancedMesh 承载 352 实例，逐个渲染需 589 次） |
-| 视口休眠 | 页面隐藏时 `frameloop: always → demand`，零后台渲染开销 |
+
+<!-- 以下区块由 node scripts/sync-docs-metrics.mjs 从 docs/performance.json 与 docs/verify-summary.json 生成，请勿手改 -->
+<!-- METRICS:BEGIN -->
+| 指标 | 实测值 | 采集口径 / 是否可作性能证据 |
+|---|---|---|
+| 数据采集时间 | 2026-11-10 14:01（Asia/Shanghai） | `node scripts/benchmark.mjs` |
+| 运行环境 | win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM · Node v24.16.0 · 24 核 | 同上 |
+| WebGL 渲染器 | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver) | 软件光栅化，**FPS 不作为性能证据** |
+| Draw Calls | **403**（20 次采样 400~403） | 硬件无关，可作渲染优化证据 |
+| Triangles | 188,738（中位） | 硬件无关 |
+| 场景对象 | 311 Mesh / 24 InstancedMesh / 972 实例 / 4 Points / 3 Lines | 场景统计 |
+| RAG 检索延迟 | 均值 **7.02ms** · 中位 6.82ms · P95 11.94ms（20 次采样） | 真实耗时 |
+| 脱敏吞吐 | **16,418 条/秒**（100 条/批 × 5） | 真实耗时 |
+| 端侧分类延迟 | 均值 0.07ms（15 条） | builtin (fallback)，非神经网络推理 |
+| 首屏 JS | 路由 84.8 kB · First Load 172 kB · 共享 87.5 kB | next build 输出 |
+| FPS（软件光栅化） | 均值 2.30 · 中位 2.00 · P95 8.00（20 次采样） | **不作为性能证据** |
+| 帧时间（软件光栅化） | 均值 626.03ms · P95 1554.40ms | **不作为性能证据** |
+| 视口休眠 | 前台 `always` → 后台 `demand`，已验证生效 | 行为验证 |
+<!-- METRICS:END -->
 
 ### 2.5 实用性（10%）
 
@@ -286,7 +302,7 @@ AI_MODEL_NAME=glm-4-flash
 node scripts/verify.mjs
 ```
 
-自动完成 **32 项检查**，覆盖静态检查、核心算法、API 契约与浏览器端 E2E：
+自动完成 <!-- VERIFY:BEGIN -->**通过 33 · 失败 0 · 跳过 0（共 33 项）**<!-- VERIFY:END -->，覆盖静态检查、核心算法、API 契约与浏览器端 E2E：
 
 ```
 阶段 1 · 静态检查         tsc / ESLint / 文件完整性 / 禁 any 扫描
@@ -305,20 +321,38 @@ node scripts/benchmark.mjs
 
 ### 实测快照
 
-> 数据来自 `pnpm benchmark`（2026-11-08 复测）。Draw Calls / Triangles 为**硬件无关指标**；
-> FPS 采集于 SwiftShader 软件光栅化环境（无 GPU 加速），数值显著低于真实显卡，
-> 刻意不作为性能证据（详见 `docs/performance.md` 的说明）。
+> **数据采集环境与时间**：下表的每一个数字都由 `node scripts/benchmark.mjs` 在**同一台机器**上
+> 一次性采集（采集时间见表格首行），并由 `node scripts/sync-docs-metrics.mjs` 自动写入本文件——
+> 不接受手抄，文档与 `docs/performance.json` 不一致时同步脚本会报错。
+>
+> **FPS 与帧时间严格不作为性能证据**：3D 场景在 SwiftShader 软件光栅化（无 GPU 加速）下运行，
+> 数值被软件光栅化严重压低，与真实显卡无可比性。可作证据的是：
+> ① 硬件无关指标（Draw Calls / Triangles / 场景对象数）；
+> ② 真实耗时（RAG 检索、脱敏吞吐、端侧分类）；
+> ③ 构建产物（首屏 JS 体积）。
+>
+> 两遍独立采集的硬件无关指标一致性由 `node scripts/benchmark-consistency.mjs` 校验。
 
-| 指标 | 值 | 说明 |
+<!-- METRICS:BEGIN -->
+| 指标 | 实测值 | 采集口径 / 是否可作性能证据 |
 |---|---|---|
-| Draw Calls | **307**（19 次采样 min = max = 307，完全恒定） | 10 个 InstancedMesh 承载 352 实例；24 个可见 Pod 仅占 1 次 |
-| 场景对象 | 237 Mesh / 10 InstancedMesh / 6 Points / 2 Lines | 含机架立柱、阶梯顶冠、16 槽幽灵框等细节 |
-| RAG 检索 | **11.14ms** 均值 / P95 12.48ms | 20 次采样 |
-| 脱敏吞吐 | **9,573 条/秒** | 100 条批量 × 5 次采样 |
-| 视口休眠 | `always → demand` | 页面隐藏时停止渲染 |
+| 数据采集时间 | 2026-11-10 14:01（Asia/Shanghai） | `node scripts/benchmark.mjs` |
+| 运行环境 | win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM · Node v24.16.0 · 24 核 | 同上 |
+| WebGL 渲染器 | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver) | 软件光栅化，**FPS 不作为性能证据** |
+| Draw Calls | **403**（20 次采样 400~403） | 硬件无关，可作渲染优化证据 |
+| Triangles | 188,738（中位） | 硬件无关 |
+| 场景对象 | 311 Mesh / 24 InstancedMesh / 972 实例 / 4 Points / 3 Lines | 场景统计 |
+| RAG 检索延迟 | 均值 **7.02ms** · 中位 6.82ms · P95 11.94ms（20 次采样） | 真实耗时 |
+| 脱敏吞吐 | **16,418 条/秒**（100 条/批 × 5） | 真实耗时 |
+| 端侧分类延迟 | 均值 0.07ms（15 条） | builtin (fallback)，非神经网络推理 |
+| 首屏 JS | 路由 84.8 kB · First Load 172 kB · 共享 87.5 kB | next build 输出 |
+| FPS（软件光栅化） | 均值 2.30 · 中位 2.00 · P95 8.00（20 次采样） | **不作为性能证据** |
+| 帧时间（软件光栅化） | 均值 626.03ms · P95 1554.40ms | **不作为性能证据** |
+| 视口休眠 | 前台 `always` → 后台 `demand`，已验证生效 | 行为验证 |
+<!-- METRICS:END -->
 
-> **FPS 数据采集于 SwiftShader 软件光栅化环境（无 GPU），不代表真实显卡表现。**
-> 详见 [docs/performance.md](docs/performance.md)。
+> 证据文件：`docs/evidence/`（验收终端输出日志与截图）、`docs/performance.json`（原始数据）、
+> `docs/performance.md`（可读报告）。
 
 ---
 
