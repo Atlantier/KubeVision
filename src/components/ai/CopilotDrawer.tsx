@@ -943,13 +943,26 @@ function MessageBubble({
             type="button"
             onClick={(): void => {
               if (onRetry !== undefined && message.failedPrompt !== undefined) {
-                onRetry(message.id, message.failedPrompt);
+                /*
+                 * 【断网恢复后"继续生成"】网络/服务端中断时，已产出内容仍在页面上。
+                 * 这里在重试 prompt 末尾追加续写指令，模型会从断点继续而不是重头再来；
+                 * 其他错误（工具参数等）仍是标准重试。
+                 */
+                const resumable = message.errorCategory === 'network' || message.errorCategory === 'server';
+                onRetry(
+                  message.id,
+                  resumable
+                    ? `${message.failedPrompt}\n\n（上一轮回答因网络/服务端中断，请基于已给出的内容继续完成，不要重复已输出部分）`
+                    : message.failedPrompt,
+                );
               }
             }}
             className="mt-1.5 flex items-center gap-1 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider text-amber-200 transition-colors hover:border-amber-400/70 hover:bg-amber-500/25"
           >
             <RotateCw className="h-2.5 w-2.5" aria-hidden />
-            一键重试
+            {message.errorCategory === 'network' || message.errorCategory === 'server'
+              ? '继续生成'
+              : '一键重试'}
           </button>
         </div>
       ) : null}
@@ -1103,6 +1116,24 @@ export default function CopilotDrawer() {
    * 现在 updater 保持纯函数，播报请求走 ref + state，由 effect 执行。
    */
   const [speechRequest, setSpeechRequest] = useState<{ readonly messageId: string; readonly nonce: number } | null>(null);
+
+  /**
+   * 卸载清理：清空所有骨架屏看门狗。
+   *
+   * 【为什么必须做】StrictMode 开发模式下组件会"挂载 → 卸载 → 再挂载"，
+   * 若首次挂载创建的 8 秒定时器不在卸载时清除，它们会在第二次挂载后
+   * 对着已失效的闭包执行 patchMessage —— 表现为无谓的状态更新与定时器累积。
+   * 这是 StrictMode 审计（docs/strictmode-audit.md）要求"卸载后零回调"的一部分。
+   */
+  useEffect((): (() => void) => {
+    const watchdogs = skeletonWatchdogRef.current;
+    return (): void => {
+      for (const timer of watchdogs.values()) {
+        window.clearTimeout(timer);
+      }
+      watchdogs.clear();
+    };
+  }, []);
   /** 是否应贴底滚动（用户手动上滑查看历史时置 false） */
   const stickToBottomRef = useRef<boolean>(true);
 
