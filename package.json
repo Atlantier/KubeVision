@@ -27,6 +27,10 @@
     "shot": "node scripts/shot.mjs",
     "probe:blackout": "node scripts/probe-blackout.mjs",
     "probe:r13": "node scripts/probe-r13.mjs",
+    "verify:telemetry": "node scripts/verify-telemetry.mjs",
+    "docs:metrics": "node scripts/sync-docs-metrics.mjs",
+    "docs:evidence": "node scripts/capture-evidence.mjs",
+    "benchmark:consistency": "node scripts/benchmark-consistency.mjs",
     "sim:drift": "node scripts/sim-drift.mjs",
     "verify:demo-drill": "node scripts/verify-demo-drill.mjs",
     "lint:glsl": "node scripts/lint-glsl.mjs"

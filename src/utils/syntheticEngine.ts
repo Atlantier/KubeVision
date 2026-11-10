@@ -182,13 +182,26 @@ const HEALTH_SCORE_MAX = 100;
  * @returns [−1, 1] 区间的确定性浮点噪声
  */
 function hashNoise(seed: number): number {
+  /*
+   * 【2026-11 修复：旧实现不是"噪声"，是一条缓慢斜坡】
+   *
+   * 旧实现是裸 xorshift32（x ^= x<<13; x ^= x>>>17; x ^= x<<5）。
+   * 对**小整数种子**（tick 从 1 开始、种子形如 tick*67+11）它没有雪崩效应：
+   *   hashNoise(78)≈0.01, hashNoise(145)≈0.02, … 连续 20 个种子输出的是一条
+   *   **单调上升的斜坡**（实测 tick 21~80 的均值 0.41，而理论应为 0）。
+   * 后果：所谓"零均值随机噪声"其实是一个缓慢漂移项，节点水位会跟着它
+   * 慢慢爬升/下滑——这正是"节点数值缓慢漂移、故障恢复后回不到基线"的根因。
+   *
+   * 修复：改用 lowbias32 终混（两次 Math.imul + 高低位 xor），
+   * 小种子也能瞬间雪崩，相邻种子输出互不相关。仍然：
+   *   · 确定性（同种子恒得同输出）；
+   *   · 无 Math.random；
+   *   · 值域 [−1, 1)。
+   */
   let x = seed | 0;
-  if (x === 0) x = 0x9e3779b9; // 零种子会退化，替换为黄金比例常数
-  x ^= x << 13;
-  x |= 0;
-  x ^= x >>> 17;
-  x ^= x << 5;
-  x |= 0;
+  x = Math.imul(x ^ (x >>> 16), 0x7feb352d);
+  x = Math.imul(x ^ (x >>> 15), 0x846ca68b);
+  x ^= x >>> 16;
   /* x 现为 32 位有符号整数，除以 2^31 得 [−1,1) */
   return x / 2147483648;
 }
@@ -206,10 +219,6 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-/** 保留整数（状态类计数用） */
-function round0(value: number): number {
-  return Math.round(value);
-}
 
 /**
  * appendHistory —— 把新值推入 6 点 FIFO 历史序列（末位恒为当前值）。
@@ -401,8 +410,8 @@ function evolvePodBaseline(pod: PodEntity, tick: number, index: number): PodEnti
     status,
     cpuUsage: cpu,
     memoryUsage: mem,
-    cpuHistory: appendHistory(pod.cpuHistory, round0(cpu)),
-    memHistory: appendHistory(pod.memHistory, round0(mem)),
+    cpuHistory: appendHistory(pod.cpuHistory, cpu),
+    memHistory: appendHistory(pod.memHistory, mem),
   };
 }
 
@@ -477,8 +486,8 @@ function evolvePodOomSwarm(pod: PodEntity, tick: number, rank: number): PodEntit
     cpuUsage: cpu,
     memoryUsage: mem,
     restarts,
-    cpuHistory: appendHistory(pod.cpuHistory, round0(cpu)),
-    memHistory: appendHistory(pod.memHistory, round0(mem)),
+    cpuHistory: appendHistory(pod.cpuHistory, cpu),
+    memHistory: appendHistory(pod.memHistory, mem),
   };
 }
 
@@ -509,8 +518,8 @@ function evolvePodCpuSpike(pod: PodEntity, tick: number, index: number): PodEnti
     status: 'Running',
     cpuUsage: cpu,
     memoryUsage: mem,
-    cpuHistory: appendHistory(pod.cpuHistory, round0(cpu)),
-    memHistory: appendHistory(pod.memHistory, round0(mem)),
+    cpuHistory: appendHistory(pod.cpuHistory, cpu),
+    memHistory: appendHistory(pod.memHistory, mem),
   };
 }
 
@@ -542,8 +551,8 @@ function evolvePodPartition(pod: PodEntity, tick: number, index: number): PodEnt
     status,
     cpuUsage: cpu,
     memoryUsage: mem,
-    cpuHistory: appendHistory(pod.cpuHistory, round0(cpu)),
-    memHistory: appendHistory(pod.memHistory, round0(mem)),
+    cpuHistory: appendHistory(pod.cpuHistory, cpu),
+    memHistory: appendHistory(pod.memHistory, mem),
   };
 }
 
@@ -708,6 +717,13 @@ function evolveNode(
    */
   const nodeBaselineMbps = deriveNodeBaselineMbps(node);
 
+  /*
+   * 【基线提前解析】故障分支也必须相对基线计算，否则会退化成"每帧累加/累减"
+   * ——那是随机游走的另一种形式（实测 NET 分支连续减 8/tick，43 tick 后 CPU 掉到 5%，
+   * 故障解除后要很久才能爬回来）。
+   */
+  const baseline = resolveNodeBaseline(node);
+
   let cpuUsage = node.cpuUsage;
   let memUsage = node.memUsage;
   let networkMbps = nodeBaselineMbps;
@@ -717,7 +733,8 @@ function evolveNode(
     /* CPU 尖峰：向 [92,99] 逼近，节点进入 HighLoad */
     const cpuTarget = (SPIKE_CPU_MIN + SPIKE_CPU_MAX) / 2;
     cpuUsage = clamp(node.cpuUsage + (cpuTarget - node.cpuUsage) * 0.6 + noiseNet * 1.5, SPIKE_CPU_MIN, SPIKE_CPU_MAX);
-    memUsage = clamp(node.memUsage + 3 + noiseNet * 2, 0, 95);
+    /* 内存压力按「基线 + 3」算，而不是每帧 +3（后者 30 帧就顶到 95） */
+    memUsage = clamp(baseline.mem + 3 + noiseNet * 2, 0, 95);
     status = 'HighLoad';
     networkMbps = nodeBaselineMbps * (1 + qpsWave);
   } else if (scenario === 'NET_PACKET_LOSS' && node.rackIndex === PARTITION_RACK_INDEX) {
@@ -727,14 +744,21 @@ function evolveNode(
        几乎恒定不变，网络流光速度会呈现「死板匀速」——而丢包场景恰恰
        应该是忽快忽慢的断续感。0.28 给出约 ±6.4 Mbps 的可见抖动。 */
     networkMbps = nodeBaselineMbps * PARTITION_THROUGHPUT_RATIO * (1 + noiseNet * 0.28);
-    cpuUsage = clamp(node.cpuUsage - 8 + noiseNet * 2, 0, 100);
-    memUsage = clamp(node.memUsage - 5 + noiseNet * 2, 0, 100);
+    /*
+     * 【修复：累计扣减】旧实现是 node.cpuUsage - 8（每帧都再减 8），
+     * 43 tick 的丢包演练足以把 CPU 从 44 打到 5%，故障解除后还要慢慢爬回来——
+     * 视觉上就是"节点被打死了"，与"网络分区"的语义也不符（分区不消耗 CPU）。
+     * 现在改为「基线 − 8」，稳定在基线下 8 个百分点。
+     */
+    cpuUsage = clamp(baseline.cpu - 8 + noiseNet * 2, 0, 100);
+    memUsage = clamp(baseline.mem - 5 + noiseNet * 2, 0, 100);
     status = 'NetworkPartition';
   } else if (scenario === 'POD_OOM_SWARM' && node.rackIndex === OOM_RACK_INDEX) {
     /* OOM 风暴：内存压力上升（Pod 批量 OOM 直接抬升节点内存水位） */
     const memTarget = 88;
     memUsage = clamp(node.memUsage + (memTarget - node.memUsage) * 0.4 + noiseNet * 1.5, 0, 96);
-    cpuUsage = clamp(node.cpuUsage + 5 + noiseNet * 2, 0, 95);
+    /* CPU 抬升同样按基线偏移，避免每帧 +5 顶到上限 */
+    cpuUsage = clamp(baseline.cpu + 5 + noiseNet * 2, 0, 95);
     networkMbps = nodeBaselineMbps * (1 + qpsWave);
     status = 'Ready';
   } else {
@@ -753,7 +777,6 @@ function evolveNode(
      * 【baseline 从哪来】resolveNodeBaseline() 返回**不可变先验**，
      * 绝不读 node 自身当前值（那会让回归项恒为 0）。
      */
-    const baseline = resolveNodeBaseline(node);
     const noiseMem = hashNoise(tick * 73 + index * 41 + 12);
 
     /*

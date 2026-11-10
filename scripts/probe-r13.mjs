@@ -202,20 +202,40 @@ const boundary = await ev(`(async () => {
 
   const during = store.getState().snapshotSummary.nodes.map((n) => ({ name: n.name, status: n.status, cpu: n.cpuUsage }));
 
-  /* ---- 平滑回落：把免疫起点改到窗口即将到期，逐帧观察该 Pod ---- */
-  /* 采样期间保持免疫表存在，=. 15s 窗口 → 0.6s 后到期 */
-  store.setState({ healedPodIds: { [betaPod.id]: Date.now() - 14400 } });
+  /*
+   * ---- 平滑回落：用「OOM 下内存 96%」这种强对比场景，免疫值 40% 附近 ----
+   *
+   * 【为什么必须强对比】稳态下 Pod 的 CPU/内存本来就在 30~50 区间，
+   * 免疫目标值也在同一区间，滑没滑根本看不出来（上一版探针就是这么误判的）。
+   * 这里先用 OOM 把内存推到 96%，再自愈免疫到 40% 附近，
+   * 窗口到期时"40% → 96%"的落差足够大，插值帧（约 68%）肉眼可辨。
+   */
+  store.getState().setActiveChaos('POD_OOM_SWARM');
+  await new Promise((r) => setTimeout(r, 4500));
+
+  const oomPod = store.getState().snapshotSummary.pods.find(
+    (p) => p.nodeId === 'node-worker-beta' && p.memoryUsage > 80,
+  );
+  const targetId = oomPod === undefined ? betaPod.id : oomPod.id;
+
+  /* 打免疫：展示值应被改写到记忆健康区 */
+  store.setState({ healedPodIds: { [targetId]: Date.now() } });
+  await new Promise((r) => setTimeout(r, 2000));
+  const immuneSnap = store.getState().snapshotSummary.pods.find((p) => p.id === targetId);
+
+  /* 把免疫起点挪到窗口即将到期（15s 窗口 → 0.6s 后到期），逐帧采样 */
+  store.setState({ healedPodIds: { [targetId]: Date.now() - 14400 } });
   const series = [];
-  for (let i = 0; i < 14; i += 1) {
+  for (let i = 0; i < 16; i += 1) {
     await new Promise((r) => setTimeout(r, 300));
-    const pod = store.getState().snapshotSummary.pods.find((p) => p.id === betaPod.id);
-    if (pod) series.push({ t: Date.now() - immuneStart, cpu: pod.cpuUsage, mem: pod.memoryUsage });
+    const pod = store.getState().snapshotSummary.pods.find((p) => p.id === targetId);
+    if (pod) series.push({ t: Date.now() - immuneStart, mem: pod.memoryUsage, cpu: pod.cpuUsage, status: pod.status });
   }
 
   store.setState({ healedPodIds: {} });
   store.getState().setActiveChaos('NONE');
   await new Promise((r) => setTimeout(r, 800));
-  return { before, during, immuneStart, series, podId: betaPod.id };
+  return { before, during, immuneStart, series, podId: targetId, immuneSnap };
 })()`);
 
 const alpha = boundary?.during?.find((n) => n.name === 'worker-alpha');

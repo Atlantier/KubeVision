@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-08T14:14:08.671Z",
+  "generatedAt": "2026-11-10T06:01:44.074Z",
   "environment": {
     "os": "win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM",
     "node": "v24.16.0",
@@ -11,35 +11,35 @@
   "rendering": {
     "fps": {
       "count": 20,
-      "mean": 2,
+      "mean": 2.3,
       "median": 2,
-      "p95": 4,
+      "p95": 8,
       "min": 1,
-      "max": 4
+      "max": 8
     },
     "frameTimeMs": {
       "count": 20,
-      "mean": 571.94,
-      "median": 467.4,
-      "p95": 1568.1,
-      "min": 252.5,
-      "max": 1568.1
+      "mean": 626.03,
+      "median": 474.2,
+      "p95": 1554.4,
+      "min": 126.5,
+      "max": 1554.4
     },
     "drawCalls": {
       "count": 20,
-      "mean": 396,
-      "median": 396,
-      "p95": 396,
-      "min": 396,
-      "max": 396
+      "mean": 402.25,
+      "median": 403,
+      "p95": 403,
+      "min": 400,
+      "max": 403
     },
     "triangles": {
       "count": 20,
-      "mean": 135480,
-      "median": 135480,
-      "p95": 135480,
-      "min": 135480,
-      "max": 135480
+      "mean": 188714,
+      "median": 188738,
+      "p95": 188738,
+      "min": 188642,
+      "max": 188738
     },
     "sampleCount": 20,
     "dprSettled": 1,
@@ -52,11 +52,11 @@
   },
   "batching": {
     "meshes": 311,
-    "instanced": 21,
-    "instancedTotal": 610,
-    "points": 6,
+    "instanced": 24,
+    "instancedTotal": 972,
+    "points": 4,
     "lines": 3,
-    "drawCalls": 396
+    "drawCalls": 400
   },
   "edgeInference": {
     "runtime": "builtin (fallback)",
@@ -65,10 +65,10 @@
     "fallback": true,
     "latencyMs": {
       "count": 15,
-      "mean": 0.1,
+      "mean": 0.07,
       "median": 0.1,
       "p95": 0.1,
-      "min": 0.1,
+      "min": 0,
       "max": 0.1
     },
     "sampleCount": 15
@@ -76,11 +76,11 @@
   "rag": {
     "latencyMs": {
       "count": 20,
-      "mean": 7.87,
-      "median": 8.03,
-      "p95": 9.62,
-      "min": 6.66,
-      "max": 9.62
+      "mean": 7.02,
+      "median": 6.82,
+      "p95": 11.94,
+      "min": 5.66,
+      "max": 11.94
     },
     "sampleCount": 20
   },
@@ -88,18 +88,18 @@
     "batchSize": 100,
     "latencyMs": {
       "count": 5,
-      "mean": 6.7,
-      "median": 6.72,
-      "p95": 6.9,
-      "min": 6.45,
-      "max": 6.9
+      "mean": 6.09,
+      "median": 6.34,
+      "p95": 6.56,
+      "min": 5.18,
+      "max": 6.56
     },
-    "throughputPerSec": 14931
+    "throughputPerSec": 16418
   },
   "bundle": {
     "routes": [
       "Route (app)                              Size     First Load JS",
-      "┌ ○ /                                    68.3 kB         156 kB",
+      "┌ ○ /                                    84.8 kB         172 kB",
       "├ ○ /_not-found                          873 B          88.4 kB",
       "├ ƒ /api/chat                            0 B                0 B",
       "├ ƒ /api/logs/live                       0 B                0 B",
@@ -108,8 +108,8 @@
       "├ ƒ /api/verify/rag                      0 B                0 B",
       "└ ƒ /api/verify/sanitize                 0 B                0 B",
       "+ First Load JS shared by all            87.5 kB",
-      "├ chunks/671-2943fbe313056d46.js       31.6 kB",
-      "├ chunks/c070312d-517b88b977c85670.js  53.6 kB",
+      "├ chunks/671-757fc8b8d981d414.js       31.6 kB",
+      "├ chunks/c070312d-fc6b0a6ac19fa687.js  53.6 kB",
       "└ other shared chunks (total)          2.27 kB"
     ]
   },

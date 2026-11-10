@@ -54,3 +54,7 @@ tmp-demo-test/
 
 # 验收失败证据（运行时生成，不入库）
 docs/summit/failures/
+
+# 脚本编译/转译临时目录（sim-drift / verify-telemetry 运行时生成）
+tmp-sim/
+tmp-telemetry/
