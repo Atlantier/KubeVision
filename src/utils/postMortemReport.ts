@@ -37,6 +37,7 @@ import type {
   RootCauseAlertProps,
 } from '@/types/ai';
 import { renderIncidentTimelineMarkdown } from '@/utils/snapshotRingBuffer';
+import { formatDateTime, formatTimestampCompact, formatTimezoneOffset } from '@/utils/time';
 
 /* ========================================================================== */
 /* 对外类型契约                                                                */
@@ -127,63 +128,9 @@ function pad2(value: number): string {
   return Math.abs(Math.trunc(value)).toString().padStart(2, '0');
 }
 
-/**
- * toSafeDate —— 把可能非法的时间戳收敛为合法 Date。
- *
- * 【为何需要】nowMs / startedAtMs 由调用方传入，可能来自持久化会话（脏值）或
- * 测试里的 NaN。`new Date(NaN).getFullYear()` 返回 NaN，会让报告标题出现
- * 「NaN-NaN-NaN」这种自毁可信度的字样，因此在入口处统一收敛到 epoch 0。
- *
- * @param epochMs 毫秒时间戳
- * @returns 合法 Date 实例
- */
-function toSafeDate(epochMs: number): Date {
-  return new Date(Number.isFinite(epochMs) ? epochMs : 0);
-}
 
-/**
- * formatDateTime —— 时间戳 → `YYYY-MM-DD HH:mm:ss`（本地时区口径）。
- *
- * @param epochMs 毫秒时间戳
- * @returns 固定宽度的可排序时间串
- */
-function formatDateTime(epochMs: number): string {
-  const date = toSafeDate(epochMs);
-  return (
-    `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ` +
-    `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`
-  );
-}
 
-/**
- * formatTimestampCompact —— 时间戳 → `YYYYMMDD-HHmmss`（文件名 / 报告编号专用）。
- *
- * @param epochMs 毫秒时间戳
- * @returns 无分隔符的紧凑时间串
- */
-function formatTimestampCompact(epochMs: number): string {
-  const date = toSafeDate(epochMs);
-  return (
-    `${date.getFullYear()}${pad2(date.getMonth() + 1)}${pad2(date.getDate())}-` +
-    `${pad2(date.getHours())}${pad2(date.getMinutes())}${pad2(date.getSeconds())}`
-  );
-}
 
-/**
- * formatTimezoneOffset —— 时间戳所在时区的 UTC 偏移标签。
- *
- * 【为何必须显式标注】复盘会被跨时区评审；一个裸的 `13:30:45` 在异地读者眼里
- * 是无法对齐的。把 `UTC+08:00` 写进报告，等于把时间语义钉死在文档里。
- *
- * @param epochMs 毫秒时间戳
- * @returns 形如 `UTC+08:00` / `UTC-05:00` 的标签
- */
-function formatTimezoneOffset(epochMs: number): string {
-  const offsetMinutes = -toSafeDate(epochMs).getTimezoneOffset();
-  const sign = offsetMinutes >= 0 ? '+' : '-';
-  const absolute = Math.abs(offsetMinutes);
-  return `UTC${sign}${pad2(Math.floor(absolute / 60))}:${pad2(absolute % 60)}`;
-}
 
 /**
  * formatRelative —— 相对时刻 → `+mm:ss`。

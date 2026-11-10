@@ -34,7 +34,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bot, Layers, ShieldCheck, TerminalSquare } from 'lucide-react';
+import { Bot, Layers, ShieldCheck } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
@@ -316,7 +316,7 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
           )}
         >
           {/* 视口槽位：后续轮次注入 dynamic(ssr:false) R3F Canvas */}
-          {viewport ?? <ViewportPlaceholder />}
+          {viewport}
 
           {/* ---- 混沌演练态势氛围光（审查报告 §2.4.2）----
               值班人员余光扫一眼就该知道集群处于故障演练态，而不是
@@ -383,11 +383,7 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
             mobileView === 'topology' && 'hidden lg:block',
           )}
         >
-          {drawer ?? (
-            <RightDrawerSlot activeTab={activeRightTab} onTabChange={setActiveRightTab}>
-              <DrawerPlaceholder tab={activeRightTab} />
-            </RightDrawerSlot>
-          )}
+          {drawer}
         </section>
       </main>
 
@@ -405,44 +401,6 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
           本外壳不再持有该模态框，只保留联动入口：
           TopBar 的 Inject Chaos 按钮写入 isChaosModalOpen，
           page.tsx 订阅该字段决定是否渲染动态组件。 */}
-    </div>
-  );
-}
-
-/* ========================================================================== */
-/* 占位内容（后续轮次被真实槽位内容替换）                                          */
-/* ========================================================================== */
-
-/** ViewportPlaceholder —— 3D 视口占位（深空网格 + 接入预告） */
-function ViewportPlaceholder() {
-  return (
-    <div className="bg-cyber-grid pointer-events-none absolute inset-0 flex items-center justify-center">
-      <div className="pointer-events-none flex flex-col items-center gap-2 text-center">
-        <TerminalSquare className="h-8 w-8 text-slate-500" aria-hidden />
-        <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-slate-500">
-          3d viewport slot
-        </p>
-        <p className="max-w-xs text-[11px] leading-relaxed text-slate-500">
-          R3F Canvas（next/dynamic · ssr:false）将于下一轮接入此槽位
-        </p>
-      </div>
-    </div>
-  );
-}
-
-/** DrawerPlaceholder —— 抽屉正文占位（按页签展示接入预告） */
-function DrawerPlaceholder({ tab }: { readonly tab: RightPanelTab }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-      {tab === 'copilot' ? <Bot className="h-8 w-8 text-slate-500" aria-hidden /> : <ShieldCheck className="h-8 w-8 text-slate-500" aria-hidden />}
-      <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-slate-500">
-        {tab === 'copilot' ? 'sre copilot slot' : 'edge auditor slot'}
-      </p>
-      <p className="max-w-[240px] text-[11px] leading-relaxed text-slate-500">
-        {tab === 'copilot'
-          ? 'NDJSON 流式对话 + 生成式 UI 卡片将于后续轮次接入'
-          : 'Transformers.js 端侧日志审计台将于后续轮次接入'}
-      </p>
     </div>
   );
 }

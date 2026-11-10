@@ -33,6 +33,7 @@
  */
 
 import type { NextRequest } from 'next/server';
+import type { McpExecuteReceipt as SharedMcpExecuteReceipt } from '@/types/mcp';
 
 /* ---- 必须动态执行：涉及外部集群调用与时间戳，绝不可静态化 ---- */
 export const dynamic = 'force-dynamic';
@@ -77,34 +78,12 @@ interface McpExecuteRequest {
   readonly clusterMode?: unknown;
 }
 
-/**
- * McpExecuteReceipt —— 成功回执（JSON-RPC 2.0 result 载荷）。
- *
- * 【为何带 kubectlCommand】运维人员看到一个抽象动作名（restart_pod）时
- * 无法立刻判断它到底做了什么。给出等价 kubectl 命令是最直接的解释——
- * 懂 K8s 的人看一眼就知道影响范围，也方便复制到自己的终端复核。
- */
-interface McpExecuteReceipt {
-  readonly executionId: string;
-  readonly timestamp: string;
-  readonly toolUri: string;
-  readonly actionType: McpActionType;
-  readonly targetId: string;
-  readonly targetName: string;
-  readonly kubectlCommand: string;
-  readonly latencyMs: number;
-  readonly auditDigest: string;
-  /** R43：调用方传入的链路 id（可选；不参与审计摘要计算） */
-  readonly traceId?: string;
-  readonly mode: ExecutionMode;
-  readonly note: string;
-}
 
 /** JSON-RPC 2.0 成功响应包 */
 interface JsonRpcSuccess {
   readonly jsonrpc: '2.0';
   readonly id: string;
-  readonly result: McpExecuteReceipt;
+  readonly result: SharedMcpExecuteReceipt;
 }
 
 /** JSON-RPC 2.0 错误响应包 */
@@ -553,7 +532,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     `${executionId}|${actionType}|${targetId}|${timestamp}|${kubectlCommand}`,
   );
 
-  const receipt: McpExecuteReceipt = {
+  const receipt: SharedMcpExecuteReceipt = {
     executionId,
     timestamp,
     toolUri: `mcp://k8s-cluster/tools/${actionType}`,

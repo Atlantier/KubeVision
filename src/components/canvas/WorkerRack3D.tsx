@@ -53,7 +53,6 @@ import * as THREE from 'three';
 
 
 import { enhanceArmorMaterial, getBrushedMetalTextures } from '@/components/canvas/ProceduralPbrEnvironment';
-import { useOptionalGltfModel } from '@/hooks/useOptionalGltfModel';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { PALETTE } from '@/constants/palette';
@@ -1194,30 +1193,6 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   /** 最新 node 快照引用：useFrame 读取，避免把 node 塞进渲染循环依赖 */
   const nodeRef = useRef<WorkerRack3DProps['node']>(node);
 
-  /**
-   * ---- Blender 混合渲染挂载槽 ----
-   *
-   * 【契约】美术把 `public/models/worker-rack.glb` 放进去即自动切换为高精度模型；
-   * 文件不存在时钩子返回 `scene === null`，本组件照常渲染程序化重工机柜。
-   *
-   * 【替换范围】只替换**静态外壳骨架**（装甲外框 / 角柱 / 底座 / 顶盖 / 顶冠 /
-   * 散热格栅）。以下动态部件**始终保留**，因此 Blender 模型同样能随节点健康度
-   * 实时变色发光：
-   *   · 12 条插槽底座环（SLOT_GHOSTS，单实例网格）
-   *   · 两根垂直霓虹导光柱（statusColor 驱动）
-   *   · 腔体状态点光源（cavityLight）
-   *   · 4 层托盘隔板（Pod 落座基准）
-   *   · 底部 <Html> 铭牌（名字 / 状态点 / CPU / MEM）
-   *   · 顶部光纤接口环（NetworkStream3D 光缆落点）
-   *
-   * 【为何用 visible 而非条件渲染】外壳由 6 处分散的网格组成，且与动态部件
-   * 交错声明。用 `visible` 关闭时 three 的渲染列表会直接跳过这些对象
-   * （零 draw call），同时保留原有 JSX 结构，避免为条件渲染做大规模结构调整
-   * 而引入布局/射线回归风险。
-   */
-  const { scene: gltfRack, isAvailable: isGltfRackAvailable } = useOptionalGltfModel(
-    '/models/worker-rack.glb',
-  );
 
   /* node props 变更（1Hz）时刷新 ref；useFrame 恒读最新值，零重订阅 */
   useEffect(() => {
@@ -1631,9 +1606,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       }}
       onPointerOut={(): void => setHovered(false)}
     >
-      {/* ---- Blender 高精度模型（存在 .glb 时挂载；否则回落到下方程序化外壳）----
-          模型已由钩子统一开启 castShadow/receiveShadow，因此与场景布光一致。 */}
-      {gltfRack !== null ? <primitive object={gltfRack} /> : null}
+            
 
       {/* ---- 通透光学导轨框架（替换原半透明磨砂装甲外框）。
          【本轮为何替换】原外框是一个 opacity 0.16、roughness 0.72 的暗色大盒子，
@@ -1658,7 +1631,6 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           key={`optic-rail-v-${cornerIndex}`}
           position={[corner.x, RACK_BODY_CENTER_Y, corner.z]}
           onClick={handleSelect}
-          visible={!isGltfRackAvailable}
         >
           {/*
            * 导轨截面 0.022×0.022 —— 极细，视觉上是一条"光边"而非一块面板。
@@ -1706,7 +1678,6 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
                 key={`optic-h-z-${zSign}`}
                 position={[0, y, zSign * (RACK_BODY_SIZE[2] / 2 - OPTIC_RAIL_SIZE / 2)]}
                 onClick={handleSelect}
-                visible={!isGltfRackAvailable}
               >
                 <boxGeometry args={[RACK_BODY_SIZE[0], OPTIC_RAIL_SIZE, OPTIC_RAIL_SIZE]} />
                 <meshStandardMaterial
@@ -1727,7 +1698,6 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
                 key={`optic-h-x-${xSign}`}
                 position={[xSign * (RACK_BODY_SIZE[0] / 2 - OPTIC_RAIL_SIZE / 2), y, 0]}
                 onClick={handleSelect}
-                visible={!isGltfRackAvailable}
               >
                 <boxGeometry args={[OPTIC_RAIL_SIZE, OPTIC_RAIL_SIZE, RACK_BODY_SIZE[2]]} />
                 <meshStandardMaterial
@@ -1763,7 +1733,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       {PILLAR_POSITIONS.map((pillar, index): ReactNode => (
         <group key={`pillar-${index}`} position={[pillar.x, RACK_BODY_CENTER_Y, pillar.z]}>
           {/* ---- 立柱主体：拉丝钛合金 ---- */}
-          <mesh raycast={noRaycast} visible={!isGltfRackAvailable}>
+          <mesh raycast={noRaycast}>
             <boxGeometry args={[PILLAR_SIZE, RACK_BODY_SIZE[1], PILLAR_SIZE]} />
             <meshStandardMaterial
             onBeforeCompile={enhanceArmorMaterial}
@@ -1813,7 +1783,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        *
        * 【raycast 关闭】全部是纯装饰，不参与拾取（与项目既有装饰件一致）。
        */}
-      <group visible={!isGltfRackAvailable}>
+      <group>
         {/* ---- 倒角亮边（34 实例）---- */}
         <instancedMesh
           ref={chamferInstancesRef}
@@ -1881,7 +1851,6 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         castShadow
         receiveShadow
         onClick={handleSelect}
-        visible={!isGltfRackAvailable}
       >
         <meshStandardMaterial
             onBeforeCompile={enhanceArmorMaterial}
@@ -2015,7 +1984,6 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         castShadow
         receiveShadow
         onClick={handleSelect}
-        visible={!isGltfRackAvailable}
       >
         <meshStandardMaterial
             onBeforeCompile={enhanceArmorMaterial}
@@ -2051,7 +2019,6 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         castShadow
         receiveShadow
         raycast={noRaycast}
-        visible={!isGltfRackAvailable}
       >
         <meshStandardMaterial
             onBeforeCompile={enhanceArmorMaterial}
@@ -2080,7 +2047,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        * 与收敛后的落束光斑（BEAM_BLOOM_SIZE 1.9 → 0.85）。
        * 顶盖因此读起来是"厚重的金属散热模组"，而不是"一块发光贴片"。
        */}
-      <mesh position={[0, CROWN_Y + CROWN_HEIGHT / 2 + 0.012, 0]} raycast={noRaycast} visible={!isGltfRackAvailable}>
+      <mesh position={[0, CROWN_Y + CROWN_HEIGHT / 2 + 0.012, 0]} raycast={noRaycast}>
         <boxGeometry args={[CROWN_WIDTH - 0.42, 0.02, CROWN_DEPTH - 0.42]} />
         <meshStandardMaterial
             onBeforeCompile={enhanceArmorMaterial}
@@ -2118,7 +2085,6 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
             key={`crown-louver-${louverIndex}`}
             position={[0, CROWN_Y + CROWN_HEIGHT / 2 + 0.026, offsetZ]}
             raycast={noRaycast}
-            visible={!isGltfRackAvailable}
           >
             <boxGeometry args={[louverWidth, LOUVER_THICKNESS, louverDepth * 0.62]} />
             <meshStandardMaterial

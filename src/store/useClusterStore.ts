@@ -49,6 +49,7 @@ import type {
 } from '@/types/store';
 import { syncSnapshotToTransientRef } from '@/store/useTelemetryRef';
 import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
+import { HEALTH_SCORE_MAX, computeClusterHealthScore } from '@/utils/clusterHealth';
 
 /* ========================================================================== */
 /* 模块级常量（容量上限与持久化键，集中定义防漂移）                               */
@@ -100,7 +101,6 @@ const HEALED_POD_MEM = 42;
 const HEAL_RECOVERY_FLOOR = 96;
 
 /** 健康分上限（百分比量程封顶） */
-const HEALTH_SCORE_MAX = 100;
 
 /** 历史序列长度契约（与 PodEntity.cpuHistory/memHistory「恒为 6 点」一致） */
 const RECOVERY_HISTORY_POINTS = 6;
@@ -165,64 +165,6 @@ function meanOf(values: number[]): number {
   return sum / values.length;
 }
 
-/**
- * computeClusterHealthScore —— 集群综合健康分加权公式。
- *
- * 【设计意图】把「节点状态 > Pod 状态 > 活跃告警」的三级严重度
- * 折算为 0~100 的单一可读分值，供 HUD 环形仪表与 MASTER 全息球着色消费。
- * 采用「满分扣减」模型（100 − Σ罚分）而非加权平均：任一维度崩坏都能
- * 独立拉低总分，符合 SRE「短板决定可用性」的直觉。
- *
- * 【罚分权重】（数值经 24 Pod / 3 节点规模标定，单节点全崩约扣 45 分）
- * - 节点：Ready 0 / HighLoad −6 / NetworkPartition −15（脑裂最致命）
- * - Pod ：Running 0 / Pending −0.5 / Terminating −0.5
- *         / CrashLoopBackOff −4 / OOMKilled −5
- * - 告警：P0 −3 / P1 −1.5 / P2 −0.5
- *
- * 【输入输出】
- * @param nodes  节点实体数组
- * @param pods   Pod 实体数组
- * @param alerts 活跃告警数组
- * @returns 0~100 的整数健康分（下限 clamp 至 0，上限 clamp 至 100）
- */
-function computeClusterHealthScore(
-  nodes: readonly WorkerNodeEntity[],
-  pods: readonly PodEntity[],
-  alerts: readonly AlertEvent[],
-): number {
-  let penalty = 0;
-
-  for (const node of nodes) {
-    if (node.status === 'NetworkPartition') penalty += 15;
-    else if (node.status === 'HighLoad') penalty += 6;
-  }
-
-  for (const pod of pods) {
-    switch (pod.status) {
-      case 'OOMKilled':
-        penalty += 5;
-        break;
-      case 'CrashLoopBackOff':
-        penalty += 4;
-        break;
-      case 'Pending':
-      case 'Terminating':
-        penalty += 0.5;
-        break;
-      case 'Running':
-        break;
-    }
-  }
-
-  for (const alert of alerts) {
-    if (alert.level === 'P0') penalty += 3;
-    else if (alert.level === 'P1') penalty += 1.5;
-    else penalty += 0.5;
-  }
-
-  const score = Math.round(HEALTH_SCORE_MAX - penalty);
-  return Math.min(HEALTH_SCORE_MAX, Math.max(0, score));
-}
 
 /**
  * deriveHealedSnapshot —— 由原快照不可变派生「已自愈」新快照（自愈闭环核心）。

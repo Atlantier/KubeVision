@@ -43,6 +43,7 @@ import type {
   NodeStatus,
 } from '@/types/cluster';
 import type { LogEntry } from '@/types/ai';
+import { HEALTH_SCORE_MAX, computeClusterHealthScore } from '@/utils/clusterHealth';
 
 /* ========================================================================== */
 /* 时间与数值常量                                                              */
@@ -161,7 +162,6 @@ const MBPS_PER_CPU_CORE = 12;
 const ALERT_ID_PREFIX = 'alert';
 
 /** 健康分满分 */
-const HEALTH_SCORE_MAX = 100;
 
 /* ========================================================================== */
 /* 确定性伪随机（无 Math.random，可复现）                                        */
@@ -243,56 +243,6 @@ function appendHistory(history: readonly number[], value: number): number[] {
 /* 健康分与告警构造                                                            */
 /* ========================================================================== */
 
-/**
- * computeClusterHealthScore —— 集群综合健康分（满分扣减模型）。
- *
- * 【权重契约】与 store 层自愈闭环使用**完全相同**的罚分表（该表在
- * useClusterStore.ts 内为私有实现，此处按同一口径复刻，保证「引擎产出的
- * 健康分」与「自愈后托底的健康分」可直接比较，不会出现两套评分打架）：
- * - 节点：Ready 0 / HighLoad −6 / NetworkPartition −15
- * - Pod ：Running 0 / Pending −0.5 / Terminating −0.5
- *         / CrashLoopBackOff −4 / OOMKilled −5
- * - 告警：P0 −3 / P1 −1.5 / P2 −0.5
- *
- * @returns 0~100 的整数健康分
- */
-export function computeClusterHealthScore(
-  nodes: readonly WorkerNodeEntity[],
-  pods: readonly PodEntity[],
-  alerts: readonly AlertEvent[],
-): number {
-  let penalty = 0;
-
-  for (const node of nodes) {
-    if (node.status === 'NetworkPartition') penalty += 15;
-    else if (node.status === 'HighLoad') penalty += 6;
-  }
-
-  for (const pod of pods) {
-    switch (pod.status) {
-      case 'OOMKilled':
-        penalty += 5;
-        break;
-      case 'CrashLoopBackOff':
-        penalty += 4;
-        break;
-      case 'Pending':
-      case 'Terminating':
-        penalty += 0.5;
-        break;
-      case 'Running':
-        break;
-    }
-  }
-
-  for (const alert of alerts) {
-    if (alert.level === 'P0') penalty += 3;
-    else if (alert.level === 'P1') penalty += 1.5;
-    else penalty += 0.5;
-  }
-
-  return Math.round(clamp(HEALTH_SCORE_MAX - penalty, 0, HEALTH_SCORE_MAX));
-}
 
 /**
  * buildAlerts —— 按当前混沌场景生成告警列表（纯函数，无副作用）。

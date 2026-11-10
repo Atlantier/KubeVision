@@ -39,7 +39,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import { syncSnapshotToTransientRef, telemetryTransientRef } from '@/store/useTelemetryRef';
-import { TICK_INTERVAL_MS, computeClusterHealthScore, stepTelemetrySimulation } from '@/utils/syntheticEngine';
+import { TICK_INTERVAL_MS, stepTelemetrySimulation } from '@/utils/syntheticEngine';
+import { computeClusterHealthScore } from '@/utils/clusterHealth';
 import {
   recordImmuneRewrites,
   recordSchemaStatus,

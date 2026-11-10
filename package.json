@@ -22,6 +22,7 @@
     "verify:demo-facts": "node scripts/verify-demo-facts.mjs",
     "verify:demo-matrix": "node scripts/verify-demo-matrix.mjs",
     "test:demo": "node scripts/run-demo-tests.mjs",
+    "test:health": "node --test tests/clusterHealth.test.mjs",
     "test:demo-cov": "node scripts/run-demo-tests.mjs",
     "benchmark": "node scripts/benchmark.mjs",
     "shot": "node scripts/shot.mjs",

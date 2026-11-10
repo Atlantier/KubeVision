@@ -1,0 +1,10 @@
+批2 引用核查（src/**/*.{ts,tsx}）
+--- useOptionalGltfModel : 0 处
+--- isGltfRackAvailable : 0 处
+--- gltfRack : 0 处
+--- ViewportPlaceholder : 0 处
+--- DrawerPlaceholder : 0 处
+--- interface McpExecuteReceipt : 1 处
+    mcp.ts:L21
+--- computeClusterHealthScore 定义数: 1（src/utils/clusterHealth.ts；store/engine 已改为 import）
+--- 健康分单测: node --test tests/clusterHealth.test.mjs → 4 pass / 0 fail

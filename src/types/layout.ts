@@ -198,9 +198,9 @@ export interface TerminalEchoProps {
  */
 export interface ShellLayoutProps {
   /** 左侧 3D 视口插槽（桌面端默认占 66% 宽，可拖拽调整） */
-  readonly viewport?: ReactNode;
+  readonly viewport: ReactNode;
   /** 右侧 AI 抽屉插槽（桌面端默认占 34% 宽，可拖拽调整） */
-  readonly drawer?: ReactNode;
+  readonly drawer: ReactNode;
 }
 
 /**
