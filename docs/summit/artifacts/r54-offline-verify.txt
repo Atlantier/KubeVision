@@ -1,0 +1,13 @@
+R54 离线演示包验证证据（Windows，生产构建）
+commit: 74eb67e（R53；本轮仅文档/脚本）
+buildId: sPvO0Qj8mlreRARE4INF0
+zip: release/kubevision-demo-74eb67e-2026-11-10T14-47-16.zip
+zip 大小: 82.0 MB；解压后 250 文件 / 96.0 MB
+sha256: 0eb33158a2ab464585e92514ed85122773b055f6b308a43cbe667ab145c3c441
+解压结构: 顶层目录 kubevision-demo-...（含 .next/ 全量、.next/static、required-server-files.json、public/ 含 ONNX 权重、src、配置、.env.local、RUN_ME.txt、MANIFEST.json）
+启动方式: node_modules 用同机副本（junction）→ node node_modules/next/dist/bin/next start -p 3100
+GET /                    → HTTP 200（1s ready）
+POST /api/mcp initialize  → HTTP 200 {"jsonrpc":"2.0","id":"offline-1","result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"kubevision-mcp","version":"1.0.0"}}}
+POST /api/verify/rag      → HTTP 200 {"results":[{"topId":"RUNBOOK-K8S-042","score":0.8943,"count":2}]}
+结论: 页面 / MCP 端点 / RAG 检索引擎在无外网条件下可用；LLM 网关不可用时走引擎 B。
+限制: 未在完全空白系统从零安装验证；node_modules 平台相关；离线恢复依赖 pnpm store。

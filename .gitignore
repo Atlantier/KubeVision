@@ -68,3 +68,6 @@ tmp-telemetry/
 
 # 本地提交信息临时文件
 /*.tmp
+# ---- 现场交付物（视频/离线包不入库）----
+/release/
+/recording/

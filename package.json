@@ -63,7 +63,8 @@
     "docs:pdf": "node scripts/build-whitepaper-pdf.mjs",
     "check:layering": "node scripts/check-layering.mjs",
     "check:dead-exports": "node scripts/check-dead-exports.mjs",
-    "audit:deps": "node scripts/audit-deps.mjs"
+    "audit:deps": "node scripts/audit-deps.mjs",
+    "package:demo": "node scripts/package-demo.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "0.0.66",
