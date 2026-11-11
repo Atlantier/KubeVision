@@ -226,6 +226,28 @@ async function phaseStatic() {
     }
     bad('GLSL 静态高危检查', detail);
   }
+
+  /*
+   * ---- 文档数字一致性（R55） ----
+   *
+   * 【为何放进 --quick】只读 Markdown/JSON，不启浏览器；单次 <100ms。
+   * 它保证 README / 白皮书 / PPT 文案里的数字与 docs/performance.json、
+   * docs/verify-summary.json 不漂移——这是"文档里的数字必须来自脚本"的最后一道闸。
+   */
+  const docsConsistency = await run('node', ['scripts/check-docs-consistency.mjs', '--json']);
+  if (docsConsistency.code === 0) {
+    ok('文档数字一致性', 'README / 白皮书 / PPT 与 performance.json 一致');
+  } else {
+    let detail = 'exit ' + docsConsistency.code;
+    try {
+      const parsed = JSON.parse(docsConsistency.stdout);
+      const failed = (parsed.results ?? []).filter((entry) => entry.status === 'fail');
+      detail = failed.map((entry) => entry.doc + ': ' + (entry.problems ?? []).length + ' 处').join('；');
+    } catch {
+      /* 保留 exit code */
+    }
+    bad('文档数字一致性', detail);
+  }
 }
 
 /* ========================================================================== */

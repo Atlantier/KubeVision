@@ -64,7 +64,10 @@
     "check:layering": "node scripts/check-layering.mjs",
     "check:dead-exports": "node scripts/check-dead-exports.mjs",
     "audit:deps": "node scripts/audit-deps.mjs",
-    "package:demo": "node scripts/package-demo.mjs"
+    "package:demo": "node scripts/package-demo.mjs",
+    "docs:ppt": "node scripts/build-pitch-pdf.mjs",
+    "evidence:final": "node scripts/capture-final-evidence.mjs",
+    "check:docs": "node scripts/check-docs-consistency.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "0.0.66",

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>KubeVision AI — Pitch Deck</title>
+<style>
+  @page { size: 1280px 720px; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #050b17; color: #e2e8f0; font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { position: relative; width: 1280px; height: 720px; padding: 52px 64px; page-break-after: always; overflow: hidden; background: radial-gradient(1200px 600px at 15% -10%, rgba(34,211,238,.14), transparent 60%), linear-gradient(160deg, #050b17 0%, #071120 60%, #050b17 100%); }
+  .page:last-child { page-break-after: auto; }
+  .kicker { font-family: ui-monospace, Consolas, monospace; font-size: 13px; letter-spacing: .28em; color: #22d3ee; text-transform: uppercase; }
+  h1 { font-size: 64px; line-height: 1.08; letter-spacing: -.02em; margin: 14px 0 18px; }
+  h2 { font-size: 40px; line-height: 1.15; margin: 8px 0 16px; }
+  .sub { font-size: 22px; color: #94a3b8; line-height: 1.5; }
+  .pageno { position: absolute; right: 40px; bottom: 26px; font-family: ui-monospace, monospace; font-size: 12px; color: #475569; }
+  .tag { display: inline-block; padding: 6px 12px; border: 1px solid rgba(34,211,238,.45); border-radius: 999px; font-family: ui-monospace, monospace; font-size: 13px; color: #67e8f9; }
+  .big { font-family: ui-monospace, Consolas, monospace; font-size: 46px; color: #22d3ee; letter-spacing: .02em; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 34px; }
+  .card { border: 1px solid rgba(148,163,184,.18); background: rgba(15,23,42,.55); border-radius: 16px; padding: 22px 24px; }
+  .card .num { font-family: ui-monospace, monospace; font-size: 40px; color: #22d3ee; }
+  .card .lbl { margin-top: 8px; font-size: 17px; color: #94a3b8; }
+  .row { display: flex; gap: 26px; margin-top: 26px; }
+  .shot { border: 1px solid rgba(34,211,238,.22); border-radius: 14px; overflow: hidden; background: #020617; }
+  .shot img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .cap { margin-top: 10px; font-size: 15px; color: #94a3b8; line-height: 1.45; }
+  .flow { display: grid; grid-template-columns: 1.05fr 1.3fr 1.05fr; gap: 18px; margin-top: 30px; align-items: stretch; }
+  .box { border: 1px solid rgba(34,211,238,.28); border-radius: 14px; background: rgba(8,20,38,.7); padding: 18px; }
+  .box h3 { font-size: 19px; color: #67e8f9; margin-bottom: 10px; }
+  .box p { font-size: 16px; color: #cbd5e1; line-height: 1.6; }
+  .arrow { display: flex; align-items: center; justify-content: center; color: #22d3ee; font-size: 26px; }
+  .foot { position: absolute; left: 64px; bottom: 30px; font-size: 13px; color: #64748b; }
+  table { width: 100%; border-collapse: collapse; margin-top: 18px; font-size: 17px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid rgba(148,163,184,.16); }
+  th { color: #67e8f9; font-weight: 600; }
+  .muted { color: #64748b; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<section class="page">
+  <div class="kicker">KubeVision AI · 2026</div>
+  <h1>KubeVision AI</h1>
+  <p class="sub">云原生三维空间态势感知与智能自愈副驾</p>
+  <p class="sub" style="margin-top:10px;font-size:18px;color:#64748b">全国高校 AI Web 开发挑战赛 · 智启未来赛道 · ID 10037</p>
+  <div style="position:absolute;left:64px;bottom:96px">
+    <span class="tag">3D 空间索引</span>&nbsp; <span class="tag">双擎容灾</span>&nbsp; <span class="tag">端侧零出域</span>&nbsp; <span class="tag">HITL 自愈</span>
+  </div>
+  <div class="foot">学校 / 队名 / 队长联系方式：提交前替换（【待填写】）</div>
+  <div class="pageno">01 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">价值与三个数字</div>
+  <h2>一块屏幕看清集群，一句话完成闭环</h2>
+  <div class="grid3">
+    <div class="card"><div class="num">12</div><div class="lbl">篇 SRE 手册（混合检索）</div></div>
+    <div class="card"><div class="num">423</div><div class="lbl">draw calls（SwiftShader 实测）</div></div>
+    <div class="card"><div class="num">33/33</div><div class="lbl">自动化验收通过</div></div>
+  </div>
+  <div class="foot">数字来源：docs/performance.json · docs/verify-summary.json（2026-11-11）</div>
+  <div class="pageno">02 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">三个痛点</div>
+  <h2>告警看得见，位置看不见；答案有了，出处没有</h2>
+  <div class="grid3">
+    <div class="card"><div class="num">01</div><div class="lbl">告警看不懂空间</div></div>
+    <div class="card"><div class="num">02</div><div class="lbl">排障查不到出处</div></div>
+    <div class="card"><div class="num">03</div><div class="lbl">高危操作难审计</div></div>
+  </div>
+  <div class="foot">对应：3D 空间索引 · 混合 RAG 出处 · HITL 回执 + 复盘</div>
+  <div class="pageno">03 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">端云双擎架构</div>
+  <h2>端侧脱敏推理，云端双擎与 MCP 执行</h2>
+  <div class="flow">
+    <div class="box"><h3>端侧（浏览器）</h3><p>PII 脱敏<br/>Worker 语义分类<br/>原始凭证不出域</p></div>
+    <div class="box"><h3>云端（Next.js API）</h3><p>意图路由 → 混合 RAG<br/>引擎 A：LLM 流式<br/>引擎 B：确定性容灾</p></div>
+    <div class="box"><h3>执行与闭环</h3><p>MCP 工具卡片<br/>HITL 确认<br/>回执 + 审计 + 复盘</p></div>
+  </div>
+  <div class="foot">单变量验证：无 Key/断网时自动回落引擎 B（实测约 6.7s）</div>
+  <div class="pageno">04 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">三大技术亮点</div>
+  <h2>双擎容灾 · ReAct 四阶段 · 混合 RAG 三路</h2>
+  <div class="grid3">
+    <div class="card"><div class="num">A/B</div><div class="lbl">LLM 与确定性引擎无缝切换</div></div>
+    <div class="card"><div class="num">4</div><div class="lbl">意图 · 多模态 · RAG · 工具</div></div>
+    <div class="card"><div class="num">3</div><div class="lbl">BM25 + 向量 + 语义 RRF</div></div>
+  </div>
+  <div class="foot">证据：docs/summit/R43（trace）· R44–R45（三路）· R17（评测）</div>
+  <div class="pageno">05 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">空间-语义双向绑定</div>
+  <h2>点 Pod 即飞控，点卡片即反查</h2>
+  <div class="row">
+    <div style="flex:1">
+      <div class="shot" style="height:400px"><img src="../summit/shots/v12-baseline/pod-closeup-1920x1080.png" alt="Pod 近景" /></div>
+      <div class="cap">近景：机架内 Pod 刀片（空间索引的起点）</div>
+    </div>
+    <div style="flex:1">
+      <div class="shot" style="height:400px"><img src="../summit/shots/r41-runbook/demo-phase2-1366x768.png" alt="故障注入后镜头锁定" /></div>
+      <div class="cap">故障注入：镜头锁定受灾机架 + 红色脉冲</div>
+    </div>
+  </div>
+  <div class="pageno">06 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">端侧零出域</div>
+  <h2>原始凭证不出浏览器，只发脱敏摘要</h2>
+  <div class="row">
+    <div style="flex:1.25">
+      <div class="shot" style="height:390px"><img src="../evidence/auditor-before-after-2026-11-11.png" alt="端侧审计脱敏前后对比" /></div>
+      <div class="cap">端侧审计：脱敏前后对照 + 敏感类型计数（真实截图）</div>
+    </div>
+    <div style="flex:.75;padding-top:16px">
+      <p class="sub" style="font-size:20px">6 类 PII 正则<br/>100 条批量 6.44ms<br/>≈12,880 条/秒</p>
+      <p class="muted" style="margin-top:18px">无 WebGPU 时降级 builtin<br/>页面如实标注当前引擎</p>
+    </div>
+  </div>
+  <div class="pageno">07 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">工程与数据</div>
+  <h2>硬件无关指标优先</h2>
+  <div class="grid3">
+    <div class="card"><div class="num">423</div><div class="lbl">draw calls（中位）</div></div>
+    <div class="card"><div class="num">8.27ms</div><div class="lbl">RAG 平均检索延迟</div></div>
+    <div class="card"><div class="num">33/33</div><div class="lbl">自动化验收</div></div>
+  </div>
+  <p class="muted" style="margin-top:22px">环境：win32 · Ryzen 9 7845HX · SwiftShader（软渲染）· Node 24 — FPS 不作为性能证据</p>
+  <div class="foot">三角面 206,028（中位）· 322 Mesh / 25 InstancedMesh / 1,026 实例</div>
+  <div class="pageno">08 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">证据页 1 · 验收与路演</div>
+  <h2>33/33 验收 · 4 阶段路演 · HITL 回执</h2>
+  <div class="row">
+    <div style="flex:1">
+      <div class="shot" style="height:340px"><img src="../evidence/verify-2026-11-11T04-50-52-880Z.png" alt="verify 33/33 终端截图" /></div>
+      <div class="cap">verify 33/33（2026-11-11）</div>
+    </div>
+    <div style="flex:1">
+      <div class="shot" style="height:340px"><img src="../evidence/roadshow-phase4-2026-11-11.png" alt="路演阶段 4" /></div>
+      <div class="cap">路演 阶段 4/4 · MCP 闭环自愈</div>
+    </div>
+  </div>
+  <div class="foot">复现：node scripts/capture-evidence.mjs · node scripts/shot.mjs --scene demo-phase4</div>
+  <div class="pageno">09 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">证据页 2 · RAG 与性能 HUD</div>
+  <h2>三路检索 90/76/73，HUD 实拍</h2>
+  <div class="row">
+    <div style="flex:1.05">
+      <div class="shot" style="height:360px"><img src="../evidence/rag-three-way-2026-11-11.png" alt="RAG 三路检索结果" /></div>
+      <div class="cap">RAG 检索：90% / 76% / 73% + Vector/BM25/Context 占比</div>
+    </div>
+    <div style="flex:.95">
+      <div class="shot" style="height:360px"><img src="../evidence/performance-hud-2026-11-11.png" alt="性能 HUD" /></div>
+      <div class="cap">Shift+P 性能 HUD（Draw Calls / 采样）</div>
+    </div>
+  </div>
+  <div class="pageno">10 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">商业与落地</div>
+  <h2>私有化 + 订阅，90 天 PoC 三项指标</h2>
+  <div class="grid3">
+    <div class="card"><div class="num">30%</div><div class="lbl">MTTR 下降（PoC 目标，假设）</div></div>
+    <div class="card"><div class="num">≤3min</div><div class="lbl">告警到定位（目标）</div></div>
+    <div class="card"><div class="num">100%</div><div class="lbl">高危操作审计覆盖（目标）</div></div>
+  </div>
+  <div class="foot">无真实客户/营收；市场与成本数字均标注"假设/估算"——见 docs/BUSINESS_CASE.md</div>
+  <div class="pageno">11 / 12</div>
+</section>
+
+<section class="page">
+  <div class="kicker">团队与引用</div>
+  <h2>团队分工 · 第三方引用 · 联系</h2>
+  <table>
+    <tr><th>角色</th><th>分工</th></tr>
+    <tr><td>队长（待填）</td><td>架构 / Agent / 答辩</td></tr>
+    <tr><td>队员 1（待填）</td><td>3D 渲染 / 性能</td></tr>
+    <tr><td>队员 2（待填）</td><td>RAG / 端侧推理</td></tr>
+    <tr><td>队员 3（待填）</td><td>前端工程 / 验收</td></tr>
+  </table>
+  <p class="muted" style="margin-top:22px">第三方：Next.js / React / three / R3F / drei / postprocessing / zustand / AI SDK / Transformers.js / Tailwind（MIT/Apache-2.0）；端侧模型 Xenova/all-MiniLM-L6-v2（Apache-2.0）。详见 THIRD_PARTY_NOTICES.md。</p>
+  <div class="foot">联系邮箱：【待填写】 · 学校/队名：【待填写】</div>
+  <div class="pageno">12 / 12</div>
+</section>
+
+</body>
+</html>

@@ -168,7 +168,12 @@ const diffPaths = new Set(diffs.map((d) => d.path));
 const INVARIANT_PREFIXES = [
   'batching.',
   'bundle.',
-  'rendering.triangles.',
+  /*
+   * 只锁中位：Triangles 的 mean/min/max 会随视锥剔除与动画相位轻微抖动
+   * （实测两遍 mean 差 4.8 / 0.0023%），按「必须完全一致」会误报；
+   * 文档引用的是中位，锁中位才与契约一致。
+   */
+  'rendering.triangles.median',
   'rendering.softwareRenderer',
   'rendering.viewportSleep.',
   'rendering.dprSettled',

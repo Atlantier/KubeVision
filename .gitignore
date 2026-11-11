@@ -71,3 +71,6 @@ tmp-telemetry/
 # ---- 现场交付物（视频/离线包不入库）----
 /release/
 /recording/
+
+# 性能双跑临时产物
+/tmp-bench-run*.json
