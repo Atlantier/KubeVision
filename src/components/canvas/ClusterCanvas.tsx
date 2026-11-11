@@ -291,8 +291,13 @@ const RENDER_TIER: RenderTier =
 const DPR_MAX = 1.75;
 const DPR_FLOOR = 0.85;
 
-/** 固定曝光（L1）：上限 1.18，按 A/B 校准；1.05 是中性起点 */
-const TONEMAP_EXPOSURE = 1.05;
+/**
+ * 固定曝光（L1 / R62）。
+ *
+ * 稳态必须保持 1.0：ExposureDriver 的自定义 ExposureEffect 已经承担曝光系数，
+ * 若这里再设 >1 会与后处理乘性曝光叠加成双重曝光（旧值 1.05 与 1.18 相乘）。
+ */
+const TONEMAP_EXPOSURE = 1.0;
 
 /**
  * detectRenderCapabilities —— 挂载期能力探测（L8）。
@@ -1016,26 +1021,24 @@ export default function ClusterCanvas() {
         <color attach="background" args={[VOID_COLOR]} />
         <fog attach="fog" args={[VOID_COLOR, FOG_NEAR, FOG_FAR]} />
 
-        {/* ---- 赛博影棚三点布光（Three-Point Studio Lighting） ----
+        {/* ---- 赛博影棚三点布光（R62 能量预算校准） ----
          *
-         * 旧实现只有一盏环境光 + 一盏方向光 + 中心点光，结果是通体均匀照亮、
-         * 没有任何明暗面——这是"塑料感"的根源：塑料正是因为缺乏方向性高光
-         * 与接地阴影才显得廉价。
-         *
-         * 现按电影布光逻辑分三层：
-         *  1) 环境基底（ambient 0.42）：保证暗部不死黑，但压得很低；
-         *  2) 半球天光：天空色 #38bdf8 / 地面色 #020617——
-         *     金属顶盖朝上反射深邃青蓝天光、朝下反射深空暗色，
-         *     单这一盏就让顶冠从"黑塑料盖"变成"阳极氧化铝"；
-         *  3) 主光（key light，投射阴影）+ 侧逆轮廓光（rim light，青蓝）
-         *     + 控制平面中心点光（青色），勾出背光侧金属棱角与中心能量感。
+         * 【为何整体下调】R62 地面反射过曝的根因之一是"PBR 环境贴图 + 三盏灯"
+         * 能量叠加：RoomEnvironment 的亮白顶棚与 8 根 3.2x HDR 灯带已经提供了
+         * 基础照明，旧值 2.3 / 0.95 / 28 属于"没有环境贴图时代"的补光量级，
+         * 叠在一起会把金属地面推成惨白。现在按深空黑曜石场景重新配比：
+         *   环境 0.28：保证暗部不死黑；
+         *   半球 0.45：保留顶盖的青蓝天光方向性；
+         *   主光 1.10：仍可投出清晰阴影，但不再压过状态色；
+         *   轮廓光 0.45：只勾背光侧金属棱角；
+         *   中心点光 6.5 / distance 22：控制平面附近局部提亮，不再照亮整片地面。
          */}
-        <ambientLight intensity={0.18} color="#94a3b8" />
-        <hemisphereLight args={['#38bdf8', '#020617', 0.34]} />
+        <ambientLight intensity={0.28} color="#94a3b8" />
+        <hemisphereLight args={['#38bdf8', '#020617', 0.45]} />
         <directionalLight
           castShadow
-          position={[14, 24, 14]}
-          intensity={2.3}
+          position={[12, 24, 14]}
+          intensity={1.1}
           color="#eaf4ff"
           shadow-mapSize={[2048, 2048]}
           shadow-camera-left={-13}
@@ -1046,9 +1049,9 @@ export default function ClusterCanvas() {
           shadow-normalBias={0.02}
         />
         {/* 侧逆轮廓光：只勾勒背光侧金属棱角，不参与阴影计算（省一次阴影渲染） */}
-        <directionalLight position={[-14, 12, -10]} intensity={0.95} color="#22d3ee" />
-        {/* 控制平面中心点光：距离 28 / 衰减 2，覆盖三座机架环域（L6：36→28） */}
-        <pointLight position={[0, 3.0, 0]} intensity={28} distance={28} decay={2} color="#22d3ee" />
+        <directionalLight position={[-14, 12, -10]} intensity={0.45} color="#22d3ee" />
+        {/* 控制平面中心点光：R62 由 28 降到 6.5，distance 收到 22，避免整片地面被点亮 */}
+        <pointLight position={[0, 3.0, 0]} intensity={6.5} distance={22} decay={2} color="#22d3ee" />
 
         {/*
          * ---- 地面接触阴影（Contact Shadows）----
@@ -1097,10 +1100,11 @@ export default function ClusterCanvas() {
          * 缺少上下镜像关系，纵深立刻扁平。参考图的深邃感来自
          * **地面把机架、八面体与星环柔和地倒映下去**。
          *
-         * 【参数依据】
-         * - blur [320, 90]：长轴大幅模糊 → 倒影是柔和渗影而非镜面复刻；
-         * - mixStrength 15 / mirror 0.55：反射克制，过强会抢戏；
-         * - roughness 0.62 + metalness 0.65：黑曜石半哑光金属釉面；
+         * 【参数依据（R62 黑曜石配比）】
+         * - blur [360, 120]：长轴大幅模糊 → 倒影是柔和渗影而非镜面复刻；
+         * - mixStrength 0.42 / mirror 0.28：反射克制，过强会抢戏；
+         * - roughness 0.72 + metalness 0.45：黑曜石半哑光金属釉面；
+         * - envMapIntensity=0：切断 RoomEnvironment 亮白顶棚反射（过曝根因）；
          * - depthScale + min/maxDepthThreshold：按深度衰减，
          *   近处清晰、远处迅速沉入深色，避免远处倒影堆叠成噪点。
          *
@@ -1118,31 +1122,26 @@ export default function ClusterCanvas() {
           {/* R25：地面圆盘半径 32 → 22；边缘由 GroundHorizonFade 在 r∈[13,22] 吞没 */}
           <circleGeometry args={[22, 96]} />
           <MeshReflectorMaterial
-            blur={[320, 90]}
-            /*
-             * ---- 反射贴图分辨率随自适应 DPR 分级 ----
-             *
-             * 【为什么必须分级】MeshReflectorMaterial 会把整个场景**再渲染一遍**
-             * 到一张 512² 的 RT，这是本场景最重的一笔固定开销。
-             * 在集显/低端设备上，它往往就是压垮 60FPS 的最后一根稻草——
-             * 而恰恰是这类设备最先触发 PerformanceMonitor 的降级。
-             *
-             * 【分级策略】以 adaptiveDpr 为信号（它是现有降级链的真实输出）：
-             *   ≥ 1.5 → 512（正常/高分屏）
-             *   < 1.5 → 256（已降级设备，反射面积减到 1/4，肉眼几乎无感）
-             * 反射本来就是模糊柔化的（blur 320×90），降采样后观感损失极小，
-             * 但填充率开销直接降到四分之一。
-             */
-            resolution={REFLECTOR_RESOLUTION[RENDER_QUALITY_TIER]}
-            mixBlur={0.85}
-            mixStrength={9}
-            roughness={0.35}
+            blur={[360, 120]}
+            resolution={512}
+            mixBlur={0.9}
+            mixStrength={0.42}
+            roughness={0.72}
             depthScale={1.1}
-            minDepthThreshold={0.35}
+            minDepthThreshold={0.4}
             maxDepthThreshold={1.4}
-            color="#010308"
-            metalness={0.88}
-            mirror={0.45}
+            color="#030712"
+            metalness={0.45}
+            mirror={0.28}
+            /*
+             * R62 关键修复：显式切断对 scene.environment 的采样。
+             * ProceduralPbrEnvironment 把环境设为 RoomEnvironment（亮白顶棚 +
+             * 8 根 3.2x HDR 灯带）；金属地面若继续采样 envMap，会把白棚
+             * 直接反射成相机左下方（worker-beta 脚下）的一片惨白高光。
+             * envMapIntensity=0 后地面只显示真实的 3D 集群倒影（tDiffuseBlur）
+             * 与 #030712 黑曜石底色。
+             */
+            envMapIntensity={0}
           />
         </mesh>
         ) : null}
@@ -1263,14 +1262,12 @@ export default function ClusterCanvas() {
          * 缺少"光溢出到邻近像素"的物理现象——这正是图五那种电影感的核心。
          * Bloom 把超过阈值的能量取样模糊后加回画面，光才真正"溢"出来。
          *
-         * 【参数依据（本轮校准）】
-         * - luminanceThreshold **0.62**：旧值 0.22 太低，把八面体面片、
-         *   机柜顶盖这类"中等亮度"表面也纳入泛光，导致控制平面糊成一团
-         *   死白的棉花糖、机柜盖泛白雾。抬到 0.62 后只有真正高光
-         *   （星核顶点 / 能量束核心 / 星尘粒子）才溢出，泛光回归点状细腻；
-         * - luminanceSmoothing 0.24：阈值边缘柔和过渡，消灭硬切边界；
-         * - mipmapBlur + radius 0.56：光晕更紧、更克制，不吞掉细节；
-         * - intensity 0.55：既保住状态色语义（红/绿/琥珀可分辨），
+         * 【参数依据（R62 校准）】
+         * - luminanceThreshold 0.92：只有真正高光（星核顶点 / 能量束核心 /
+         *   星尘粒子）才溢出，浅色 UI 线与地面反射不再触发辉光；
+         * - luminanceSmoothing 0.28：阈值边缘柔和过渡，消灭硬切边界；
+         * - mipmapBlur + radius 0.45 + levels 5：光晕更紧、更克制，不吞细节；
+         * - intensity 0.48：保住状态色语义（红/绿/琥珀可分辨），
          *   又不会把暗部整体提亮成灰雾。
          *
          * 【Vignette】暗角 0.35 让视线自然收拢到画面中心的三环布局，
@@ -1316,12 +1313,12 @@ export default function ClusterCanvas() {
                 bokehScale={1.2}
               />
               <Bloom
-                intensity={qualityBloomIntensity}
-                luminanceThreshold={0.78}
-                luminanceSmoothing={0.14}
+                intensity={0.48}
+                luminanceThreshold={0.92}
+                luminanceSmoothing={0.28}
                 mipmapBlur
-                radius={0.62}
-                levels={qualityBloomLevels}
+                radius={0.45}
+                levels={5}
               />
               <ExposureEffect ref={exposureEffectRef} />
               <ToneMapping mode={ToneMappingMode.NEUTRAL} />
@@ -1336,12 +1333,12 @@ export default function ClusterCanvas() {
               frameBufferType={HalfFloatType}
             >
               <Bloom
-                intensity={qualityBloomIntensity}
-                luminanceThreshold={0.78}
-                luminanceSmoothing={0.14}
+                intensity={0.48}
+                luminanceThreshold={0.92}
+                luminanceSmoothing={0.28}
                 mipmapBlur
-                radius={0.62}
-                levels={qualityBloomLevels}
+                radius={0.45}
+                levels={5}
               />
               <ExposureEffect ref={exposureEffectRef} />
               <ToneMapping mode={ToneMappingMode.NEUTRAL} />

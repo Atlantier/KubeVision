@@ -1,11 +1,21 @@
 'use client';
 
 /**
- * KubeVision AI — 自适应曝光控制器（R24）
+ * KubeVision AI — 自适应曝光控制器（R24 / R62 修复）
  *
  * 【要解决什么】故障态下发光体（告警红、闪烁光斑、泛光）数量骤增，
  * 固定曝光会把画面高光糊成一片，状态色失去层次。需要让曝光随
- * **画面亮度估计**在 [1.0, 1.18] 内平滑回落。
+ * **画面亮度估计**在 [0.85, 1.00] 内平滑回落。
+ *
+ * 【R62 关键修复：双重曝光】
+ * 旧实现同时做两件事：
+ *   1. useFrame 里 `gl.toneMappingExposure = 1.18`；
+ *   2. 后处理 ExposureEffect 里 `inputColor.rgb * uExposure`（也是 1.18）。
+ * 稳态画面被乘了 1.18 × 1.18 = 1.3924 倍，所有高光直接过曝发白。
+ * 现在：
+ *   · `gl.toneMappingExposure` 只在挂载 effect 中固定为 **1.0**，useFrame 不再碰；
+ *   · 曝光系数唯一来源是 ExposureEffect 的 `uExposure`（[0.85, 1.0]）；
+ *   · 片元里先做 NaN/Infinity 防御，再做软膝高光滚降，局部高亮平滑收敛。
  *
  * 【为什么不用 readPixels】每帧回读 GPU 像素会造成渲染管线同步停顿
  * （readPixels 是同步阻塞调用），在 60FPS 预算里是不可接受的开销。
@@ -24,17 +34,22 @@
  * 视觉上是"缓慢适应"而不是"忽然变暗"。
  */
 
-import { useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useEffect, useRef } from 'react';
+import { useFrame, useThree } from '@react-three/fiber';
 import { Effect } from 'postprocessing';
-import { Uniform } from 'three';
+import { Uniform, type WebGLRenderer } from 'three';
 import { wrapEffect } from '@react-three/postprocessing';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { useClusterStore } from '@/store/useClusterStore';
 
-/** 曝光上下限（题目要求 [1.0, 1.18]） */
-export const EXPOSURE_MIN = 1.0;
-export const EXPOSURE_MAX = 1.18;
+/**
+ * 曝光上下限（R62）。
+ *
+ * 稳态上限 1.00：绝不凭空放大亮度；故障/高发光期温和压到 0.85（-15%）。
+ * 旧的 [1.0, 1.18] 会在稳态放大 18%，叠加渲染器曝光后就是双重过曝。
+ */
+export const EXPOSURE_MIN = 0.85;
+export const EXPOSURE_MAX = 1.0;
 
 /** 亮度估计的采样周期（≤4Hz） */
 const ESTIMATE_INTERVAL_MS = 250;
@@ -42,12 +57,35 @@ const ESTIMATE_INTERVAL_MS = 250;
 /** 阻尼系数（越大收敛越快；2.2 ≈ 0.25s 走完约 42%） */
 const EXPOSURE_DAMPING = 2.2;
 
-/** 自定义 Effect 的片元着色器：线性域乘性曝光 */
+/**
+ * 自定义 Effect 的片元着色器：线性域乘性曝光 + 防御 + 软膝高光滚降。
+ *
+ * 【安全判据】用范围取反 `!(x >= 0 && x <= 64)` 而不是 `x == x`：
+ * Windows ANGLE→D3D11 的 HLSL 优化可能把自比较折叠掉，范围判据同时
+ * 覆盖 NaN、负数与 ±Infinity。
+ *
+ * 【软膝】exposed / (1 + max(0, exposed - 0.85) * 0.45)：
+ * 0.85 以下保持线性；以上分母逐渐增大，高光平滑压缩到约 2.2 上限，
+ * 不会出现整片死白。
+ */
 const EXPOSURE_FRAGMENT = /* glsl */ `
-  uniform float exposure;
+  uniform float uExposure;
 
   void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
-    outputColor = vec4(inputColor.rgb * exposure, inputColor.a);
+    vec3 safeRgb = inputColor.rgb;
+    bvec3 invalid = bvec3(
+      !(safeRgb.r >= 0.0 && safeRgb.r <= 64.0),
+      !(safeRgb.g >= 0.0 && safeRgb.g <= 64.0),
+      !(safeRgb.b >= 0.0 && safeRgb.b <= 64.0)
+    );
+    if (any(invalid)) {
+      safeRgb = vec3(0.0);
+    }
+    vec3 exposed = safeRgb * uExposure;
+    // 高光软膝滚降：超过 1.0 的高亮平滑压缩，防止局部死白过曝
+    vec3 compressed = exposed / (vec3(1.0) + max(vec3(0.0), exposed - vec3(0.85)) * 0.45);
+    float safeAlpha = (inputColor.a >= 0.0 && inputColor.a <= 1.0) ? inputColor.a : 1.0;
+    outputColor = vec4(compressed, safeAlpha);
   }
 `;
 
@@ -60,17 +98,17 @@ const EXPOSURE_FRAGMENT = /* glsl */ `
 class ExposureEffectImpl extends Effect {
   constructor() {
     super('ExposureEffect', EXPOSURE_FRAGMENT, {
-      uniforms: new Map<string, Uniform>([['exposure', new Uniform(EXPOSURE_MAX)]]),
+      uniforms: new Map<string, Uniform>([['uExposure', new Uniform(EXPOSURE_MAX)]]),
     });
   }
 
   /**
    * 设置曝光值。
    *
-   * @param value 目标曝光（会被 clamp 到 [1.0, 1.18]）
+   * @param value 目标曝光（会被 clamp 到 [0.85, 1.0]）
    */
   setExposure(value: number): void {
-    const uniform = this.uniforms.get('exposure');
+    const uniform = this.uniforms.get('uExposure');
     if (uniform !== undefined) {
       uniform.value = Math.min(EXPOSURE_MAX, Math.max(EXPOSURE_MIN, value));
     }
@@ -122,6 +160,10 @@ function estimateSceneLuminance(): number {
  * 【职责】低频（≤4Hz）估计亮度 → 计算目标曝光 → 每帧阻尼逼近 →
  * 写入 Effect uniform 与瞬态轨（供 HUD 显示），**全程不 setState**。
  *
+ * 【R62 单一曝光源】渲染器 toneMappingExposure 固定在 1.0（挂载 effect），
+ * useFrame 只写 ExposureEffect 的 uExposure；禁止再写 gl.toneMappingExposure，
+ * 否则会与后处理乘性曝光形成 1.0×1.0 以外的双重放大。
+ *
  * @param props.effectRef 指向 ExposureEffect 实例的 ref
  */
 export function ExposureDriver({ effectRef }: { readonly effectRef: React.MutableRefObject<ExposureEffectHandle | null> }): null {
@@ -132,7 +174,20 @@ export function ExposureDriver({ effectRef }: { readonly effectRef: React.Mutabl
   /** 上次估计时刻 */
   const lastEstimateAtRef = useRef<number>(0);
 
-  useFrame(({ gl }, delta): void => {
+  /** 渲染器实例：只用于挂载时把 toneMappingExposure 固定为 1.0。 */
+  const gl = useThree((state): WebGLRenderer => state.gl);
+
+  /**
+   * R62：渲染器曝光固定 1.0。
+   *
+   * 这条只在挂载/渲染器变化时执行一次，绝不放进 useFrame；
+   * 曝光系数由 ExposureEffect.uExposure 唯一控制。
+   */
+  useEffect((): void => {
+    gl.toneMappingExposure = 1.0;
+  }, [gl]);
+
+  useFrame((_state, delta): void => {
     const now = performance.now();
 
     /* 低频估计：≤4Hz；只在到点时读一次瞬态轨（O(pods)） */
@@ -140,8 +195,8 @@ export function ExposureDriver({ effectRef }: { readonly effectRef: React.Mutabl
       lastEstimateAtRef.current = now;
       const luminance = estimateSceneLuminance();
       /*
-       * 目标曝光：亮度越高曝光越低（1.18 → 1.0）。
-       * 这样故障态发光增强时画面不会糊成一片，而稳态仍保留电影感亮度。
+       * 目标曝光：亮度越高曝光越低（1.00 → 0.85）。
+       * 稳态保持 1.0 标准曝光；故障态高光增多时温和压暗 15%。
        */
       targetRef.current = EXPOSURE_MAX - luminance * (EXPOSURE_MAX - EXPOSURE_MIN);
       telemetryTransientRef.glStats.sceneLuminanceEstimate =
@@ -152,9 +207,7 @@ export function ExposureDriver({ effectRef }: { readonly effectRef: React.Mutabl
     const alpha = 1 - Math.exp(-EXPOSURE_DAMPING * Math.min(delta, 0.1));
     currentRef.current += (targetRef.current - currentRef.current) * alpha;
 
-    /* 渲染器 exposure：兜底路径（渲染器内置 NeutralToneMapping）直接生效 */
-    gl.toneMappingExposure = currentRef.current;
-    /* Composer 路径：通过自定义曝光 pass 生效（渲染器 toneMapping 已被关闭） */
+    /* 唯一曝光写入点：后处理 Effect 的 uExposure */
     effectRef.current?.setExposure(currentRef.current);
     /* 瞬态轨：供 Shift+P HUD 读取，零重渲染 */
     telemetryTransientRef.glStats.toneMappingExposure =
