@@ -1444,6 +1444,14 @@ function enterHeal(label: string): void {
     if (generation !== runGeneration) return;
 
     let executedViaUi = false;
+    /**
+     * R64：从被点击卡片上读取的真实目标。
+     *
+     * ActionConfirm 的 handleExecute 内部有 600ms 流光 + `/api/mcp/execute`
+     * 异步链，`button.click()` 返回时 healedPodIds 仍为空；必须等卡片自己
+     * 把目标写入 healedPodIds 后，导演才能安全补齐剩余受害者。
+     */
+    let executedCardTargetId: string | null = null;
     if (cardReady) {
       const card = findActionCard();
       if (card !== null) {
@@ -1458,10 +1466,51 @@ function enterHeal(label: string): void {
         if (button !== null && !button.disabled) {
           button.click();
           executedViaUi = true;
+          executedCardTargetId = card.getAttribute('data-target-id');
           actions().appendTerminalLog(
             '[DEMO-DIRECTOR] 已通过动作卡「立即执行自愈方案」完成 HITL 确认（导演自动确认模式）',
           );
         }
+      }
+    }
+
+    /*
+     * R64：等待卡片自身的 600ms 动画 + MCP 请求落库。
+     *
+     * 【为什么必须等】旧实现在 click() 后 0ms 就读取 healedPodIds，此时卡片
+     * 还在 executing 态，集合为空 → 导演把卡片目标也 heal 了 → 600ms 后
+     * 卡片再调用 healEntity 时撞上 30s 免疫窗口，ActionConfirm 当场翻红
+     * “免疫窗口内不可重复自愈”。这里改为轮询卡片目标已进入 healedPodIds，
+     * 超时 3500ms（600ms 动画 + 网络 + 渲染余量），再计算 remaining。
+     */
+    let cardHealed = false;
+    if (executedViaUi) {
+      cardHealed = await pollUntil(
+        (): boolean =>
+          executedCardTargetId !== null && executedCardTargetId.length > 0
+            ? actions().healedPodIds[executedCardTargetId] !== undefined
+            : Object.keys(actions().healedPodIds).length > 0,
+        3500,
+        DOM_POLL_MS,
+        generation,
+      );
+      if (generation !== runGeneration) return;
+    }
+
+    /*
+     * R64：卡片落库后立刻写可解析的 MCP 汇总回执（不发起第二次 POST）。
+     * 必须放在终态旁白/阶段标记之前：verify-demo 在检测到阶段完成时立刻快照，
+     * 若回执晚于快照写入，J-3 的 mcpAction 会读到 null。
+     */
+    if (executedViaUi) {
+      if (cardHealed) {
+        actions().appendTerminalLog(
+          `[MCP 回执] ${primaryName} · ${podAction} 已完成（动作卡自身 /api/mcp/execute；导演未重复 POST）`,
+        );
+      } else {
+        actions().appendTerminalLog(
+          `[MCP 回执] ${primaryName} · ${podAction} 未确认（等待动作卡落库超时 3500ms；导演未重复 POST）`,
+        );
       }
     }
 
@@ -1571,8 +1620,19 @@ function enterHeal(label: string): void {
       );
     }
 
-    /* ---- 8. MCP 回执：target 用首个受害 Pod（不是节点），targetName 用可读名 ---- */
-    repairMcpReceipt(primaryId, primaryName, podAction, generation);
+    /* ---- 8. MCP 回执：target 用首个受害 Pod（不是节点），targetName 用可读名 ----
+     *
+     * R64：executedViaUi=true 时 ActionConfirm 已经发起了真实 `/api/mcp/execute`
+     * 并写入 [MCP-ROUTER] 审计日志；导演再调用一次会产生重复 HTTP POST。
+     * 只有卡片未挂载/无法点击的兜底路径才由导演补回执。
+     */
+    if (executedViaUi) {
+      actions().appendTerminalLog(
+        '[DEMO-DIRECTOR] HITL 卡片已自行发起 /api/mcp/execute，导演跳过重复 MCP 回执请求',
+      );
+    } else {
+      repairMcpReceipt(primaryId, primaryName, podAction, generation);
+    }
 
     /*
      * 【不在这里清除 demoAutoConfirm】实测发现：一旦在 HITL 执行完就置 false，

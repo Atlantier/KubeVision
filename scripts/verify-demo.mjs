@@ -1252,6 +1252,17 @@ async function main() {
     }
   }
   if (final === null) final = await evaluate(cdp, READ_STATE);
+  /*
+   * R64：MCP 回执是卡片 600ms 动画 + /api/mcp/execute 之后才写入终端的，
+   * “剧本已完整跑完”可能先到。这里最多等 6s，让 J-3 读到真实的最终回执，
+   * 而不是在异步写日志前取样导致误报 null。
+   */
+  for (let i = 0; i < 30; i += 1) {
+    const action = final?.mcpAction;
+    if (typeof action === 'string' && action.length > 0) break;
+    await sleep(200);
+    final = await evaluate(cdp, READ_STATE);
+  }
   const finalCards = await evaluate(cdp, READ_CARDS);
 
   console.log(
