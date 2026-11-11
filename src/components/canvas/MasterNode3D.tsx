@@ -42,10 +42,9 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Html } from '@react-three/drei';
+import { Edges, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { PALETTE } from '@/constants/palette';
-import CrystalOptics from '@/components/canvas/CrystalOptics';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import { MASTER_ENTITY_ID } from '@/types/canvas';
@@ -311,8 +310,14 @@ const PLASMA_VERTEX_SHADER = `
 varying vec3 vViewNormal;
 varying vec3 vViewPosition;
 
+/* R67：零向量安全归一化，避免 normalize(0) 产生 NaN 传入片元 */
+vec3 safeNormalize(vec3 v, vec3 fallback) {
+  float lenSq = dot(v, v);
+  return lenSq > 1.0e-8 ? v * inversesqrt(lenSq) : fallback;
+}
+
 void main() {
-  vViewNormal = normalize(normalMatrix * normal);
+  vViewNormal = safeNormalize(normalMatrix * normal, vec3(0.0, 0.0, 1.0));
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   vViewPosition = -mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
@@ -365,7 +370,7 @@ void main() {
   float alpha = corona * uPulse;
   alpha *= smoothstep(0.0, 0.02, viewDot);
 
-  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
+  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 0.88));
   #ifdef KV_DEBUG_NAN
     if (!(gl_FragColor.r == gl_FragColor.r)
         || !(gl_FragColor.g == gl_FragColor.g)
@@ -551,15 +556,13 @@ const RING_TICKS: ReadonlyArray<{
 });
 
 /**
- * 铭牌的局部坐标（R61）。
+ * 铭牌的局部坐标（R67 复原）。
  *
- * 【为何从 [0, -1.96, 1.48] 移到 [-2.35, -1.55, 0.85]】
- * 旧坐标的世界投影在沿 Z 轴观察 / 选中 master 相机位于 [0, 5.2, 7.6] 时，
- * 恰好落在正前方 worker-alpha 铭牌的同一水平线，两块铭牌完全叠在一起。
- * 移到晶核左下方后，控制平面铭牌不再沿着 worker-alpha 的投影轨迹，
- * 并用右上角 45° 折角战术引线指向晶核中心。
+ * 晶核正下方居中：世界坐标约 [0, 0.54, 1.48]。
+ * 铭牌回到晶核下方后不再向左前方偏置，避免与左侧 worker 机架铭牌重叠；
+ * 不再需要侧向引线。
  */
-const LABEL_POSITION: readonly [number, number, number] = [-2.35, -1.55, 0.85];
+const LABEL_POSITION: readonly [number, number, number] = [0, -1.96, 1.48];
 
 /* ========================================================================== */
 /* MasterNode3D 主体                                                           */
@@ -582,8 +585,14 @@ export default function MasterNode3D() {
   const [hovered, setHovered] = useState<boolean>(false);
 
   /* ---- 动画通道 ref（useFrame 内原地突变） ---- */
+  const floatGroupRef = useRef<THREE.Group>(null);
   const outerRef = useRef<THREE.Mesh>(null);
+  const outerMatRef = useRef<THREE.MeshPhysicalMaterial>(null);
   const coreRef = useRef<THREE.Mesh>(null);
+  const coreMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const selectionRingRef = useRef<THREE.Mesh>(null);
+  const pulseRingRef = useRef<THREE.Mesh>(null);
+  const pulseRingMatRef = useRef<THREE.MeshBasicMaterial>(null);
   const ringGroupRef = useRef<THREE.Group>(null);
 
   /**
@@ -616,7 +625,19 @@ export default function MasterNode3D() {
    * 会挡住最中心的等离子星核——那才是视觉焦点。线框既表达了
    * "高密测地线结构"，又保持了通透性。
    */
-  const icosaCoreRef = useRef<THREE.LineSegments>(null);
+  const icosaCoreRef = useRef<THREE.Mesh>(null);
+  const icosaCoreMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const plasmaMatRef = useRef<THREE.ShaderMaterial>(null);
+  const constellationMatRef = useRef<THREE.PointsMaterial>(null);
+  const neuralMatRef = useRef<THREE.LineBasicMaterial>(null);
+  const gyroMatRefs = useRef<Array<THREE.MeshBasicMaterial | null>>([]);
+  const gimbalTicksAMatRef = useRef<THREE.LineBasicMaterial>(null);
+  const gimbalTicksBMatRef = useRef<THREE.LineBasicMaterial>(null);
+  const vertexAnchorMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const beamMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const equatorRingRef = useRef<THREE.Mesh>(null);
+  const polarRingRef = useRef<THREE.Mesh | null>(null);
+  const tickRingMatRef = useRef<THREE.MeshBasicMaterial>(null);
 
   /** 双向正交刻度星轨环 A（绕 X 轴倾斜）ref */
   const gimbalRingARef = useRef<THREE.Group>(null);
@@ -644,10 +665,10 @@ export default function MasterNode3D() {
     [],
   );
 
-  /** 星轨环 A 的刻度齿实例网格（36 实例 → 1 次 Draw Call） */
-  const gimbalTicksARef = useRef<THREE.InstancedMesh>(null);
-  /** 星轨环 B 的刻度齿实例网格 */
-  const gimbalTicksBRef = useRef<THREE.InstancedMesh>(null);
+  /** 星轨环 A 的刻度线几何 ref（LineSegments，36 条短刻线 → 1 次 draw call） */
+  const gimbalTicksARef = useRef<THREE.LineSegments>(null);
+  /** 星轨环 B 的刻度线几何 ref */
+  const gimbalTicksBRef = useRef<THREE.LineSegments>(null);
 
   /**
    * 刻度齿的实例矩阵表（两环各 36 个，useMemo 一次算好）。
@@ -692,25 +713,31 @@ export default function MasterNode3D() {
   );
 
   /**
-   * 把刻度齿矩阵写入两个 InstancedMesh。
+   * 双正交万向节刻度线几何（R67）。
    *
-   * 【为何必须置 needsUpdate】InstancedMesh 的实例矩阵存在 GPU 缓冲里，
-   * 通过 setMatrixAt 只改动 CPU 侧副本。不置 instanceMatrix.needsUpdate
-   * 的话，渲染时仍用旧的（全零）矩阵——所有齿会堆在原点，
-   * 视觉上表现为"刻度齿消失"（AGENTS.md 第 7 条）。
+   * 72 条短刻线写入一个 LineSegments 几何，两环共享同一份顶点缓冲：
+   * 环 A / 环 B 各自放在自己的 group 里旋转，几何本身零每帧修改。
+   * 半径 1.76，刻度沿径向向外 0.055 / 0.042 —— 与规范中的
+   * torusGeometry(1.76, 0.008) 环体保持同一半径，视觉上像精密度盘。
    */
-  useEffect((): void => {
-    const apply = (mesh: THREE.InstancedMesh | null, matrices: ReadonlyArray<THREE.Matrix4>): void => {
-      if (mesh === null) return;
-      for (let i = 0; i < matrices.length; i += 1) {
-        mesh.setMatrixAt(i, matrices[i]);
-      }
-      mesh.count = matrices.length;
-      mesh.instanceMatrix.needsUpdate = true;
-    };
-    apply(gimbalTicksARef.current, gimbalTickMatrices.ringA);
-    apply(gimbalTicksBRef.current, gimbalTickMatrices.ringB);
-  }, [gimbalTickMatrices]);
+  const gimbalTickGeometry = useMemo((): THREE.BufferGeometry => {
+    const vertices = new Float32Array(GIMBAL_TICK_COUNT * 2 * 3);
+    for (let i = 0; i < GIMBAL_TICK_COUNT; i += 1) {
+      const angle = (i / GIMBAL_TICK_COUNT) * Math.PI * 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      /* 每条刻线两个端点：环半径内侧 → 外侧 0.055 */
+      vertices[i * 6] = cos * 1.76;
+      vertices[i * 6 + 1] = sin * 1.76;
+      vertices[i * 6 + 2] = 0;
+      vertices[i * 6 + 3] = cos * (1.76 + 0.055);
+      vertices[i * 6 + 4] = sin * (1.76 + 0.055);
+      vertices[i * 6 + 5] = 0;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+    return geometry;
+  }, []);
 
   /**
    * 最新总 QPS 的 ref 镜像。
@@ -728,67 +755,44 @@ export default function MasterNode3D() {
   /** 内部神经晶格连线 ref */
   const neuralRef = useRef<THREE.LineSegments>(null);
 
-  /** 环绕星火 Points ref */
-  const sparkRef = useRef<THREE.Points>(null);
+  /** 环绕星火 InstancedMesh ref（R67：八面体微粒实例） */
+  const sparkRef = useRef<THREE.InstancedMesh>(null);
 
   /**
-   * 环绕星火的静态几何（半径 R 的球壳上按黄金角均匀分布）。
+   * 环绕星火的实例矩阵（R67：单位八面体 + 黄金角球壳分布）。
    *
-   * 【零分配契约】位置属性在 useMemo 内一次算好，
-   * useFrame 只旋转整个 Points 对象（改 rotation.y），
-   * 不触碰任何顶点缓冲，因此每帧成本仅一次矩阵更新。
+   * 【零分配契约】矩阵在 useMemo 内一次算好；useFrame 只旋转整个
+   * InstancedMesh（改 rotation.y / scale），不触碰实例缓冲。
    */
-  const sparkGeometry = useMemo((): THREE.BufferGeometry => {
-    const positions = new Float32Array(AMBIENT_SPARK_COUNT * 3);
+  const sparkMatrices = useMemo((): ReadonlyArray<THREE.Matrix4> => {
+    const matrices: THREE.Matrix4[] = [];
+    const temp = new THREE.Object3D();
     for (let i = 0; i < AMBIENT_SPARK_COUNT; i++) {
       const phase = AMBIENT_SPARK_PHASES[i];
-      /* 黄金角分布：极角 φ 由序号线性推进，方位角用黄金角错相 → 球壳均匀 */
       const phi = Math.acos(1 - (2 * (i + 0.5)) / AMBIENT_SPARK_COUNT);
       const radius = AMBIENT_SPARK_RADIUS * (0.75 + 0.25 * Math.sin(phase));
-      positions[i * 3] = radius * Math.sin(phi) * Math.cos(phase);
-      positions[i * 3 + 1] = radius * Math.cos(phi) * 0.55;
-      positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(phase);
+      temp.position.set(
+        radius * Math.sin(phi) * Math.cos(phase),
+        radius * Math.cos(phi) * 0.55,
+        radius * Math.sin(phi) * Math.sin(phase),
+      );
+      temp.scale.setScalar(0.035);
+      temp.updateMatrix();
+      matrices.push(temp.matrix.clone());
     }
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    return geometry;
+    return matrices;
   }, []);
-  /**
-   * 外层晶格罩（Octahedron Cage）ref。
-   *
-   * 【为何要第二层】只有一层壳 + 一层核时，转动像"一个东西在转"；
-   * 参考图的能量核心之所以"耀眼"，是因为**多层反向旋转的棱线**相互穿插，
-   * 产生持续的视差与摩尔纹。罩体只画棱线（表面 opacity 0），不遮挡内部。
-   */
-  /**
-   * 外层战术线框笼（R61）。
-   *
-   * 【为何只保留这一层】MasterNode3D 同时挂载了 CrystalOptics（自身含内核/雾球/
-   * 晶面/星云/大气/陀螺环），此前这里又叠了外壳、内壳、二十面体内胆、顶点焊点、
-   * 星云、神经线、陀螺环等十多个发光网格，中心 19 层同心叠加导致严重过曝。
-   * 现在只保留 1 层极细外轮廓线框笼 + CrystalOptics。
-   *
-   * 【几何】EdgesGeometry 只取真实 12 条棱（wireframe 会多画面对角线）；
-   * 【材质】LineBasicMaterial（wireframeMaterial）透明度上限钳制 0.38，
-   * 加色混合但不写深度，作为"战术外轮廓"而非发光主体。
-   */
-  const outerCageGeometry = useMemo(
-    (): THREE.EdgesGeometry => new THREE.EdgesGeometry(new THREE.OctahedronGeometry(OCTA_RADIUS, 0)),
-    [],
-  );
-  const wireframeMaterial = useMemo(
-    (): THREE.LineBasicMaterial =>
-      new THREE.LineBasicMaterial({
-        color: GLOW_ICE,
-        transparent: true,
-        opacity: 0.38,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-        toneMapped: false,
-      }),
-    [],
-  );
-  const cageRef = useRef<THREE.LineSegments>(null);
+
+  /** 写入星火实例矩阵（挂载一次） */
+  useEffect((): void => {
+    const mesh = sparkRef.current;
+    if (mesh === null) return;
+    for (let i = 0; i < sparkMatrices.length; i++) {
+      mesh.setMatrixAt(i, sparkMatrices[i]);
+    }
+    mesh.count = sparkMatrices.length;
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [sparkMatrices]);
 
   /* ---------------------------------------------------------------------- */
   /* 星云星座粒子群 / 神经晶格 / 垂直光柱 —— 数据与 uniforms                    */
@@ -864,8 +868,6 @@ export default function MasterNode3D() {
   }, [totalQps]);
 
   /** 赤道环 ref（水平光环，最快自转） */
-  const equatorRef = useRef<THREE.Mesh>(null);
-  /** 两道斜交极轨环 ref 表 */
   const polarRingRefs = useRef<Array<THREE.Mesh | null>>([]);
   polarRingRefs.current.length = POLAR_RINGS.length;
 
@@ -1002,6 +1004,8 @@ export default function MasterNode3D() {
     ];
     for (const p of positions) {
       temp.position.set(p[0], p[1], p[2]);
+      /* R67：几何改为单位八面体（args 1），用实例矩阵缩到 0.055 的微缩锚点 */
+      temp.scale.setScalar(0.055);
       temp.updateMatrix();
       list.push(temp.matrix.clone());
     }
@@ -1044,8 +1048,8 @@ export default function MasterNode3D() {
     constellationUniforms.uTime.value = t;
 
     /* ---- 赤道环 / 斜交极轨环自转（三种角速度，形成球壳经纬差速） ---- */
-    if (equatorRef.current !== null) {
-      equatorRef.current.rotation.z = t * EQUATOR_SPIN_RATE;
+    if (equatorRingRef.current !== null) {
+      equatorRingRef.current.rotation.z = t * EQUATOR_SPIN_RATE;
     }
     const polars = polarRingRefs.current;
     for (let i = 0; i < POLAR_RINGS.length; i++) {
@@ -1072,14 +1076,12 @@ export default function MasterNode3D() {
     const toneAlpha = 1 - Math.exp(-TONE_LERP_RATE * clampedDelta);
     healthColorCurrent.lerp(healthTargetColor, toneAlpha);
 
-    (constellationUniforms.uColor.value as THREE.Color).copy(healthColorCurrent);
-
-    const neural = neuralRef.current;
-    if (neural !== null) {
-      const neuralMaterial = neural.material;
-      if (neuralMaterial instanceof THREE.LineBasicMaterial) {
-        neuralMaterial.color.copy(healthColorCurrent);
-      }
+    /* R67：粒子/连线改用内置材质后，直接写 material.color（零分配） */
+    if (constellationMatRef.current !== null) {
+      constellationMatRef.current.color.copy(healthColorCurrent);
+    }
+    if (neuralMatRef.current !== null) {
+      neuralMatRef.current.color.copy(healthColorCurrent);
     }
 
     /* 星云整体随晶体缓慢自转（比外壳更慢，形成内外差速观感） */
@@ -1100,7 +1102,8 @@ export default function MasterNode3D() {
       coreRef.current.rotation.y = t * INNER_SPIN_RATE;
       coreRef.current.rotation.z = Math.cos(t * 0.32) * 0.22;
       const breath = 1 + BREATH_AMPLITUDE * Math.sin(t * BREATH_RATE);
-      coreRef.current.scale.setScalar(breath);
+      /* R67：JSX 的基础缩放为 0.78，呼吸必须相对基础缩放，不能把它覆盖掉 */
+      coreRef.current.scale.setScalar(0.78 * breath);
     }
     /* 等离子星核脉动：uPulse ∈ [0.82, 1.18]，驱动整个径向衰减包络呼吸。
        必须原地写 .value —— 若赋新对象字面量，就是每帧一次堆分配，
@@ -1110,11 +1113,6 @@ export default function MasterNode3D() {
     /* 底部全息圆环：缓慢自转（刻度扫过 = 控制面巡检隐喻） */
     if (ringGroupRef.current !== null) {
       ringGroupRef.current.rotation.y = t * RING_SPIN_RATE;
-    }
-    /* 外层晶格罩：反向快速自转 + 反向倾角，与外壳形成穿插视差 */
-    if (cageRef.current !== null) {
-      cageRef.current.rotation.y = -t * CAGE_SPIN_RATE;
-      cageRef.current.rotation.z = Math.sin(t * 0.55) * 0.12;
     }
     /*
      * 三轴陀螺仪环：各自绕自身法线匀速自转，互不同步。
@@ -1173,6 +1171,23 @@ export default function MasterNode3D() {
       }
     }
 
+    /* ---- R67：浮游组呼吸、选中锁定框、点击脉冲波纹、底部光柱呼吸 ---- */
+    if (floatGroupRef.current !== null) {
+      floatGroupRef.current.position.y = Math.sin(t * 0.8) * 0.04;
+    }
+    if (selectionRingRef.current !== null) {
+      selectionRingRef.current.rotation.z = t * 0.35;
+    }
+    if (pulseRingRef.current !== null && pulseRingMatRef.current !== null) {
+      /* 2.2s 一圈的向外扩散：scale 1→2.8，alpha 0.36→0；循环复用于选中/故障强调 */
+      const cycle = (t * 0.45) % 1;
+      pulseRingRef.current.scale.setScalar(1 + cycle * 1.8);
+      pulseRingMatRef.current.opacity = (1 - cycle) * 0.36;
+    }
+    if (beamMatRef.current !== null) {
+      beamMatRef.current.opacity = 0.32 + 0.04 * Math.sin(t * 1.6);
+    }
+
   });
 
   return (
@@ -1190,50 +1205,268 @@ export default function MasterNode3D() {
       onPointerOut={(): void => setHovered(false)}
     >
       {/*
-       * ═══ 第 1.5 层：外层旋转正八面体棱线晶格（Octahedron Cage）═══
+       * ═══ R67：多层全息晶核（由内到外 8 层 + 底部光柱/环）═══
        *
-       * 【只画棱线】表面材质 opacity 0 + depthWrite false：
-       * 完全透明的面片不会遮挡内部晶核，只有 <Edges> 的 12 条棱可见。
-       * 因此几何上是一个"线框笼"，视觉上却像一层在外部旋转的能量晶格。
-       *
-       * 【棱色用冰青】比外壳的青色更白一档，让它在深空背景上有"最亮一层"的观感，
-       * 与内部晶核、白炽内核形成"外亮—中亮—最亮"的向内汇聚。
+       * 【重构说明】移除 CrystalOptics 后，Master 中央重新由本文件承担全部
+       * 几何层次：选中锁定框、脉冲波纹、八面体晶壳、反向晶核、二十面体内胆、
+       * 等离子热核、星座点云/神经连线、三轴陀螺环、双正交万向节、顶点锚点、
+       * 环绕星火。全部挂载在 floatGroupRef 下，由 useFrame 统一驱动。
        */}
-      <lineSegments
-        ref={cageRef}
-        geometry={outerCageGeometry}
-        material={wireframeMaterial}
-        scale={[CAGE_SCALE, CAGE_SCALE * OCTA_SCALE_Y, CAGE_SCALE]}
-        raycast={(): void => undefined}
-      />
+      <group ref={floatGroupRef}>
+        {/* ---- 选中态：外扩六边形锁定框 ---- */}
+        {isSelected ? (
+          <mesh ref={selectionRingRef} rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
+            <ringGeometry args={[2.05, 2.12, 6]} />
+            <meshBasicMaterial
+              color="#22d3ee"
+              transparent
+              opacity={0.7}
+              side={THREE.DoubleSide}
+              depthWrite={false}
+              blending={THREE.AdditiveBlending}
+              toneMapped={false}
+            />
+          </mesh>
+        ) : null}
 
-      {/*
-       * ═══ 第 4 层：等离子星核（自定义 GLSL 径向衰减）═══
-       *
-       * 【为什么必须自写 shader】标准材质靠 emissiveIntensity 提亮，
-       * RGB 三个通道全部超过 1 被截断成纯白 —— 视觉上就是一个死白的硬边圆片，
-       * 轮廓像剪纸。真实能量核的特征恰恰相反：**中心极亮、边缘完全透明**。
-       *
-       * 【实现】片元着色器用视线-法线夹角余弦做径向衰减：
-       *   球体可见轮廓处 viewDot → 0，alpha → 0（自然透明，无缝融入背景）
-       *   正对相机处 viewDot → 1，core = 1（白炽）
-       * 配合 AdditiveBlending + depthWrite=false，多层能量自然叠加发光。
-       *
-       * 【uPulse】由 useFrame 每帧写 .value 做心跳脉动（零分配）。
-       */}
-      <mesh raycast={(): void => undefined}>
-        <sphereGeometry args={[NUCLEUS_RADIUS, 48, 48]} />
-        <shaderMaterial
-          defines={KV_DEBUG_NAN_DEFINES}
-          uniforms={plasmaUniforms}
-          vertexShader={PLASMA_VERTEX_SHADER}
-          fragmentShader={PLASMA_FRAGMENT_SHADER}
-          transparent
-          depthWrite={false}
-          blending={THREE.AdditiveBlending}
-          toneMapped={false}
-        />
-      </mesh>
+        {/* ---- 点击/选中脉冲波纹：useFrame 驱动 scale 与 opacity ---- */}
+        <mesh ref={pulseRingRef} rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
+          <ringGeometry args={[1.0, 1.08, 64]} />
+          <meshBasicMaterial
+            ref={pulseRingMatRef}
+            color="#22d3ee"
+            transparent
+            opacity={0}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            toneMapped={false}
+          />
+        </mesh>
+
+        {/* ---- 第 1 层：外层八面体半透明全息晶壳 + 发光棱线 ---- */}
+        <mesh
+          ref={outerRef}
+          onClick={(event): void => {
+            event.stopPropagation();
+            selectEntity(MASTER_ENTITY_ID, 'master');
+          }}
+          onPointerOver={(event): void => {
+            event.stopPropagation();
+            setHovered(true);
+          }}
+          onPointerOut={(): void => setHovered(false)}
+        >
+          <octahedronGeometry args={[1.45, 0]} />
+          <meshPhysicalMaterial
+            ref={outerMatRef}
+            color="#06b6d4"
+            emissive="#0891b2"
+            emissiveIntensity={0.45}
+            transmission={0.72}
+            transparent
+            opacity={0.28}
+            roughness={0.12}
+            metalness={0.1}
+            ior={1.45}
+            thickness={1.2}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+            toneMapped={false}
+          />
+          <Edges scale={1.002} threshold={1} color="#67e8f9" />
+        </mesh>
+
+        {/* ---- 第 2 层：内层反向旋转八面体晶核 + 高亮棱线 ---- */}
+        <mesh ref={coreRef} scale={0.78}>
+          <octahedronGeometry args={[1.05, 0]} />
+          <meshStandardMaterial
+            ref={coreMatRef}
+            color="#22d3ee"
+            emissive="#06b6d4"
+            emissiveIntensity={1.2}
+            wireframe={false}
+            transparent
+            opacity={0.42}
+            roughness={0.2}
+            metalness={0.3}
+            depthWrite={false}
+            toneMapped={false}
+          />
+          <Edges scale={1.003} threshold={1} color="#a5f3fc" />
+        </mesh>
+
+        {/* ---- 第 3 层：80 面二十面体测地线高密线框内胆 ---- */}
+        <mesh ref={icosaCoreRef}>
+          <icosahedronGeometry args={[0.72, 1]} />
+          <meshBasicMaterial
+            ref={icosaCoreMatRef}
+            color="#67e8f9"
+            wireframe
+            transparent
+            opacity={0.32}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            toneMapped={false}
+          />
+        </mesh>
+
+        {/* ---- 第 4 层：中心热核等离子体球 ---- */}
+        <mesh raycast={(): void => undefined}>
+          <sphereGeometry args={[0.42, 32, 32]} />
+          <shaderMaterial
+            ref={plasmaMatRef}
+            defines={KV_DEBUG_NAN_DEFINES}
+            uniforms={plasmaUniforms}
+            vertexShader={PLASMA_VERTEX_SHADER}
+            fragmentShader={PLASMA_FRAGMENT_SHADER}
+            transparent
+            depthWrite={false}
+            blending={THREE.NormalBlending}
+            toneMapped={false}
+          />
+        </mesh>
+
+        {/* ---- 第 5a 层：360 颗微缩星座点云 ---- */}
+        <points ref={constellationRef} geometry={constellationGeometry} raycast={(): void => undefined}>
+          <pointsMaterial
+            ref={constellationMatRef}
+            color="#a5f3fc"
+            size={0.032}
+            sizeAttenuation
+            transparent
+            opacity={0.78}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            toneMapped={false}
+          />
+        </points>
+
+        {/* ---- 第 5b 层：28 条神经网络拓扑连线 ---- */}
+        <lineSegments ref={neuralRef} geometry={neuralGeometry} raycast={(): void => undefined}>
+          <lineBasicMaterial
+            ref={neuralMatRef}
+            color="#22d3ee"
+            transparent
+            opacity={0.38}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            toneMapped={false}
+          />
+        </lineSegments>
+
+        {/* ---- 第 6 层：三轴正交陀螺仪能量环 ---- */}
+        {[0, 1, 2].map((idx: number): ReactNode => (
+          <mesh
+            key={`gyro-${idx}`}
+            ref={(el): void => {
+              gyroRefs.current[idx] = el;
+            }}
+            rotation={[GYRO_RINGS[idx].tilt[0], GYRO_RINGS[idx].tilt[1], GYRO_RINGS[idx].tilt[2]]}
+            raycast={(): void => undefined}
+          >
+            <torusGeometry args={[1.55 + idx * 0.14, 0.012, 16, 96]} />
+            <meshBasicMaterial
+              ref={(el): void => {
+                gyroMatRefs.current[idx] = el;
+              }}
+              color="#22d3ee"
+              transparent
+              opacity={0.48}
+              depthWrite={false}
+              blending={THREE.AdditiveBlending}
+              toneMapped={false}
+            />
+          </mesh>
+        ))}
+
+        {/* ---- 第 7 层：双正交 72 刻度精密万向节环 ---- */}
+        <group ref={gimbalRingARef} rotation={[Math.PI / 3, 0, 0]}>
+          <lineSegments ref={gimbalTicksARef} geometry={gimbalTickGeometry} raycast={(): void => undefined}>
+            <lineBasicMaterial
+              ref={gimbalTicksAMatRef}
+              color="#22d3ee"
+              transparent
+              opacity={0.42}
+              depthWrite={false}
+              blending={THREE.AdditiveBlending}
+              toneMapped={false}
+            />
+          </lineSegments>
+          <mesh raycast={(): void => undefined}>
+            <torusGeometry args={[1.76, 0.008, 12, 96]} />
+            <meshBasicMaterial
+              color="#67e8f9"
+              transparent
+              opacity={0.35}
+              depthWrite={false}
+              blending={THREE.AdditiveBlending}
+              toneMapped={false}
+            />
+          </mesh>
+        </group>
+        <group ref={gimbalRingBRef} rotation={[-Math.PI / 3, Math.PI / 4, 0]}>
+          <lineSegments ref={gimbalTicksBRef} geometry={gimbalTickGeometry} raycast={(): void => undefined}>
+            <lineBasicMaterial
+              ref={gimbalTicksBMatRef}
+              color="#67e8f9"
+              transparent
+              opacity={0.42}
+              depthWrite={false}
+              blending={THREE.AdditiveBlending}
+              toneMapped={false}
+            />
+          </lineSegments>
+          <mesh raycast={(): void => undefined}>
+            <torusGeometry args={[1.76, 0.008, 12, 96]} />
+            <meshBasicMaterial
+              color="#67e8f9"
+              transparent
+              opacity={0.35}
+              depthWrite={false}
+              blending={THREE.AdditiveBlending}
+              toneMapped={false}
+            />
+          </mesh>
+        </group>
+
+        {/* ---- 第 8a 层：6 顶点微型八面体悬浮锚点 ---- */}
+        <instancedMesh
+          ref={vertexAnchorRef}
+          args={[undefined, undefined, OCTA_VERTEX_COUNT]}
+          raycast={(): void => undefined}
+          frustumCulled={false}
+        >
+          <octahedronGeometry args={[1, 0]} />
+          <meshBasicMaterial
+            ref={vertexAnchorMatRef}
+            color="#ffffff"
+            transparent
+            opacity={0.85}
+            depthWrite={false}
+            toneMapped={false}
+          />
+        </instancedMesh>
+
+        {/* ---- 第 8b 层：环绕光尘（单位八面体实例） ---- */}
+        <instancedMesh
+          ref={sparkRef}
+          args={[undefined, undefined, AMBIENT_SPARK_COUNT]}
+          raycast={(): void => undefined}
+          frustumCulled={false}
+        >
+          <octahedronGeometry args={[1, 0]} />
+          <meshBasicMaterial
+            color="#ffffff"
+            transparent
+            opacity={0.75}
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            toneMapped={false}
+          />
+        </instancedMesh>
+      </group>
+
 
       {/*
        * ═══ 第 5 层：地面投射光束（悬浮水晶的能量脐带）═══
@@ -1255,6 +1488,7 @@ export default function MasterNode3D() {
           args={[BEAM_TOP_RADIUS, BEAM_BOTTOM_RADIUS, BEAM_HEIGHT, BEAM_RADIAL_SEGMENTS, 1, true]}
         />
         <meshBasicMaterial
+          ref={beamMatRef}
           color={GLOW_ICE}
           transparent
           opacity={0.35}
@@ -1280,9 +1514,6 @@ export default function MasterNode3D() {
        * 放大，整颗晶体被糊成浅蓝棉花糖。现在只保留一枚紧凑锐利的星核辉光
        * （2.15 / 0.62）：它的职责是给中心白炽点一层薄光晕，而非覆盖整颗晶体。
        */}
-      {/* R25：7 层封闭光学结构（替代旧光柱 / 焦点光晕） */}
-      <CrystalOptics />
-
       <GlowHalo3D color={GLOW_CYAN} scale={2.15} opacity={0.62} falloff={2.6} pulse pulsePeriod={2.6} />
 
       {/*
@@ -1298,7 +1529,7 @@ export default function MasterNode3D() {
        *
        * 【零分配】useFrame 只写各自的 rotation.z，不触碰几何或材质。
        */}
-      <mesh ref={equatorRef} rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
+      <mesh ref={equatorRingRef} rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
         <ringGeometry args={[EQUATOR_RADIUS, EQUATOR_RADIUS + EQUATOR_THICKNESS, 128]} />
         <meshBasicMaterial
           color={GLOW_CYAN}
@@ -1316,6 +1547,7 @@ export default function MasterNode3D() {
           key={polar.key}
           ref={(node): void => {
             polarRingRefs.current[index] = node;
+            if (index === 0) polarRingRef.current = node;
           }}
           rotation={[polar.tilt[0], polar.tilt[1], polar.tilt[2]]}
           raycast={(): void => undefined}
@@ -1344,6 +1576,7 @@ export default function MasterNode3D() {
         <mesh rotation={[-Math.PI / 2, 0, 0]}>
           <ringGeometry args={[RING_OUTER_RADIUS - 0.035, RING_OUTER_RADIUS, 96]} />
           <meshBasicMaterial
+            ref={tickRingMatRef}
             color={GLOW_CYAN}
             transparent
             opacity={emphasized ? 0.85 : 0.5}
@@ -1392,7 +1625,6 @@ export default function MasterNode3D() {
       <Html
         position={[LABEL_POSITION[0], LABEL_POSITION[1], LABEL_POSITION[2]]}
         center
-        distanceFactor={15}
         zIndexRange={[10, 0]}
         className="pointer-events-none"
         style={{ pointerEvents: 'none' }}
@@ -1408,27 +1640,7 @@ export default function MasterNode3D() {
          *   · 无闭合边，结构由上下 1px 折射亮边 + 四角发光靶标表达；
          *   · 斜向折射高光 + 顶部毫米微标尺，把面板从"标题牌"升级为"仪表台"。
          */}
-        <div className="relative flex flex-col items-center gap-1 whitespace-nowrap bg-slate-950/50 px-3 py-1 kv-blur-panel">
-          {/*
-           * R61 战术引线：右上角 45° 折角，从铭牌指向晶核中心，
-           * 把"这块牌子在标注谁"画出来，同时不引入任何可点击区域。
-           */}
-          <svg
-            aria-hidden
-            className="pointer-events-none absolute -right-8 -top-7 h-9 w-9 overflow-visible"
-            viewBox="0 0 36 36"
-            fill="none"
-          >
-            <polyline
-              points="2,34 14,20 34,20"
-              stroke="#22d3ee"
-              strokeWidth="1"
-              strokeLinecap="square"
-              opacity="0.72"
-            />
-            <circle cx="34" cy="20" r="1.8" fill="#22d3ee" opacity="0.85" />
-            <circle cx="2" cy="34" r="1.4" stroke="#22d3ee" strokeWidth="1" opacity="0.7" />
-          </svg>
+        <div className="pointer-events-none relative flex flex-col items-center gap-1 whitespace-nowrap bg-slate-950/50 px-3 py-1 kv-blur-panel">
           <HoloSpecularSheen />
           <HoloRefractionEdges accent="#22d3ee" />
           <HoloCorners color="#22d3ee" />
