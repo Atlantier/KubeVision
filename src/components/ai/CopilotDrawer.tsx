@@ -85,7 +85,6 @@ import {
 } from '@/types/ai';
 import type {
   ActionConfirmProps,
-  ChatErrorCategory,
   ChatStreamEvent,
   ClusterContext,
   CopilotMessage,

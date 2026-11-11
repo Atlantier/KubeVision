@@ -25,7 +25,6 @@
  *   既防 localStorage 5MB 配额膨胀，也避免把易失运行时状态误当用户偏好。
  */
 
-import { useEffect, useState } from 'react';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
@@ -40,7 +39,6 @@ import { INITIAL_CLUSTER_SNAPSHOT } from '@/types/cluster';
 import type {
   ClusterState,
   ClusterStore,
-  PendingRemediation,
   PersistedClusterState,
   RemediationDiff,
   RemediationRecord,

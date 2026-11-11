@@ -36,7 +36,7 @@
  * 让相机飞回全景鸟瞰。
  */
 
-import { useCallback, useEffect } from 'react';
+import { useCallback } from 'react';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Cpu, Network, ShieldCheck, Skull, X } from 'lucide-react';

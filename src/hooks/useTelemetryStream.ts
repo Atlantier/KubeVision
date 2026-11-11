@@ -48,7 +48,7 @@ import {
   recordTelemetryFrame,
   resetTelemetryHealthBaseline,
 } from '@/utils/telemetryHealth';
-import { clearFrameBuffer, pushSnapshotFrame } from '@/utils/snapshotRingBuffer';
+import { pushSnapshotFrame } from '@/utils/snapshotRingBuffer';
 import { TELEMETRY_SCHEMA_VERSION } from '@/types/cluster';
 import type { PodEntity, TelemetrySnapshot } from '@/types/cluster';
 import type { ConnectionMode } from '@/types/store';

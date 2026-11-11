@@ -183,7 +183,6 @@ function MobileViewSwitcher({ view, onChange }: { readonly view: MobileViewKey; 
  */
 export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
   /* ---- Store 细粒度订阅 ---- */
-  const activeRightTab = useClusterStore((s): RightPanelTab => s.activeRightTab);
   const setPerfHudOpen = useClusterStore((s): ((open: boolean) => void) => s.setPerfHudOpen);
   const setActiveRightTab = useClusterStore((s): ((tab: RightPanelTab) => void) => s.setActiveRightTab);
   /* 混沌场景订阅：驱动视口四周的警示氛围光（仅一个字符串比较，开销可忽略） */

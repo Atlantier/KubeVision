@@ -64,14 +64,10 @@ const OCTA_RADIUS = 1.68;
 /** 外层纵向拉伸比：水晶略瘦高，比正球体更具「晶体」而非「球」的轮廓 */
 const OCTA_SCALE_Y = 1.22;
 
-/** 内层反向晶核半径（与外层保持充足间隙，双层结构互不穿插） */
-const CORE_CRYSTAL_RADIUS = 1.05;
-
 /** 八面体顶点数（6 个：±X / ±Y / ±Z 各一对） */
 const OCTA_VERTEX_COUNT = 6;
 
 /** 中心白炽星核球半径（紧凑锐利，收敛自旧版 0.36 的"大棉花球"） */
-const NUCLEUS_RADIUS = 0.16;
 
 /**
  * 三轴陀螺仪全息轨道环的几何参数。
@@ -130,99 +126,6 @@ const NEURAL_PAIR_COUNT = 28;
 
 /** 星云粒子/连线随整颗晶体自转的角速度（rad/s，与外壳同步但更慢） */
 const CONSTELLATION_SPIN_RATE = 0.18;
-
-/**
- * 星云星座粒子的顶点着色器。
- *
- * 【职责】把三件事传给片元，并完成逐粒子的悬浮位移：
- * 1. `aSize`   粒径档位 → 作为点尺寸的乘数（大/中/微三档）；
- * 2. `aPhase`  独立相位 → 每颗粒子的闪烁与悬浮互不同步，避免整片同步脉动；
- * 3. 悬浮位移  pos.y += sin(uTime · 0.8 + aPhase) · 0.035
- *    振幅仅 3.5cm：晶体内部的星云应当是"呼吸"，不是"沸腾"。
- *
- * 【点尺寸公式】gl_PointSize = aSize · uScale · (300 / -mvPosition.z)
- * 这是 three 内置 pointsMaterial 的标准透视缩放式，改成手写后
- * 可以逐粒子调制粒径（内置材质只有全局 size）。
- */
-const CONSTELLATION_VERTEX_SHADER = `
-attribute float aSize;
-attribute float aPhase;
-
-uniform float uTime;
-uniform float uScale;
-
-varying float vPhase;
-varying float vSize;
-
-void main() {
-  vPhase = aPhase;
-  vSize = aSize;
-
-  vec3 displaced = position;
-  displaced.y += sin(uTime * 0.8 + aPhase) * 0.035;
-
-  vec4 mvPosition = modelViewMatrix * vec4(displaced, 1.0);
-  gl_Position = projectionMatrix * mvPosition;
-  gl_PointSize = aSize * uScale * (300.0 / max(0.001, -mvPosition.z));
-}
-`;
-
-/**
- * 星云星座粒子的片元着色器 —— 圆形径向高斯星芒点。
- *
- * 【为什么必须手写】Points 默认渲染的是**方形像素块**，放大会露出硬边方块，
- * 一眼假。用 `gl_PointCoord`（点内归一化坐标 [0,1]²）计算到中心的距离，
- * 再做径向高斯衰减，才能得到圆形柔光的星点。
- *
- * 【三层色阶】
- *   d < 0.22          → 炽白 #ffffff（核心）
- *   0.22 ≤ d < 0.55   → 电光青 #38bdf8（内圈）
- *   d ≥ 0.55          → 深海蓝 #0284c7（外圈，边缘透明）
- * 三档之间用 smoothstep 平滑过渡，且 alpha 在 d → 1 时归零，
- * 因此点的边界完全消失，只有中心的光。
- *
- * 【闪烁】`flicker = 0.62 + 0.38·sin(uTime·2.4 + vPhase)`：
- * 每颗粒子有自己的相位，整片星云呈现细密的明灭，而不是统一呼吸。
- */
-const CONSTELLATION_FRAGMENT_SHADER = `
-uniform float uTime;
-uniform float uOpacity;
-uniform vec3 uColor;
-
-varying float vPhase;
-varying float vSize;
-
-void main() {
-  vec2 centered = gl_PointCoord - vec2(0.5);
-  float d = length(centered) * 2.0;
-  if (d > 1.0) discard;
-
-  float core = 1.0 - smoothstep(0.0, 0.22, d);
-  float mid = 1.0 - smoothstep(0.18, 0.55, d);
-  float outer = 1.0 - smoothstep(0.5, 1.0, d);
-
-  vec3 color = vec3(0.011, 0.518, 0.780);          /* #0284c7 外圈 */
-  color = mix(color, uColor, mid);        /* 内圈取健康度色温 */
-  color = mix(color, vec3(1.0, 1.0, 1.0), core);    /* #ffffff 核心 */
-
-  float flicker = 0.62 + 0.38 * sin(uTime * 2.4 + vPhase);
-  float alpha = (core * 0.95 + mid * 0.55 + outer * 0.25) * flicker * uOpacity;
-  alpha *= 1.0 - smoothstep(0.85, 1.0, d);
-
-  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 1.0));
-  #ifdef KV_DEBUG_NAN
-    if (!(gl_FragColor.r == gl_FragColor.r)
-        || !(gl_FragColor.g == gl_FragColor.g)
-        || !(gl_FragColor.b == gl_FragColor.b)
-        || !(gl_FragColor.a == gl_FragColor.a)
-        || abs(gl_FragColor.r) > 1.0e38
-        || abs(gl_FragColor.g) > 1.0e38
-        || abs(gl_FragColor.b) > 1.0e38) {
-      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
-    }
-  #endif
-}
-`;
 
 /* -------------------------------------------------------------------------- */
 /** 星火环绕半径（控制平面外围能量场） */
@@ -395,18 +298,6 @@ const INNER_SPIN_RATE = -0.38;
 /** 内核呼吸角频率（rad/s）：≈2.85 秒/次心跳 */
 const BREATH_RATE = 2.2;
 
-/**
- * 外层晶格罩的自转速率（弧度/秒，反向）。
- *
- * 【为何比外壳快且反向】外壳 0.25 是"缓慢扫描"的仪表节奏；
- * 罩体取 0.55 的反向旋转，两层棱线以约 0.8 rad/s 的相对角速度穿插，
- * 视觉上产生持续的摩尔纹流动——这正是参考图中心"耀眼且活着"的来源。
- */
-const CAGE_SPIN_RATE = 0.55;
-
-/** 晶格罩相对外壳的尺寸倍数（略大，使两层棱线错开而非共面） */
-const CAGE_SCALE = 1.34;
-
 /** 内核呼吸振幅（±12% 缩放） */
 const BREATH_AMPLITUDE = 0.12;
 
@@ -426,25 +317,6 @@ const RING_SPIN_RATE = 0.1;
 /* ========================================================================== */
 
 /**
- * 二十面体测地线量子内胆的半径。
- *
- * 【为何比八面体小这么多】内胆必须完全容纳在双层八面体内部，
- * 否则会在晶面上穿出、破坏"水晶包裹内核"的层次。
- * 八面体内切球半径 = OCTA_RADIUS / √3 ≈ 0.97，取 0.86 留出安全余量。
- */
-const ICOSA_CORE_RADIUS = 0.86;
-
-/**
- * 内胆的细分等级（0 = 原始 20 面，1 = 80 面，2 = 320 面）。
- *
- * 【为何取 1】测地线球体的视觉价值在于"高密但可读"——等级 0 太像普通
- * 二十面体（与八面体区分度不够），等级 2 的 320 面在机柜大小的视口里
- * 会糊成一团球，反而失去几何美感。等级 1 的 80 面恰好在"看得出是
- * 多面体"与"足够密实"之间，是测地线穹顶的经典折中。
- */
-const ICOSA_CORE_DETAIL = 1;
-
-/**
  * 内胆自转角速度（rad/s，反向且明显慢于内核）。
  *
  * 【为何要"慢"】内胆是背景层的结构装饰，它的作用是让中央区域
@@ -453,31 +325,12 @@ const ICOSA_CORE_DETAIL = 1;
  */
 const ICOSA_CORE_SPIN_RATE = -0.17;
 
-/**
- * 双向正交精密刻度星轨环的半径。
- *
- * 【取值依据】必须落在八面体内部（内切球 0.97）但又要大于内胆，
- * 形成"内胆 → 刻度环 → 八面体线框"的三层同心结构。
- */
-const GIMBAL_RING_RADIUS = 1.12;
-
 /** 星轨环的刻度齿数量（双向各 36 齿 = 10° 一格，精密仪器感） */
 const GIMBAL_TICK_COUNT = 36;
 
 /** 星轨环自转角速度：两环反向，形成正交差速 */
 const GIMBAL_RING_A_SPIN = 0.31;
 const GIMBAL_RING_B_SPIN = -0.24;
-
-/**
- * 刻度齿的几何尺寸。
- *
- * 【为何如此之短】刻度齿是"度盘上的刻线"，作用是提供角度参照，
- * 不是装饰条。长 0.055 / 宽 0.006 在 1.12 半径的环上约占
- * 5% 半径、0.5% 宽度——正好是精密仪器刻线的比例。
- * B 环略短，让两环在视觉上有主次（A 为主刻度、B 为副刻度）。
- */
-const GIMBAL_TICK_LENGTH_A = 0.055;
-const GIMBAL_TICK_LENGTH_B = 0.042;
 
 /** 八面体顶点电光锚点的呼吸角频率与基准尺寸 */
 const VERTEX_ANCHOR_BREATH_RATE = 1.9;
@@ -647,70 +500,10 @@ export default function MasterNode3D() {
   /** 八面体顶点电光锚点实例网格 ref（呼吸辉光由材质 emissive 驱动） */
   const vertexAnchorRef = useRef<THREE.InstancedMesh>(null);
 
-  /**
-   * 二十面体测地线内胆的线框几何（useMemo 预分配）。
-   *
-   * 【为何不能在 JSX 里内联 new THREE.IcosahedronGeometry(...)】
-   * `<wireframeGeometry args={[new THREE.IcosahedronGeometry(...)]} />`
-   * 这种写法会在**每次组件重渲染**时创建一个新的 IcosahedronGeometry，
-   * 而 args 引用变化会让 R3F 重建 wireframeGeometry——1Hz 遥测快照
-   * 触发重渲染时就会持续产生几何垃圾，最终被 GPU 侧 accumulate 成内存增长。
-   * 用 useMemo 固定在首次渲染创建，此后引用恒定。
-   */
-  const icosaCoreGeometry = useMemo(
-    (): THREE.WireframeGeometry =>
-      new THREE.WireframeGeometry(
-        new THREE.IcosahedronGeometry(ICOSA_CORE_RADIUS, ICOSA_CORE_DETAIL),
-      ),
-    [],
-  );
-
   /** 星轨环 A 的刻度线几何 ref（LineSegments，36 条短刻线 → 1 次 draw call） */
   const gimbalTicksARef = useRef<THREE.LineSegments>(null);
   /** 星轨环 B 的刻度线几何 ref */
   const gimbalTicksBRef = useRef<THREE.LineSegments>(null);
-
-  /**
-   * 刻度齿的实例矩阵表（两环各 36 个，useMemo 一次算好）。
-   *
-   * 【为何必须实例化】36 × 2 = 72 个刻度齿若各自一个 <mesh>，
-   * 就是 72 次 draw call——实测把整场景从 388 推到 466（+78）。
-   * 它们材质相同、只有位置与朝向不同，正是 InstancedMesh 的典型场景：
-   * 72 → 2 次 draw call，省下 70 次。
-   *
-   * 【矩阵只在挂载时写一次】刻度齿是静态装饰：环的自转由外层
-   * group 的 rotation.z 承担，子节点相对位置不变，
-   * 因此实例矩阵永不变化，useFrame 零开销。
-   */
-  const gimbalTickMatrices = useMemo(
-    (): { ringA: ReadonlyArray<THREE.Matrix4>; ringB: ReadonlyArray<THREE.Matrix4> } => {
-      /* 临时 Object3D 仅在此用一次，绝不进入渲染循环 */
-      const temp = new THREE.Object3D();
-      const build = (tickLength: number): ReadonlyArray<THREE.Matrix4> => {
-        const matrices: THREE.Matrix4[] = [];
-        for (let i = 0; i < GIMBAL_TICK_COUNT; i += 1) {
-          const angle = (i / GIMBAL_TICK_COUNT) * Math.PI * 2;
-          /* 齿根贴在环上，齿身朝外：位置取"环半径 + 半个齿长" */
-          temp.position.set(
-            Math.cos(angle) * (GIMBAL_RING_RADIUS + tickLength / 2),
-            Math.sin(angle) * (GIMBAL_RING_RADIUS + tickLength / 2),
-            0,
-          );
-          /* 齿的长边沿径向：绕 Z 旋转 angle 让本地 X 轴指回半径方向 */
-          temp.rotation.set(0, 0, angle);
-          temp.scale.set(1, 1, 1);
-          temp.updateMatrix();
-          matrices.push(temp.matrix.clone());
-        }
-        return matrices;
-      };
-      return {
-        ringA: build(GIMBAL_TICK_LENGTH_A),
-        ringB: build(GIMBAL_TICK_LENGTH_B),
-      };
-    },
-    [],
-  );
 
   /**
    * 双正交万向节刻度线几何（R67）。

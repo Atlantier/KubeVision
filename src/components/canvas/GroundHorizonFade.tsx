@@ -19,8 +19,6 @@
 import { useMemo } from 'react';
 import * as THREE from 'three';
 
-/** 渐隐起始半径（雾近端附近开始压暗） */
-const FADE_INNER_RADIUS = 13;
 /** 渐隐完成半径（= 地面圆盘半径） */
 const FADE_OUTER_RADIUS = 22;
 /** 与背景/雾同色 */

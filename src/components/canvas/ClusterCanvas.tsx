@@ -247,12 +247,7 @@ type RenderQualityTier = 'high' | 'balanced' | 'low';
 /** 质量档位 → 后处理 AA 策略（L4）：T3 用 MSAA×2；T2 用 FXAA；T1 不加 AA */
 type RenderTier = 'T3' | 'T2' | 'T1';
 
-/** 反射 RT 分辨率（像素）——按档位固定，与 DPR 完全解耦 */
-const REFLECTOR_RESOLUTION: Readonly<Record<RenderQualityTier, number>> = {
-  high: 512,
-  balanced: 256,
-  low: 128,
-};
+/** 反射 RT 分辨率固定 512：R62 起不再按档位自适应（低端填充率风险已知） */
 
 /**
  * resolveQualityTier —— 首次渲染前解析质量档位。
@@ -594,8 +589,6 @@ export default function ClusterCanvas() {
   const qualityPost = postEnabled && qualityTier > 0;
   const qualityReflector = reflectorEnabled && qualityTier >= 2;
   const qualitySoftShadows = envCaps.software ? 'basic' : qualityTier >= 2 ? 'soft' : false;
-  const qualityBloomLevels = qualityTier >= 3 ? 6 : qualityTier === 2 ? 5 : 4;
-  const qualityBloomIntensity = qualityTier >= 3 ? 0.72 : qualityTier === 2 ? 0.66 : 0.6;
 
   /**
    * R24 追问 3：把"当前渲染路径 + 原因"写入瞬态轨。

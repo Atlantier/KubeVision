@@ -15,7 +15,7 @@
  * 【零分配】只写 material.opacity / mesh.scale（预分配对象），不 new。
  */
 
-import { useMemo, useRef } from 'react';
+import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { getRackTransform } from '@/utils/spatialLayout';

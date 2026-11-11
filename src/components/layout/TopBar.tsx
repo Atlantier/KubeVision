@@ -51,7 +51,6 @@ import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
   DEMO_SCRIPTS,
-  FINISHED_AUTO_COLLAPSE_MS,
   PACING_LABEL,
   setDemoPacing,
   clearPreflightError,

@@ -38,7 +38,7 @@
 
 import { createOpenAI } from '@ai-sdk/openai';
 import { streamText, tool, type CoreMessage } from 'ai';
-import { createTrace, elapsedMs, endSpan, startSpan, type AgentSpan, type AgentTrace, type EndedSpan } from '@/utils/agentTrace';
+import { createTrace, elapsedMs, endSpan, startSpan, type AgentTrace, type EndedSpan } from '@/utils/agentTrace';
 import { annotateUngrounded, clampConfidence } from '@/utils/grounding';
 import { z } from 'zod';
 
@@ -3060,7 +3060,7 @@ export async function POST(request: Request): Promise<Response> {
              * 这里先为所有 pending 的调用补发 status:'error' 的 tool-result，
              * 前端据此渲染"生成失败，点击重试"。
              */
-            const repaired = repairPendingToolCalls(
+            repairPendingToolCalls(
               ledger,
               emit,
               'engine A failed before producing this card; fell back to local engine',

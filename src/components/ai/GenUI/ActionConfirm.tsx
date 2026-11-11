@@ -187,9 +187,6 @@ export default function ActionConfirm({
   const setActionCardMountedId = useClusterStore(
     (s): ((v: string | null) => void) => s.setActionCardMountedId,
   );
-  const lastAssistantMessageId = useClusterStore(
-    (s): string | null => s.lastAssistantMessageId,
-  );
 
   /*
    * ===== C 项：自动演示标识与降级已执行 =====

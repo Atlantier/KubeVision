@@ -34,7 +34,6 @@
 
 import { useEffect, useSyncExternalStore } from 'react';
 
-import type { ChaosScenario } from '@/types/cluster';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
   assertChaosTargets,
@@ -1365,9 +1364,8 @@ function buildDiagnosisPrompt(
  * 现在：置 demoAutoConfirm → 等卡片挂载 → 勾选风险 → 点击真实按钮 → 等回执。
  * 卡片 8 秒内未挂载才降级为直接 healEntity，并在旁白中**如实说明**。
  *
- * @param label 终端日志前缀
  */
-function enterHeal(label: string): void {
+function enterHeal(): void {
   const generation = runGeneration;
   const api = actions();
   const chaos = lastInjectedChaos;
@@ -1723,7 +1721,7 @@ const PHASE_ACTIONS: Readonly<Record<DemoScriptId, readonly (() => void)[]>> = {
         (): string => '检测到集群发生 OOMKilled 内存溢出告警',
         '阶段 3/4',
       ),
-    (): void => enterHeal('阶段 4/4'),
+    (): void => enterHeal(),
   ],
   'network-latency-trace': [
     enterCruise,
@@ -1733,7 +1731,7 @@ const PHASE_ACTIONS: Readonly<Record<DemoScriptId, readonly (() => void)[]>> = {
         (): string => '检测到跨节点网络延迟与丢包，疑似 CNI VXLAN 隧道瓶颈',
         '阶段 3/4',
       ),
-    (): void => enterHeal('阶段 4/4'),
+    (): void => enterHeal(),
   ],
   'cpu-spike-autofix': [
     enterCruise,
@@ -1743,7 +1741,7 @@ const PHASE_ACTIONS: Readonly<Record<DemoScriptId, readonly (() => void)[]>> = {
         (): string => '检测到节点 CPU 利用率持续高位，容器算力被争抢',
         '阶段 3/4',
       ),
-    (): void => enterHeal('阶段 4/4'),
+    (): void => enterHeal(),
   ],
 };
 

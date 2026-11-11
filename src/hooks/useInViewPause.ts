@@ -24,7 +24,7 @@
  * 这样同一个 Hook 既能约束 R3F 场景，也能约束独立的动画循环。
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 /* ========================================================================== */
 /* 类型契约                                                                    */
