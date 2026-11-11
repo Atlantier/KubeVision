@@ -42,7 +42,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Edges, Html } from '@react-three/drei';
+import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { PALETTE } from '@/constants/palette';
 import CrystalOptics from '@/components/canvas/CrystalOptics';
@@ -344,10 +344,17 @@ uniform vec3 uDeepColor;
 varying vec3 vViewNormal;
 varying vec3 vViewPosition;
 
+/* R61：零向量安全归一化，避免 normalize(0) = 0 * inversesqrt(0) = NaN */
+vec3 safeNormalize(vec3 v, vec3 fallback) {
+  float lenSq = dot(v, v);
+  return lenSq > 1.0e-8 ? v * inversesqrt(lenSq) : fallback;
+}
+
 void main() {
-  vec3 n = normalize(vViewNormal);
-  vec3 v = normalize(vViewPosition);
-  float viewDot = max(0.0, dot(n, v));
+  vec3 n = safeNormalize(vViewNormal, vec3(0.0, 0.0, 1.0));
+  vec3 v = safeNormalize(vViewPosition, vec3(0.0, 0.0, 1.0));
+  /* 下界 1e-4：pow(viewDot, 2.2) 永远不会收到 0.0 底数 */
+  float viewDot = clamp(dot(n, v), 1.0e-4, 1.0);
 
   float core = pow(max(viewDot, 1.0e-4), 3.2);
   float corona = pow(max(viewDot, 1.0e-4), 1.35);
@@ -544,20 +551,15 @@ const RING_TICKS: ReadonlyArray<{
 });
 
 /**
- * 铭牌的局部坐标。
+ * 铭牌的局部坐标（R61）。
  *
- * 【为何是这个位置】MasterNode3D 的 <group> 整体挂在 MASTER_POSITION
- * [0, 2.5, 0]，因此所有子节点的 Y 都是**相对 2.5 的局部值**。
- *
- * 旧值 [0, 0.42, 2.25] 换算成世界坐标 Y = 2.5 + 0.42 = **2.92**，
- * 而水晶纵向跨度约 0.32 ~ 4.68（半径 1.85 × 纵向拉伸 1.22），
- * 2.92 恰好落在晶体腰腹正中——铭牌直接插进水晶肚子里穿模。
- *
- * 新值 [0, RING_LOCAL_Y + 0.14, RING_OUTER_RADIUS + 0.45]：
- *   世界 Y = 2.5 + (−2.42 + 0.14) = **0.22**（略高于地面 y=0.08 的刻度环）
- *   世界 Z = 2.35 + 0.45 = **2.80**（朝相机侧探出，在刻度环正前方）
+ * 【为何从 [0, -1.96, 1.48] 移到 [-2.35, -1.55, 0.85]】
+ * 旧坐标的世界投影在沿 Z 轴观察 / 选中 master 相机位于 [0, 5.2, 7.6] 时，
+ * 恰好落在正前方 worker-alpha 铭牌的同一水平线，两块铭牌完全叠在一起。
+ * 移到晶核左下方后，控制平面铭牌不再沿着 worker-alpha 的投影轨迹，
+ * 并用右上角 45° 折角战术引线指向晶核中心。
  */
-const LABEL_POSITION: readonly [number, number, number] = [0, -1.96, 1.48];
+const LABEL_POSITION: readonly [number, number, number] = [-2.35, -1.55, 0.85];
 
 /* ========================================================================== */
 /* MasterNode3D 主体                                                           */
@@ -758,7 +760,35 @@ export default function MasterNode3D() {
    * 参考图的能量核心之所以"耀眼"，是因为**多层反向旋转的棱线**相互穿插，
    * 产生持续的视差与摩尔纹。罩体只画棱线（表面 opacity 0），不遮挡内部。
    */
-  const cageRef = useRef<THREE.Mesh>(null);
+  /**
+   * 外层战术线框笼（R61）。
+   *
+   * 【为何只保留这一层】MasterNode3D 同时挂载了 CrystalOptics（自身含内核/雾球/
+   * 晶面/星云/大气/陀螺环），此前这里又叠了外壳、内壳、二十面体内胆、顶点焊点、
+   * 星云、神经线、陀螺环等十多个发光网格，中心 19 层同心叠加导致严重过曝。
+   * 现在只保留 1 层极细外轮廓线框笼 + CrystalOptics。
+   *
+   * 【几何】EdgesGeometry 只取真实 12 条棱（wireframe 会多画面对角线）；
+   * 【材质】LineBasicMaterial（wireframeMaterial）透明度上限钳制 0.38，
+   * 加色混合但不写深度，作为"战术外轮廓"而非发光主体。
+   */
+  const outerCageGeometry = useMemo(
+    (): THREE.EdgesGeometry => new THREE.EdgesGeometry(new THREE.OctahedronGeometry(OCTA_RADIUS, 0)),
+    [],
+  );
+  const wireframeMaterial = useMemo(
+    (): THREE.LineBasicMaterial =>
+      new THREE.LineBasicMaterial({
+        color: GLOW_ICE,
+        transparent: true,
+        opacity: 0.38,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      }),
+    [],
+  );
+  const cageRef = useRef<THREE.LineSegments>(null);
 
   /* ---------------------------------------------------------------------- */
   /* 星云星座粒子群 / 神经晶格 / 垂直光柱 —— 数据与 uniforms                    */
@@ -1160,184 +1190,6 @@ export default function MasterNode3D() {
       onPointerOut={(): void => setHovered(false)}
     >
       {/*
-       * ═══ 第 1 层：外层水晶壳（全息通透包络）═══
-       *
-       * 【为何用 AdditiveBlending + 低 opacity】
-       * 不透明混合的晶面会「遮挡」内部结构，整体读起来像半透明白塑料；
-       * 纯加色混合下每个晶面只贡献亮度而不遮挡后方，多层叠加自然渐亮，
-       * 形成真正通透的能量包络。
-       *
-       * 【棱线为何用 <Edges> 而非 wireframe】
-       * wireframe 沿三角形边绘制，八面体每个面由 2 个三角形构成，
-       * 因此会在面上多画出斜向对角线。<Edges threshold={15}> 基于
-       * EdgesGeometry 按二面角阈值提取，只保留真正的 12 条棱。
-       * scale={1.002} 让棱线极微外扩，避免与晶面共面产生 z-fighting。
-       */}
-      <mesh ref={outerRef} scale={[1, OCTA_SCALE_Y, 1]}>
-        <octahedronGeometry args={[OCTA_RADIUS, 0]} />
-        {/*
-         * 【通透暗晶外壳】opacity 0.025 + color #022c43（深海墨青）。
-         *
-         * 旧版是 opacity 0.12~0.22 的亮青加色面片——多层晶面叠加后亮度
-         * 持续累积，配合 Bloom 就糊成一团浅蓝棉花糖。
-         * 新版把面片压到**几乎不可见**（0.025）并改用普通混合，
-         * 晶面只暗示体积边界，全部结构信息交给棱线与内部星云。
-         */}
-        <meshBasicMaterial
-          color="#022c43"
-          transparent
-          opacity={emphasized ? 0.045 : 0.025}
-          side={THREE.DoubleSide}
-          depthWrite={false}
-          toneMapped={false}
-        />
-        {/* 外层主棱线：亮白 #f0f9ff —— 整颗晶体最锐利的轮廓 */}
-        <Edges scale={1.002} threshold={15} color={emphasized ? '#ffffff' : '#f0f9ff'} />
-        {/* 内嵌青色副棱线：略内缩，与外层白棱构成"双线描边"的精密感 */}
-        <Edges scale={0.996} threshold={15} color="#38bdf8" />
-      </mesh>
-
-      {/*
-       * ═══ 第 1b 层：八面体 6 个顶点的高光菱形星芒锚点 ═══
-       *
-       * 【为何需要】通透化之后，八面体尖端是两个面交汇的尖角，
-       * 在深空背景上容易"飞掉"（读者找不到轮廓终点）。
-       * 在 6 个顶点各钉一枚微型高光锚点，轮廓立刻被锚定，
-       * 同时产生参考图那种顶点迸光的精致感。
-       *
-       * 【几何】八面体顶点位于 (±r,0,0)/(0,±r,0)/(0,0,±r)；
-       * 外层施加 scaleY=1.22，故上下顶点需按同一比例缩放 Y。
-       * 单实例网格 → 6 个锚点仅 1 次 Draw Call。
-       */}
-      <instancedMesh
-        ref={vertexAnchorRef}
-        args={[undefined, undefined, OCTA_VERTEX_COUNT]}
-        frustumCulled={false}
-        raycast={(): void => undefined}
-      >
-        <octahedronGeometry args={[0.055, 0]} />
-        <meshBasicMaterial
-          color="#f0f9ff"
-          toneMapped={false}
-          transparent
-          opacity={0.95}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-        />
-      </instancedMesh>
-
-      {/*
-       * ═══ 第 1c 层：二十面体测地线量子内胆（Geodesic Icosahedron Quantum Core）═══
-       *
-       * 【为何再加一层】中央区域此前只有"八面体外壳 + 八面体内核"两层，
-       * 都是 8 面体（12 条棱），结构信息量偏低——远看就是一个菱形套菱形。
-       * 插入一层二十面体（20 面、30 条棱）后，中央形成
-       * 「八面体(8面) → 二十面体(20面) → 内核」的复杂度递进，
-       * 正是好莱坞科幻片里"量子核心"那种高密几何感。
-       *
-       * 【为何用 LineSegments + WireframeGeometry 而非 wireframe 材质】
-       * 与项目既有的八面体棱线一致：wireframe 会在每个三角面上画出
-       * 内部对角线（测地线细分后三角形很多，对角线会糊成一片），
-       * 而 WireframeGeometry 只提取真实棱边，线条干净。
-       *
-       * 【半径 0.86】八面体内切球 = 1.68/√3 ≈ 0.97，取 0.86 留安全余量，
-       * 保证内胆完全被外壳包裹、任何角度都不会穿出晶面。
-       */}
-      <lineSegments ref={icosaCoreRef} geometry={icosaCoreGeometry} raycast={(): void => undefined}>
-        <lineBasicMaterial
-          color="#7dd3fc"
-          transparent
-          opacity={emphasized ? 0.72 : 0.42}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-          toneMapped={false}
-        />
-      </lineSegments>
-
-      {/*
-       * ═══ 第 1d 层：双向正交精密刻度星轨环（Orthogonal Gimbal Rings）═══
-       *
-       * 【结构】两圈半径相同的刻度环，分别绕 X 轴与 Z 轴倾斜 90°，
-       * 因此二者正交、互不共面——这是"万向节（gimbal）"的经典形态。
-       *
-       * 【为何要刻度齿】纯圆环只是"一个圈"，没有仪器感。
-       * 沿环周均布 36 道极短径向刻线（10° 一格）后，
-       * 立刻读作"精密测量仪器的度盘"，与中央量子核心的科技感呼应。
-       *
-       * 【两环反向自转】A 环 0.31 rad/s、B 环 −0.24 rad/s，
-       * 在正交平面上反向旋转会产生持续变化的交叉点位置，
-       * 这是机械陀螺仪最迷人的视觉特征。
-       */}
-      <group ref={gimbalRingARef} rotation={[Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
-        {/* 环本体：极细圆环 */}
-        <mesh raycast={(): void => undefined}>
-          <torusGeometry args={[GIMBAL_RING_RADIUS, 0.004, 6, 96]} />
-          <meshBasicMaterial
-            color="#a5f3fc"
-            transparent
-            opacity={emphasized ? 0.85 : 0.5}
-            blending={THREE.AdditiveBlending}
-            depthWrite={false}
-            toneMapped={false}
-          />
-        </mesh>
-        {/*
-         * 36 道刻度齿（InstancedMesh 合并为 1 次 Draw Call）。
-         * 逐齿矩阵已在挂载 effect 中写入，此处只声明几何与材质。
-         * 【base color 必须 #ffffff】AGENTS.md 第 7 条：InstancedMesh 动态
-         * 着色时基础材质需为白色，实际色由 instanceColor 或材质自发光决定。
-         * 本处不使用 instanceColor，故直接用材质色表现青色。
-         */}
-        <instancedMesh
-          ref={gimbalTicksARef}
-          args={[undefined, undefined, GIMBAL_TICK_COUNT]}
-          raycast={(): void => undefined}
-          frustumCulled={false}
-        >
-          <boxGeometry args={[GIMBAL_TICK_LENGTH_A, 0.006, 0.006]} />
-          <meshBasicMaterial
-            color="#67e8f9"
-            transparent
-            opacity={emphasized ? 0.8 : 0.42}
-            blending={THREE.AdditiveBlending}
-            depthWrite={false}
-            toneMapped={false}
-          />
-        </instancedMesh>
-      </group>
-
-      {/* B 环：绕 Z 轴倾斜 90°，与 A 环正交 */}
-      <group ref={gimbalRingBRef} rotation={[0, Math.PI / 2, 0]} raycast={(): void => undefined}>
-        <mesh raycast={(): void => undefined}>
-          <torusGeometry args={[GIMBAL_RING_RADIUS, 0.0035, 6, 96]} />
-          <meshBasicMaterial
-            color="#cffafe"
-            transparent
-            opacity={emphasized ? 0.7 : 0.38}
-            blending={THREE.AdditiveBlending}
-            depthWrite={false}
-            toneMapped={false}
-          />
-        </mesh>
-        <instancedMesh
-          ref={gimbalTicksBRef}
-          args={[undefined, undefined, GIMBAL_TICK_COUNT]}
-          raycast={(): void => undefined}
-          frustumCulled={false}
-        >
-          <boxGeometry args={[GIMBAL_TICK_LENGTH_B, 0.005, 0.005]} />
-          <meshBasicMaterial
-            color="#a5f3fc"
-            transparent
-            opacity={emphasized ? 0.65 : 0.34}
-            blending={THREE.AdditiveBlending}
-            depthWrite={false}
-            toneMapped={false}
-          />
-        </instancedMesh>
-      </group>
-
-      {/*
        * ═══ 第 1.5 层：外层旋转正八面体棱线晶格（Octahedron Cage）═══
        *
        * 【只画棱线】表面材质 opacity 0 + depthWrite false：
@@ -1347,67 +1199,13 @@ export default function MasterNode3D() {
        * 【棱色用冰青】比外壳的青色更白一档，让它在深空背景上有"最亮一层"的观感，
        * 与内部晶核、白炽内核形成"外亮—中亮—最亮"的向内汇聚。
        */}
-      <mesh ref={cageRef} scale={[CAGE_SCALE, CAGE_SCALE * OCTA_SCALE_Y, CAGE_SCALE]} raycast={(): void => undefined}>
-        <octahedronGeometry args={[OCTA_RADIUS, 0]} />
-        <meshBasicMaterial color={GLOW_ICE} transparent opacity={0} depthWrite={false} toneMapped={false} />
-        <Edges scale={1.002} threshold={15} color={emphasized ? '#ecfeff' : GLOW_ICE} />
-      </mesh>
-
-      {/*
-       * ═══ 第 2 层：内层反向晶核 ═══
-       *
-       * 【本轮通透化】面片 opacity 0.22 → **0.04**：内层不再是"发光的面"，
-       * 而是略带体积暗示的暗面 + 亮青色线框（#22d3ee / 0.55）。
-       * 内外因此是「白棱外框 + 青棱内框」的几何套嵌，
-       * 而不是两块叠在一起发光的塑料。
-       */}
-      <mesh ref={coreRef}>
-        <octahedronGeometry args={[CORE_CRYSTAL_RADIUS, 0]} />
-        <meshBasicMaterial
-          color="#022c43"
-          transparent
-          opacity={emphasized ? 0.07 : 0.04}
-          side={THREE.DoubleSide}
-          depthWrite={false}
-          toneMapped={false}
-        />
-        <Edges scale={1.002} threshold={15} color="#22d3ee" transparent opacity={0.55} />
-      </mesh>
-
-      {/*
-       * ═══ 第 3 层：三轴陀螺仪全息轨道环 ═══
-       *
-       * 【替代了什么】原来的三根 boxGeometry 十字直棍直接穿过球心，
-       * 视觉上是"糖葫芦签子"——刚性、共面、且把中心切成了碎片。
-       *
-       * 【为什么环更像仪器】三道环倾角各异（π/3、−π/4+π/5、π/2+π/6），
-       * 半径 1.15 / 1.32 / 1.48 递进，各自以不同角速度自转：
-       * 任意时刻三环的交点都在移动，扫掠面持续变化，
-       * 这正是陀螺仪"在工作"的视觉签名，而不是一个静态骨架。
-       *
-       * 【渲染参数】torusGeometry 的管径取得极细（0.008~0.012），
-       * 配合加色混合，在深空背景上像一圈悬浮的激光轨道。
-       */}
-      {GYRO_RINGS.map((gyro): ReactNode => (
-        <mesh
-          key={gyro.key}
-          ref={(node): void => {
-            gyroRefs.current[GYRO_RINGS.indexOf(gyro)] = node;
-          }}
-          rotation={[gyro.tilt[0], gyro.tilt[1], gyro.tilt[2]]}
-          raycast={(): void => undefined}
-        >
-          <torusGeometry args={[gyro.radius, gyro.thickness, 8, 128]} />
-          <meshBasicMaterial
-            color={GLOW_PALE}
-            transparent
-            opacity={0.55}
-            toneMapped={false}
-            depthWrite={false}
-            blending={THREE.AdditiveBlending}
-          />
-        </mesh>
-      ))}
+      <lineSegments
+        ref={cageRef}
+        geometry={outerCageGeometry}
+        material={wireframeMaterial}
+        scale={[CAGE_SCALE, CAGE_SCALE * OCTA_SCALE_Y, CAGE_SCALE]}
+        raycast={(): void => undefined}
+      />
 
       {/*
        * ═══ 第 4 层：等离子星核（自定义 GLSL 径向衰减）═══
@@ -1436,29 +1234,6 @@ export default function MasterNode3D() {
           toneMapped={false}
         />
       </mesh>
-
-      {/*
-       * ═══ 第 4b 层：环绕微光星火（36 颗缓慢上升旋转的微粒）═══
-       *
-       * 【解决什么】控制平面此前只有几条刚性结构线，缺少"数字生命力"。
-       * 36 颗星火按球壳黄金角分布包围在半径 2.2 内，整体缓慢自转 + 呼吸缩放，
-       * 让中心在静止机位下也持续有微小的光点在游走。
-       *
-       * 【性能】单个 Points 对象 = 1 次 Draw Call；顶点缓冲在 useMemo 内
-       * 一次性生成，useFrame 只改对象变换（rotation.y / scale），不触碰缓冲。
-       */}
-      <points ref={sparkRef} geometry={sparkGeometry} raycast={(): void => undefined}>
-        <pointsMaterial
-          size={0.055}
-          color={GLOW_ICE}
-          transparent
-          opacity={0.75}
-          sizeAttenuation
-          toneMapped={false}
-          depthWrite={false}
-          blending={THREE.AdditiveBlending}
-        />
-      </points>
 
       {/*
        * ═══ 第 5 层：地面投射光束（悬浮水晶的能量脐带）═══
@@ -1499,53 +1274,6 @@ export default function MasterNode3D() {
       {/* 旧的 scale 5.4 / opacity 0.85 大面积柔光已收敛，见下方星核辉光 */}
 
       {/*
-       * ═══ 第 2b 层：内部星云星座粒子群（360 颗，单次 Draw Call）═══
-       *
-       * 【整颗晶体的灵魂】通透外壳之后，八面体内部必须有"内容"：
-       * 360 颗严格约束在八面体体积内的粒子，越靠中心越密，
-       * 由自定义 shader 绘制成圆形径向高斯星芒点（绝非方形像素块）。
-       *
-       * 【为何用 points 而非 InstancedMesh】星星是"光"不是"物"：
-       * Points + 自定义点精灵可逐粒子控制粒径与闪烁相位；
-       * InstancedMesh 画小球需要更多三角面，且没有 gl_PointCoord 的柔边。
-       */}
-      <points
-        ref={constellationRef}
-        geometry={constellationGeometry}
-        raycast={(): void => undefined}
-      >
-        <shaderMaterial
-          defines={KV_DEBUG_NAN_DEFINES}
-          uniforms={constellationUniforms}
-          vertexShader={CONSTELLATION_VERTEX_SHADER}
-          fragmentShader={CONSTELLATION_FRAGMENT_SHADER}
-          transparent
-          depthWrite={false}
-          blending={THREE.AdditiveBlending}
-          toneMapped={false}
-        />
-      </points>
-
-      {/*
-       * ═══ 第 2c 层：内部神经晶格连线（28 对节点 + 6 顶点辐条）═══
-       *
-       * 【为何要连线】没有连线时 360 颗粒子只是"发光的灰尘"；
-       * 有了点与点的细线，它们才组成"有结构的星系"——
-       * 这正是参考图晶核内部繁复璀璨的星座纹理。
-       * WebGL 线宽上限为 1px，因此靠低透明度 + 加色叠加取胜。
-       */}
-      <lineSegments ref={neuralRef} geometry={neuralGeometry} raycast={(): void => undefined}>
-        <lineBasicMaterial
-          color="#38bdf8"
-          transparent
-          opacity={0.28}
-          toneMapped={false}
-          blending={THREE.AdditiveBlending}
-          depthWrite={false}
-        />
-      </lineSegments>
-
-      {/*
        * ═══ 程序化星核辉光（本轮收敛）═══
        *
        * 旧配置 scale 5.4 / opacity 0.85 的大面积柔光，叠在八面体上再经 Bloom
@@ -1556,18 +1284,6 @@ export default function MasterNode3D() {
       <CrystalOptics />
 
       <GlowHalo3D color={GLOW_CYAN} scale={2.15} opacity={0.62} falloff={2.6} pulse pulsePeriod={2.6} />
-
-      {/*
-       * ═══ 中心紧凑高光星核点（0.16 纯白球）═══
-       *
-       * 很小但极亮：它是整颗晶体的"瞳孔"。
-       * 与等离子 shader、星核辉光合成「白点 → 青晕 → 暗晶外壳」三级亮度，
-       * 而不是旧版那种"整块都在发光"的均质白团。
-       */}
-      <mesh raycast={(): void => undefined}>
-        <sphereGeometry args={[NUCLEUS_RADIUS, 24, 24]} />
-        <meshBasicMaterial color="#ffffff" toneMapped={false} />
-      </mesh>
 
       {/*
        * ═══ 第 2e 层：赤道光环 + 两道斜交极轨细环 ═══
@@ -1676,9 +1392,10 @@ export default function MasterNode3D() {
       <Html
         position={[LABEL_POSITION[0], LABEL_POSITION[1], LABEL_POSITION[2]]}
         center
-        distanceFactor={14}
+        distanceFactor={15}
         zIndexRange={[10, 0]}
         className="pointer-events-none"
+        style={{ pointerEvents: 'none' }}
       >
         {/*
          * ---- 光学玻璃拟态控制平面铭牌（本轮重构）----
@@ -1691,7 +1408,27 @@ export default function MasterNode3D() {
          *   · 无闭合边，结构由上下 1px 折射亮边 + 四角发光靶标表达；
          *   · 斜向折射高光 + 顶部毫米微标尺，把面板从"标题牌"升级为"仪表台"。
          */}
-        <div className="relative flex flex-col items-center gap-1 overflow-hidden whitespace-nowrap bg-slate-950/50 px-3 py-1 kv-blur-panel">
+        <div className="relative flex flex-col items-center gap-1 whitespace-nowrap bg-slate-950/50 px-3 py-1 kv-blur-panel">
+          {/*
+           * R61 战术引线：右上角 45° 折角，从铭牌指向晶核中心，
+           * 把"这块牌子在标注谁"画出来，同时不引入任何可点击区域。
+           */}
+          <svg
+            aria-hidden
+            className="pointer-events-none absolute -right-8 -top-7 h-9 w-9 overflow-visible"
+            viewBox="0 0 36 36"
+            fill="none"
+          >
+            <polyline
+              points="2,34 14,20 34,20"
+              stroke="#22d3ee"
+              strokeWidth="1"
+              strokeLinecap="square"
+              opacity="0.72"
+            />
+            <circle cx="34" cy="20" r="1.8" fill="#22d3ee" opacity="0.85" />
+            <circle cx="2" cy="34" r="1.4" stroke="#22d3ee" strokeWidth="1" opacity="0.7" />
+          </svg>
           <HoloSpecularSheen />
           <HoloRefractionEdges accent="#22d3ee" />
           <HoloCorners color="#22d3ee" />
