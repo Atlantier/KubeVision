@@ -11,8 +11,8 @@
 | 1 | README 重构（赛事/团队/唯一 3 分钟/路演/局限/死链） | **已补（R55）** | `README.md` | 队长 | T-7 |
 | 2 | 赛事全称/赛道/官网/团队信息表 | **已补**（团队信息占位待填） | README §1 | 队长 | **T-3** |
 | 3 | 技术白皮书升级（R02–R18、12 处口径、数字对齐） | **已补（R55）** | `docs/COMPETITION_TECHNICAL_WHITEPAPER.md` | 文档 | T-3 |
-| 4 | 白皮书 PDF（生成时间晚于最后提交、≤10MB） | **本轮生成（待校验）** | `docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf` | 文档 | T-1 |
-| 5 | 路演 PPT（10–12 页，PDF ≤10MB） | **已补**（`docs/pitch/index.html` + PDF） | `docs/KubeVision_PITCH.pdf` | 队长 | T-3 |
+| 4 | 白皮书 PDF（生成时间晚于最后代码提交、≤10MB） | **已生成：1.75MB / 26 页 / 2026-11-11 13:16** | `docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf` | 文档 | T-1 |
+| 5 | 路演 PPT（12 页，PDF ≤10MB） | **已生成：3.80MB / 2026-11-11 13:16** | `docs/KubeVision_PITCH.pdf` | 队长 | T-3 |
 | 6 | 3 分钟视频（1080p30、≤3:00） | **仍缺：待录制** | `recording/KubeVision_3min_FINAL_1080p30.mp4` | 主讲/录制 | **T-2** |
 | 7 | 60s 无旁白版 | **仍缺：待剪辑** | `recording/KubeVision_60s_silent_1080p30.mp4` | 录制 | T-2 |
 | 8 | 源码包（排除 node_modules/.next/.git/大文件，含命名规则） | **仍缺：待打包命名** | `docs/SUBMISSION_PACKAGE.md` | 队长 | **T-1** |
