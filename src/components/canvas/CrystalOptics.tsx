@@ -180,6 +180,21 @@ float fbm3(vec3 p) {
 /* 着色器                                                                      */
 /* ========================================================================== */
 
+/**
+ * safeNormalize —— GLSL 安全归一化。
+ *
+ * 【R60】普通 normalize 在长度为 0 时执行 0 * inversesqrt(0) = NaN；
+ * 八面体/二十面体边缘、掠射角、低分辨率反射 Pass 都可能读出零向量。
+ * lenSq > 1e-8 才归一化，否则返回 fallback（通常是视角法线），
+ * 保证后续 dot/pow/refract 不会把 NaN 送进 Bloom。
+ */
+const SAFE_NORMALIZE = /* glsl */ `
+vec3 safeNormalize(vec3 v, vec3 fallback) {
+  float lenSq = dot(v, v);
+  return lenSq > 1.0e-8 ? v * inversesqrt(lenSq) : fallback;
+}
+`;
+
 /** 1. 内核奇点：3 倍频噪声流动 + 中心白→电光青→深蓝 */
 const CORE_VERTEX = /* glsl */ `
   varying vec3 vLocalPos;
@@ -204,6 +219,7 @@ const CORE_FRAGMENT = /* glsl */ `
   varying vec3 vNormalView;
   varying vec3 vViewDir;
   ${SIMPLEX_NOISE}
+  ${SAFE_NORMALIZE}
   void main() {
     float flow = fbm3(vLocalPos * 3.2 + vec3(0.0, uTime * 0.45, uTime * 0.28));
     float radial = clamp(1.0 - length(vLocalPos) / 0.4, 0.0, 1.0);
@@ -211,9 +227,13 @@ const CORE_FRAGMENT = /* glsl */ `
     vec3 color = mix(uColorDeep, uColorCool, clamp(radial * 1.4, 0.0, 1.0));
     color = mix(color, uColorHot, clamp(radial * radial * 1.6, 0.0, 1.0));
     color *= 0.72 + 0.28 * flow;
-    float fresnel = pow(clamp(dot(normalize(vNormalView), normalize(vViewDir)), 0.0, 1.0), 1.6);
+    vec3 N = safeNormalize(vNormalView, vec3(0.0, 0.0, 1.0));
+    vec3 V = safeNormalize(vViewDir, vec3(0.0, 0.0, 1.0));
+    /* R60：pow 的底数钳到 1e-4，避免 dot<=0 时 pow(0,1.6) 未定义 */
+    float fresnel = pow(clamp(dot(N, V), 1.0e-4, 1.0), 1.6);
     color += uColorHot * fresnel * 0.35;
-    color *= uBreath;
+    /* R60：亮度系数按 0.85 下调，避免核心白斑过曝 */
+    color *= 0.85 * uBreath;
     float alpha = clamp(0.16 + 0.10 * radial + 0.06 * abs(flow), 0.0, 0.22);
     gl_FragColor = vec4(clamp(color, 0.0, 8.0), alpha);
   }
@@ -236,8 +256,12 @@ const FOG_FRAGMENT = /* glsl */ `
   uniform float uBreath;
   varying vec3 vNormalView;
   varying vec3 vViewDir;
+  ${SAFE_NORMALIZE}
   void main() {
-    float facing = max(dot(normalize(vNormalView), normalize(vViewDir)), 1.0e-4);
+    vec3 N = safeNormalize(vNormalView, vec3(0.0, 0.0, 1.0));
+    vec3 V = safeNormalize(vViewDir, vec3(0.0, 0.0, 1.0));
+    /* BackSide 球体法线背向相机：dot 为负，必须取 abs，否则永远卡在 1e-4 */
+    float facing = clamp(abs(dot(N, V)), 1.0e-4, 1.0);
     float alpha = pow(max(facing, 1.0e-4), 2.6) * 0.30 * uBreath;
     gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(alpha, 0.0, 0.30));
   }
@@ -260,21 +284,34 @@ const CRYSTAL_VERTEX = /* glsl */ `
 const CRYSTAL_FRAGMENT = /* glsl */ `
   uniform vec3 uColor;
   uniform vec3 uTint;
+  uniform float uRefractionStrength;
+  uniform float uAlphaBase;
+  uniform float uEdgeBoost;
+  uniform float uCaustic;
   varying vec3 vNormalView;
   varying vec3 vViewDir;
   varying vec3 vLocalPos;
+  ${SAFE_NORMALIZE}
   void main() {
-    vec3 normal = normalize(vNormalView);
-    vec3 view = normalize(vViewDir);
-    float facing = clamp(dot(normal, view), 0.0, 1.0);
+    vec3 N = safeNormalize(vNormalView, vec3(0.0, 0.0, 1.0));
+    vec3 V = safeNormalize(vViewDir, vec3(0.0, 0.0, 1.0));
+    float facing = clamp(dot(N, V), 0.0, 1.0);
     float fresnel = pow(max(1.0 - facing, 1.0e-4), 2.4);
-    /* 假折射：法线扰动 + 视角函数，模拟内部弯折的青光 */
-    vec3 refracted = refract(-view, normal, 0.74);
+    /*
+     * 色散折射：ior 由 uRefractionStrength 控制（0.028 内层 / 0.05 外层）。
+     * refract 的第三个参数必须落在 (0,1)，clamp 后不会触发无效折射。
+     */
+    vec3 refracted = refract(-V, N, clamp(1.0 - uRefractionStrength, 0.5, 0.995));
     float bend = clamp(length(refracted) * 1.8, 0.0, 1.0);
+    /* 棱边高光与焦散：R60 由固定 0.55/0.22 降为 0.32/0.12，避免白炽过曝；用乘法代替整数次幂 */
+    float edgeBase = max(1.0 - facing, 1.0e-4);
+    float edge = edgeBase * edgeBase * edgeBase * uEdgeBoost;
+    float causticBase = clamp(dot(refracted, V), 0.0, 1.0);
+    float caustic = causticBase * causticBase * causticBase * uCaustic;
     vec3 color = mix(uColor, uTint, 0.35 + 0.35 * bend);
-    color += uTint * fresnel * 0.9;
-    /* 透明度上限 0.28：绝不遮挡内核 */
-    float alpha = clamp(0.06 + fresnel * 0.22, 0.0, 0.28);
+    color += uTint * (fresnel * 0.9 + edge + caustic);
+    /* 透明度：外层 0.22 / 内层 0.24 起，加少量菲涅尔，上限 0.30，绝不遮挡内核 */
+    float alpha = clamp(uAlphaBase + fresnel * 0.08, 0.0, 0.30);
     gl_FragColor = vec4(clamp(color, 0.0, 8.0), alpha);
   }
 `;
@@ -325,7 +362,8 @@ const NEBULA_VERTEX = /* glsl */ `
     gl_Position = projectionMatrix * mvPosition;
     float twinkle = 0.45 + 0.55 * sin(uTime * 1.7 + aPhase * 6.2831);
     vTwinkle = twinkle;
-    gl_PointSize = clamp(aSize * uPixelRatio * (2.2 / -mvPosition.z), 0.6, 6.0);
+    /* R60：靠近相机平面时 -z 可能为 0/负，先钳到 0.25 再除，避免除零/负尺寸 */
+    gl_PointSize = clamp(aSize * uPixelRatio * (2.2 / max(0.25, -mvPosition.z)), 0.6, 6.0);
   }
 `;
 
@@ -334,9 +372,11 @@ const NEBULA_FRAGMENT = /* glsl */ `
   varying float vTwinkle;
   void main() {
     vec2 centered = gl_PointCoord - 0.5;
-    float dist = length(centered);
-    if (dist > 0.5) discard;
-    float falloff = 1.0 - smoothstep(0.0, 0.5, dist);
+    /* 归一化半径：圆内 r∈[0,1)，四角 >=1 直接丢弃 */
+    float r = length(centered) * 2.0;
+    if (r >= 1.0) discard;
+    /* R60：底数钳到 1e-4，避免 r→1 时 pow(0,1.6) 未定义 */
+    float falloff = pow(max(1.0e-4, 1.0 - r), 1.6);
     gl_FragColor = vec4(clamp(uColor * (0.7 + 0.6 * vTwinkle), 0.0, 8.0), falloff * 0.5 * vTwinkle);
   }
 `;
@@ -386,8 +426,12 @@ const ATMOSPHERE_FRAGMENT = /* glsl */ `
   uniform float uBreath;
   varying vec3 vNormalView;
   varying vec3 vViewDir;
+  ${SAFE_NORMALIZE}
   void main() {
-    float facing = max(dot(normalize(vNormalView), normalize(vViewDir)), 1.0e-4);
+    vec3 N = safeNormalize(vNormalView, vec3(0.0, 0.0, 1.0));
+    vec3 V = safeNormalize(vViewDir, vec3(0.0, 0.0, 1.0));
+    /* BackSide：法线背向相机，取 abs 才能得到真实轮廓泛光 */
+    float facing = clamp(abs(dot(N, V)), 1.0e-4, 1.0);
     /* 只在轮廓处泛光：pow 3.8 */
     float alpha = pow(max(facing, 1.0e-4), 3.8) * 0.20 * uBreath;
     gl_FragColor = vec4(clamp(uColor, 0.0, 8.0), clamp(alpha, 0.0, 0.20));
@@ -457,17 +501,6 @@ function buildNebulaGeometry(count: number): THREE.BufferGeometry {
 /** CrystalOptics 无外部 props：颜色/呼吸均来自瞬态轨与低频 store */
 export default function CrystalOptics(): React.ReactElement {
   /**
-   * A3：晶体主体是否使用 MeshPhysicalMaterial 真折射。
-   *
-   * 【性能预算】transmission 需要额外 RT 与一次屏幕空间采样，
-   * 只在 T3（high 档）且**非软件光栅化**时启用；T2/T1/软渲染
-   * 一律退回自写的 Fresnel 假折射 shader（视觉近似、成本恒定）。
-   */
-  const usePhysicalCrystal = useMemo((): boolean => {
-    return resolveCrystalQuality() === 'high' && !detectSoftwareRenderer();
-  }, []);
-
-  /**
    * 追问 4：低档位（T1/T0）。
    *
    * 判定口径与 R10 档位一致：?quality=low（T1）或检测到软件光栅化（T0）。
@@ -514,8 +547,37 @@ export default function CrystalOptics(): React.ReactElement {
     () => ({ uColor: { value: new THREE.Color('#38bdf8') }, uBreath: { value: 1 } }),
     [],
   );
+  /**
+   * 外层晶面材质 uniforms（R60）。
+   * uRefractionStrength 0.05 / uAlphaBase 0.22 / edgeBoost 0.32 / caustic 0.12，
+   * 通透切面折光而非白炽过曝。
+   */
   const crystalUniforms = useMemo(
-    () => ({ uColor: { value: new THREE.Color('#0b3b5a') }, uTint: { value: new THREE.Color('#38bdf8') } }),
+    () => ({
+      uColor: { value: new THREE.Color('#0b3b5a') },
+      uTint: { value: new THREE.Color('#38bdf8') },
+      uRefractionStrength: { value: 0.05 },
+      uAlphaBase: { value: 0.22 },
+      uEdgeBoost: { value: 0.32 },
+      uCaustic: { value: 0.12 },
+    }),
+    [],
+  );
+
+  /**
+   * 内层晶面材质 uniforms（R60）：不再使用 meshPhysicalMaterial.transmission，
+   * 改为与外层同源 ShaderMaterial，uRefractionStrength 0.028 / uAlphaBase 0.24，
+   * FrontSide + depthWrite=false，避免嵌套 FBO/transmissionRenderTarget 冲突。
+   */
+  const innerRefractionUniforms = useMemo(
+    () => ({
+      uColor: { value: new THREE.Color('#0b3b5a') },
+      uTint: { value: new THREE.Color('#67e8f9') },
+      uRefractionStrength: { value: 0.028 },
+      uAlphaBase: { value: 0.24 },
+      uEdgeBoost: { value: 0.32 },
+      uCaustic: { value: 0.12 },
+    }),
     [],
   );
   const wireInnerUniforms = useMemo(
@@ -582,10 +644,17 @@ export default function CrystalOptics(): React.ReactElement {
     const t = state.clock.elapsedTime;
     const dt = Math.min(delta, 0.1);
 
-    /* R29 B：开场 uBoot 乘到晶体整体 scale（0→1，0 新增 draw call） */
+    /*
+     * R29 开场缩放与 R60 呼吸合并为**一次**赋值。
+     * 当前仓库父组件（MasterNode3D）并未施加 bootScale（grep 为 0），
+     * 因此这里必须保留开场因子；关键是绝不二次相乘（不做 boot × boot），
+     * 且 boot 下限 0.55，不会出现 normalMatrix 行列式下溢。
+     */
     const boot = Math.max(0.001, Math.min(1, bootUniform.value));
+    const bootFactor = 0.55 + 0.45 * boot;
+    const breathScale = 1 + Math.sin(t * 2.1) * 0.015;
     if (crystalGroupRef.current !== null) {
-      crystalGroupRef.current.scale.setScalar(0.55 + 0.45 * boot);
+      crystalGroupRef.current.scale.setScalar(bootFactor * breathScale);
     }
 
     /* ---- C. 色温目标：健康=冰川青 / 高负载=琥珀 / 故障=绯红 ---- */
@@ -621,6 +690,8 @@ export default function CrystalOptics(): React.ReactElement {
     (fogUniforms.uColor.value as THREE.Color).copy(toneCurrent);
     (crystalUniforms.uTint.value as THREE.Color).copy(toneCurrent);
     (crystalUniforms.uColor.value as THREE.Color).copy(toneCurrent).multiplyScalar(0.22);
+    (innerRefractionUniforms.uTint.value as THREE.Color).copy(toneCurrent);
+    (innerRefractionUniforms.uColor.value as THREE.Color).copy(toneCurrent).multiplyScalar(0.18);
     /* QPS 驱动流光速度：负载越高，能量沿棱线流得越快 */
     const flowSpeed = 1 + 0.6 * qpsNorm;
     wireInnerUniforms.uTime.value = t;
@@ -718,36 +789,35 @@ export default function CrystalOptics(): React.ReactElement {
         renderOrder={1}
       >
         <octahedronGeometry args={[CRYSTAL_RADIUS, 0]} />
-        {usePhysicalCrystal ? (
-          /*
-           * T3 真折射：transmission 由 MeshPhysicalMaterial 走屏幕空间折射。
-           * 透明度上限 0.28、不写深度，确保内核永远可见。
-           */
-          <meshPhysicalMaterial
-            color="#7dd3fc"
-            transmission={0.35}
-            thickness={1.2}
-            ior={1.45}
-            roughness={0.18}
-            metalness={0.1}
-            transparent
-            opacity={0.28}
-            depthWrite={false}
-            side={THREE.DoubleSide}
-            toneMapped={false}
-          />
-        ) : (
-          /* T2/T1 / 软渲染：Fresnel 假折射（成本恒定，无色偏） */
-          <shaderMaterial
-            uniforms={crystalUniforms}
-            vertexShader={CRYSTAL_VERTEX}
-            fragmentShader={CRYSTAL_FRAGMENT}
-            transparent
-            depthWrite={false}
-            side={THREE.DoubleSide}
-            toneMapped={false}
-          />
-        )}
+        {/*
+         * R60：彻底移除 transmission（meshPhysicalMaterial 会强制一次全场景
+         * transmissionRenderTarget 离屏渲染，与 MeshReflectorMaterial /
+         * EffectComposer 的 HalfFloat FBO 嵌套时易 FBO 状态错乱与双倍开销）。
+         * 外层使用与内核同源的折射 ShaderMaterial（DoubleSide）。
+         */}
+        <shaderMaterial
+          uniforms={crystalUniforms}
+          vertexShader={CRYSTAL_VERTEX}
+          fragmentShader={CRYSTAL_FRAGMENT}
+          transparent
+          depthWrite={false}
+          side={THREE.DoubleSide}
+          toneMapped={false}
+        />
+      </mesh>
+
+      {/* ---- 3b. 内层晶面：R60 折射色散 ShaderMaterial（替代 transmission） ---- */}
+      <mesh scale={[0.92, 1.12, 0.92]} raycast={(): void => undefined} renderOrder={1}>
+        <octahedronGeometry args={[CRYSTAL_RADIUS, 0]} />
+        <shaderMaterial
+          uniforms={innerRefractionUniforms}
+          vertexShader={CRYSTAL_VERTEX}
+          fragmentShader={CRYSTAL_FRAGMENT}
+          transparent
+          depthWrite={false}
+          side={THREE.FrontSide}
+          toneMapped={false}
+        />
       </mesh>
 
       {/* ---- 1.5 屏幕空间星芒：1 draw call，四瓣衍射，宽度 ≤ 晶核屏幕直径 1.6× ---- */}

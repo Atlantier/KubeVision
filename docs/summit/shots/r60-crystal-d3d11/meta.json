@@ -1,0 +1,82 @@
+{
+  "baseline": {
+    "commit": "7326119",
+    "tag": "r60-crystal-d3d11",
+    "generatedAt": "2026-11-11T10:04:38.770Z"
+  },
+  "scenes": {
+    "crystal@1920x1080": {
+      "scene": "crystal",
+      "sceneLabel": "控制平面选中态（中央晶体高亮 + 环形布局鸟瞰）",
+      "file": "crystal-1920x1080.png",
+      "timestamp": "2026-11-11T10:04:38.770Z",
+      "commit": "7326119",
+      "tag": "r60-crystal-d3d11",
+      "gpuMode": "d3d11",
+      "viewport": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "metrics": {
+        "glStats": {
+          "fps": 281,
+          "frameTimeMs": 3.6,
+          "drawCalls": 1,
+          "triangles": 1,
+          "sseLatencyMs": 1008,
+          "workerStatus": "idle"
+        },
+        "dpr": 0.85,
+        "devicePixelRatio": 1,
+        "contextLost": false,
+        "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Laptop GPU (0x00002D18) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "canvas": {
+          "width": 1057,
+          "height": 861
+        },
+        "store": {
+          "activeChaos": "NONE",
+          "selectedEntityId": "master-control-plane",
+          "connectionMode": "demo",
+          "clusterHealthScore": 100,
+          "runningPods": 24,
+          "totalPods": 24,
+          "activeAlerts": 0,
+          "isOrbitPatrolActive": false
+        }
+      },
+      "luminance": {
+        "bins": [
+          1039357,
+          482378,
+          179649,
+          84471,
+          54997,
+          44348,
+          44103,
+          47645,
+          24906,
+          19038,
+          15748,
+          16005,
+          10618,
+          5401,
+          3418,
+          1518
+        ],
+        "mean": 32.9434195663643,
+        "overexposed": 409,
+        "overexposedRatio": 0.0197241512345679,
+        "totalPixels": 2073600
+      },
+      "consoleErrors": 0,
+      "consoleWarns": 1,
+      "consoleErrorSamples": [],
+      "consoleWarnSamples": [
+        "[DEPRECATED] Use `createWithEqualityFn` instead of `create` or use `useStoreWithEqualityFn` instead of `useStore`. They can be imported from 'zustand/traditional'. https://github.com/pmndrs/zustand/di"
+      ],
+      "note": "dpr 取自 renderer.getPixelRatio()，是该构建下唯一可观测的\"自适应画质档位\"代理；glStats 的 fps/frameTime 来自 SwiftShader 软件光栅化，不代表真机 GPU 性能，drawCalls/triangles 与硬件无关。"
+    }
+  }
+}
