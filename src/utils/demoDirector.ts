@@ -2605,14 +2605,19 @@ function finishDemoDirector(): void {
    *
    * 【为什么在 finish 里再开一次】阶段 4 可能在中途把巡检关过（例如用户拖拽
    * 接管了镜头）。完成态应该回到"全景缓缓旋转"的收官画面，这是路演的
-   * 视觉句点。用 programmatic 开启，CameraRig 不会再把它关掉。
+   * 视觉句点。
+   *
+   * R69：这里改用 'user' 来源开启，显式释放 patrolLockedByProgram。
+   * 剧本已经结束，不再需要程序化锁保护巡检；若继续用 programmatic，
+   * 用户随后点击任意节点/Pod 时 disengagePatrolIfActive 会被锁拦截，
+   * 无法自动退出巡检并聚焦目标。
    */
   const finishApi = actions();
   /* 路演结束才关闭自动演示标识（见阶段 4 末尾的说明） */
   finishApi.setDemoAutoConfirm(false);
   finishApi.setActiveChaos('NONE');
   finishApi.selectEntity(null);
-  finishApi.setOrbitPatrolActive(true, 'programmatic');
+  finishApi.setOrbitPatrolActive(true, 'user');
   recordDemoEffect('onFinish', `phase=${phaseIndex}`);
   finishApi.appendTerminalLog('[DEMO-DIRECTOR] ■ 剧本已完整跑完');
 

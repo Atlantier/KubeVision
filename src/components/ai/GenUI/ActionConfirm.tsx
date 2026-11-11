@@ -483,8 +483,17 @@ export default function ActionConfirm({
         /* ---- 步骤 4：引导 3D 相机聚焦被自愈实体 ---- *
          * 必须在 healEntity 之后：CameraRig 的 focus effect 依赖
          * selectedEntityId 变化，此时快照已是愈合态，
-         * 相机飞过去看到的就是"已自愈"的绿色实例——时序上因果正确。 */
-        selectEntity(effectiveTargetId, effectiveEntityType);
+         * 相机飞过去看到的就是"已自愈"的绿色实例——时序上因果正确。
+         *
+         * R69：自动剧本路演期间禁止卡片抢镜头。
+         * 导演在阶段 4 已统一把镜头切回全景鸟瞰并开启环绕巡检；卡片在
+         * 600ms 动画 + MCP 请求后异步完成时若再 selectEntity(单 Pod)，
+         * 会把镜头从全景猛拉回局部，并与巡检形成二次冲突。
+         * 手动执行时 demoAutoConfirm 为 false，仍保留聚焦已自愈 Pod 的体验。
+         */
+        if (!useClusterStore.getState().demoAutoConfirm) {
+          selectEntity(effectiveTargetId, effectiveEntityType);
+        }
 
         /* ---- 步骤 5：切换成功态并向上冒泡 ---- */
         setPhase('done');

@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — 相机运镜系统（CameraRig）
@@ -85,6 +85,15 @@ const FLIGHT_DAMPING_RATE = 4;
 
 /** 到达判定阈值（需求契约值）：相机距目标机位 < 0.15 即吸附终点并结束动画 */
 const ARRIVAL_EPSILON = 0.15;
+
+/**
+ * 单次飞行最长时间（秒）。
+ *
+ * 【为什么需要超时收敛】弧线绕飞 + 阻尼在极端机位（近地/远距）下可能长时间
+ * 逼近不到 ARRIVAL_EPSILON；若永远不结束，isAnimatingRef 会与 autoRotate
+ * 形成永久拉锯。超过该时长直接结束飞行并交还巡检，由当前真实位置接续。
+ */
+const MAX_FLIGHT_DURATION = 3.2;
 
 /** 单帧 Δt 钳制上限（秒）：掉帧时限制插值步长，防相机瞬移穿模 */
 const MAX_FRAME_DELTA = 0.1;
@@ -174,6 +183,8 @@ export default function CameraRig() {
   const arcPointVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
   /** 归一化飞行进度 [0,1] */
   const flightProgressRef = useRef<number>(0);
+  /** 本次飞行已用时长（秒）：用于 MAX_FLIGHT_DURATION 超时收敛 */
+  const flightElapsedRef = useRef<number>(0);
 
   /* R29 C：开场运镜（0–2.4s，与 uBoot 同步；reduced-motion 时直接落位） */
   const openingProgressRef = useRef<number>(0);
@@ -250,6 +261,7 @@ export default function CameraRig() {
      */
     flightStartVec.copy(camera.position);
     flightProgressRef.current = 0;
+    flightElapsedRef.current = 0;
     isAnimatingRef.current = true;
   }, [selectedEntityId, selectedEntityType, camera, flightStartVec]);
 
@@ -261,6 +273,7 @@ export default function CameraRig() {
       focusRef.current = resolveViewPresetFocus(preset);
       flightStartVec.copy(camera.position);
       flightProgressRef.current = 0;
+      flightElapsedRef.current = 0;
       isAnimatingRef.current = true;
     });
   }, [camera, flightStartVec]);
@@ -274,8 +287,15 @@ export default function CameraRig() {
       isAnimatingRef.current = false;
       /* 用户接管同时终止开场运镜，避免与之抢相机 */
       openingDoneRef.current = true;
-      // 环绕巡检让位：用户拖拽即手动操作优先，自动解除 autoRotate
-      disengagePatrolIfActive();
+      /*
+       * R69：用户手动接管拥有最高优先级，必须无条件解锁巡检。
+       * 不能复用 disengagePatrolIfActive()——导演 programmatic 锁会让它提前 return，
+       * 导致用户拖拽后 autoRotate 仍然开启、继续与手动镜头打架。
+       */
+      const store = useClusterStore.getState();
+      if (store.isOrbitPatrolActive) {
+        store.setOrbitPatrolActive(false, 'user');
+      }
     };
     controls.addEventListener('start', handleUserTakeover);
     return (): void => {
@@ -287,6 +307,15 @@ export default function CameraRig() {
   useFrame((state, delta): void => {
     /* ---- R29 C：开场运镜（0–2.4s），独立于选中/预设飞行 ---- */
     if (!openingDoneRef.current) {
+      const controlsForOpening = controlsRef.current;
+      /*
+       * R69：开场推镜期间强制挂起 autoRotate。
+       * 否则 OrbitControls 的水平切向位移会与开场阻尼插值互相拉扯，
+       * 相机永远到不了 OVERVIEW，openingDoneRef 也永远不置位。
+       */
+      if (controlsForOpening !== null && controlsForOpening.autoRotate !== false) {
+        controlsForOpening.autoRotate = false;
+      }
       const dt = Math.min(delta, 0.1);
       openingProgressRef.current = Math.min(
         1,
@@ -300,7 +329,6 @@ export default function CameraRig() {
       );
       targetLookVec.set(OVERVIEW_LOOK_AT[0], OVERVIEW_LOOK_AT[1], OVERVIEW_LOOK_AT[2]);
       state.camera.position.lerp(targetPosVec, alpha);
-      const controlsForOpening = controlsRef.current;
       if (controlsForOpening !== null) {
         controlsForOpening.target.lerp(targetLookVec, alpha);
         controlsForOpening.update();
@@ -315,14 +343,37 @@ export default function CameraRig() {
           controlsForOpening.update();
         }
         openingDoneRef.current = true;
+        /* 开场完成：从 Store 的真实巡检状态恢复 autoRotate（而非硬编码 true） */
+        if (controlsForOpening !== null) {
+          controlsForOpening.autoRotate = useClusterStore.getState().isOrbitPatrolActive;
+        }
       }
     }
 
-    if (!isAnimatingRef.current) return;
+    if (!isAnimatingRef.current) {
+      /* 自由态：autoRotate 始终以 Store 为唯一事实源（用户接管/导演开关都会回写） */
+      const freeControls = controlsRef.current;
+      if (freeControls !== null) {
+        const patrolActive = useClusterStore.getState().isOrbitPatrolActive;
+        if (freeControls.autoRotate !== patrolActive) {
+          freeControls.autoRotate = patrolActive;
+        }
+      }
+      return;
+    }
 
     const focus = focusRef.current;
     const controls = controlsRef.current;
     const clampedDelta = Math.min(delta, MAX_FRAME_DELTA);
+    /*
+     * R69：飞行插值期间每帧显式关闭 autoRotate。
+     * React 的 autoRotate prop 只在 Store 变化时重放；若飞行途中 Store 已为 true，
+     * 仅靠 prop 无法保证下一帧仍关闭，必须每帧命令式压制，抵达后再交还。
+     */
+    if (controls !== null && controls.autoRotate !== false) {
+      controls.autoRotate = false;
+    }
+    flightElapsedRef.current += clampedDelta;
     // 帧率无关指数阻尼：α = 1 − e^(−k·Δt)
     const alpha = 1 - Math.exp(-FLIGHT_DAMPING_RATE * clampedDelta);
 
@@ -393,15 +444,28 @@ export default function CameraRig() {
       controls.update();
     }
 
-    // 到达判定：< 0.15 吸附终点并交还控制权
-    if (state.camera.position.distanceTo(targetPosVec) < ARRIVAL_EPSILON) {
-      state.camera.position.copy(targetPosVec);
-      if (controls !== null) {
-        controls.target.copy(targetLookVec);
-        controls.update();
+    /*
+     * 抵达 / 超时收敛：两条路径都必须结束 isAnimatingRef 并交还 autoRotate。
+     *
+     * - 正常抵达：吸附终点与 lookAt，保证像素级精确；
+     * - 超时：不强行吸附（可能瞬移），只结束插值，让巡检从当前真实机位接续，
+     *   随后 OrbitControls 以当前相机位置为起点继续旋转。
+     */
+    const arrived = state.camera.position.distanceTo(targetPosVec) < ARRIVAL_EPSILON;
+    const timedOut = flightElapsedRef.current > MAX_FLIGHT_DURATION;
+    if (arrived || timedOut) {
+      if (arrived) {
+        state.camera.position.copy(targetPosVec);
+        if (controls !== null) {
+          controls.target.copy(targetLookVec);
+          controls.update();
+        }
       }
       isAnimatingRef.current = false;
       flightProgressRef.current = 1;
+      if (controls !== null) {
+        controls.autoRotate = useClusterStore.getState().isOrbitPatrolActive;
+      }
     }
   });
 
