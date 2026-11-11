@@ -33,7 +33,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const SRC = 'docs/COMPETITION_TECHNICAL_WHITEPAPER.md';
-const OUTPUT = 'docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf';
+const OUTPUT = join(process.cwd(), 'docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf');
 
 /** 临时工作目录（构建结束即清理，不污染仓库） */
 const workDir = mkdtempSync(join(tmpdir(), 'kv-whitepaper-'));
@@ -47,7 +47,7 @@ const BROWSER_CANDIDATES = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
 
-const browser = BROWSER_CANDIDATES.find((p): boolean => existsSync(p));
+const browser = BROWSER_CANDIDATES.find((p) => existsSync(p));
 if (browser === undefined) {
   console.error('未找到 Chrome / Edge，无法打印 PDF');
   process.exit(1);
