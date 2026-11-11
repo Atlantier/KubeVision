@@ -124,6 +124,19 @@ const HEAL_COLOR_STRENGTH = 0.82;
 /** 故障态发光增强倍率（契约指定：tempColor.multiplyScalar(1.5)，分量可 >1 产生过曝辉光） */
 const CRASH_GLOW_BOOST = 1.5;
 
+/** 实例容量别名：与 MAX_PODS 同源，语义化命名便于阅读（容量契约不变） */
+const MAX_POD_INSTANCES = MAX_PODS;
+
+/**
+ * Pod 材质的环境贴图强度（R58 统一常量）。
+ *
+ * 【R58 说明】本组件当前是单一 meshStandardMaterial（没有独立 clearcoat 层），
+ * 全仓库 grep 不到任务描述中的 POD_SHELL_ENV_INTENSITY / POD_CLEARCOAT_ENV_INTENSITY。
+ * 现有强度 0.3 已经远低于任务给的 1.15 / 1.25 目标值；若反向提高到 1.15 反而会
+ * 加重顶盖白斑，因此保留 0.3 并集中为一个常量，避免两处魔法数再次漂移。
+ */
+const POD_SHELL_ENV_INTENSITY = 0.3;
+
 /** 颜色过渡阻尼率 k（1/秒）：≈0.17s 完成 63% 渐变，状态切换平滑不粘滞 */
 const COLOR_LERP_RATE = 6;
 
@@ -144,7 +157,11 @@ const MAX_FRAME_DELTA = 0.1;
  * 远离的一侧则柔和下沉——这是真实镜头下的景深与光衰减共同作用的结果。
  * 没有这层调制时，24 个刀片无论远近都是同一亮度，机柜读起来像一张平面贴图。
  *
- * 【公式】distanceGain = clamp(1.18 − (instanceCamDist − 8) · 0.045, 0.68, 1.22)
+ * 【公式】distanceGain = clamp(1.03 − (instanceCamDist − 8) · 0.02, 0.68, 1.08)
+ *
+ * 【R58 下调】原近景上界 1.22 / 基准 1.18 与故障呼吸叠加时可达 1.65 倍，
+ * 与 instanceColor 的帧间回写形成指数正反馈；现上界降到 1.08、基准 1.03，
+ * 叠加呼吸后仍受写入前的 2.2 亮度钳制，观感更稳且不会顶穿 Bloom。
  *
  * 参数依据：
  * · 相机到刀片的典型距离在 18~30 单位之间（机架半径 9.5 + 相机偏移），
@@ -152,13 +169,13 @@ const MAX_FRAME_DELTA = 0.1;
  *   足够敏感才能在同一机架内看出差异，因此斜率取 0.045（比机架的 0.032 更陡）；
  * · 8 是"理想近距"基准（相机贴近机架时刀片约在此距离）；
  * · 下界 0.68 保证最远的刀片仍然可辨（不会被压成黑块）；
- * · 上界 1.22 防止贴脸时高光过曝。
+ * · 上界 1.08 防止贴脸时高光过曝（R58 由 1.22 下调）。
  */
-const POD_DEPTH_BASE = 1.18;
+const POD_DEPTH_BASE = 1.03;
 const POD_DEPTH_PIVOT = 8;
-const POD_DEPTH_SLOPE = 0.045;
+const POD_DEPTH_SLOPE = 0.02;
 const POD_DEPTH_MIN = 0.68;
-const POD_DEPTH_MAX = 1.22;
+const POD_DEPTH_MAX = 1.08;
 
 /**
  * 故障态呼吸频闪的频率与幅度。
@@ -733,7 +750,7 @@ export default function PodInstancedMesh() {
    * 预分配临时对象（AGENTS.md 第 3 条：useFrame 内禁止 new THREE.*）。
    * useMemo 空依赖 → 组件生命周期内仅分配一次，每帧原地复用：
    * - tempObject：矩阵复合载体（position/rotation/scale → updateMatrix）
-   * - tempColor：实例当前色（getColorAt 接收器 + lerp 原地渐变 + setColorAt 回写）
+   * - tempColor：本帧颜色计算载体（从 smoothedBaseColorsRef 读基色 → lerp → 增益 → 钳制 → setColorAt）
    * - tempTargetColor：本帧目标色（基础色 copy + 时变调制 multiplyScalar）
    */
   const tempObject = useMemo((): THREE.Object3D => new THREE.Object3D(), []);
@@ -741,9 +758,25 @@ export default function PodInstancedMesh() {
   const tempTargetColor = useMemo((): THREE.Color => new THREE.Color(), []);
 
   /**
+   * smoothedBaseColorsRef —— 逐实例「未调制平滑基色」持久缓冲（MAX_PODS×3）。
+   *
+   * 【R58 P0 根因】旧实现把 distanceGain * faultBreath 乘完的颜色直接
+   * setColorAt 写回 instanceColor，下一帧又 getColorAt 读回再乘一遍——
+   * 颜色在帧间被反复放大（近景 1.22×、故障期最高 1.65×），0.5s 内突破
+   * HalfFloatType 上限 65504 → Infinity/NaN，被 Bloom 放大成屏幕中央阶梯黑块。
+   *
+   * 【修复】持久化的是未乘任何增益的基色；增益只作用于本帧的 tempColor，
+   * 绝不回灌本缓冲。这样帧间递推变成 base ← lerp(base, target) 的收敛过程。
+   */
+  const smoothedBaseColorsRef = useRef<Float32Array>(new Float32Array(MAX_POD_INSTANCES * 3));
+
+  /** 基色是否已由挂载 effect 初始化；false 时 useFrame 用目标色兜底首帧 */
+  const baseColorsInitializedRef = useRef<boolean>(false);
+
+  /**
    * 每实例过滤缩放状态缓冲（Float32Array(48)，初始 1）。
    * 缩放是跨帧连续量（lerp 平滑），必须以持久缓冲保存「当前值」，
-   * 与颜色的持久化思路一致（instanceColor 缓冲即颜色当前值）。
+   * 与颜色的持久化思路一致（颜色的持久态改为 smoothedBaseColorsRef，见 R58 注释）。
    * 命名不带 Ref 后缀：它是 useMemo 分配的裸 TypedArray（非 useRef 容器），
    * 直接下标读写，避免 .current 误用。
    */
@@ -809,7 +842,12 @@ export default function PodInstancedMesh() {
       tempObject.updateMatrix();
       mesh.setMatrixAt(i, tempObject.matrix);
       mesh.setColorAt(i, tempColor);
+      const baseOffset = i * 3;
+      smoothedBaseColorsRef.current[baseOffset] = tempColor.r;
+      smoothedBaseColorsRef.current[baseOffset + 1] = tempColor.g;
+      smoothedBaseColorsRef.current[baseOffset + 2] = tempColor.b;
     }
+    baseColorsInitializedRef.current = true;
     mesh.count = Math.min(telemetryTransientRef.snapshot.pods.length, MAX_PODS);
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor !== null) {
@@ -841,9 +879,10 @@ export default function PodInstancedMesh() {
    *    当前值以 k=8 指数阻尼 lerp 平滑逼近（filterScaleBuffer 持久缓冲）；
    *    最终缩放 = 状态脉冲 × 过滤系数（三轴同乘，缩小态保持姿态）。
    *
-   * 4. 颜色渐变：getColorAt 读当前实例色 → 向目标色 lerp（k=6 帧率无关
-   *    指数阻尼 α = 1 − e^(−k·Δt)，Δt 钳 0.1s）→ setColorAt 回写；
-   *    instanceColor 缓冲自身即「当前值」持久态，无需额外数组。
+   * 4. 颜色渐变（R58 修复）：从 smoothedBaseColorsRef 读未调制基色
+   *    → 向目标色 lerp（k=6 帧率无关指数阻尼 α = 1 − e^(−k·Δt)，Δt 钳 0.1s）
+   *    → 立即把纯净基色写回缓冲 → 再乘距离增益/故障呼吸 → 亮度钳制 → setColorAt；
+   *    增益绝不回灌基色缓冲，彻底切断帧间指数正反馈。
    *
    * 5. 提交：tempObject.updateMatrix() 复合 TRS → setMatrixAt；
    *    帧末显式 instanceMatrix.needsUpdate = true 与
@@ -1147,12 +1186,30 @@ export default function PodInstancedMesh() {
       tempObject.updateMatrix();
       mesh.setMatrixAt(i, tempObject.matrix);
 
-      /* ---- 7. 颜色平滑渐变 + 近大远小光泽对比 + 故障呼吸频闪 ---- */
-      mesh.getColorAt(i, tempColor);
-      tempColor.lerp(tempTargetColor, colorAlpha);
+      /* ---- 7. 颜色：平滑基色 → 距离增益 → 故障呼吸 → 钳制（R58 修复指数正反馈） ---- */
+      const baseOffset = i * 3;
+      const baseColors = smoothedBaseColorsRef.current;
 
       /*
-       * ---- 7a. 相机距离光泽对比（近景更锐利、远景更柔和）----
+       * 【为何从持久缓冲读、而不是 getColorAt】getColorAt 读到的是上一帧
+       * 已乘过增益的 GPU 色值；把它当基色会形成 index^n 的指数回路。
+       * 若初始化尚未完成（极端挂载顺序），用本帧目标色兜底，避免全黑首帧。
+       */
+      if (!baseColorsInitializedRef.current) {
+        baseColors[baseOffset] = tempTargetColor.r;
+        baseColors[baseOffset + 1] = tempTargetColor.g;
+        baseColors[baseOffset + 2] = tempTargetColor.b;
+      }
+      tempColor.setRGB(baseColors[baseOffset], baseColors[baseOffset + 1], baseColors[baseOffset + 2]);
+      tempColor.lerp(tempTargetColor, colorAlpha);
+
+      /* 只写回未调制基色；distanceGain / faultBreath 绝不可进入这里 */
+      baseColors[baseOffset] = tempColor.r;
+      baseColors[baseOffset + 1] = tempColor.g;
+      baseColors[baseOffset + 2] = tempColor.b;
+
+      /*
+       * ---- 7a. 相机距离光泽对比（近景更锐利、远景更柔和）
        *
        * 【为何用本帧刚算出的 posX/posY/posZ 而非实例矩阵反解】
        * 这三个变量就是本帧最终的世界位置，直接拿来算距离比
@@ -1172,7 +1229,7 @@ export default function PodInstancedMesh() {
 
       /*
        * 【为何用 multiplyScalar 而非 lerp 到白色】
-       * 直接乘到颜色向量上是**等比提亮**：保留色相，只改明度。
+       * 直接乘到颜色向量上是等比提亮：保留色相，只改明度。
        * 若 lerp 到白色，近景刀片会褪色成灰白，失去翡翠/青的语义色。
        * 等比提亮后，近景刀片仍是翡翠绿，只是更亮更锐利。
        */
@@ -1182,8 +1239,8 @@ export default function PodInstancedMesh() {
        * ---- 7b. 故障态呼吸频闪 ----
        *
        * 【为何只对故障态施加】正常运行态已由负载呼吸（悬浮抬升）表达活力，
-       * 再叠一层亮度频闪会让整个机柜"一直在抖"，反而干扰阅读。
-       * 只有故障态需要"持续报警"的视觉压力。
+       * 再叠一层亮度频闪会让整个机柜一直在抖，反而干扰阅读。
+       * 只有故障态需要持续报警的视觉压力。
        *
        * 【相位错开】用 i * 0.7 让 24 个刀片不同步呼吸——
        * 若全部同相，整排刀片会像一根灯管一样整齐闪烁，那是装饰灯不是故障。
@@ -1195,6 +1252,18 @@ export default function PodInstancedMesh() {
         const faultBreath = FAULT_BREATH_MIN + FAULT_BREATH_GAIN * (0.5 + 0.5 * Math.sin(breathPhase));
         tempColor.multiplyScalar(faultBreath);
       }
+
+      /*
+       * ---- 7c. 写入 GPU 前的最后一道防线 ----
+       *
+       * 无论上游数学出什么异常，这里都保证：
+       * · r/g/b 是有限数（NaN/Infinity → 安全兜底色）；
+       * · 亮度上限 2.2（>1 保留辉光，但不会把 Bloom 顶穿成黑块）。
+       * 这比相信上游不会溢出更可靠，也是 R58 复现后加的硬约束。
+       */
+      tempColor.r = Number.isFinite(tempColor.r) ? Math.min(2.2, Math.max(0, tempColor.r)) : 0.2;
+      tempColor.g = Number.isFinite(tempColor.g) ? Math.min(2.2, Math.max(0, tempColor.g)) : 0.5;
+      tempColor.b = Number.isFinite(tempColor.b) ? Math.min(2.2, Math.max(0, tempColor.b)) : 0.5;
 
       mesh.setColorAt(i, tempColor);
     }
@@ -1268,7 +1337,7 @@ export default function PodInstancedMesh() {
          * 把"这排容器是绿的"这一最关键的判读信息冲淡。
          * 0.30 只让边缘切角吃到一点冷金属反光，正面仍然由状态色主导。
          */
-        envMapIntensity={0.3}
+        envMapIntensity={POD_SHELL_ENV_INTENSITY}
         toneMapped={false}
         onBeforeCompile={injectCrystalShader}
       />
