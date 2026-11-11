@@ -20,7 +20,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { Canvas, useFrame, type RootState } from '@react-three/fiber';
+import { Canvas, useFrame, useThree, type RootState } from '@react-three/fiber';
 import { ContactShadows, Grid, MeshReflectorMaterial, PerformanceMonitor, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
 import { NeutralToneMapping, NoToneMapping } from 'three';
@@ -50,6 +50,7 @@ import ArcStartGlow3D from '@/components/canvas/ArcStartGlow3D';
 import ReturnStream3D from '@/components/canvas/ReturnStream3D';
 import RackGroundReflection from '@/components/canvas/RackGroundReflection';
 import BootController from '@/components/canvas/BootController';
+import { validateGlowBudget } from '@/constants/glowBudget';
 import GlowDebugOverlay from '@/components/canvas/GlowDebugOverlay';
 import { useQualityStore } from '@/store/useQualityStore';
 import { useQualityGovernor } from '@/hooks/useQualityGovernor';
@@ -403,6 +404,35 @@ const MULTIMODAL_DIAGNOSIS_PROMPT =
 
 /** JPEG 快照编码质量（0.8：视觉保真与 Base64 体积的平衡点，契约指定值） */
 const SNAPSHOT_JPEG_QUALITY = 0.8;
+
+/**
+ * GlowBudgetProbe —— 开发期发光预算巡检探针（R66）。
+ *
+ * 【为什么从 BootController 移到这里】预算是 Canvas 级开发探针，不是开场动画
+ * 的职责；放到 ClusterCanvas 可以让"场景资源巡检"与"渲染树装配"在同一层，
+ * 也避免 BootController 同时承担两件无关的事。
+ *
+ * 【安全边界】巡检失败（第三方材质、测试桩对象、异常 matrixWorld 等）只
+ * console.warn，不向 Canvas effect 抛错。validateGlowBudget 内部已有 try/catch，
+ * 这里再加一层调用侧保护，确保任何版本的光效预算巡检都不会中断 WebGL 主渲染树。
+ */
+function GlowBudgetProbe(): null {
+  const scene = useThree((state): THREE.Scene => state.scene);
+
+  useEffect((): (() => void) | undefined => {
+    if (process.env.NODE_ENV === 'production') return undefined;
+    const timer = window.setTimeout((): void => {
+      try {
+        validateGlowBudget(scene);
+      } catch (error: unknown) {
+        console.warn('[glowBudget] 巡检异常，已隔离（不影响渲染）:', error);
+      }
+    }, 4000);
+    return (): void => window.clearTimeout(timer);
+  }, [scene]);
+
+  return null;
+}
 
 export default function ClusterCanvas() {
   /* ---- Store 细粒度订阅（工具条受控状态四元组） ---- */
@@ -1008,6 +1038,9 @@ export default function ClusterCanvas() {
 
         {/* R29 B：开场编排唯一推进者（uBoot 0→1，1.2s） */}
         <BootController />
+
+        {/* R66：开发期发光预算巡检（调用侧 try/catch，失败不阻断渲染） */}
+        <GlowBudgetProbe />
 
         {/* ---- R24：自适应曝光驱动（≤4Hz 估计亮度、每帧阻尼插值） ---- */}
         <ExposureDriver effectRef={exposureEffectRef} />

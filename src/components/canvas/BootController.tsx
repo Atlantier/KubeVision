@@ -11,24 +11,15 @@
  */
 
 import { useEffect } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useFrame } from '@react-three/fiber';
 import { bootUniform, BOOT_DURATION, smoothstep01 } from '@/utils/bootUniform';
 import { isReducedMotion } from '@/constants/motion';
-import { validateGlowBudget } from '@/constants/glowBudget';
 
 /** BootController 无 props */
 export default function BootController(): null {
-  const scene = useThree((s): typeof s.scene => s.scene);
-
-  useEffect((): (() => void) | undefined => {
+  useEffect((): void => {
     if (isReducedMotion()) bootUniform.value = 1;
-    /* 开发期材质扫描：挂载后 4s 跑一次（等异步材质编译完成），不进渲染循环 */
-    if (process.env.NODE_ENV !== 'production') {
-      const timer = window.setTimeout((): void => validateGlowBudget(scene), 4000);
-      return (): void => window.clearTimeout(timer);
-    }
-    return undefined;
-  }, [scene]);
+  }, []);
 
   useFrame((_state, delta): void => {
     if (bootUniform.value >= 1) return;
