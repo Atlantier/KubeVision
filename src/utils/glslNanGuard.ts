@@ -1,60 +1,100 @@
 /**
- * KubeVision AI — GLSL NaN 可视化探针（开发期）
+ * KubeVision AI — GLSL NaN / Infinity 防线（开发探针 + 生产守卫）
  *
- * 【解决什么问题】片元算出一个 NaN 后，GPU 不会报错，也不会中断渲染：
- * 这个像素要么变黑、要么变白、要么被后处理的 bloom 扩散成一整块斑。
- * 光看画面**无法定位是哪一段 GLSL 产生的**——只能靠猜。
- * 本模块让污染像素直接变成刺眼的洋红（1,0,1），一眼就能在屏幕上圈出问题区域。
+ * 【解决什么问题】片元一旦算出 NaN，GPU 不会报错，也不会中断渲染：
+ * 这个像素要么变黑、要么变白，经 Bloom 降采样/升采样后扩散成一整块斑。
+ * 光看画面无法定位是哪一段 GLSL 产生的，只能靠猜。
  *
- * 【为什么不用 WebGL2 的 isnan() / isinf()】这两个内建函数只在
- * GLSL ES 3.00（`#version 300 es`）中可用。本项目所有自定义 shader 都以
- * ES 1.00 编译（three 默认不注入 `#version` 指令），直接写 isnan 会**编译失败**，
- * 整个材质变黑——比原来的 NaN 更糟。
- * 因此这里用三条在 ES 1.00 中同样成立的等价判据：
- *   1. `v != v`        —— IEEE-754 下 NaN 是唯一不等于自身的值；
- *   2. `abs(v) > 1e38` —— 超出 float32 表示范围的有限值必然已溢出为 Inf；
- *   3. 逐通道检查 rgb —— 只要任一通道异常就整像素标洋红。
+ * 【为什么不能只写 x == x】这是本文件的历史缺陷，也是 R59 修复的核心：
+ * 1. 在 Windows Chrome/Edge 上，WebGL 经 ANGLE 转译为 D3D11 HLSL；
+ *    HLSL 默认优化会把 `!(x == x)` 静态折叠为 `false`，NaN 直接逃逸；
+ * 2. `x == x` 对 ±Infinity 仍返回 true，而 Bloom 里的 `Infinity * 0.0`
+ *    会立刻生成 NaN；只判 NaN 等于没判；
+ * 3. 部分驱动对 `clamp(NaN, 0.0, 4.0)` 仍返回 NaN，不能把 clamp 当保险。
  *
- * 【生产构建零成本】探针体整段被 `#ifdef KV_DEBUG_NAN` 包裹，而
- * `KV_DEBUG_NAN_DEFINES` 在 production 下是空对象 → 预处理器直接把整段删掉，
- * 不产生任何指令、不占用 uniform、不影响分支预测。
+ * 【正确判据：范围取反 + 有限上界】
+ * 对每个通道检查 `!(x >= lo && x <= hi)`：
+ * - NaN 与任何数比较都为 false → 取反为 true → 被判为异常；
+ * - +Infinity 超过 hi → 异常；-Infinity / 负数低于 lo → 异常；
+ * - 该写法不依赖 `x == x`，不会被 HLSL 折叠成常量 false。
+ * 异常像素直接清零（加色混合下等于"不发光"），正常像素再做双向夹逼，
+ * 保证进入 HalfFloatType 帧缓冲的颜色永远不会是 Inf/NaN。
+ *
+ * 【生产是否生效】KV_NAN_GUARD_BLOCK 是**无条件**守卫（不再包 #ifdef）：
+ * 黑块是线上也必须拦截的渲染事故，不应只在调试构建开启。
+ * KV_DEBUG_NAN_DEFINES 保留给仓库里既有的 `#ifdef KV_DEBUG_NAN` 洋红探针块，
+ * 二者互不替代。
  *
  * 【用法】
- *   <shaderMaterial defines={KV_DEBUG_NAN_DEFINES} ... />
- *   并在 fragment 源码里、每次写完 gl_FragColor 之后追加 KV_NAN_GUARD_BLOCK。
+ *   const FRAGMENT_SHADER = withNanGuard(`
+ *     void main() { ... gl_FragColor = ...; }
+ *   `);
+ *
+ * withNanGuard 会把守卫块插到 fragment shader 的**最后一个右花括号之前**
+ * （即 main 的末尾）。前提约定：着色器最后一个语句是写 gl_FragColor。
  */
 
 /**
- * 注入给 shaderMaterial 的 defines。
+ * 注入给 shaderMaterial 的调试 defines。
  *
  * 【类型说明】three 的 `defines` 接受 `Record<string, string | number | boolean>`；
  * 这里只放一个开关，值为 `'1'`。空对象时 three 不会注入任何 `#define`，
- * `#ifdef KV_DEBUG_NAN` 分支即被剔除。
+ * 既有 shader 中的 `#ifdef KV_DEBUG_NAN` 分支即被剔除。
+ *
+ * 注意：它只控制"洋红调试探针"，不控制 KV_NAN_GUARD_BLOCK 的生产守卫。
  */
 export const KV_DEBUG_NAN_DEFINES: Readonly<Record<string, string>> =
   process.env.NODE_ENV === 'production' ? {} : { KV_DEBUG_NAN: '1' };
 
 /**
- * 追加在 `gl_FragColor` 赋值之后的守卫块。
+ * 追加在 fragment shader main 末尾的强守卫块。
  *
- * 【为什么是"事后覆盖"而不是包裹表达式】包裹需要用括号匹配找到 `vec4(...)`
+ * 【为何是"事后覆盖"而不是包裹表达式】包裹需要用括号匹配找到 `vec4(...)`
  * 的闭合位置，而 shader 里 `vec4` 可能嵌套多层（clamp 套 mix 套 …），
  * 字符串层面做括号匹配极易出错。写成"再赋值一次"则完全不需要匹配：
- * 异常就把值换掉，正常则不产生任何可见变化。
+ * 异常就把值清零，正常则只做夹逼，不改变语义。
  *
- * 【为什么不用 discard】discard 会让该像素透明，在加色混合/后处理链里
- * 表现为"洞"，反而不如洋红醒目；而且 discard 会打断早期深度测试，影响性能。
+ * 【为何异常时输出透明黑而不是洋红】洋红是调试标记；生产守卫的职责是
+ * "不让坏值进入 Bloom"，透明黑在加色混合/预乘 alpha 管线下等价于无贡献。
+ *
+ * 【为何上界是 64 而不是 3.2】判据负责识别异常（64 是有限上界，远高于
+ * 正常 HDR 峰值但远低于 HalfFloat 的 65504）；正常分支再夹到 3.2，
+ * 既保留辉光，又给 Bloom 留出安全余量。
  */
-export const KV_NAN_GUARD_BLOCK = `
-  #ifdef KV_DEBUG_NAN
-    if (!(gl_FragColor.r == gl_FragColor.r)
-        || !(gl_FragColor.g == gl_FragColor.g)
-        || !(gl_FragColor.b == gl_FragColor.b)
-        || !(gl_FragColor.a == gl_FragColor.a)
-        || abs(gl_FragColor.r) > 1.0e38
-        || abs(gl_FragColor.g) > 1.0e38
-        || abs(gl_FragColor.b) > 1.0e38) {
-      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
-    }
-  #endif
+export const KV_NAN_GUARD_BLOCK = /* glsl */ `
+  // [KV_NAN_GUARD] 拦截 NaN / ±Infinity 并钳制 HDR 峰值，防止 Bloom Mipmap 传染黑块
+  bvec4 _kvInvalid = bvec4(
+    !(gl_FragColor.r >= 0.0 && gl_FragColor.r <= 64.0),
+    !(gl_FragColor.g >= 0.0 && gl_FragColor.g <= 64.0),
+    !(gl_FragColor.b >= 0.0 && gl_FragColor.b <= 64.0),
+    !(gl_FragColor.a >= 0.0 && gl_FragColor.a <= 1.0)
+  );
+  if (any(_kvInvalid)) {
+    gl_FragColor = clamp(vec4(0.0, 0.0, 0.0, 0.0), 0.0, 1.0);
+  } else {
+    gl_FragColor.rgb = min(max(gl_FragColor.rgb, vec3(0.0)), vec3(3.2));
+    gl_FragColor.a = min(max(gl_FragColor.a, 0.0), 1.0);
+  }
 `;
+
+/**
+ * withNanGuard —— 把强守卫块注入 fragment shader 的 main 末尾。
+ *
+ * 【实现选择】不引入 GLSL 解析器，只找**最后一个** `}`：
+ * 本仓库的自定义 shader 都是"单 main + 末尾无其他函数"的形态；
+ * 最后一个 `}` 必然是 main 的闭合。若 shader 还包含辅助函数，
+ * 调用方应把守卫块手动放到 main 末尾，或先把辅助函数移到 main 之前。
+ *
+ * 【为什么不做字符串替换 gl_FragColor】一次 shader 里可能有多个分支写
+ * gl_FragColor，逐个替换容易漏；追加一次守卫覆盖所有分支的最后结果。
+ *
+ * @param fragmentShader 完整 fragment shader 源码（末尾为 main 的 `}`）
+ * @returns 已注入守卫的源码；若找不到 `}` 则原样追加守卫（编译性由调用方保证）
+ */
+export function withNanGuard(fragmentShader: string): string {
+  const lastBrace = fragmentShader.lastIndexOf('}');
+  if (lastBrace < 0) {
+    return `${fragmentShader}\n${KV_NAN_GUARD_BLOCK}`;
+  }
+  return `${fragmentShader.slice(0, lastBrace)}${KV_NAN_GUARD_BLOCK}${fragmentShader.slice(lastBrace)}`;
+}

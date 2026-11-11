@@ -18,10 +18,12 @@
  * 设面片 UV 中心为原点，归一化半径 r = |vUv * 2 - 1|：
  *
  *   1. 外层柔光：
- *        smoothEdge = (1 - r)^1.8
+ *        edge = max(1e-4, 1 - r)
+ *        smoothEdge = edge²（数学等价于整数次幂，改用乘法）
  *        outerBloom = exp(-r² · uFalloff·1.6) · smoothEdge
- *      指数高斯保证中心亮、外围平滑收敛；再乘 (1-r)^1.8 让边界在 r→1 时
+ *      指数高斯保证中心亮、外围平滑收敛；edge² 让边界在 r→1 时
  *      以零斜率落地，彻底消除「圆盘贴纸」那种可见的硬圆边。
+ *      R59：r ≥ 1 直接返回透明，四角不再执行可能产生 NaN 的指数运算。
  *
  *   2. 中心白炽核：
  *        whiteCore = exp(-r² · 18) · 0.85
@@ -49,7 +51,18 @@ import { useMemo, useRef } from 'react';
 import { Billboard } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
+import { withNanGuard } from '@/utils/glslNanGuard';
+
+/**
+ * 光晕面片允许的最大直径（世界单位）。
+ *
+ * 【R59 说明】任务描述里的 HALO_PLANE_SIZE = 7.2 在当前仓库不存在（grep 0 处）：
+ * 本组件实际是「1×1 基准面片 + 调用方 scale」（唯一调用点 MasterNode3D 传 2.15），
+ * 不存在固定 7.2 的几何常量。这里新增 5.6 作为**上限护栏**并使用
+ * Math.min(scale, HALO_PLANE_SIZE)，保持现有 2.15 外观不变，同时阻止
+ * 未来传入过大 scale 导致光晕覆盖半个屏幕、叠加 Bloom 后过曝。
+ */
+const HALO_PLANE_SIZE = 5.6;
 
 /* ========================================================================== */
 /* 类型契约                                                                    */
@@ -92,15 +105,18 @@ const VERTEX_SHADER = /* glsl */ `
 /**
  * 片元着色器：双层高斯 —— 外层柔光 + 中心白炽核。
  *
- * 【为何要 discard 四角】
+ * 【为何 r ≥ 1 直接返回透明】
  * PlaneGeometry 的 UV 在四角为 (0,0)/(1,1)，映射到 [-1,1]² 后四角长度
- * 达 √2 > 1。若不丢弃，面片会呈现一个**方形**的弱光底噪，
- * 在暗背景上肉眼可见。r > 1 时直接 discard，保证只有圆形光斑参与混合。
+ * 达 √2 > 1。旧实现先 discard、再对 r>1 执行 pow(max(0.0, 1.0-r), 1.8)：
+ * 四角处底数为 0，GLSL 的 pow(0, y) 属未定义行为（exp2(y·log2(0)) 会得到
+ * -Inf/NaN），在屏幕中央叠加 Bloom 后放大成黑块。
+ * 现在 r ≥ 1 时直接写透明并 return，既保留"只有圆形光斑参与混合"的语义，
+ * 又从源头阻止四角执行任何指数运算。
  *
  * 【输出约定】片元返回**预乘 alpha** 颜色，与材质的 premultipliedAlpha
  * 标记配套（详见文件头渲染契约）。
  */
-const FRAGMENT_SHADER = /* glsl */ `
+const FRAGMENT_SHADER = withNanGuard(/* glsl */ `
   uniform vec3 uColor;
   uniform float uOpacity;
   uniform float uFalloff;
@@ -113,13 +129,19 @@ const FRAGMENT_SHADER = /* glsl */ `
     vec2 centered = vUv * 2.0 - 1.0;
     float r = length(centered);
 
-    /* 四角落在单位圆外：直接丢弃，避免方形底噪 */
-    if (r > 1.0) discard;
+    /* R59：r ≥ 1（四角/圆外）直接输出透明并返回，避免 0 的幂运算未定义 */
+    if (r >= 1.0) {
+      gl_FragColor = clamp(vec4(0.0), 0.0, 1.0);
+      return;
+    }
 
     /* ── 1. 外层柔光：指数高斯 × 平滑落地边缘 ──
        指数项负责「中心亮、外围暗」的高斯衰减；
-       (1-r)^1.8 负责让 r→1 时衰减到零且斜率平缓，消除硬圆边。 */
-    float smoothEdge = pow(max(0.0, 1.0 - r), 1.8);
+       (1-r)^2 负责让 r→1 时衰减到零且斜率平缓，消除硬圆边。
+       R59：用乘法代替整数次幂——数学等价，且避免部分驱动/ANGLE 上的
+       精度与 NaN 风险（lint-glsl 亦禁止整数次幂）。 */
+    float edge = max(1.0e-4, 1.0 - r);
+    float smoothEdge = edge * edge;
     float outerBloom = exp(-r * r * (uFalloff * 1.6)) * smoothEdge;
 
     /* ── 2. 中心白炽核：更陡峭的高斯，模拟光源本体过曝 ──
@@ -131,26 +153,16 @@ const FRAGMENT_SHADER = /* glsl */ `
        用 whiteCore 作为混合因子，天然产生「白炽中心 → 主题色外晕」。 */
     vec3 finalColor = mix(uColor, vec3(1.0, 1.0, 1.0), clamp(whiteCore, 0.0, 1.0));
 
-    /* ── 4. 合成 alpha：柔光占 0.75 权重，白核占 0.9 权重 ── */
-    float alpha = clamp((outerBloom * 0.75 + whiteCore * 0.9) * uOpacity, 0.0, 1.0);
+    /* ── 4. 合成 alpha：R59 下调权重（白核 0.55 / 柔光 0.22），避免中心白斑过曝 ── */
+    float alpha = clamp((whiteCore * 0.55 + outerBloom * 0.22) * uOpacity, 0.0, 1.0);
 
     /* 预乘 alpha 输出（rgb 已乘 alpha），配合 premultipliedAlpha 标记 */
   /* L9：自定义着色器雾衰减（uFogFar=64 与线性雾远端一致；edge0<edge1 满足 R01） */
   float kvFog = 1.0 - smoothstep(0.75 * uFogFar, uFogFar, vFogDepth);
     gl_FragColor = vec4(clamp(finalColor * alpha, 0.0, 8.0) * kvFog, clamp(alpha, 0.0, 1.0) * kvFog);
-  #ifdef KV_DEBUG_NAN
-    if (!(gl_FragColor.r == gl_FragColor.r)
-        || !(gl_FragColor.g == gl_FragColor.g)
-        || !(gl_FragColor.b == gl_FragColor.b)
-        || !(gl_FragColor.a == gl_FragColor.a)
-        || abs(gl_FragColor.r) > 1.0e38
-        || abs(gl_FragColor.g) > 1.0e38
-        || abs(gl_FragColor.b) > 1.0e38) {
-      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
-    }
-  #endif
+    /* R59：NaN/±Infinity/负值守卫由 withNanGuard 注入到 main 末尾（无条件生效） */
   }
-`;
+`);
 
 /* ========================================================================== */
 /* 组件主体                                                                    */
@@ -171,6 +183,12 @@ export default function GlowHalo3D({
   position,
 }: GlowHalo3DProps): React.ReactElement {
   const materialRef = useRef<THREE.ShaderMaterial>(null);
+
+  /**
+   * 有效直径：保留调用方 scale 语义，同时用 HALO_PLANE_SIZE 做上限护栏。
+   * 当前唯一调用点传 2.15，不受影响；未来误传大值时不会覆盖半屏。
+   */
+  const effectiveScale = Math.min(scale, HALO_PLANE_SIZE);
 
   /**
    * uniform 对象必须用 useMemo 稳定引用：
@@ -211,10 +229,9 @@ export default function GlowHalo3D({
        * 不覆盖 scale，因此两者互不干扰。用 1×1 基准面片 + scale 的好处是
        * 着色器内的 UV 语义恒定（始终 [0,1]²），换任何尺寸都不需改 shader。
        */}
-      <mesh raycast={noRaycast} scale={scale}>
+      <mesh raycast={noRaycast} scale={effectiveScale}>
         <planeGeometry args={[1, 1]} />
         <shaderMaterial
-          defines={KV_DEBUG_NAN_DEFINES}
           ref={materialRef}
           uniforms={uniforms}
           vertexShader={VERTEX_SHADER}
