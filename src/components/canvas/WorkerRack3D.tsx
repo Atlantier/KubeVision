@@ -287,13 +287,22 @@ const HARDWARE_EDGE_COLOR = '#1e3a5f';
  *    可以放心把金属度拉到 0.88，让机架真正"借"环境形状表现金属。
  * 2. **roughness 0.24**：配合 roughnessMap 使用。基础粗糙度给 0.24，
  *    贴图在其上下起伏（0.16~0.34），产生**沿拉丝方向的各向异性高光**。
- * 3. **envMapIntensity 2.2**：这是让倒角"亮"起来的直接杠杆。
- *    材质级 envMapIntensity 会与 scene.environmentIntensity 相乘，
- *    2.2 × 0.78 ≈ 1.7 的净强度，足以在细窄的倒角面上聚出可见亮线。
+ * 3. **envMapIntensity 1.05**：R63 从 2.2 下调。
+ *    2.2 × 0.78 ≈ 1.7 的净强度会把立柱推成发白的银条，
+ *    1.05 × 0.78 ≈ 0.82 才是深色阳极氧化钛合金的物理合理区间；
+ *    倒角另用 1.45 保持锐利高光，不再靠整体过曝来"提亮金属"。
  */
 const TI_METALNESS = 0.88;
 const TI_ROUGHNESS = 0.24;
-const TI_ENV_INTENSITY = 2.2;
+const TI_ENV_INTENSITY = 1.05;
+
+/**
+ * 内框/层板等次级金属结构的环境反射强度（R63）。
+ *
+ * 这些面比立柱更靠内、受灯带直射更少，继续用 2.2 会在机架内部形成灰白雾；
+ * 0.85 让内框保持暗部层次，把亮度留给立柱与倒角。
+ */
+const INNER_FRAME_ENV_INTENSITY = 0.85;
 
 /**
  * 拉丝凹凸强度。
@@ -314,7 +323,7 @@ const BRUSH_BUMP_SCALE = 0.015;
  */
 const CHAMFER_METALNESS = 0.96;
 const CHAMFER_ROUGHNESS = 0.12;
-const CHAMFER_ENV_INTENSITY = 3.0;
+const CHAMFER_ENV_INTENSITY = 1.45;
 const CHAMFER_COLOR = '#c8e8f5';
 const CHAMFER_EMISSIVE = '#164e63';
 const CHAMFER_EMISSIVE_INTENSITY = 0.35;
@@ -342,7 +351,7 @@ const CREVICE_AO_OPACITY = 0.55;
 const RIVET_COLOR = '#334155';
 const RIVET_METALNESS = 0.92;
 const RIVET_ROUGHNESS = 0.28;
-const RIVET_ENV_INTENSITY = 1.8;
+const RIVET_ENV_INTENSITY = 1.25;
 /** 铆钉半径与高度（扁圆柱，像压在钢板上的实心铆接件） */
 const RIVET_RADIUS = 0.018;
 const RIVET_HEIGHT = 0.014;
@@ -381,6 +390,14 @@ const OPTIC_RAIL_COLOR = '#a8c4d4';
  * 使"选中"在视觉上表现为**轮廓整圈亮起**，比换一个半透明色块更清晰。
  */
 const OPTIC_RAIL_EMISSIVE = '#0e7490';
+
+/**
+ * 光学导轨的环境反射强度（R63）。
+ *
+ * 旧值 3.2 远超物理 PBR 的 0.8~1.4 区间，导轨在灯带环境下会变成
+ * 刺眼的白条；1.35 保留"抛光导光条"的锐利反射，又不会盖住自发光轮廓。
+ */
+const OPTIC_RAIL_ENV_INTENSITY = 1.35;
 
 /* ========================================================================== */
 /* 顶冠激光蚀刻散热百叶窗                                                        */
@@ -1642,7 +1659,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
             color={OPTIC_RAIL_COLOR}
             metalness={0.92}
             roughness={0.16}
-            envMapIntensity={3.2}
+            envMapIntensity={OPTIC_RAIL_ENV_INTENSITY}
             emissive={OPTIC_RAIL_EMISSIVE}
             emissiveIntensity={isSelected ? 0.85 : emphasized ? 0.5 : 0.28}
             transparent
@@ -1685,7 +1702,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
                   color={OPTIC_RAIL_COLOR}
                   metalness={0.92}
                   roughness={0.16}
-                  envMapIntensity={3.2}
+                  envMapIntensity={OPTIC_RAIL_ENV_INTENSITY}
                   emissive={OPTIC_RAIL_EMISSIVE}
                   emissiveIntensity={isSelected ? 0.85 : emphasized ? 0.5 : 0.28}
                   transparent
@@ -1705,7 +1722,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
                   color={OPTIC_RAIL_COLOR}
                   metalness={0.92}
                   roughness={0.16}
-                  envMapIntensity={3.2}
+                  envMapIntensity={OPTIC_RAIL_ENV_INTENSITY}
                   emissive={OPTIC_RAIL_EMISSIVE}
                   emissiveIntensity={isSelected ? 0.85 : emphasized ? 0.5 : 0.28}
                   transparent
@@ -1891,7 +1908,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
               roughnessMap={brushedMetal?.roughnessMap ?? null}
               bumpMap={brushedMetal?.bumpMap ?? null}
               bumpScale={BRUSH_BUMP_SCALE}
-              envMapIntensity={TI_ENV_INTENSITY}
+              envMapIntensity={INNER_FRAME_ENV_INTENSITY}
               emissive="#0e7490"
               emissiveIntensity={0.06}
             />
@@ -2388,7 +2405,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
          *  - 信息只留节点名 / 状态徽标 / POD 数 / CPU·MEM 2px 迷你条。
          */}
         <div
-          className="relative px-2.5 py-1.5-[8px]"
+          className="relative rounded-[2px] bg-slate-950/80 px-2.5 py-1.5 backdrop-blur-[8px]"
           style={{
             boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)',
             background: 'transparent',

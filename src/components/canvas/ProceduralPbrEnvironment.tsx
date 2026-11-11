@@ -67,8 +67,8 @@ const PMREM_SIGMA = 0.02;
  */
 const ENV_INTENSITY = 0.78;
 
-/** 工业灯带的冷青白色（略带青调，与主题 cyan-400 呼应但不抢色） */
-const STRIP_LIGHT_COLOR = '#dff6ff';
+/** 工业灯带的深空冷青灰（R63：从近白 #dff6ff 下调，避免 PMREM 烘焙出白色高光） */
+const STRIP_LIGHT_COLOR = '#94a3b8';
 
 /* ========================================================================== */
 /* 程序化拉丝金属纹理                                                          */
@@ -111,7 +111,7 @@ let brushedMetalCache: { roughnessMap: THREE.DataTexture; bumpMap: THREE.DataTex
  * enhanceArmorMaterial —— 机架装甲材质程序化增强（R11 A2/A3/B1）。
  *
  * 通过 onBeforeCompile 注入，不新增 draw call、不新增贴图文件：
- * 1. 倒角高光：fresnel^4 × 冷白 × 0.25（掠射角/棱边附近）；
+ * 1. 倒角高光：fresnel^4 × 冷青灰 × 0.09（掠射角/棱边附近，R63 由 0.25 下调）；
  * 2. 接缝 AO：UV 纵向 4 段接缝附近把漫反射压暗最多 30%（不碰自发光）；
  * 3. 深度大气：按视深 smoothstep(14, 33.6, |viewPos|)×0.35 混向雾色，
  *    远端节点亮度与饱和度同步下降；edge0<edge1 满足 R01。
@@ -140,7 +140,7 @@ export function enhanceArmorMaterial(shader: {
     )
     .replace(
       '#include <emissivemap_fragment>',
-      '#include <emissivemap_fragment>\n  float kvFres = pow(max(1.0 - abs(dot(normalize(kvNrm), normalize(kvViewPos))), 1.0e-4), 4.0);\n  totalEmissiveRadiance += vec3(0.85, 0.92, 1.0) * kvFres * 0.25;\n  float kvDepth = length(kvViewPos);\n  float kvHaze = smoothstep(uKvHaze, uKvHaze * 2.4, kvDepth) * 0.35;\n  diffuseColor.rgb = mix(diffuseColor.rgb, uKvFogColor, kvHaze);',
+      '#include <emissivemap_fragment>\n  float kvFres = pow(max(1.0 - abs(dot(normalize(kvNrm), normalize(kvViewPos))), 1.0e-4), 4.0);\n  totalEmissiveRadiance += vec3(0.45, 0.78, 0.96) * kvFres * 0.09;\n  float kvDepth = length(kvViewPos);\n  float kvHaze = smoothstep(uKvHaze, uKvHaze * 2.4, kvDepth) * 0.35;\n  diffuseColor.rgb = mix(diffuseColor.rgb, uKvFogColor, kvHaze);',
     );
 
   shader.uniforms.uKvHaze = { value: 14 };
@@ -325,15 +325,16 @@ function createStripLightGeometry(width: number, height: number, depth: number):
  * meshBasicMaterial 输出恒定高亮颜色，烘焙结果最纯净。
  *
  * 【强度控制】颜色值可以超过 1 来表达 HDR 亮度。
- * 这里直接给色值乘以 3.2 倍，让灯带在 PMREM 中成为真正的高亮源——
- * 否则烘焙后亮度会被压缩到与其他面板相当，金属上就看不出"锐利高光"。
+ * R63：从 3.2 下调到 1.35——旧值把 8 根灯带烘成过曝光源，
+ * 所有采样该 PMREM 的金属件都泛白；1.35 仍能在倒角上形成锐利冷光，
+ * 但不再抬高整个环境的亮度基线。
  *
  * @returns 灯带材质（调用方负责 dispose）
  */
 function createStripLightMaterial(): THREE.MeshBasicMaterial {
   const color = new THREE.Color(STRIP_LIGHT_COLOR);
-  /* HDR 提亮：乘 3.2 让灯带在环境贴图中成为过曝光源 */
-  color.multiplyScalar(3.2);
+  /* R63：深空冷青灰 × 1.35，替代原来的近白 × 3.2 */
+  color.multiplyScalar(1.35);
   return new THREE.MeshBasicMaterial({ color, toneMapped: false });
 }
 
