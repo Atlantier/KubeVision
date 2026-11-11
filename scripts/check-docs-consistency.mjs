@@ -58,6 +58,77 @@ const STALE_TOKENS = [
   '「快照诊断」',
 ];
 
+/** 性能事实源中允许出现的数值 */
+const draw = perf.rendering.drawCalls;
+const tri = perf.rendering.triangles;
+const ragLatency = perf.rag.latencyMs;
+const throughput = perf.sanitizer.throughputPerSec;
+const firstLoadKb = (() => {
+  const line = (perf.bundle?.routes ?? []).find((row) => row.includes('First Load') || row.trim().startsWith('┌'));
+  const match = typeof line === 'string' ? line.match(/(\d+)\s*kB\s*$/) : null;
+  return match === null ? null : Number(match[1]);
+})();
+
+/**
+ * findContradictions —— 交叉核对：同一指标在文档里出现的值必须与事实源一致。
+ *
+ * 【为什么需要】"缺少最新数字"只能发现漏更新，发现不了"文档 A 写 423、文档 B 写 420"这种自相矛盾。
+ * 这里对常见指标做上下文抽取：draw calls（允许 min~max 区间）、RAG 延迟（允许均值/中位/P95）、
+ * 三角面、脱敏吞吐、首屏体积。发现不一致即 fail。
+ */
+function findContradictions(text, docName) {
+  const problems = [];
+  const allowed = (values) => values.filter((value) => typeof value === 'number' && Number.isFinite(value));
+
+  /* draw calls：单个值必须等于中位；区间必须在实测 min~max 内 */
+  for (const match of text.matchAll(/(?:draw\s*calls?|Draw Calls)[^\d\n]{0,16}(\d{2,4})(?:\s*[~～\-–]\s*(\d{2,4}))?/gi)) {
+    const first = Number(match[1]);
+    const second = match[2] === undefined ? null : Number(match[2]);
+    if (second !== null) {
+      if (first < draw.min || first > draw.max || second < draw.min || second > draw.max) {
+        problems.push(`${docName}: draw calls 区间 ${first}~${second} 超出实测 ${draw.min}~${draw.max}`);
+      }
+    } else if (first !== draw.median) {
+      problems.push(`${docName}: draw calls ${first} ≠ 中位 ${draw.median}`);
+    }
+  }
+
+  /* RAG 延迟：允许均值/中位/P95；跳过"两路/三路"评测表里的引擎延迟 */
+  for (const match of text.matchAll(/(?:RAG[^\d\n]{0,12}|检索[^\d\n]{0,6})(\d+\.\d{2})\s*ms/gi)) {
+    const context = text.slice(Math.max(0, match.index - 30), match.index + 30);
+    if (/两路|三路|1\.82|1\.98/.test(context)) continue;
+    const value = Number(match[1]);
+    if (!allowed([ragLatency.mean, ragLatency.median, ragLatency.p95]).includes(value)) {
+      problems.push(`${docName}: RAG 延迟 ${value}ms 不在事实源 ${ragLatency.mean}/${ragLatency.median}/${ragLatency.p95}ms 内`);
+    }
+  }
+
+  /* 三角面 */
+  for (const match of text.matchAll(/(?:Triangles|三角面|三角形)[^\d\n]{0,14}([\d,]{5,9})/gi)) {
+    const value = Number(match[1].replace(/,/g, ''));
+    if (value !== tri.median) problems.push(`${docName}: 三角面 ${match[1]} ≠ 中位 ${tri.median}`);
+  }
+
+  /* 脱敏吞吐 */
+  for (const match of text.matchAll(/([\d,]{3,9})\s*条\/秒/g)) {
+    /* 跳过指标要求（如 "> 1,000 条/秒"）与目标/阈值语境，只核对"实测"陈述 */
+    const context = text.slice(Math.max(0, match.index - 24), match.index + 12);
+    if (/[>≥]|目标|要求|阈值/.test(context)) continue;
+    const value = Number(match[1].replace(/,/g, ''));
+    if (value !== throughput) problems.push(`${docName}: 脱敏吞吐 ${match[1]} 条/秒 ≠ ${throughput}`);
+  }
+
+  /* 首屏 First Load（若文档出现该口径） */
+  if (firstLoadKb !== null) {
+    for (const match of text.matchAll(/(?:First Load JS|First Load|首屏 JS)[^\d\n]{0,28}(\d{1,3})\s*kB/gi)) {
+      const value = Number(match[1]);
+      if (value !== firstLoadKb) problems.push(`${docName}: 首屏 First Load ${value}kB ≠ ${firstLoadKb}kB`);
+    }
+  }
+
+  return problems;
+}
+
 /** 需要校验的文档 */
 const DOCS = [
   { name: 'README.md', file: 'README.md', numbers: true },
@@ -83,6 +154,7 @@ for (const doc of DOCS) {
   for (const token of STALE_TOKENS) {
     if (text.includes(token)) problems.push(`残留旧口径/旧数字："${token}"`);
   }
+  problems.push(...findContradictions(text, doc.name));
   results.push({ doc: doc.name, file: doc.file, status: problems.length === 0 ? 'pass' : 'fail', problems });
 }
 

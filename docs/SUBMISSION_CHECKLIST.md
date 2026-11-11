@@ -21,7 +21,7 @@
 | 11 | 证据链（`docs/evidence/` + 索引） | **已补** | `docs/EVIDENCE.md` | 测试 | T-2 |
 | 12 | 合规（LICENSE/NOTICES/模型/语料来源） | **已补；LICENSE 决策待确认** | `LICENSE`、`THIRD_PARTY_NOTICES.md` | 队长 | **T-3** |
 | 13 | 商业价值页（客户/竞品/模式/单位经济/PoC） | **已补（数字均标假设）** | `docs/BUSINESS_CASE.md` | 产品 | T-3 |
-| 14 | 文档数字一致性脚本 + 纳入 verify | **已补** | `scripts/check-docs-consistency.mjs` | 测试 | T-3 |
+| 14 | 文档数字一致性脚本 + verify + CI 门禁 + 交叉矛盾核对 | **已补**：`verify --quick` 7/7；CI 见 `.github/workflows/verify.yml` | `scripts/check-docs-consistency.mjs`、`.github/workflows/verify.yml` | 测试 | T-3 |
 | 15 | 现场预案（双机/录屏执行单/彩排/兜底） | **已有** | `docs/summit/RECORDING_KIT.md`、`R55-RECORDING-RUNSHEET.md`、`DUAL_MACHINE_CHECKLIST.md`、`JUDGE_REHEARSAL.md`、`DEMO_DIRECTOR_PLAYBOOK.md` | 队长 | T-2 |
 
 ## 2. 提交前 24 小时检查表

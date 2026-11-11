@@ -66,4 +66,4 @@ if (size > MAX_BYTES) {
   console.error('[FATAL] PDF 超过 10MB 限制');
   process.exit(1);
 }
-console.log('  ✓ 已生成（12 页：封面 → 价值 → 痛点 → 架构 → 三大亮点 → 空间绑定 → 端侧 → 工程数据 → 证据×2 → 商业 → 团队）');
+console.log('  ✓ 已生成（12 页：封面 → 为什么是 KubeVision → 痛点 → 架构 → 三大亮点 → 空间绑定 → 端侧 → 工程数据 → 证据×2 → 商业 → 团队）');
