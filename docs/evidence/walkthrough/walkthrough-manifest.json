@@ -1,0 +1,62 @@
+{
+  "date": "2026-11-11",
+  "base": "http://127.0.0.1:3000",
+  "state": [
+    {
+      "item": "首屏 3 秒",
+      "image": "walkthrough-01-first-screen-2026-11-11.png",
+      "ok": true
+    },
+    {
+      "item": "选中 Pod / 相机锁定 + 探针卡",
+      "image": "walkthrough-02-pod-selected-2026-11-11.png",
+      "ok": true,
+      "detail": {
+        "ok": true,
+        "id": "node-worker-beta"
+      }
+    },
+    {
+      "item": "故障注入（演练中：OOM 风暴）",
+      "image": "walkthrough-03-chaos-injected-2026-11-11.png",
+      "ok": true
+    },
+    {
+      "item": "快照诊断三卡（动作卡待执行态）",
+      "image": "walkthrough-04-three-cards-2026-11-11.png",
+      "ok": true,
+      "detail": {
+        "cmd": {
+          "ok": true
+        },
+        "cardsSeen": true
+      }
+    },
+    {
+      "item": "第三张 MCP 卡最终态（人工点击执行）",
+      "image": "walkthrough-04b-action-executed-2026-11-11.png",
+      "ok": true,
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "item": "复盘报告",
+      "image": "walkthrough-05-postmortem-2026-11-11.png",
+      "ok": true
+    },
+    {
+      "item": "窗口缩放 1366×768",
+      "image": "walkthrough-06-1366x768-2026-11-11.png",
+      "ok": true
+    },
+    {
+      "item": "语音输入入口（无麦克风降级）",
+      "image": "walkthrough-07-voice-input-2026-11-11.png",
+      "ok": true,
+      "detail": {
+        "ok": true
+      }
+    }
+  ]
+}

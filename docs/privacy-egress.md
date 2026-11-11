@@ -1,6 +1,6 @@
 # 原始凭证零出域证明（Privacy Egress Report）
 
-> 由 `node scripts/verify-privacy.mjs` 自动生成于 2026-11-10T08:28:35.762Z。
+> 由 `node scripts/verify-privacy.mjs` 自动生成于 2026-11-11T06:46:52.888Z。
 > 目标：http://127.0.0.1:3000。
 
 ## 方法
@@ -27,7 +27,7 @@
 
 | 指标 | 值 |
 |---|---|
-| 抓包总数 | 15 |
+| 抓包总数 | 30 |
 | /api 请求数 | 3 |
 | /api/chat 请求数 | 1 |
 | POST 请求数 | 1 |
@@ -41,8 +41,8 @@
 | 方法 | URL | 请求体大小 |
 |---|---|---|
 | GET | `/api/telemetry?mode=demo&chaos=NONE&since=1793865600000` | — |
-| GET | `/api/telemetry?mode=demo&chaos=POD_OOM_SWARM&since=1794299290959` | — |
-| POST | `/api/chat` | 1727 B |
+| GET | `/api/telemetry?mode=demo&chaos=POD_OOM_SWARM&since=1794379587865` | — |
+| POST | `/api/chat` | 1728 B |
 
 ## 边界与诚实声明
 

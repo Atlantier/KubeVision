@@ -1,0 +1,79 @@
+$ C:\Program Files\nodejs\node.exe scripts/verify-demo.mjs
+
+--- output ---
+KubeVision AI — 自动路演回归（verify-demo）
+  目标: http://127.0.0.1:3000
+  连跑两遍: 启用
+  → 就绪检查: {"store":true,"drawer":true,"viewport":true,"qps":11261,"glLost":false}
+  ✓ 演示环境就绪（抽屉/视口/SSE 数据）  ::  qps=11261
+
+==============================================================================
+第一遍 · 主链路（R1 §J-1 ~ §J-4）
+==============================================================================
+  → 阶段 2 @8.7s  selected=node-worker-beta  chaos=POD_OOM_SWARM
+  ✓ J-1 阶段 2 镜头锁定的是真受灾机架  ::  worker-beta 名下 3 个异常 Pod
+  ✓ J-1 阶段 2 activeAlerts 非空  ::  3 条
+  → 阶段2 截图=C:\Users\Dannie\Desktop\AI项目\KubeVision\docs\summit\shots\r10-verify\phase2-lock.png 亮度 avg=56.1 lost=false
+  ✓ J-1 阶段 2 截图已存档  ::  C:\Users\Dannie\Desktop\AI项目\KubeVision\docs\summit\shots\r10-verify\phase2-lock.png
+  → 卡片 metrics=1 rootCause=1 action=1
+  ✓ J-2 三张 GenUI 卡片齐全  ::  1/1/1
+  → 阶段3 亮度 avg=44.18
+  ✓ J-2 AI 正文未出现宿主节点字样（无需比对）  ::  prose=null
+  → 结束态 health=100 topBarHealth=100 orbit=true healed=3
+  ✓ J-3 自愈覆盖全部受害 Pod  ::  3/3
+  ✓ J-3 MCP 回执 actionType 与场景映射一致  ::  restart_pod
+  ✗ J-3 动作卡终态为 executed（无 pending 并存）  ::  实际值={"metricsCard":1,"rootCauseCard":1,"actionCard":1,"actionCardExecuted":false,"actionCardPending":false,"hostNodeInProse":null}
+  ✓ J-4 旁白未出现健康分数值（无需比对）  ::  narration 不含"健康分 N"
+  ✓ J-4 结束态环绕巡检开启
+  → 亮度样本 阶段2=56.1 阶段3=44.18 结束态=24.24 阈值=2 截图=C:\Users\Dannie\Desktop\AI项目\KubeVision\docs\summit\shots\r10-verify\finished.png
+  ✓ J-4 canvas 亮度探针全程高于阈值（R01 黑屏回归）  ::  3 次采样最小值=24.24 > 2
+  ✓ J-4 结束态截图已存档  ::  C:\Users\Dannie\Desktop\AI项目\KubeVision\docs\summit\shots\r10-verify\finished.png
+  ✗ J-4 全流程零 console.error / 零未捕获异常  ::  实际值={"consoleErrors":[],"pageErrors":["Uncaught"]}
+
+==============================================================================
+第二遍 · 连跑一致性（R1 §J-5）
+==============================================================================
+  → 第二遍 healed=6 queuedLogs=0 (首遍 healed=3 queued=?)
+  ✓ J-5 第二遍自愈数量不少于首遍  ::  3 → 6
+  ✓ J-5 第二遍无 QUEUED 免疫日志  ::  增量=0（基线 0 → 0）
+  ✓ J-5 连跑两遍受害者数量一致  ::  3 → 3
+
+==============================================================================
+收尾 · pause / resume / stop（R1 §J-6）
+==============================================================================
+  ✓ J-6 stop 后 5 秒内无新增导演日志  ::  36 → 36
+  ✓ J-6 stop 后字幕条消失
+  ✓ J-6 暂停期间阶段序号不推进  ::  阶段 1/4 · 全景稳态巡航
+  ✗ J-6 恢复后进度单调不回退  ::  实际值={"pausedElapsedSec":null,"resumedElapsedSec":null}
+  ✓ J-6 恢复后阶段单调不回退  ::  1 → 2
+
+==============================================================================
+汇总
+==============================================================================
+  通过 19 · 失败 3
+
+  失败证据已归档: C:\Users\Dannie\Desktop\AI项目\KubeVision\docs\summit\failures\2026-11-11T06-39-30-689Z
+    · store-snapshot.json / console.log / last-frame.png / failures.json
+
+  失败明细（实际值）：
+    · J-3 动作卡终态为 executed（无 pending 并存）
+      {
+        "metricsCard": 1,
+        "rootCauseCard": 1,
+        "actionCard": 1,
+        "actionCardExecuted": false,
+        "actionCardPending": false,
+        "hostNodeInProse": null
+      }
+    · J-4 全流程零 console.error / 零未捕获异常
+      {
+        "consoleErrors": [],
+        "pageErrors": [
+          "Uncaught"
+        ]
+      }
+    · J-6 恢复后进度单调不回退
+      {
+        "pausedElapsedSec": null,
+        "resumedElapsedSec": null
+      }

@@ -68,7 +68,8 @@
     "docs:ppt": "node scripts/build-pitch-pdf.mjs",
     "evidence:final": "node scripts/capture-final-evidence.mjs",
     "check:docs": "node scripts/check-docs-consistency.mjs",
-    "verify:docs": "node scripts/check-docs-consistency.mjs"
+    "verify:docs": "node scripts/check-docs-consistency.mjs",
+    "verify:all": "node scripts/verify-all.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "0.0.66",

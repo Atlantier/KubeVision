@@ -367,12 +367,15 @@ const READ_STATE = `(() => {
   if (!store) return { __noStore: true };
   const s = store.getState();
   const snap = s.snapshotSummary;
-  const bar = document.querySelector('[aria-label^="剧本路演进行中"]');
+  /* R41 后字幕条改名「自动演练序列器」，阶段信息走 data-demo-phase；保留旧 aria 兜底 */
+  const bar =
+    document.querySelector('[aria-label="自动演练序列器"]') ??
+    document.querySelector('[aria-label^="剧本路演进行中"]');
   const logs = s.terminalLogs ?? [];
   const barText = bar === null ? '' : (bar.textContent || '');
   const elapsedHit = barText.match(/([0-9.]+)s\\s*\\/\\s*([0-9]+)s/);
   return {
-    phase: bar ? bar.getAttribute('aria-label') : null,
+    phase: bar ? (bar.getAttribute('data-demo-phase') ?? bar.getAttribute('aria-label')) : null,
     barText,
     barElapsedSec: elapsedHit === null ? null : Number(elapsedHit[1]),
     barTotalSec: elapsedHit === null ? null : Number(elapsedHit[2]),

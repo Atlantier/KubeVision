@@ -73,15 +73,19 @@ function rewriteAliases(code) {
     .replace(/require\("@\/types\/cluster"\)/g, 'require("./cluster.cjs")')
     .replace(/require\('@\/types\/cluster'\)/g, "require('./cluster.cjs')")
     .replace(/require\("@\/constants\/telemetryTuning"\)/g, 'require("./telemetryTuning.cjs")')
-    .replace(/require\('@\/constants\/telemetryTuning'\)/g, "require('./telemetryTuning.cjs')");
+    .replace(/require\('@\/constants\/telemetryTuning'\)/g, "require('./telemetryTuning.cjs')")
+    .replace(/require\("@\/utils\/clusterHealth"\)/g, 'require("./clusterHealth.cjs")')
+    .replace(/require\('@\/utils\/clusterHealth'\)/g, "require('./clusterHealth.cjs')");
 }
 
 transpile('src/constants/telemetryTuning.ts', 'telemetryTuning');
 transpile('src/types/cluster.ts', 'cluster', rewriteAliases);
+transpile('src/utils/clusterHealth.ts', 'clusterHealth', rewriteAliases);
 transpile('src/utils/syntheticEngine.ts', 'syntheticEngine', rewriteAliases);
 transpile('src/utils/snapshotRingBuffer.ts', 'snapshotRingBuffer', rewriteAliases);
 
 const engine = require(join(OUT_DIR, 'syntheticEngine.cjs'));
+const clusterHealth = require(join(OUT_DIR, 'clusterHealth.cjs'));
 const cluster = require(join(OUT_DIR, 'cluster.cjs'));
 const tuning = require(join(OUT_DIR, 'telemetryTuning.cjs'));
 const ring = require(join(OUT_DIR, 'snapshotRingBuffer.cjs'));
@@ -402,7 +406,7 @@ test('A-5 chaos 复位后 60 tick 内节点回到基线 ±8%', () => {
 
 test('A-6 新增 P0 告警后健康分不升（单调性）', () => {
   const snapshot = SEED;
-  const base = engine.computeClusterHealthScore(snapshot.nodes, snapshot.pods, snapshot.activeAlerts);
+  const base = clusterHealth.computeClusterHealthScore(snapshot.nodes, snapshot.pods, snapshot.activeAlerts);
 
   const alert = {
     id: 'alert-test-p0',
@@ -412,13 +416,13 @@ test('A-6 新增 P0 告警后健康分不升（单调性）', () => {
     entityName: snapshot.pods[0].name,
     message: '测试用 P0 告警',
   };
-  const withP0 = engine.computeClusterHealthScore(snapshot.nodes, snapshot.pods, [alert]);
+  const withP0 = clusterHealth.computeClusterHealthScore(snapshot.nodes, snapshot.pods, [alert]);
 
   assert.ok(withP0 <= base, `加入 P0 后健康分不得上升：${base} → ${withP0}`);
   assert.ok(withP0 < base, `P0 罚分应使健康分严格下降：${base} → ${withP0}`);
 
   /* 再叠加 P1 也必须继续不升 */
-  const withP1 = engine.computeClusterHealthScore(snapshot.nodes, snapshot.pods, [
+  const withP1 = clusterHealth.computeClusterHealthScore(snapshot.nodes, snapshot.pods, [
     alert,
     { ...alert, id: 'alert-test-p1', level: 'P1' },
   ]);

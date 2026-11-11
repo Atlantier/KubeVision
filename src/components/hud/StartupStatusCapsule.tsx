@@ -132,7 +132,7 @@ export default function StartupStatusCapsule(): React.ReactElement | null {
           <span className="tabular-nums text-slate-500">
             {readyCount}/{items.length}
           </span>
-          <span aria-hidden className="text-slate-600">
+          <span aria-hidden className="text-slate-400">
             {expanded ? '−' : '+'}
           </span>
         </button>
@@ -148,7 +148,7 @@ export default function StartupStatusCapsule(): React.ReactElement | null {
                 <span className={item.ready ? 'text-slate-500' : 'text-amber-300/90'}>{item.detail}</span>
               </li>
             ))}
-            <li className="flex items-center gap-2 font-mono text-[10px] text-slate-600">
+            <li className="flex items-center gap-2 font-mono text-[10px] text-slate-400">
               <span aria-hidden>··</span>
               <span className="w-20 shrink-0">端侧模型</span>
               <span>按需加载（未启用时不阻塞首屏）</span>
@@ -156,7 +156,7 @@ export default function StartupStatusCapsule(): React.ReactElement | null {
           </ul>
         ) : null}
       </div>
-      <p className="mt-1 max-w-[220px] font-mono text-[10px] leading-relaxed text-slate-600" aria-live="polite">
+      <p className="mt-1 max-w-[220px] font-mono text-[10px] leading-relaxed text-slate-400" aria-live="polite">
         {allReady ? '全部启动项就绪，可开始操作' : '启动项将在就绪后自动收起'}
       </p>
     </div>

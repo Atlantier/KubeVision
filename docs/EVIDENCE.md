@@ -5,7 +5,7 @@
 
 | # | 证据文件 | 证明结论 | 复现命令 |
 |---|---|---|---|
-| 1 | `docs/evidence/verify-2026-11-11T04-50-52-880Z.png` / `.log` | 自动化验收 **33/33 通过（0 失败 0 跳过）**，含静态/接口/浏览器三类 | `node scripts/capture-evidence.mjs` |
+| 1 | `docs/evidence/verify-2026-11-11T06-50-24-504Z.png` / `.log` | 自动化验收 **34/34 通过（0 失败 0 跳过）**，含静态/接口/浏览器三类 | `node scripts/capture-evidence.mjs` |
 | 2 | `docs/evidence/benchmark-2026-11-11.log` + `docs/performance.json` | 性能基准（draw calls 中位 **423**、三角面 **206,028** 中位、RAG 均值 **8.27ms**、脱敏 **12,880 条/s**）；环境 SwiftShader | `node scripts/benchmark.mjs` |
 | 3 | `docs/evidence/benchmark-consistency-2026-11-11.log` | R06 双跑一致性：场景对象/实例数/中位三角面/首屏体积等硬件无关字段一致（triangles 仅锁中位，mean 抖动 0.002% 已在脚本注释说明） | `node scripts/benchmark-consistency.mjs` |
 | 4 | `docs/evidence/roadshow-phase2-2026-11-11.png` | 路演阶段 2/4 · 故障注入与空间锁定（真实运行截图） | `node scripts/shot.mjs --scene demo-phase2` |

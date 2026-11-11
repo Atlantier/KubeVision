@@ -1,0 +1,84 @@
+{
+  "startedAt": "2026-11-11T06:32:27.309Z",
+  "finishedAt": "2026-11-11T06:39:33.462Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "outDir": "C:\\Users\\Dannie\\Desktop\\AI项目\\KubeVision\\docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z",
+  "steps": [
+    {
+      "name": "tsc",
+      "exitCode": 0,
+      "durationMs": 5678,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\01-tsc.log"
+    },
+    {
+      "name": "next-lint",
+      "exitCode": 0,
+      "durationMs": 4564,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\02-next-lint.log"
+    },
+    {
+      "name": "lint-glsl",
+      "exitCode": 0,
+      "durationMs": 166,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\03-lint-glsl.log"
+    },
+    {
+      "name": "check-a11y",
+      "exitCode": 0,
+      "durationMs": 207,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\04-check-a11y.log"
+    },
+    {
+      "name": "check-emoji",
+      "exitCode": 0,
+      "durationMs": 202,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\05-check-emoji.log"
+    },
+    {
+      "name": "check-layering",
+      "exitCode": 0,
+      "durationMs": 165,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\06-check-layering.log"
+    },
+    {
+      "name": "check-dead-exports",
+      "exitCode": 0,
+      "durationMs": 374,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\07-check-dead-exports.log"
+    },
+    {
+      "name": "verify",
+      "exitCode": 0,
+      "durationMs": 91940,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\08-verify.log"
+    },
+    {
+      "name": "verify-stream-integrity",
+      "exitCode": 0,
+      "durationMs": 76413,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\09-verify-stream-integrity.log"
+    },
+    {
+      "name": "verify-telemetry",
+      "exitCode": 0,
+      "durationMs": 524,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\10-verify-telemetry.log"
+    },
+    {
+      "name": "verify-demo",
+      "exitCode": 1,
+      "durationMs": 245818,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\11-verify-demo.log"
+    }
+  ],
+  "failed": {
+    "step": "verify-demo",
+    "index": 11,
+    "exitCode": 1,
+    "logFile": "C:\\Users\\Dannie\\Desktop\\AI项目\\KubeVision\\docs\\evidence\\verify-all\\2026-11-11T06-32-27-307Z\\11-verify-demo.log",
+    "tail": "汇总\n==============================================================================\n  通过 19 · 失败 3\n\n  失败证据已归档: C:\\Users\\Dannie\\Desktop\\AI项目\\KubeVision\\docs\\summit\\failures\\2026-11-11T06-39-30-689Z\n    · store-snapshot.json / console.log / last-frame.png / failures.json\n\n  失败明细（实际值）：\n    · J-3 动作卡终态为 executed（无 pending 并存）\n      {\n        \"metricsCard\": 1,\n        \"rootCauseCard\": 1,\n        \"actionCard\": 1,\n        \"actionCardExecuted\": false,\n        \"actionCardPending\": false,\n        \"hostNodeInProse\": null\n      }\n    · J-4 全流程零 console.error / 零未捕获异常\n      {\n        \"consoleErrors\": [],\n        \"pageErrors\": [\n          \"Uncaught\"\n        ]\n      }\n    · J-6 恢复后进度单调不回退\n      {\n        \"pausedElapsedSec\": null,\n        \"resumedElapsedSec\": null\n      }\n"
+  },
+  "passCount": 10,
+  "failCount": 1,
+  "totalSteps": 19
+}

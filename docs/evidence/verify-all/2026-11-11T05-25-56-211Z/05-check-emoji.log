@@ -1,0 +1,5 @@
+$ C:\Program Files\nodejs\node.exe scripts/check-emoji.mjs
+
+--- output ---
+KubeVision AI — Emoji / AI 味符号检查
+  扫描文件: 121 个 · 命中: 0

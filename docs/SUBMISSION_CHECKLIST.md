@@ -28,7 +28,7 @@
 
 | 时间 | 检查 | 通过标准 | 失败处理 |
 |---|---|---|---|
-| T-24h | 全量回归 | `node scripts/verify.mjs` 33/33；`node scripts/verify-demo.mjs` 通过 | 修复或降级演示链路 |
+| T-24h | 全量回归 | `node scripts/verify.mjs` 34/34；`node scripts/verify-demo.mjs` 通过 | 修复或降级演示链路 |
 | T-24h | 文档一致性 | `node scripts/check-docs-consistency.mjs` 通过 | 重跑 benchmark + sync-docs-metrics |
 | T-23h | PDF 重新生成 | 白皮书/PPT PDF 的生成时间晚于最后一次代码提交；各 ≤10MB | 重新生成，不手改 PDF |
 | T-22h | 视频母版 | 3:00 内、1080p30、无通知/无画圈；60s 版就绪 | 重录指定段 |

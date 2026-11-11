@@ -636,7 +636,7 @@ flowchart LR
 | R02–R05 | 程序化 3D 场景、机架/Pod 实例化、双轨遥测、全息 HUD | `src/components/canvas/**`、`docs/summit/shots/` | FPS 未真机；仅 draw calls 可作证 |
 | R04 | 自动演练导演状态机（4 阶段/34s、暂停/续播/停止） | `src/utils/demoDirector.ts`、`scripts/run-demo-tests.mjs` | 依赖预检 5 项；失败不自动降级到手动 |
 | R06 | 性能基准脚本与 `docs/performance.json` | `scripts/benchmark.mjs` | SwiftShader 环境，FPS 不作证据 |
-| R10 | 33 项自动化验收（静态/接口/浏览器） | `docs/evidence/verify-*.png/.log`、`docs/verify-summary.json` | 浏览器用 CDP 模拟输入，非人工操作 |
+| R10 | 34 项自动化验收（静态/接口/浏览器） | `docs/evidence/verify-*.png/.log`、`docs/verify-summary.json` | 浏览器用 CDP 模拟输入，非人工操作 |
 | R11–R15 | 视觉/A11y/启动胶囊/一键演示链路 | `docs/summit/shots/r41-*`、`scripts/shot.mjs` | 视觉回归依赖基线图 |
 | R16 | traceId/细分 span/usage tokens/成本字段 | `src/utils/agentTrace.ts`、`AgentTracePanel` | 成本需配置 env 单价，未配置显示"未配置" |
 | R17 | RAG 评测 49 用例（两路/三路/负例/拒答） | `docs/rag-eval.json`、`scripts/eval-rag.mjs` | 构造用例，非线上流量 |
@@ -818,7 +818,7 @@ Next.js App Router 默认服务端渲染。若组件在渲染期读取 `localSto
 node scripts/verify.mjs
 ```
 
-自动完成 <!-- VERIFY:BEGIN -->**通过 33 · 失败 0 · 跳过 0（共 33 项）**<!-- VERIFY:END -->，分四阶段：
+自动完成 <!-- VERIFY:BEGIN -->**通过 34 · 失败 0 · 跳过 0（共 34 项）**<!-- VERIFY:END -->，分四阶段：
 
 | 阶段 | 覆盖内容 | 检查数 |
 |---|---|---|
@@ -863,7 +863,7 @@ node scripts/benchmark.mjs
 | lexical-only（消融） | 66.7% | 75.0% | 0.781 | 0.814 |
 | 负例拒答率（两路 / 三路） | 87.5% | 87.5% | — | — |
 | 误拒率（两路 / 三路，目标 <5%） | 0.0% | 0.0% | — | — |
-| 检索延迟 P95（两路 / 三路） | 1.82ms | 1.98ms | — | — |
+| 检索延迟 P95（两路 / 三路） | 2.18ms | 2.45ms | — | — |
 
 > RAG 评测：49 条用例（正例 41 / 负例 8），两次运行指标一致=是；三路查询向量 49 条。
 <!-- METRICS:END -->
