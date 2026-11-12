@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * KubeVision AI — 样式契约静态守卫（R1 · 视觉地基）
+ * KubeVision AI — 样式契约静态守卫（R1 视觉地基 · R2 CI 可校验）
  *
  * 【设计意图】玻璃四层与 Tailwind 透明度档位是"写了但可能静默失效"的重灾区：
  *   - CSS 里残留 `--:` / `var(--)` / 空选择器 `. {}` 会让整段规则失效；
@@ -10,9 +10,13 @@
  *   - 半像素 / <10px 字号违反可读性契约。
  * 这些缺陷肉眼极难发现（画面"看起来正常"），必须静态扫描 + 构建产物比对。
  *
- * 【输入】src/app/globals.css、src/constants/tokens.ts、src/**\/*.tsx、
+ * 【R2 · 全量透明度比对】提取 src 全部含透明度修饰符的类（裸刻度值 + 括号任意值），
+ * 逐个与生产 CSS 选择器比对，输出「源码类总数 / 已生成数 / 缺失清单」。
+ * 缺失即静默失效，必须阻断 verify；不设白名单掩盖。
+ *
+ * 【输入】src/app/globals.css、src/constants/tokens.ts、src/**\/*.{ts,tsx}、
  *         以及（若存在）.next/static/css/*.css 构建产物。
- * 【输出】--json 时输出 { ok, results:[{name,status,detail}] }；否则人类可读。
+ * 【输出】--json 时输出 { ok, opacityReport, results:[{name,status,detail}] }；否则人类可读。
  * 【退出码】0 = 全部通过；1 = 存在违约；2 = 扫描本身失败。
  *
  * 【为何接入 verify:quick / verify:all】只读源码与构建产物，不启浏览器，
@@ -30,21 +34,27 @@ const JSON_MODE = process.argv.includes('--json');
 const VALID_OPACITY = new Set([0, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 100]);
 
 /** 颜色工具类前缀（可带透明度修饰符） */
-const COLOR_PREFIX = '(?:bg|text|border|ring|from|to|via|fill|stroke|divide|placeholder|decoration|outline|accent|caret)';
+const COLOR_PREFIX = '(?:bg|text|border|ring|from|to|via|fill|stroke|divide|placeholder|decoration|outline|accent|caret|shadow)';
 
 const results = [];
 function record(name, status, detail) {
   results.push({ name, status, detail });
 }
 
-function walkTsx(dir) {
+function walkSources(dir) {
   const out = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walkTsx(full));
-    else if (entry.name.endsWith('.tsx')) out.push(full);
+    if (entry.isDirectory()) out.push(...walkSources(full));
+    else if (entry.name.endsWith('.tsx') || entry.name.endsWith('.ts')) out.push(full);
   }
   return out;
+}
+
+/** 剥离块注释：中文 JSDoc 里可能引用 `/8、/12`、`bg-x/50` 等字样作说明，
+ *  不应被当作真实类名参与提取/比对。只留真正的代码。 */
+function stripBlockComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
 /* ========================================================================== */
@@ -156,20 +166,24 @@ function checkTokenConsistency(css) {
 /* 3. src tsx：禁止双重透明度 / 非刻度裸透明度 / 半像素与 <10px 字号             */
 /* ========================================================================== */
 function checkTsx() {
-  const files = walkTsx(join(ROOT, 'src'));
+  const files = walkSources(join(ROOT, 'src'));
   const doubleHits = [];
   const bareHits = [];
   const fontHits = [];
   const bracketClasses = new Set();
+  /* 全部含透明度修饰符的类（裸刻度值 + 括号任意值），供与生产 CSS 逐一比对 */
+  const opacityClasses = new Set();
 
   const doubleRe = /\/\[0\.\d+\]\/\d+/g;
   const bareRe = new RegExp('\\b(' + COLOR_PREFIX + '-(?:[a-zA-Z]+(?:-[a-zA-Z0-9]+)*))\\/(\\d{1,3})\\b', 'g');
   const bracketRe = new RegExp('\\b(' + COLOR_PREFIX + '-[a-zA-Z0-9-]+\\/\\[0\\.\\d+\\])', 'g');
+  /* 统一提取：颜色工具类 + /裸数字 或 /[0.xxx]，一次抓全 */
+  const opacityRe = new RegExp('\\b(' + COLOR_PREFIX + '-[a-zA-Z]+(?:-[a-zA-Z0-9]+)*\\/(?:\\d{1,3}|\\[0?\\.\\d+\\]))', 'g');
   const fontRe = /text-\[(\d+(?:\.\d+)?)px\]/g;
 
   for (const file of files) {
     const rel = relative(ROOT, file).replace(/\\/g, '/');
-    const src = readFileSync(file, 'utf8');
+    const src = stripBlockComments(readFileSync(file, 'utf8'));
     const lines = src.split('\n');
     lines.forEach((line, idx) => {
       let m;
@@ -188,6 +202,9 @@ function checkTsx() {
     let bm;
     bracketRe.lastIndex = 0;
     while ((bm = bracketRe.exec(src)) !== null) bracketClasses.add(bm[1]);
+    let om;
+    opacityRe.lastIndex = 0;
+    while ((om = opacityRe.exec(src)) !== null) opacityClasses.add(om[1]);
   }
 
   if (doubleHits.length === 0) record('无双重透明度', 'pass', '0 处');
@@ -199,13 +216,20 @@ function checkTsx() {
   if (fontHits.length === 0) record('字号 ≥10px 且无半像素', 'pass', '0 处违规');
   else record('字号 ≥10px 且无半像素', 'fail', `${fontHits.length} 处，例: ${fontHits[0]}`);
 
-  return bracketClasses;
+  return { bracketClasses, opacityClasses };
 }
 
 /* ========================================================================== */
-/* 4. 构建产物 CSS：无坏标记 + 玻璃类与本轮修复的透明度类都有生成规则            */
+/* 4. 构建产物 CSS：无坏标记 + 玻璃类 + 全部透明度类逐一比对（缺失即阻断）       */
 /* ========================================================================== */
-function checkBuiltCss(bracketClasses) {
+
+/** 供主流程输出「源码类总数 / 已生成数 / 缺失清单」 */
+let opacityReport = { total: 0, generated: 0, missing: [], cssFile: null };
+
+function checkBuiltCss(classes) {
+  const { opacityClasses } = classes;
+  opacityReport.total = opacityClasses.size;
+
   const cssDir = join(ROOT, '.next/static/css');
   if (!existsSync(cssDir)) {
     record('构建 CSS 校验', 'skip', '未找到 .next/static/css（先运行 pnpm build）');
@@ -216,13 +240,14 @@ function checkBuiltCss(bracketClasses) {
     record('构建 CSS 校验', 'skip', '目录为空（先运行 pnpm build）');
     return;
   }
-  /* 取最新构建产物 */
+  /* 取体积最大的构建产物（主样式 bundle） */
   let newest = cssFiles[0];
-  let newestMtime = 0;
+  let newestSize = 0;
   for (const f of cssFiles) {
     const st = readFileSync(join(cssDir, f));
-    if (st.length > newestMtime) { newestMtime = st.length; newest = f; }
+    if (st.length > newestSize) { newestSize = st.length; newest = f; }
   }
+  opacityReport.cssFile = newest;
   const raw = readFileSync(join(cssDir, newest), 'utf8');
   const css = raw.replace(/\\/g, ''); /* 去掉 CSS 转义反斜杠，便于按类名子串匹配 */
 
@@ -239,12 +264,27 @@ function checkBuiltCss(bracketClasses) {
   if (glassOk && blurOk) record('构建 CSS 玻璃类与 blur 令牌', 'pass', '5 类 + 20/8/30');
   else record('构建 CSS 玻璃类与 blur 令牌', 'fail', `glass=${glassOk} blur=${blurOk}`);
 
-  /* 本轮修复的每个括号透明度类都必须在构建 CSS 里生成 */
-  const missing = [...bracketClasses].filter((cls) => !css.includes(cls));
+  /*
+   * 全量透明度类比对：src 里每一个含透明度修饰符的类，都必须在生产 CSS 里
+   * 有对应选择器。缺失 = 静默失效，必须阻断 verify；不设白名单掩盖。
+   * 比对前去掉 CSS 转义反斜杠，variant 前缀（hover: 等）不影响核心类名命中。
+   */
+  const missing = [...opacityClasses].filter((cls) => !css.includes(cls)).sort();
+  opacityReport.missing = missing;
+  opacityReport.generated = opacityClasses.size - missing.length;
+
   if (missing.length === 0) {
-    record('修复的透明度类均已生成', 'pass', `${bracketClasses.size} 个括号透明度类全部命中`);
+    record(
+      '透明度类全量生成比对',
+      'pass',
+      `源码 ${opacityReport.total} 类 / 已生成 ${opacityReport.generated} / 缺失 0`,
+    );
   } else {
-    record('修复的透明度类均已生成', 'fail', `${missing.length} 个未生成，例: ${missing[0]}`);
+    record(
+      '透明度类全量生成比对',
+      'fail',
+      `源码 ${opacityReport.total} 类 / 已生成 ${opacityReport.generated} / 缺失 ${missing.length}: ${missing.join(', ')}`,
+    );
   }
 }
 
@@ -254,19 +294,26 @@ function checkBuiltCss(bracketClasses) {
 try {
   const css = checkGlobals();
   checkTokenConsistency(css);
-  const bracketClasses = checkTsx();
-  checkBuiltCss(bracketClasses);
+  const classes = checkTsx();
+  checkBuiltCss(classes);
 
   const failed = results.filter((r) => r.status === 'fail');
   const ok = failed.length === 0;
 
   if (JSON_MODE) {
-    console.log(JSON.stringify({ ok, results }, null, 2));
+    console.log(JSON.stringify({ ok, opacityReport, results }, null, 2));
   } else {
-    console.log('KubeVision AI — 样式契约守卫（R1）');
+    console.log('KubeVision AI — 样式契约守卫（R2 · CI 可校验）');
     for (const r of results) {
       const icon = r.status === 'pass' ? '✓' : r.status === 'skip' ? '·' : '✗';
       console.log(`  ${icon} ${r.name}  (${r.detail})`);
+    }
+    /* 明确的「源码类总数 / 已生成数 / 缺失清单」报告 */
+    console.log('\n  透明度类比对（生产 CSS: ' + (opacityReport.cssFile ?? '无构建') + '）');
+    console.log(`    源码类总数: ${opacityReport.total} · 已生成: ${opacityReport.generated} · 缺失: ${opacityReport.missing.length}`);
+    if (opacityReport.missing.length > 0) {
+      console.log('    缺失清单:');
+      for (const cls of opacityReport.missing) console.log('      ✗ ' + cls);
     }
     console.log(ok ? '\n✓ 样式契约全部通过' : `\n✗ ${failed.length} 项违约`);
   }

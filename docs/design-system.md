@@ -133,3 +133,55 @@ git revert --no-edit <本轮 commit>
 git reset --hard 533301e     # 回到 r30
 git reset --hard v12-baseline
 ```
+
+---
+
+## 8. 玻璃四层契约 + 改值只改 tokens.ts（R2 · CI 可校验）
+
+### 8.1 四层结构（`.kv-panel` 的"高定玻璃"）
+
+`.kv-panel` 由四层叠加而成，缺一层就退回"廉价深色块"：
+
+| 层 | 属性 | 值 | 作用 |
+|---|---|---|---|
+| ① 纵向渐变底 | `background` | `linear-gradient(180deg, rgba(15,23,42,.78) → rgba(6,10,19,.88))` | 顶部受光、底部沉入阴影，底部更实更易读 |
+| ② 强毛玻璃 | `backdrop-filter` | `blur(var(--kv-blur-panel)) saturate(140%)` | 柔化背景且补饱和，透出颜色仍鲜活 |
+| ③ 发丝描边 | `border` | `1px solid rgba(255,255,255,.075)` | 白色低透明 = 玻璃边缘高光，而非"画上去的框" |
+| ④ 双层阴影 | `box-shadow` | `inset 0 1px 0 rgba(255,255,255,.09)` + `0 16px 40px -12px rgba(0,0,0,.65)` | 顶部受光棱边 + 悬浮层级 |
+
+`.kv-chip` / `.kv-overlay` 为轻量/重毛玻璃变体；`.kv-blur-panel` / `.kv-blur-chip`
+是"只供 blur、不写背景"的可组合工具类，供已用 `bg-*` 的 HUD 直接叠加。
+
+### 8.2 改值只改 tokens.ts（单一事实源链路）
+
+```
+src/constants/tokens.ts  GLASS { panel.blurPx:20, chip.blurPx:8, overlay.blurPx:30 }
+        │  （唯一可编辑数值处）
+        ▼
+src/app/globals.css  :root { --kv-blur-panel:20px; --kv-blur-chip:8px; --kv-blur-overlay:30px }
+        │  （CSS 变量，供 2D HUD 与 3D <Html> 共同继承）
+        ▼
+.kv-panel / .kv-chip / .kv-overlay / .kv-blur-*  引用 var(--kv-blur-*)
+```
+
+**要改模糊半径，只改 `tokens.ts` 的 `GLASS.*.blurPx`，再同步 `globals.css` 的
+`--kv-blur-*`**（两者由 `check-style-contract.mjs` 静态校验一致，漂移即报错）。
+不要在组件里手写 `backdrop-blur-*` 或第二个 `.kv-panel`。颜色基座同理走
+`COLORS` / `STROKE`。`tailwind.config.ts` 用 `safelist` 保证五个玻璃基元不被
+usage 裁剪，始终可被引用。
+
+### 8.3 CI 闸门（能红能绿）
+
+- `scripts/check-style-contract.mjs`（接入 `verify:quick` / `verify:all`）：
+  - 静态拒绝 `--:` / `var(--)` / 空选择器 `. {}` / 双重透明度 / 非刻度裸透明度 / 半像素与 <10px 字号；
+  - 校验 `tokens.GLASS` 与 `globals.css` blur 变量一致；
+  - **全量透明度比对**：提取 src 全部含透明度修饰符的类，逐个与生产 CSS 选择器比对，
+    输出「源码类总数 / 已生成数 / 缺失清单」，缺失即阻断 verify，不设白名单。
+- `scripts/probe-glass-contract.mjs`（接入 `verify:all`，需 dev/preview 服务）：
+  四档视口（1920×1080 / 1366×768 / 1024×768 / 800×600）实测 `.kv-panel / .kv-chip /
+  .kv-overlay` 的 `backdropFilter / backgroundColor / borderColor / boxShadow` 逐项符合令牌；
+  `prefers-reduced-motion` 下 `transition/animationDuration ≤ 1ms`。期望值从 `tokens.ts` 读取。
+
+**能红能绿证明**：把 `.kv-panel` 的 `var(--kv-blur-panel)` 改回 `var(--)` → 契约脚本
+exit 1（红）；恢复 → exit 0（绿）。注入一个"合法刻度但不存在的颜色"类
+（如 `bg-notacolor-500/50`）→ 静态检查通过但全量比对报缺失、exit 1（红）；移除 → 绿。
