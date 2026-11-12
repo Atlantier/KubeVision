@@ -321,28 +321,6 @@ const PHASE3_EVENT_GATE_POLL_MS = 200;
 export const FINISHED_AUTO_COLLAPSE_MS = 8_000;
 
 /**
- * 事件门未决时，收尾定时器的重新检查间隔（毫秒）。
- *
- * 【为什么需要它】B 项的实测暴露了一个真实缺陷：剧本 durationMs=34000，
- * 而事件门 25 秒兜底是从阶段 3（约 11 秒）起算的，即 36 秒才到点。
- * 于是**时间轴抢在门之前结束了整场路演**——门既没等到事件、也没等到超时，
- * 阶段 4 反而由固定 atMs 定时器推进，事件驱动形同虚设。
- *
- * 修法：收尾定时器到点时若门仍未决，就推迟收尾并重新检查。
- * 门自身有 25 秒兜底，不会无限等待。
- */
-const FINISH_DEFER_RECHECK_MS = 6_000;
-
-/**
- * 收尾最短宽限期（毫秒）。
- *
- * 【为什么需要】事件门推进到阶段 4 时，时间轴可能已经"超时"（elapsed >
- * durationMs）。此时若立刻收尾，阶段 4 的 HITL 与自愈根本没机会跑。
- * 给一段宽限，让最后阶段至少能开始并等待动作卡。
- */
-const FINISH_MIN_GRACE_MS = 6_000;
-
-/**
  * 阶段 4 点击「立即执行」后等待自愈回执落库的超时上限。
  *
  * 【为何放宽到 10 秒】healEntity 是同步写 store 的，但动作卡内部有
@@ -810,6 +788,18 @@ let phaseTimers: Array<ReturnType<typeof setTimeout>> = [];
 /** 进度心跳定时器句柄 */
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * 阶段 4 自愈闭环完成后的稳态展示定时器（R70）。
+ *
+ * 【为什么不再用总时长定时器】云端 LLM/MCP 响应可能超过剧本的"理想总时长"，
+ * 旧实现会在总时长到点直接 finishDemoDirector()，提前截断仍在等待的诊断链。
+ * 现在收尾只由“阶段 4 异步闭环完成 + 4.2s 稳态展示”驱动。
+ */
+let finishHandle: ReturnType<typeof setTimeout> | null = null;
+
+/** 阶段 4 自愈完成后的稳态展示时长（毫秒） */
+const FINISH_STEADY_HOLD_MS = 4200;
+
 /** MCP 请求取消器（停止时 abort，避免回调在停止后写 store） */
 let mcpAbort: AbortController | null = null;
 
@@ -931,6 +921,11 @@ function clearAllTimers(): void {
     clearTimeout(finishedCollapseTimer);
     finishedCollapseTimer = null;
   }
+  /* R70：阶段 4 稳态收尾定时器同样必须随停止/重播取消 */
+  if (finishHandle !== null) {
+    clearTimeout(finishHandle);
+    finishHandle = null;
+  }
 }
 
 /**
@@ -1003,11 +998,31 @@ function publish(): void {
   const script = currentScript;
   /* 时长基准是"当前节奏"的总时长，而不是剧本的标准时长 */
   const total = effectiveDurationMs();
-  const elapsed = script === null ? 0 : Math.min(currentElapsedMs(), total);
+  /*
+   * R70：elapsedMs 是“实况已用时长”，不再被理想总时长截断。
+   * 云端 LLM/MCP 响应可以超过剧本预估时长，字幕条仍应显示真实 T+。
+   */
+  const elapsed = script === null ? 0 : currentElapsedMs();
   const activePhase =
     script !== null && phaseIndex >= 0 && phaseIndex < script.phases.length
       ? script.phases[phaseIndex]
       : null;
+
+  /*
+   * R70：进度按“阶段推进 + 阶段内微进量”计算，而不是 elapsed / duration。
+   * 这样等待云端 LLM 响应期间，进度会停在当前阶段的合理区间；
+   * 只有阶段 4 自愈完成并进入 finished 才到达 100%。
+   */
+  let progress = 0;
+  if (status === 'finished') {
+    progress = 1;
+  } else if (status !== 'idle') {
+    const totalPhases = Math.max(1, script?.phases.length ?? 0);
+    const phaseElapsedMs =
+      phaseStartedAt === null ? 0 : Math.max(0, Date.now() - phaseStartedAt);
+    const stageInner = Math.min(0.85, phaseElapsedMs / 10000);
+    progress = Math.min(0.96, (Math.max(0, phaseIndex) + stageInner) / totalPhases);
+  }
 
   cachedSnapshot = {
     status,
@@ -1017,7 +1032,7 @@ function publish(): void {
     phaseIndex,
     elapsedMs: Math.round(elapsed),
     durationMs: total,
-    progress: total <= 0 ? 0 : Math.min(1, Math.max(0, elapsed / total)),
+    progress,
     badge: activePhase?.badge ?? '',
     /* 优先用当帧事实渲染的旁白，其次才是剧本静态兜底文案 */
     narration: narrationOverride ?? activePhase?.fallback ?? '',
@@ -1350,6 +1365,45 @@ function buildDiagnosisPrompt(
 }
 
 /**
+ * scheduleFinishAfterSteadyState —— 阶段 4 闭环完成后的稳态收尾（R70）。
+ *
+ * 【事件驱动替代固定总时长】旧 scheduleFrom 会在 effectiveDurationMs() 到点
+ * 直接 finish，一旦云端 LLM/MCP 比理想时长更慢，诊断/自愈链会被提前截断。
+ * 现在只有本函数在最终旁白更新后安排 4.2s 稳态展示；到期且仍处于同一
+ * generation、status 仍为 running 时才真正 finish。
+ *
+ * 讲解模式（narrator）不自动收尾：由主讲人手动点击完成/停止，避免断点讲解
+ * 被定时器打断。
+ *
+ * @param generation 发起时的运行代次
+ */
+function scheduleFinishAfterSteadyState(generation: number): void {
+  if (status !== 'running') return;
+
+  if (currentPacing === 'narrator') {
+    actions().appendTerminalLog(
+      '[DEMO-DIRECTOR] 讲解模式：阶段 4 已完成，等待主讲人手动收尾',
+    );
+    return;
+  }
+
+  if (finishHandle !== null) {
+    clearTimeout(finishHandle);
+    finishHandle = null;
+  }
+
+  finishHandle = setTimeout((): void => {
+    finishHandle = null;
+    if (runGeneration !== generation || status !== 'running') return;
+    finishDemoDirector();
+  }, FINISH_STEADY_HOLD_MS);
+
+  actions().appendTerminalLog(
+    `[DEMO-DIRECTOR] 阶段 4 闭环完成，${FINISH_STEADY_HOLD_MS / 1000}s 稳态展示后收尾`,
+  );
+}
+
+/**
  * 阶段 4：MCP 闭环自愈（P0-2 / P0-3 自愈）。
  *
  * 【自愈 P0-2：受害者解析改为全局】
@@ -1410,6 +1464,8 @@ function enterHeal(): void {
     api.setOrbitPatrolActive(true, 'programmatic');
     setNarration('已解除混沌并恢复稳态，但未捕获到可自愈的异常容器（自愈未验证）。');
     api.appendTerminalLog('[DEMO-DIRECTOR] 阶段 4/4 · 无受害 Pod，已终止演练并如实降级旁白');
+    /* 无受害 Pod 也是阶段 4 的一种终态：给出稳态展示后再收尾，避免卡在 running */
+    scheduleFinishAfterSteadyState(generation);
     return;
   }
 
@@ -1638,6 +1694,11 @@ function enterHeal(): void {
      * 证明"这次是编排执行的"。规格 C 项要求该标识可被察觉，因此改为在整个
      * 路演期间保持 true，只在 finish / stop 两个终态清除。
      */
+    /*
+     * R70：自愈闭环与最终旁白已完成，进入 4.2s 稳态展示后收尾。
+     * 讲解模式不自动收尾，由主讲人手动完成/停止。
+     */
+    scheduleFinishAfterSteadyState(generation);
     void nodeLabel;
   })();
 }
@@ -2093,27 +2154,14 @@ function scheduleFrom(elapsed: number): void {
     phaseTimerByIndex.set(i, handle);
   }
 
-  /* 收尾定时器：到总时长后标记完成（但不得抢跑仍未决的事件门） */
-  const remain = Math.max(effectiveDurationMs() - elapsed, FINISH_MIN_GRACE_MS);
-  const finishHandle = setTimeout((): void => {
-    if (status !== 'running') return;
-    /*
-     * 阶段 3→4 的事件门还在等（流未结束或卡片未挂载）→ 推迟收尾。
-     * 门自身有 25 秒兜底，最长只会把总时长拉长到"门的截止点 + 阶段 4"，
-     * 不会无限等待。若不这样处理，时间轴会抢在门之前结束整场路演。
-     */
-    if (phaseGateTimer !== null || phaseGateDeadlineTimer !== null) {
-      const deferHandle = setTimeout((): void => {
-        if (status !== 'running') return;
-        if (phaseGateTimer !== null || phaseGateDeadlineTimer !== null) return;
-        finishDemoDirector();
-      }, FINISH_DEFER_RECHECK_MS);
-      phaseTimers.push(deferHandle);
-      return;
-    }
-    finishDemoDirector();
-  }, remain);
-  phaseTimers.push(finishHandle);
+  /*
+   * R70：这里不再安排“总时长到点即 finish”的定时器。
+   *
+   * 旧实现在 effectiveDurationMs() 到点直接 finishDemoDirector()，一旦云端 LLM
+   * 或 MCP 响应超过理想时长，就会提前截断仍在等待的诊断/自愈链。
+   * 现在收尾只由 enterHeal 的异步闭环在最终旁白更新后调用
+   * scheduleFinishAfterSteadyState()，以 4.2s 稳态展示驱动。
+   */
 }
 
 /** 启动进度心跳 */
@@ -2183,9 +2231,9 @@ export function setDemoPacing(mode: DemoPacingKind): void {
     startTick();
   }
 
-  recordDemoEffect('setPacing', `${mode} (${Math.round(newTotal / 1000)}s)`);
+  recordDemoEffect('setPacing', mode);
   actions().appendTerminalLog(
-    `[DEMO-DIRECTOR] 节奏切换为 ${PACING_LABEL[mode]}（总时长 ${Math.round(newTotal / 1000)} 秒）`,
+    `[DEMO-DIRECTOR] 节奏切换为 ${PACING_LABEL[mode]}`,
   );
   publish();
 }
@@ -2461,7 +2509,7 @@ export function startDemoDirector(id: DemoScriptId): void {
   segmentStartedAt = performance.now();
 
   bootApi.appendTerminalLog(
-    `[DEMO-DIRECTOR] [PLAY] 启动剧本「${script.title}」（约 ${Math.round(script.durationMs / 1000)} 秒）`,
+    `[DEMO-DIRECTOR] [PLAY] 启动剧本「${script.title}」（4 阶段全链路实况演练）`,
   );
 
   /* 阶段 0 的 atMs 为 0 → scheduleFrom(0) 会立即补触发 */
@@ -2644,6 +2692,17 @@ function finishDemoDirector(): void {
     if (runGeneration !== collapseGeneration) return;
     dismissFinishedDemo();
   }, FINISHED_AUTO_COLLAPSE_MS);
+}
+
+/**
+ * finishDemoDirectorNow —— 讲解模式下手动完成当前剧本（R70）。
+ *
+ * 讲解模式不会自动排 4.2s 收尾；阶段 4 完成后由主讲人点击「完成」调用本入口。
+ * 沿用 finishDemoDirector 的完成态语义（保留字幕/进度，8s 后自动收起）。
+ */
+export function finishDemoDirectorNow(): void {
+  if (status !== 'running') return;
+  finishDemoDirector();
 }
 
 /**

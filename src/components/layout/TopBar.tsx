@@ -55,6 +55,7 @@ import {
   setDemoPacing,
   clearPreflightError,
   dismissFinishedDemo,
+  finishDemoDirectorNow,
   registerDemoNarrator,
   replayDemoDirector,
   startDemoDirector,
@@ -698,12 +699,10 @@ export function ModeToggle({ mode, onChange, disabled = false }: ModeToggleProps
 function DemoScriptMenuItem({
   label,
   title,
-  durationMs,
   onSelect,
 }: {
   readonly label: string;
   readonly title: string;
-  readonly durationMs: number;
   readonly onSelect: () => void;
 }): React.ReactElement {
   return (
@@ -722,12 +721,19 @@ function DemoScriptMenuItem({
           {label}
         </span>
         <span className="mt-0.5 block font-mono text-[10px] tabular-nums text-slate-500">
-          约 {Math.round(durationMs / 1000)} 秒 · 4 阶段
+          4 阶段全链路 · 实时 AI 诊断与自愈闭环
         </span>
       </span>
     </button>
   );
 }
+
+/** 节奏模式的可读说明（R70：不再展示预估秒数） */
+const PACING_HINT: Readonly<Record<DemoPacingKind, string>> = {
+  standard: '标准（自动连贯演练）',
+  compact: '紧凑（快速切镜演练）',
+  narrator: '讲解（阶段断点 · 空格推进）',
+};
 
 /**
  * DemoDirectorBar —— 全息路演导演字幕条。
@@ -747,6 +753,7 @@ function DemoDirectorBar({
   onReplay,
   onDismiss,
   onClearPreflight,
+  onFinish,
 }: {
   readonly demo: DemoDirectorSnapshot;
   readonly onStop: () => void;
@@ -754,9 +761,15 @@ function DemoDirectorBar({
   readonly onReplay: () => void;
   readonly onDismiss: () => void;
   readonly onClearPreflight: () => void;
+  readonly onFinish: () => void;
 }): React.ReactElement {
-  const elapsedSec = (demo.elapsedMs / 1000).toFixed(1);
-  const totalSec = Math.round(demo.durationMs / 1000);
+  const elapsedSec = Math.floor(demo.elapsedMs / 1000);
+  const stageTotal = Math.max(1, demo.phases.length);
+  const stageCurrent = Math.max(1, demo.phaseIndex + 1);
+  const elapsedClock = `${String(Math.floor(elapsedSec / 60)).padStart(2, '0')}:${String(elapsedSec % 60).padStart(2, '0')}`;
+  const waitingForAi = demo.phaseIndex === 2 && demo.status === 'running';
+  const canFinishNarrator =
+    demo.pacing === 'narrator' && demo.phaseIndex === demo.phases.length - 1;
   const progressPct = Math.round(demo.progress * 100);
   const isPaused = demo.status === 'paused';
   const isFinished = demo.status === 'finished';
@@ -785,16 +798,11 @@ function DemoDirectorBar({
           : '已暂停，点击继续'
         : demo.narration;
 
-  /**
-   * 阶段剩余时间提示（B 项）。
-   *
-   * 【只读引擎给的 deadline】字幕条不自己计时——那样会与暂停/恢复错位。
-   * phaseDeadline 仅事件驱动阶段（3→4）会被填上，其余阶段为 null。
+  /*
+   * R70：不再计算阶段剩余秒数。
+   * 云端 LLM 响应时长不可预估，倒计时会在等待期间归零并制造“已超时”的假象；
+   * 阶段 3 改为呼吸态“正在等待云端 AI 诊断响应…”。
    */
-  const phaseRemainSec =
-    demo.phaseDeadline !== null && demo.phaseStartedAt !== null
-      ? Math.max(0, Math.ceil((demo.phaseDeadline - Date.now()) / 1000))
-      : null;
   /* R34 追问 2：讲解者友好的下一步提示（三行） */
   const nextPhase = demo.phases[demo.phaseIndex + 1] ?? null;
   const currentPhaseView = demo.phases[demo.phaseIndex] ?? null;
@@ -807,7 +815,7 @@ function DemoDirectorBar({
         : `下一阶段：${nextPhase?.badge ?? '结束态'}`;
   const hintStage = currentPhaseView === null
     ? 'STAGE-00 / IDLE'
-    : `当前 ${currentPhaseView.badge} · T+${elapsedSec}s`;
+    : `当前 ${currentPhaseView.badge} · T+${elapsedClock}`;
   const hintKey = 'Space 继续 / 暂停 · Esc 关闭 · ? 快捷键';
 
   return (
@@ -872,7 +880,7 @@ function DemoDirectorBar({
             )}
           >
             {isPreflightError ? 'DEMO-PREFLIGHT · 未通过' : 'RUNBOOK · 自动演练'}
-            {phaseRemainSec !== null ? ` · 等待诊断 ${phaseRemainSec}s` : ''}
+            {waitingForAi ? ' · 正在等待云端 AI 诊断响应…' : ''}
           </span>
           <span className="mt-0.5 truncate text-[11px] font-medium tracking-tight text-slate-100">
             {narrationText}
@@ -890,9 +898,9 @@ function DemoDirectorBar({
                 onClick={(): void => {
                   setDemoPacing(kind);
                 }}
-                aria-label={`切换为${PACING_LABEL[kind]}节奏`}
+                aria-label={`切换为${PACING_HINT[kind]}`}
                 aria-pressed={demo.pacing === kind}
-                title={`${PACING_LABEL[kind]}节奏`}
+                title={PACING_HINT[kind]}
                 className={cn(
                   'h-4 px-1 font-mono text-[10px] leading-none transition-colors',
                   demo.pacing === kind
@@ -906,7 +914,7 @@ function DemoDirectorBar({
           </span>
 
           <span className="font-mono text-[10px] tabular-nums text-slate-500" aria-live="off">
-            T+{elapsedSec} / 00:{String(totalSec).padStart(2, '0')}
+            阶段 {stageCurrent}/{stageTotal} · T+{elapsedClock}
           </span>
 
           <span
@@ -960,6 +968,17 @@ function DemoDirectorBar({
             </>
           ) : (
             <>
+              {canFinishNarrator ? (
+                <button
+                  type="button"
+                  onClick={onFinish}
+                  aria-label="完成讲解版路演，进入稳态收尾"
+                  title="完成"
+                  className="flex h-5 items-center justify-center rounded border border-cyan-400/30 bg-cyan-400/10 px-1.5 font-mono text-[10px] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:text-cyan-100"
+                >
+                  完成
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={onTogglePause}
@@ -1367,7 +1386,6 @@ export default function TopBar() {
                   key={script.id}
                   label={script.label}
                   title={script.title}
-                  durationMs={script.durationMs}
                   onSelect={(): void => handleStartDemo(script.id)}
                 />
               ))}
@@ -1466,6 +1484,7 @@ export default function TopBar() {
             onReplay={handleReplayDemo}
             onDismiss={handleDismissDemo}
             onClearPreflight={handleClearPreflight}
+            onFinish={finishDemoDirectorNow}
           />
         </div>
       ) : null}
