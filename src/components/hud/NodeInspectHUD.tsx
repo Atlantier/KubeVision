@@ -44,6 +44,7 @@ import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
   type ReactNode } from 'react';
 import { AnimatePresence,
@@ -719,6 +720,34 @@ function Sparkline({ series, width = SPARKLINE_WIDTH, height = SPARKLINE_HEIGHT 
  */
 function TopologyLegendPanel() {
   const [expanded, setExpanded] = useState<boolean>(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * R74：展开后支持点击外部 / Esc 关闭。
+   *
+   * 只用 pointerdown 而不是 click：拖拽 3D 相机时 pointerup 可能落在画布外，
+   * click 不一定触发；pointerdown 能稳定表达“用户开始操作别处”。
+   * 点击面板/按钮内部不关闭（root.contains 判断）。
+   */
+  useEffect((): (() => void) | undefined => {
+    if (!expanded) return undefined;
+    const handlePointerDown = (event: PointerEvent): void => {
+      const root = rootRef.current;
+      if (root === null || !(event.target instanceof Node) || root.contains(event.target)) {
+        return;
+      }
+      setExpanded(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setExpanded(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return (): void => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [expanded]);
 
   /**
    * R73：触发按钮与浮层彻底解耦。
@@ -729,7 +758,7 @@ function TopologyLegendPanel() {
    * 通过 transform/opacity 进出，宽度不再参与动画。
    */
   return (
-    <div className="pointer-events-none relative flex flex-col items-start">
+    <div ref={rootRef} className="pointer-events-none relative flex flex-col items-start">
       <button
         type="button"
         onClick={(): void => setExpanded((prev): boolean => !prev)}

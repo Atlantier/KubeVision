@@ -201,6 +201,13 @@ export interface ShellLayoutProps {
   readonly viewport: ReactNode;
   /** 右侧 AI 抽屉插槽（桌面端默认占 34% 宽，可拖拽调整） */
   readonly drawer: ReactNode;
+  /**
+   * 性能遥测 HUD 插槽（R74）。
+   *
+   * 【为何由 ShellLayout 承载】HUD 必须锚定在 3D 视口内部，才能避免覆盖右侧
+   * Copilot 抽屉；同时保留 page.tsx 的 dynamic 懒加载（只传节点，不静态 import）。
+   */
+  readonly perfHud?: ReactNode;
 }
 
 /**

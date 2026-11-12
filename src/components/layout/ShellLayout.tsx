@@ -33,7 +33,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'framer-motion';
 import { Bot, Layers, ShieldCheck } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
@@ -181,7 +181,7 @@ function MobileViewSwitcher({ view, onChange }: { readonly view: MobileViewKey; 
  * 【层级栈】TopBar z-30 / 移动端切换栏 z-30 / PerfHUD z-40 / 混沌 Modal z-50；
  * 画布内 drei <Html> 恒 zIndexRange=[10,0]，永不遮挡以上任何 UI（契约第 6 条）。
  */
-export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
+export default function ShellLayout({ viewport, drawer, perfHud }: ShellLayoutProps) {
   /* ---- Store 细粒度订阅 ---- */
   const setPerfHudOpen = useClusterStore((s): ((open: boolean) => void) => s.setPerfHudOpen);
   const setActiveRightTab = useClusterStore((s): ((tab: RightPanelTab) => void) => s.setActiveRightTab);
@@ -342,6 +342,10 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
           {/* R73：演示态状态胶囊锚定在 3D 视口左下角；终端隐藏后该区域为空闲安全区。
               放在 section 内而非根容器，彻底避开右侧 Copilot 页签栏。 */}
           {present ? <PresentStatusHud /> : null}
+
+          {/* R74：性能 HUD 也锚定在 3D 视口内，避免覆盖右侧 Copilot 内容；
+              通过 page.tsx 的 dynamic 节点传入，保留按需加载。 */}
+          <AnimatePresence initial={false}>{perfHud}</AnimatePresence>
 
           {/* 性能遥测 HUD 已迁出本组件：由 page.tsx 通过 next/dynamic
               懒加载 PerfTelemetryHUD 挂载（按需载入，首屏零开销）。

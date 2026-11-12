@@ -459,7 +459,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8 }}
       transition={{ duration: 0.18 }}
-      className="kv-panel pointer-events-auto absolute right-3 top-16 z-40 w-[268px] max-h-[calc(100%-11rem)] overflow-y-auto p-2.5"
+      className="kv-panel pointer-events-auto absolute right-3 top-16 z-40 w-[268px] max-w-[calc(100%-1.5rem)] max-h-[calc(100%-18rem)] overflow-y-auto p-2.5"
       role="region"
       aria-label="性能遥测 HUD"
     >

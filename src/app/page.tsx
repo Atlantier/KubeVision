@@ -272,7 +272,15 @@ export default function HomePage() {
 
   return (
     <>
-      <ShellLayout viewport={<ClusterCanvas />} drawer={<CopilotDrawer />} />
+      <ShellLayout
+        viewport={<ClusterCanvas />}
+        drawer={<CopilotDrawer />}
+        perfHud={
+          isPerfHudOpen ? (
+            <PerfTelemetryHUD key="perf-hud" onClose={(): void => setPerfHudOpen(false)} />
+          ) : null
+        }
+      />
 
       {/* R41：WebGL / Copilot chunk / 遥测三条启动状态合并为一个可折叠胶囊 */}
       <StartupStatusCapsule />
@@ -290,11 +298,8 @@ export default function HomePage() {
        * 【initial={false}】首屏时不播放入场动画——HUD 默认关闭，
        * 若初始挂载也走动画会造成没必要的首帧抖动。
        */}
-      <AnimatePresence initial={false}>
-        {isPerfHudOpen ? (
-          <PerfTelemetryHUD key="perf-hud" onClose={(): void => setPerfHudOpen(false)} />
-        ) : null}
-      </AnimatePresence>
+      {/* 性能 HUD 已通过 ShellLayout 的 perfHud 插槽移入 3D 视口内部（R74），
+          既避免覆盖右侧 Copilot 内容，又保留 dynamic 懒加载。 */}
 
       {/*
        * 顶层混沌演练模态框（z-50，全站最顶层，高于 PerfHUD z-40）。
