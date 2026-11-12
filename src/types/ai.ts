@@ -1022,6 +1022,12 @@ export type ClassifierRuntime = 'webgpu' | 'wasm' | 'builtin';
 /** 主线程 → Worker 的分类请求消息 */
 export interface ClassifierClassifyRequest {
   readonly type: 'classify';
+  /**
+   * 请求序号（R4：每次派发递增，Worker 原样回传）。
+   * 主线程按它配对结果——超时兜底后迟到的旧批次 result 会被识别为
+   * 错配并丢弃，绝不会把上一批的分类结果灌进下一批的审计结论。
+   */
+  readonly requestId: number;
   /** 待分类的日志条目（sanitizedText 是唯一合法输入） */
   readonly logs: readonly LogEntry[];
 }
@@ -1123,6 +1129,8 @@ export interface ClassifierReadyMessage {
 /** Worker → 主线程：单条日志的分类结果 */
 export interface ClassifierResultMessage {
   readonly type: 'result';
+  /** 原样回传请求序号（R4：主线程据此配对，不匹配即丢弃并计数） */
+  readonly requestId: number;
   /** 逐条分类结果（与请求 logs 顺序一一对应） */
   readonly results: readonly EdgeAuditResult[];
 }
@@ -1131,6 +1139,11 @@ export interface ClassifierResultMessage {
 export interface ClassifierErrorMessage {
   readonly type: 'error';
   readonly message: string;
+  /**
+   * 关联的请求序号（R4）。classify 路径的错误必带（与请求配对）；
+   * init/全局错误不带（影响整个引擎，主线程按全局降级处理）。
+   */
+  readonly requestId?: number;
 }
 
 /** R45：Worker → 主线程的句向量结果（模型未就绪时 vectors=null，不填 0 冒充） */
@@ -1211,10 +1224,13 @@ export function isClassifierResponse(value: unknown): value is ClassifierRespons
       );
 
     case 'result':
-      return Array.isArray(rec.results);
+      return Array.isArray(rec.results) && isFiniteNumber(rec.requestId);
 
     case 'error':
-      return typeof rec.message === 'string';
+      return (
+        typeof rec.message === 'string' &&
+        (rec.requestId === undefined || isFiniteNumber(rec.requestId))
+      );
 
     default:
       return false;

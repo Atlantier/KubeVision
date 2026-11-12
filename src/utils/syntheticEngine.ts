@@ -896,6 +896,8 @@ export function stepTelemetrySimulation(
   /* ---- 6. 组装中间快照（告警需要读取已演进的实体状态，故先构造再补告警） ---- */
   const intermediate: TelemetrySnapshot = {
     timestamp: prevSnapshot.timestamp + TICK_INTERVAL_MS,
+    /* R4：帧序号随演进严格 +1（前端据此丢弃重复帧） */
+    seq: prevSnapshot.seq + 1,
     schemaVersion: TELEMETRY_SCHEMA_VERSION,
     clusterHealthScore: HEALTH_SCORE_MAX,
     totalQps,
@@ -1029,6 +1031,8 @@ export function applyLiveChaosOverlay(
   const intermediate: TelemetrySnapshot = {
     /* 时间戳沿用真实快照：live 模式的时间基准不可被改写 */
     timestamp: snapshot.timestamp,
+    /* 叠加层不产生新帧：seq 原样保留（帧身份属于采集链） */
+    seq: snapshot.seq,
     schemaVersion: TELEMETRY_SCHEMA_VERSION,
     clusterHealthScore: HEALTH_SCORE_MAX,
     totalQps,

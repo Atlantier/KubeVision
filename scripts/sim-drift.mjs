@@ -68,17 +68,20 @@ function transpile(srcRel, outName, rewrite) {
   return file;
 }
 
-/** 把 `@/xxx` 别名改写成同目录相对 require（仅用于这三个文件） */
+/** 把 `@/xxx` 别名改写成同目录相对 require（仅用于这几个文件） */
 function rewriteAliases(code) {
   return code
     .replace(/require\("@\/types\/cluster"\)/g, 'require("./cluster.cjs")')
     .replace(/require\('@\/types\/cluster'\)/g, "require('./cluster.cjs')")
     .replace(/require\("@\/constants\/telemetryTuning"\)/g, 'require("./telemetryTuning.cjs")')
-    .replace(/require\('@\/constants\/telemetryTuning'\)/g, "require('./telemetryTuning.cjs')");
+    .replace(/require\('@\/constants\/telemetryTuning'\)/g, "require('./telemetryTuning.cjs')")
+    .replace(/require\("@\/utils\/clusterHealth"\)/g, 'require("./clusterHealth.cjs")')
+    .replace(/require\('@\/utils\/clusterHealth'\)/g, "require('./clusterHealth.cjs')");
 }
 
 transpile('src/constants/telemetryTuning.ts', 'telemetryTuning');
 transpile('src/types/cluster.ts', 'cluster', rewriteAliases);
+transpile('src/utils/clusterHealth.ts', 'clusterHealth', rewriteAliases);
 transpile('src/utils/syntheticEngine.ts', 'syntheticEngine', rewriteAliases);
 
 const engine = require(join(OUT_DIR, 'syntheticEngine.cjs'));

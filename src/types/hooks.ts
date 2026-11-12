@@ -32,8 +32,6 @@ export type TelemetryTransport = 'connecting' | 'sse' | 'fallback';
 export interface TelemetryStreamState {
   /** 当前生效的数据通道形态 */
   readonly transport: TelemetryTransport;
-  /** 累计接收到的有效帧数（含本地降级帧，单调递增，可作心跳指示） */
-  readonly frameCount: number;
   /** 连续 SSE 错误次数（成功收到消息后清零；达到阈值触发降级） */
   readonly consecutiveErrors: number;
   /** 是否已发生过降级接管（一旦降级保持到下次连接重建） */

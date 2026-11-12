@@ -80,6 +80,9 @@ export const telemetryTransientRef: TelemetryTransientRef = {
   /** C7：Pod ID → 稳定槽位（首次出现时分配，卸载后回收） */
   podSlotById: new Map<string, number>(),
 
+  /** R4：空闲槽位栈（回收即入栈、分配先取栈，见 syncSnapshotToTransientRef） */
+  podFreeSlots: [],
+
   /** 性能 HUD 瞬态指标（渲染循环每帧写入，HUD 以 rAF 节流读取） */
   glStats: {
     fps: 0,
@@ -92,6 +95,10 @@ export const telemetryTransientRef: TelemetryTransientRef = {
     renderReason: '初始化中',
     toneMappingExposure: 1.18,
     sceneLuminanceEstimate: 0,
+    telemetryFrameCount: 0,
+    workerStaleResults: 0,
+    staleSeqFrames: 0,
+    telemetryPipelineMs: 0,
   },
 };
 
@@ -105,22 +112,22 @@ export const telemetryTransientRef: TelemetryTransientRef = {
  * 【核心逻辑】
  * 1. 整体替换 snapshot 引用（不可变值语义：绝不原地修改传入快照的字段，
  *    避免与 zustand 轨道二的 snapshotSummary 共享可变引用导致状态漂移）。
- * 2. 按下标 i 将 pods[i] / nodes[i] 的数值写入对应 Float32Array 槽位。
- *    索引映射采用「快照数组顺序」而非 Pod.id 查表：O(n) 单次遍历，
- *    与 InstancedMesh 的 instanceId 下标天然对齐（渲染层按同一顺序构建矩阵）。
- * 3. **越界清零**：实际数量 < 容量时，将 [count, MAX) 区间显式置 0，
- *    杜绝上一轮快照残留的「幽灵 Pod」在缩容后仍被渲染。
- *    （Float32Array.fill(0, begin, end) 为原生定长填充，零分配。）
- * 4. **容量截断**：实际数量 > 容量时仅同步前 MAX 个并返回 false，
- *    由调用方（引擎层）记录告警；绝不越界写入（TypedArray 越界写会被静默忽略，
- *    但显式截断可让 HUD 暴露配置错误）。
+ * 2. Pod 数值按 **稳定槽位** 写入（C7：按 id 映射而非按下标，快照重排不串台）。
+ * 3. **槽位复用（R4）**：维护 freeSlots 栈——Pod 消失时槽位回收即入栈，
+ *    新 Pod 分配先弹栈复用，栈空才向高水位推进。旧实现只增不复用，
+ *    累计 48 个不同 ID 后新 Pod 永远分不到槽位，3D 着色恒为 0%。
+ * 4. **容量耗尽用 continue 而非 break（R4）**：单个 Pod 分不到槽位只跳过它，
+ *    后续 Pod 仍有机会复用本轮刚回收的槽位；truncated 标志随返回值上报，
+ *    由调用方（引擎层）记录告警。绝不越界写入。
+ * 5. **越界清零**：节点数量 < 容量时，将 [count, MAX) 区间显式置 0，
+ *    杜绝上一轮快照残留的「幽灵节点」。（Float32Array.fill 为原生定长填充。）
  *
  * 【输入输出】
  * @param snapshot 待同步的完整遥测快照（不可变值对象）
  * @returns true 表示全部实体均在容量内同步成功；false 表示发生容量截断
  *
- * 【调用频率】1Hz（每份快照一次）。本函数自身为 O(MAX_PODS + MAX_NODES)
- * 定长开销，不含任何对象分配，可安全在 Worker 消息回调中调用。
+ * 【调用频率】1Hz（每份快照一次）。O(MAX_PODS + MAX_NODES) 定长开销，
+ * 可安全在 Worker 消息回调中调用。
  */
 /**
  * getPodSlotIndex —— 按 Pod ID 取瞬态槽位（C7：读方唯一入口）。
@@ -140,44 +147,65 @@ export function syncSnapshotToTransientRef(snapshot: TelemetrySnapshot): boolean
   const nodes = snapshot.nodes;
 
   // ---- 2. 容量截断判定（超出 MAX 的部分本轮丢弃并上报 false） ----
-  const podCount = pods.length <= MAX_PODS ? pods.length : MAX_PODS;
   const nodeCount = nodes.length <= MAX_NODES ? nodes.length : MAX_NODES;
-  const truncated = pods.length > MAX_PODS || nodes.length > MAX_NODES;
+  let truncated = pods.length > MAX_PODS || nodes.length > MAX_NODES;
 
-  // ---- 3. Pod 数值按**稳定槽位**写入（C7：按 id 映射而非按下标） ----
+  // ---- 3. Pod 数值按**稳定槽位**写入（C7 按 id 映射 + R4 freeSlots 复用） ----
   // 契约：cpuUsage / memoryUsage ∈ [0,100]（cluster.ts @range 标注）。
-  // 槽位在 Pod 首次出现时分配，此后即使快照重排也保持不变；
   // 仅对 NaN 做防御（NaN 会污染后续所有插值运算，必须拦截为 0）。
   const slotMap = telemetryTransientRef.podSlotById;
-  const activeSlots = new Set<number>();
-  let nextSlot = 0;
-  for (const slot of slotMap.values()) {
-    if (slot >= nextSlot) nextSlot = slot + 1;
-  }
+  const freeSlots = telemetryTransientRef.podFreeSlots;
 
-  for (let i = 0; i < podCount; i += 1) {
-    const pod = pods[i];
-    let slot = slotMap.get(pod.id);
-    if (slot === undefined) {
-      slot = nextSlot;
-      nextSlot += 1;
-      if (slot >= MAX_PODS) break;
-      slotMap.set(pod.id, slot);
-    }
-    activeSlots.add(slot);
-    const cpu = pod.cpuUsage;
-    const mem = pod.memoryUsage;
-    telemetryTransientRef.podCpuFloat32[slot] = Number.isNaN(cpu) ? 0 : cpu;
-    telemetryTransientRef.podMemFloat32[slot] = Number.isNaN(mem) ? 0 : mem;
-  }
+  /*
+   * 【顺序契约：先回收、后分配】本轮消失 Pod 的槽位必须先入栈，
+   * 本轮新 Pod 才能复用——否则"整批换血"（48 旧出、48 新入）时
+   * 空闲栈还是空的，新 Pod 会被误判为容量耗尽。
+   */
+  const presentIds = new Set<string>();
+  for (const pod of pods) presentIds.add(pod.id);
 
-  // ---- 4. 回收已消失 Pod 的槽位并清零（防幽灵数据） ----
+  // ---- 3a. 回收已消失 Pod 的槽位：清零防幽灵数据 + 入栈供复用（R4） ----
   for (const [podId, slot] of slotMap) {
-    if (activeSlots.has(slot)) continue;
+    if (presentIds.has(podId)) continue;
     slotMap.delete(podId);
     telemetryTransientRef.podCpuFloat32[slot] = 0;
     telemetryTransientRef.podMemFloat32[slot] = 0;
     telemetryTransientRef.podSmoothCpuFloat32[slot] = 0;
+    freeSlots.push(slot);
+  }
+
+  /* 高水位 = max(现存槽位, 空闲栈槽位) + 1。
+     空闲栈里的槽位也是"已发放过"的——只看 slotMap 会在整批回收后
+     把高水位误重置为 0，与刚弹栈复用的槽位撞车。
+     栈空时 [0, nextSlot) 必然全被占用，nextSlot 即下一个可用新槽位。 */
+  let nextSlot = 0;
+  for (const slot of slotMap.values()) {
+    if (slot >= nextSlot) nextSlot = slot + 1;
+  }
+  for (const slot of freeSlots) {
+    if (slot >= nextSlot) nextSlot = slot + 1;
+  }
+
+  // ---- 3b. 分配 + 写入：已有槽位保持不变，新 Pod 先弹栈复用 ----
+  for (let i = 0; i < pods.length; i += 1) {
+    const pod = pods[i];
+    let slot = slotMap.get(pod.id);
+    if (slot === undefined) {
+      /* 分配先取栈（复用回收槽位），栈空才推进高水位 */
+      const reused = freeSlots.pop();
+      slot = reused !== undefined ? reused : nextSlot;
+      if (slot >= MAX_PODS) {
+        /* 容量耗尽：跳过本 Pod 但继续处理后续（continue 而非 break） */
+        truncated = true;
+        continue;
+      }
+      if (reused === undefined) nextSlot += 1;
+      slotMap.set(pod.id, slot);
+    }
+    const cpu = pod.cpuUsage;
+    const mem = pod.memoryUsage;
+    telemetryTransientRef.podCpuFloat32[slot] = Number.isNaN(cpu) ? 0 : cpu;
+    telemetryTransientRef.podMemFloat32[slot] = Number.isNaN(mem) ? 0 : mem;
   }
 
   // ---- 5. 节点网络吞吐按下标写入 + 越界清零 ----

@@ -904,10 +904,10 @@ async function runStressMatrix(cdp) {
     })()`,
   );
   /*
-   * 【关于"演示中卸载 TopBar"】真正的 React 卸载无法从 CDP 直接触发，
-   * 而 useDemoDirector 的卸载清理调用的正是同一个 stopDemoDirector('unmount')。
-   * 因此这里断言 stop 之后的**可观测契约**：定时器归零、导演日志不再新增、
-   * Store 不再被写。报告里如实标注该等价关系，不假称已做过组件卸载。
+   * 【关于"演示中卸载 TopBar"】R4 起 useDemoDirector 卸载只取消订阅、不再 stop
+   * （路演生命周期与组件挂载解耦），因此本场景断言的是**显式 stop** 之后的
+   * 可观测契约：定时器归零、导演日志不再新增、Store 不再被写。
+   * 报告里如实标注：验证的是显式停止路径，不假称已做过组件卸载。
    */
   judge(
     '停止后：定时器归零、5秒无日志新增、无 AI 流',

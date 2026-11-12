@@ -67,11 +67,14 @@ function rewriteAliases(code) {
     .replace(/require\("@\/types\/cluster"\)/g, 'require("./cluster.cjs")')
     .replace(/require\('@\/types\/cluster'\)/g, "require('./cluster.cjs')")
     .replace(/require\("@\/constants\/telemetryTuning"\)/g, 'require("./telemetryTuning.cjs")')
-    .replace(/require\('@\/constants\/telemetryTuning'\)/g, "require('./telemetryTuning.cjs')");
+    .replace(/require\('@\/constants\/telemetryTuning'\)/g, "require('./telemetryTuning.cjs')")
+    .replace(/require\("@\/utils\/clusterHealth"\)/g, 'require("./clusterHealth.cjs")')
+    .replace(/require\('@\/utils\/clusterHealth'\)/g, "require('./clusterHealth.cjs')");
 }
 
 transpile('src/constants/telemetryTuning.ts', 'telemetryTuning');
 transpile('src/types/cluster.ts', 'cluster', rewriteAliases);
+transpile('src/utils/clusterHealth.ts', 'clusterHealth', rewriteAliases);
 transpile('src/utils/syntheticEngine.ts', 'syntheticEngine', rewriteAliases);
 
 const engine = require(join(OUT_DIR, 'syntheticEngine.cjs'));

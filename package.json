@@ -74,7 +74,10 @@
     "evidence:final": "node scripts/capture-final-evidence.mjs",
     "check:docs": "node scripts/check-docs-consistency.mjs",
     "verify:docs": "node scripts/check-docs-consistency.mjs",
-    "verify:all": "node scripts/verify-all.mjs"
+    "verify:all": "node scripts/verify-all.mjs",
+    "test:slots": "node --test tests/telemetrySlots.test.mjs",
+    "probe:r4-consistency": "node scripts/probe-r4-consistency.mjs",
+    "probe:r4-oom10": "node scripts/probe-r4-oom10.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "0.0.66",

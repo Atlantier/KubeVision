@@ -32,7 +32,7 @@
  * `node-worker-alpha` / `node-worker-beta`。
  */
 
-import { useEffect, useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from 'react';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import {
@@ -2040,6 +2040,24 @@ function applyPreflightFailure(reason: string): void {
 function enterPhase(index: number): void {
   const script = currentScript;
   if (script === null) return;
+
+  /*
+   * 【R4 · 阶段不重入】同一阶段只允许进入一次。
+   * 事件门推进与到点定时器可能几乎同时触发同一阶段（竞态），
+   * 重入会让阶段 4 的自愈链跑两遍——第二遍的「自愈未验证」旁白
+   * 覆盖第一遍的「闭环校验通过」，终态自相矛盾。
+   * 开发期对每次重入尝试打调用栈，便于定位是哪条路径抢跑。
+   */
+  if (index <= phaseIndex) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn(
+        `[DEMO-DIRECTOR] 拦截阶段重入：#${index}（当前 #${phaseIndex}）`,
+        new Error('phase reentry trace').stack,
+      );
+    }
+    return;
+  }
+
   phaseIndex = index;
 
   const phase = script.phases[index];
@@ -2105,6 +2123,9 @@ function scheduleFrom(elapsed: number): void {
   if (script === null) return;
 
   for (let i = 0; i < script.phases.length; i += 1) {
+    /* 【R4 · 不重入】已进过的阶段一律跳过（补触发与排定时器都不允许回头） */
+    if (i <= phaseIndex) continue;
+
     const phase = script.phases[i];
     if (phase === undefined) continue;
 
@@ -2112,8 +2133,8 @@ function scheduleFrom(elapsed: number): void {
     const atMs = scaledAtMs(phase);
 
     if (atMs <= elapsed) {
-      /* 已到点但还没进过 → 立即补触发 */
-      if (i > phaseIndex) enterPhase(i);
+      /* 已到点但还没进过 → 立即补触发（enterPhase 内部另有重入守卫） */
+      enterPhase(i);
       continue;
     }
 
@@ -2713,9 +2734,9 @@ export function finishDemoDirectorNow(): void {
  * · 进行中的 MCP 请求（abort）；
  * · 集群混沌状态 / 镜头选中 / 环绕巡检 / 待执行自愈队列。
  *
- * @param reason 'user' 用户点击停止 / 'unmount' 组件卸载 / 'switch' 切换剧本
+ * @param reason 'user' 用户点击停止 / 'switch' 切换剧本
  */
-export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user'): void {
+export function stopDemoDirector(reason: 'user' | 'switch' = 'user'): void {
   const wasActive = status === 'running' || status === 'paused';
 
   clearAllTimers();
@@ -2770,8 +2791,6 @@ export function stopDemoDirector(reason: 'user' | 'unmount' | 'switch' = 'user')
     resetToBaseline();
     if (reason === 'user') {
       actions().appendTerminalLog('[DEMO-DIRECTOR] [STOP] 已停止并复位集群稳态');
-    } else if (reason === 'unmount') {
-      actions().appendTerminalLog('[DEMO-DIRECTOR] [STOP] 组件卸载，已清理全部路演定时器');
     }
   }
 
@@ -2807,22 +2826,16 @@ export function getDemoDirectorSnapshot(): DemoDirectorSnapshot {
  * 它天然处理 SSR（需提供 getServerSnapshot）与并发渲染下的撕裂问题，
  * 且订阅的是模块级单例，多个消费方（顶栏按钮、字幕条）永远读到同一份状态。
  *
- * 【卸载即停】钩子内部在卸载时调用 stopDemoDirector('unmount')：
- * 顶栏若因路由切换被卸载，后台绝不能还剩一串 setTimeout 在改 store。
- * stopDemoDirector 是幂等的，重复调用安全。
+ * 【R4 · 生命周期与挂载解耦】路演状态活在模块级单例（独立于 React 树），
+ * 钩子只负责订阅/派发。**卸载只取消订阅，绝不 stop**——
+ * 旧实现在卸载时调用 stopDemoDirector('unmount')，任何消费组件
+ * （顶栏、调试面板）因路由切换或条件渲染被卸载，都会把正在直播的路演
+ * 当场杀掉。stop 只由显式结束（用户点击停止）/ 重置（切换剧本）触发。
  */
 export function useDemoDirector(): DemoDirectorSnapshot {
-  const snapshot = useSyncExternalStore(
+  return useSyncExternalStore(
     subscribeDemoDirector,
     getDemoDirectorSnapshot,
     getDemoDirectorSnapshot,
   );
-
-  useEffect((): (() => void) => {
-    return (): void => {
-      stopDemoDirector('unmount');
-    };
-  }, []);
-
-  return snapshot;
 }

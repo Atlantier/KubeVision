@@ -779,7 +779,12 @@ function isClassifierRequest(value: unknown): value is ClassifierRequest {
   const rec = value as Record<string, unknown>;
   if (rec.type === 'init') return true;
   if (rec.type === 'classify') {
-    return Array.isArray(rec.logs);
+    /* R4：classify 必须携带有限数 requestId（结果配对契约） */
+    return (
+      Array.isArray(rec.logs) &&
+      typeof rec.requestId === 'number' &&
+      Number.isFinite(rec.requestId)
+    );
   }
   if (rec.type === 'embed') {
     return Array.isArray(rec.texts);
@@ -861,6 +866,9 @@ self.addEventListener('message', (event: MessageEvent<unknown>): void => {
     const inferencingStartedAt = performance.now();
     postStatus('INFERENCING');
 
+    /* R4：原样回传请求序号——主线程据此配对，迟到/错配结果会被丢弃 */
+    const requestId = request.requestId;
+
     void (async (): Promise<void> => {
       try {
         const handle = await ensureModel();
@@ -874,7 +882,7 @@ self.addEventListener('message', (event: MessageEvent<unknown>): void => {
           results.push(await classifyOne(input, handle.extractor));
         }
 
-        post({ type: 'result', results });
+        post({ type: 'result', requestId, results });
 
         /**
          * 【状态最小可见时长】内置分类器是纯词权重匹配，实测整批仅耗时
@@ -900,6 +908,7 @@ self.addEventListener('message', (event: MessageEvent<unknown>): void => {
         postStatus('ERROR');
         post({
           type: 'error',
+          requestId,
           message: error instanceof Error ? error.message : 'classification failed',
         });
       }

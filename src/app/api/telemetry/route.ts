@@ -53,7 +53,11 @@ import {
   applyLiveChaosOverlay,
   stepTelemetrySimulation,
 } from '@/utils/syntheticEngine';
-import { collectLiveTelemetrySnapshot } from '@/utils/liveTelemetry';
+import {
+  acquireHostSampler,
+  collectLiveTelemetrySnapshot,
+  releaseHostSampler,
+} from '@/utils/liveTelemetry';
 
 /* ---- Next.js Route Segment 配置（必须位于模块顶层且为字面量导出） ---- */
 export const dynamic = 'force-dynamic';
@@ -175,6 +179,17 @@ export function GET(request: Request): Response {
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
 
   /**
+   * R4：本连接是否订阅了宿主机单一采样器。
+   * live 分支订阅、safeClose 与 live→demo 降级两条路径退订（幂等守卫）。
+   */
+  let liveSamplerAcquired = false;
+  const releaseLiveSampler = (): void => {
+    if (!liveSamplerAcquired) return;
+    liveSamplerAcquired = false;
+    releaseHostSampler();
+  };
+
+  /**
    * safeClose —— 幂等的连接清理函数（三条清理路径的唯一汇聚点）。
    *
    * 【三重安全】
@@ -187,6 +202,7 @@ export function GET(request: Request): Response {
   const safeClose = (): void => {
     if (isClosed) return;
     isClosed = true;
+    releaseLiveSampler();
     if (timer !== null) {
       clearInterval(timer);
       timer = null;
@@ -364,6 +380,8 @@ export function GET(request: Request): Response {
             liveFailures += 1;
             if (liveFailures >= LIVE_FAILURE_LIMIT) {
               liveEnabled = false;
+              /* 已切合成源：退订宿主机采样器（末个订阅者离开即停 ticker） */
+              releaseLiveSampler();
               console.warn(
                 `[AUDIT][telemetry] live 采集连续 ${liveFailures} 次失败 → 已降级为合成数据源`,
               );
@@ -381,7 +399,16 @@ export function GET(request: Request): Response {
         /*
          * 首帧：同步等待一次采集（采集内部有 4s 超时护栏，不会无限挂）。
          * 采完再启动定时器，保证后续帧间隔严格 = STREAM_INTERVAL_MS。
+         *
+         * 【R4 · 单一采样器 + 广播】先订阅宿主机采样器：差分基准
+         * （上一秒 CPU 累计时间 / 网卡字节）只由模块级 ticker 写入，
+         * 本连接与所有其他连接读同一份缓存——双标签页数值一致且非 0。
+         * 退订在 safeClose / 降级两条路径（releaseLiveSampler 幂等）。
          */
+        liveSamplerAcquired = true;
+        acquireHostSampler();
+        /* 极端竞态：订阅前连接已关闭 → 立即退订，不留游离 ticker */
+        if (isClosed) releaseLiveSampler();
         void pushLiveFrame().then((): void => {
           if (isClosed || !liveEnabled) return;
           timer = setInterval((): void => {

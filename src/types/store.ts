@@ -59,6 +59,22 @@ export interface GlStatsSnapshot {
   toneMappingExposure: number;
   /** 场景亮度估计（0~1，来自瞬态轨而非 readPixels） */
   sceneLuminanceEstimate: number;
+  /**
+   * 累计接收的有效遥测帧数（R4：1Hz 心跳计数）。
+   * 放瞬态轨而非 useState——page 根订阅的 Hook 若持有帧计数 state，
+   * 每帧都会重渲染整棵页面树（1Hz 成本缺陷）。HUD 需要时以 rAF 直读。
+   */
+  telemetryFrameCount: number;
+  /** Worker 迟到/错配结果被丢弃的累计次数（R4：requestId 不匹配计数，反作弊取证用） */
+  workerStaleResults: number;
+  /** 因 seq 单调去重被丢弃的累计帧数（R4：时间轴重复帧防御计数） */
+  staleSeqFrames: number;
+  /**
+   * 遥测投递管线累计主线程耗时（毫秒，R4：1Hz 成本取证）。
+   * deliver 每帧用 performance.now() 包裹实测并累加；
+   * 探针按时间差分即得「每秒管线成本」，与 GL 渲染开销分离。
+   */
+  telemetryPipelineMs: number;
 }
 
 /**
@@ -93,6 +109,12 @@ export interface TelemetryTransientRef {
    * Pod 的身份与数值槽位一一绑定，重排不再造成串台。
    */
   podSlotById: Map<string, number>;
+  /**
+   * 空闲槽位栈（R4：槽位复用）。
+   * Pod 消失时其槽位入栈，新 Pod 分配时先弹栈复用——
+   * 否则槽位只增不减，48 个不同 ID 之后新 Pod 永远分不到槽位（恒 0%）。
+   */
+  podFreeSlots: number[];
   /** 节点网络吞吐目标值（Mbps）。长度恒为 MAX_NODES(3) */
   nodeNetFloat32: Float32Array;
   /** 性能 HUD 瞬态指标（渲染循环每帧写入） */

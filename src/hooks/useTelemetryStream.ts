@@ -464,9 +464,14 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
 
   /* ---- 暴露给 UI 的观测状态（低频：仅在通道变化时更新） ---- */
   const [transport, setTransport] = useState<TelemetryTransport>('connecting');
-  const [frameCount, setFrameCount] = useState(0);
   const [consecutiveErrors, setConsecutiveErrors] = useState(0);
   const [lastReconciledCount, setLastReconciledCount] = useState(0);
+
+  /**
+   * 【R4 · 1Hz 成本】帧计数移入瞬态轨（glStats.telemetryFrameCount）。
+   * 旧实现是 useState：page 根调用本 Hook，每帧 +1 都重渲染整棵页面树。
+   * 计数只供 HUD 心跳展示，rAF 直读瞬态池即可，无需 React 参与。
+   */
 
   /** 错误计数镜像（供回调内同步读写，避免闭包陈旧） */
   const errorCountRef = useRef(0);
@@ -478,6 +483,18 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
   const lastChaosRef = useRef<string>(activeChaos);
   /** 传输形态镜像（供回调读取最新值，避免在回调里闭包旧状态） */
   const transportRef = useRef<TelemetryTransport>('connecting');
+
+  /**
+   * lastSeqRef —— 最近已接受帧的 seq（R4：时间轴去重）。
+   * seq <= lastSeq 的帧直接丢弃：重复帧若放行，会再走一遍时间戳单调修正
+   * （+1 tick），时间轴被重复帧一步步推离服务端真实时钟（+1000 积分漂移）。
+   * 【重连复位】新 SSE 连接从种子 seq=0 起步，onopen 时复位为 -1；
+   * 本地降级引擎从 evolutionBaseRef 续接（seq 连续），不复位。
+   */
+  const lastSeqRef = useRef(-1);
+
+  /** 容量截断告警是否已上报（每连接只报一次，避免每秒刷屏） */
+  const truncationReportedRef = useRef(false);
 
   /**
    * evolutionBaseRef —— 演进基准快照（连续性核心）。
@@ -583,6 +600,16 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
    */
   const deliver = useCallback(
     (rawSnapshot: TelemetrySnapshot): void => {
+      /* ---- 0. seq 去重（R4：重复帧是时间轴漂移的根源，先于一切处理丢弃） ---- */
+      if (rawSnapshot.seq <= lastSeqRef.current) {
+        telemetryTransientRef.glStats.staleSeqFrames += 1;
+        return;
+      }
+      lastSeqRef.current = rawSnapshot.seq;
+
+      /* R4：管线主线程成本实测（累加到瞬态轨，探针差分取证） */
+      const pipelineT0 = performance.now();
+
       const store = useClusterStore.getState();
 
       /* ---- 1+2. 免疫合并（读最新免疫表，窗口外自动放行原始数据） ---- */
@@ -635,7 +662,14 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
 
       /* ---- 3. 双轨分发 ---- */
       /* 轨一：瞬态池（Float32Array 原地写入，useFrame 下一帧 Lerp，零重渲染） */
-      syncSnapshotToTransientRef(reconciled);
+      const fullySynced = syncSnapshotToTransientRef(reconciled);
+      /* 容量截断上报（R4：truncated 标志必须可见，每连接只报一次） */
+      if (!fullySynced && !truncationReportedRef.current) {
+        truncationReportedRef.current = true;
+        store.appendTerminalLog(
+          '[WARN] 遥测实体超出瞬态容量（MAX_PODS=48），超出部分本帧未着色，槽位复用已启用',
+        );
+      }
       /* 轨二：响应轨快照摘要（驱动 HUD / 告警面板等低频 UI） */
       store.setSnapshotSummary(reconciled);
 
@@ -672,7 +706,9 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
        * 相等性守卫保证稳态（恒 0）不触发任何重渲染。 */
       setLastReconciledCount((prev): number => (prev === reconciledCount ? prev : reconciledCount));
 
-      setFrameCount((prev): number => prev + 1);
+      /* R4：帧计数写瞬态轨（零 React 参与），HUD 以 rAF 直读 */
+      telemetryTransientRef.glStats.telemetryFrameCount += 1;
+      telemetryTransientRef.glStats.telemetryPipelineMs += performance.now() - pipelineT0;
     },
     [activeChaos, immunityWindowMs],
   );
@@ -812,6 +848,13 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
       errorCountRef.current = 0;
       setConsecutiveErrors(0);
       setTransportBothRef.current('sse');
+      /*
+       * 【R4 · seq 跨连接复位】每条新连接（含 EventSource 自动重连）
+       * 服务端都从种子 seq=0 重新起步，这里复位去重基准；
+       * 连接内仍严格单调，重复帧照丢。截断告警也按连接重新允许一次。
+       */
+      lastSeqRef.current = -1;
+      truncationReportedRef.current = false;
     };
 
     /* 收到数据帧：正常投递管线 */
@@ -915,7 +958,6 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
 
   return {
     transport,
-    frameCount,
     consecutiveErrors,
     isFallbackActive: transport === 'fallback',
     lastReconciledCount,

@@ -33,6 +33,7 @@ import os from 'node:os';
 import { readFileSync } from 'node:fs';
 
 import { TELEMETRY_SCHEMA_VERSION } from '@/types/cluster';
+import { computeHealthScore } from '@/utils/clusterHealth';
 import type {
   AlertEvent,
   AlertLevel,
@@ -162,15 +163,17 @@ interface CoreTimes {
 }
 
 /**
- * 上一次 `os.cpus()` 的累计时间（模块级单例）。
+ * 上一次 `os.cpus()` 的累计时间（采样器内部状态）。
  *
- * 【为何放模块级】SSE 每秒采集一次，跨帧必须共享"上一秒"，否则每次都是
- * 首帧、只能算出"自开机平均利用率"而非真实的瞬时值。
- * 多连接共享同一份采样是**正确**的：物理机只有一台，指标也只有一份。
+ * 【R4 · 单一写者契约】CPU 瞬时利用率 = 相邻两次采样的累计时间差。
+ * 这份"上一次"基准**只允许单一采样器写入**（见 acquireHostSampler）：
+ * 若每条 SSE 连接各自采样，两个标签页的定时器会交替覆盖基准——
+ * 同相位时 Δtotal≈0，CPU 恒读 0；错相位时窗口被截半，读数失真。
+ * 物理机只有一台，指标也只有一份：一个 ticker 采一次，所有连接广播同一份。
  */
 let previousCoreTimes: readonly CoreTimes[] | null = null;
 
-/** 上一次真实的网卡字节累计（用于求增量） */
+/** 上一次真实的网卡字节累计（用于求增量；同为采样器内部状态，单一写者） */
 let previousNicBytes: { readonly rx: number; readonly tx: number } | null = null;
 
 /**
@@ -297,21 +300,43 @@ function pickInternalIpv4(): string {
 /* ========================================================================== */
 
 /**
- * buildHostSnapshot —— 用宿主机真实硬件指标组装完整快照。
- *
- * 【映射关系】
- * - 把 N 个逻辑核**均分为 3 组**，分别驱动 worker-alpha / beta / gamma
- *   的真实 CPU 水位（组内取算术平均）；
- * - 24 个容器各绑定一个**真实物理核**的利用率（`(rack*8 + i) % N`），
- *   因此打开一个吃 CPU 的软件时，对应容器会真的跟着飙；
- * - 容器内存 = 宿主真实内存占用 + 该容器 CPU 相对偏差的线性调制
- *   （两个真实量的确定性组合，不含随机项）；
- * - 历史曲线由上一帧真实值滚动追加（首帧用当前值填满）。
- *
- * @param prev 上一帧快照（用于保持实体身份与历史连续性）
- * @returns 采集结果（source 恒为 host-os-bridge）
+ * HostSample —— 单一采样器的一次宿主机采样结果（广播给所有 SSE 连接）。
+ * 全部字段可追溯到真实系统调用，不含任何随机项。
  */
-function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
+interface HostSample {
+  readonly perCore: readonly number[];
+  readonly overall: number;
+  readonly coreCount: number;
+  readonly memPct: number;
+  readonly totalMemBytes: number;
+  readonly freeMemBytes: number;
+  readonly sysShare: number;
+  readonly networkMbps: number;
+  readonly networkSource: 'proc-net-dev' | 'sys-proxy';
+  readonly rssMb: number;
+  readonly heapUsedMb: number;
+  readonly internalIp: string;
+  readonly sampledAtMs: number;
+}
+
+/** 最近一次采样缓存（所有连接读同一份 → 双标签页数值一致） */
+let latestHostSample: HostSample | null = null;
+/** 采样器定时器句柄（null 表示无订阅者，采样器停转） */
+let hostSamplerTimer: ReturnType<typeof setInterval> | null = null;
+/** 当前订阅的连接数（归零即停采样器并清理基准） */
+let hostSamplerSubscribers = 0;
+
+/** 采样节拍：与 SSE 推流间隔一致（1Hz） */
+const HOST_SAMPLE_INTERVAL_MS = 1000;
+
+/**
+ * sampleHostOnce —— 执行一次真实宿主机采样（**唯一**写入差分基准的函数）。
+ *
+ * 【核心数学】CPU 逐核利用率 = (1 − Δidle/Δtotal) × 100（/proc/stat 标准算法）；
+ * 网卡 Mbps = (Δrx + Δtx) × 8 / 1e6（Linux /proc/net/dev，其余平台 sys 代理）。
+ * 首帧无差分基准时退化为"自开机平均"，仍是真实读数。
+ */
+function sampleHostOnce(): HostSample {
   const cpu = sampleCpu();
   const coreCount = cpu.perCore.length > 0 ? cpu.perCore.length : os.cpus().length;
   const totalMemBytes = os.totalmem();
@@ -319,7 +344,6 @@ function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
   const memPct = round1(clamp((1 - freeMemBytes / totalMemBytes) * 100, 0, 100));
   const proc = process.memoryUsage();
   const sysShare = sampleSysShare();
-  const internalIp = pickInternalIpv4();
 
   /* ---- 真实网卡增量 → Mbps（Linux）；其余平台走 sys 代理 ---- */
   const nicNow = readNicBytes();
@@ -328,7 +352,7 @@ function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
   if (nicNow !== null && previousNicBytes !== null) {
     const dRx = Math.max(0, nicNow.rx - previousNicBytes.rx);
     const dTx = Math.max(0, nicNow.tx - previousNicBytes.tx);
-    /* 采样间隔按 1 秒（与 STREAM_INTERVAL 一致）：字节/秒 ×8 /1e6 = Mbps */
+    /* 采样间隔按 1 秒（与 HOST_SAMPLE_INTERVAL_MS 一致）：字节/秒 ×8 /1e6 = Mbps */
     networkMbps = round1(((dRx + dTx) * 8) / 1_000_000);
     networkSource = 'proc-net-dev';
   } else {
@@ -341,6 +365,97 @@ function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
   }
   previousNicBytes = nicNow;
 
+  return {
+    perCore: cpu.perCore,
+    overall: cpu.overall,
+    coreCount,
+    memPct,
+    totalMemBytes,
+    freeMemBytes,
+    sysShare,
+    networkMbps,
+    networkSource,
+    rssMb: Math.round(proc.rss / 1024 / 1024),
+    heapUsedMb: Math.round(proc.heapUsed / 1024 / 1024),
+    internalIp: pickInternalIpv4(),
+    sampledAtMs: Date.now(),
+  };
+}
+
+/**
+ * acquireHostSampler —— 连接订阅采样器（R4：单一采样器 + 广播）。
+ *
+ * 【为什么多连接不能共享可变基准】CPU/网卡都是**差分指标**：本次读数依赖
+ * "上一次采样"。若每条连接各自调用采样，N 条连接就有 N 个写者交替覆盖基准：
+ * 同相位（双标签页同时打开）时相邻采样几乎同一时刻，Δtotal≈0 → CPU 恒 0；
+ * 错相位时差分窗口被截成 1/N 秒，读数抖动失真。
+ * 因此基准只由这一个 ticker 写入，连接只读缓存——物理机一份指标，广播给所有人。
+ *
+ * 【生命周期】首个订阅者启动 ticker（立即采一次，避免首秒空白）；
+ * 后续订阅者直接复用。与 releaseHostSampler 配对调用。
+ */
+export function acquireHostSampler(): void {
+  hostSamplerSubscribers += 1;
+  if (hostSamplerTimer !== null) return;
+  latestHostSample = sampleHostOnce();
+  hostSamplerTimer = setInterval((): void => {
+    latestHostSample = sampleHostOnce();
+  }, HOST_SAMPLE_INTERVAL_MS);
+}
+
+/**
+ * releaseHostSampler —— 连接断开时退订（断开清理，缺一不可）。
+ *
+ * 末个订阅者离开即停 ticker 并**清空差分基准**：
+ * 下一条新连接从全新基准起步（首帧为自开机平均，仍是真实值），
+ * 绝不会拿到隔了几分钟的陈旧"上一次"算出离谱的增量。
+ */
+export function releaseHostSampler(): void {
+  hostSamplerSubscribers = Math.max(0, hostSamplerSubscribers - 1);
+  if (hostSamplerSubscribers > 0) return;
+  if (hostSamplerTimer !== null) {
+    clearInterval(hostSamplerTimer);
+    hostSamplerTimer = null;
+  }
+  latestHostSample = null;
+  previousCoreTimes = null;
+  previousNicBytes = null;
+}
+
+/**
+ * readHostSample —— 读取最近一次广播采样。
+ * 采样器未启动时（单元测试直调 / 极端竞态）兜底同步采一次——
+ * 仍经 sampleHostOnce 这唯一写者，绝不另开差分基准。
+ */
+function readHostSample(): HostSample {
+  if (latestHostSample !== null) return latestHostSample;
+  latestHostSample = sampleHostOnce();
+  return latestHostSample;
+}
+
+/**
+ * buildHostSnapshot —— 用宿主机真实硬件指标组装完整快照。
+ *
+ * 【映射关系】
+ * - 把 N 个逻辑核**均分为 3 组**，分别驱动 worker-alpha / beta / gamma
+ *   的真实 CPU 水位（组内取算术平均）；
+ * - 24 个容器各绑定一个**真实物理核**的利用率（`(rack*8 + i) % N`），
+ *   因此打开一个吃 CPU 的软件时，对应容器会真的跟着飙；
+ * - 容器内存 = 宿主真实内存占用 + 该容器 CPU 相对偏差的线性调制
+ *   （两个真实量的确定性组合，不含随机项）；
+ * - 历史曲线由上一帧真实值滚动追加（首帧用当前值填满）。
+ *
+ * 【R4】所有指标读自单一采样器的广播缓存（readHostSample），
+ * 本函数不再触发任何采样——多连接同时调用也拿到同一份数。
+ *
+ * @param prev 上一帧快照（用于保持实体身份与历史连续性）
+ * @returns 采集结果（source 恒为 host-os-bridge）
+ */
+function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
+  const sample = readHostSample();
+  const { perCore, overall: cpuOverall, coreCount, memPct, sysShare } = sample;
+  const { totalMemBytes, freeMemBytes, networkMbps, networkSource, internalIp } = sample;
+
   /* ---- 均分核心组，驱动 3 台节点 ---- */
   const groupSize = Math.max(1, Math.ceil(coreCount / RACK_COUNT));
   const memCapacityGiB = round1(totalMemBytes / 1024 / 1024 / 1024 / RACK_COUNT);
@@ -350,16 +465,16 @@ function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
 
   const nodes: WorkerNodeEntity[] = RACK_INDICES.map((rackIndex): WorkerNodeEntity => {
     const start = rackIndex * groupSize;
-    const group = cpu.perCore.slice(start, start + groupSize);
+    const group = perCore.slice(start, start + groupSize);
     const groupCpu =
       group.length > 0
         ? round1(group.reduce((acc, v): number => acc + v, 0) / group.length)
-        : cpu.overall;
+        : cpuOverall;
     /*
      * 节点内存：宿主真实内存占用为基线，按该组 CPU 负载做 ±6% 的确定性微调
      * （负载高的组通常缓存占用更高），最终 clamp 到合法域。
      */
-    const groupMem = round1(clamp(memPct + (groupCpu - cpu.overall) * 0.6, 0, 100));
+    const groupMem = round1(clamp(memPct + (groupCpu - cpuOverall) * 0.6, 0, 100));
     const status: NodeStatus =
       groupCpu >= HIGH_LOAD_THRESHOLD || groupMem >= HIGH_LOAD_THRESHOLD ? 'HighLoad' : 'Ready';
     const id = `node-worker-${RACK_SUFFIXES[rackIndex]}`;
@@ -368,7 +483,7 @@ function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
     return {
       id,
       name: `worker-${RACK_SUFFIXES[rackIndex]}`,
-      /* 真实网卡地址；三台节点共享同一块物理网卡（本就是同一台机器） */
+      /* 真实网卡地址：三台节点共享同一块物理网卡（本就是同一台机器） */
       ip: internalIp,
       status,
       cpuCapacity: groupSize,
@@ -395,9 +510,9 @@ function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
       const template = seedPods.length > 0 ? seedPods[globalIndex % seedPods.length] : null;
       /* 绑定一个真实物理核（核数不足时复用），得到该容器的真实 CPU 读数 */
       const coreIndex = coreCount > 0 ? globalIndex % coreCount : 0;
-      const coreCpu = cpu.perCore[coreIndex] ?? cpu.overall;
+      const coreCpu = perCore[coreIndex] ?? cpuOverall;
       const podCpu = round1(clamp(coreCpu, 0, 100));
-      const podMem = round1(clamp(memPct + (coreCpu - cpu.overall) * 0.4, 0, 100));
+      const podMem = round1(clamp(memPct + (coreCpu - cpuOverall) * 0.4, 0, 100));
       const status: PodStatus = podMem >= OOM_THRESHOLD ? 'OOMKilled' : 'Running';
 
       const id = template?.id ?? `pod-live-${rack}-${slot}`;
@@ -431,32 +546,30 @@ function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
     }
   }
 
-  /* ---- 健康分：由真实阈值越限情况推导 ---- */
-  let healthScore = 100;
-  if (cpu.overall >= HIGH_LOAD_THRESHOLD) healthScore -= 25;
-  else if (cpu.overall >= 70) healthScore -= 10;
-  if (memPct >= HIGH_LOAD_THRESHOLD) healthScore -= 25;
-  else if (memPct >= 70) healthScore -= 10;
-  healthScore = Math.round(clamp(healthScore, 50, 100));
-
   /* ---- 吞吐：真实 sys 占比 + load average 推导的服务能力代理 ---- */
   const loadAvg = os.loadavg();
   /* Windows 的 loadavg 恒为 [0,0,0]，此时用 CPU 总量回填，保证代理值仍有真实来源 */
-  const effectiveLoad = loadAvg[0] > 0 ? loadAvg[0] : (cpu.overall / 100) * coreCount;
+  const effectiveLoad = loadAvg[0] > 0 ? loadAvg[0] : (cpuOverall / 100) * coreCount;
   const totalQps = Math.max(0, Math.round(600 + effectiveLoad * 180 + sysShare * 1200));
 
   /* ---- 真实摘要（写入 alert，评委可直接与任务管理器比对） ---- */
   const totalMemGiB = totalMemBytes / 1024 / 1024 / 1024;
   const usedMemGiB = totalMemGiB - freeMemBytes / 1024 / 1024 / 1024;
-  const rssMb = Math.round(proc.rss / 1024 / 1024);
-  const heapUsedMb = Math.round(proc.heapUsed / 1024 / 1024);
   const summary =
-    `[LIVE-OS-BRIDGE] 宿主机 ${coreCount} 核真实 CPU 采样: ${cpu.overall.toFixed(1)}% | ` +
+    `[LIVE-OS-BRIDGE] 宿主机 ${coreCount} 核真实 CPU 采样: ${cpuOverall.toFixed(1)}% | ` +
     `物理内存占用: ${memPct.toFixed(1)}% (${usedMemGiB.toFixed(1)}GB/${totalMemGiB.toFixed(1)}GB) | ` +
-    `Node RSS: ${rssMb}MB (heap ${heapUsedMb}MB) | ` +
+    `Node RSS: ${sample.rssMb}MB (heap ${sample.heapUsedMb}MB) | ` +
     `网络 ${networkMbps.toFixed(1)}Mbps (${networkSource === 'proc-net-dev' ? '真实网卡增量' : 'sys 代理'})`;
 
-  const level: AlertLevel = healthScore < 70 ? 'P1' : 'P2';
+  /*
+   * 【R4 · 健康分唯一口径】告警等级由实体真实状态推导（有高负载/崩溃即 P1），
+   * 健康分经 computeHealthScore 统一罚分模型计算——删除旧阈值公式与 50 分下限。
+   * 分数难看说明故障面真实存在，正确解是缩小故障影响面，不是打地板。
+   */
+  const hasFault =
+    nodes.some((node): boolean => node.status !== 'Ready') ||
+    pods.some((pod): boolean => pod.status === 'OOMKilled' || pod.status === 'CrashLoopBackOff');
+  const level: AlertLevel = hasFault ? 'P1' : 'P2';
   const timestampMs = Date.now();
   const alerts: AlertEvent[] = [
     {
@@ -469,18 +582,21 @@ function buildHostSnapshot(prev: TelemetrySnapshot): LiveTelemetryResult {
     },
   ];
 
+  const snapshot: TelemetrySnapshot = {
+    timestamp: timestampMs,
+    seq: prev.seq + 1,
+    schemaVersion: TELEMETRY_SCHEMA_VERSION,
+    clusterHealthScore: 0,
+    totalQps,
+    nodes,
+    pods,
+    activeAlerts: alerts,
+  };
+
   return {
     source: 'host-os-bridge',
     summary,
-    snapshot: {
-      timestamp: timestampMs,
-      schemaVersion: TELEMETRY_SCHEMA_VERSION,
-      clusterHealthScore: healthScore,
-      totalQps,
-      nodes,
-      pods,
-      activeAlerts: alerts,
-    },
+    snapshot: { ...snapshot, clusterHealthScore: computeHealthScore(snapshot) },
   };
 }
 
@@ -721,32 +837,40 @@ function buildK8sSnapshot(
   }
 
   const readyNodes = nodes.filter((node): boolean => node.ready).length;
-  const healthScore = nodes.length > 0 ? Math.round(clamp((readyNodes / nodes.length) * 100, 0, 100)) : 100;
 
   const summary =
     `[LIVE-K8S-API] 已连接真实集群：${nodes.length} 节点（${readyNodes} Ready） / ${pods.length} Pod`;
 
+  /*
+   * 【R4 · 健康分唯一口径】旧实现用 Ready 节点占比单独算分（第二套口径），
+   * 与合成引擎/自愈派生的罚分模型不一致。现在统一经 computeHealthScore：
+   * 节点 NotReady 映射为 NetworkPartition、异常 Pod 状态与告警等级共同罚分，
+   * 三处展示同一个数，无地板。
+   */
+  const snapshot: TelemetrySnapshot = {
+    timestamp: timestampMs,
+    seq: prev.seq + 1,
+    schemaVersion: TELEMETRY_SCHEMA_VERSION,
+    clusterHealthScore: 0,
+    totalQps: Math.max(0, Math.round(600 + pods.length * 25)),
+    nodes: workerNodes,
+    pods: livePods,
+    activeAlerts: [
+      {
+        id: `live-k8s-${timestampMs}`,
+        timestamp: new Date(timestampMs).toISOString(),
+        level: readyNodes === nodes.length ? 'P2' : 'P1',
+        entityId: workerNodes[0]?.id ?? 'node-worker-alpha',
+        entityName: 'Kubernetes API',
+        message: summary,
+      },
+    ],
+  };
+
   return {
     source: 'k8s-api',
     summary,
-    snapshot: {
-      timestamp: timestampMs,
-      schemaVersion: TELEMETRY_SCHEMA_VERSION,
-      clusterHealthScore: healthScore,
-      totalQps: Math.max(0, Math.round(600 + pods.length * 25)),
-      nodes: workerNodes,
-      pods: livePods,
-      activeAlerts: [
-        {
-          id: `live-k8s-${timestampMs}`,
-          timestamp: new Date(timestampMs).toISOString(),
-          level: readyNodes === nodes.length ? 'P2' : 'P1',
-          entityId: workerNodes[0]?.id ?? 'node-worker-alpha',
-          entityName: 'Kubernetes API',
-          message: summary,
-        },
-      ],
-    },
+    snapshot: { ...snapshot, clusterHealthScore: computeHealthScore(snapshot) },
   };
 }
 

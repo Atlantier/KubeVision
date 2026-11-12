@@ -62,6 +62,7 @@ docs/evidence/r3-advanced/**/*.png
 # 脚本编译/转译临时目录（sim-drift / verify-telemetry 运行时生成）
 tmp-sim/
 tmp-telemetry/
+tmp-slots/
 
 # 本地 dev server 日志（由后台 pnpm dev 写入）
 /tmp-dev.log

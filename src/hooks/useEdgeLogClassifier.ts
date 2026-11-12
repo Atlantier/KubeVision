@@ -12,10 +12,12 @@
  * （'../workers/x.worker.js'）在构建后路径会失效——这是 Next.js 里
  * 最容易踩的 Worker 坑之一。
  *
- * 【请求-响应配对】Worker 是全局单例、消息无内建 id，因此本 Hook
- * 采用「一次只允许一批在途请求」的模型：发 classify 后阻塞新请求，
- * 收到 result 即视为本批完成。审计场景本就是串行批处理，
- * 这比给每条日志编 id 更简单且不会错配。
+ * 【请求-响应配对（R4：requestId 匹配）】Worker 是全局单例，消息本身无内建 id，
+ * 因此每次派发 classify 都携带一个递增的 requestId，Worker 原样回传。
+ * onmessage 只接受与在途批次 requestId 一致的 result/error；
+ * 不匹配（典型来源：单批超时兜底后迟到的旧结果）一律丢弃并计数
+ * （glStats.workerStaleResults），绝不让上一批的结果灌进下一批。
+ * 并发上限仍为 1（审计场景串行批处理），超时走显式终态 + 内置兜底。
  *
  * 【进度与运行时回显】Worker 每次 progress 消息都自带 runtime 与
  * runtimeLabel，Hook 直接透传给 HUD——HUD 无需再自己探测能力。
@@ -114,13 +116,17 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
   const [isClassifying, setIsClassifying] = useState<boolean>(false);
 
   const workerRef = useRef<Worker | null>(null);
+  /** R4：requestId 派发计数器（每次 classify 递增，Worker 原样回传） */
+  const nextRequestIdRef = useRef<number>(0);
   /**
    * 在途请求（null 表示无在途请求）。
    *
    * 【B1：同时记录日志与开始时刻】超时兜底必须能在主线程用内置分类器
    * 重新算出结果，因此 pending 里要保留输入——只留 resolver 是不够的。
+   * 【R4：requestId】结果配对凭据——迟到/错配消息据此丢弃。
    */
   const pendingRef = useRef<{
+    readonly requestId: number;
     readonly logs: readonly LogEntry[];
     readonly startedAtMs: number;
     readonly resolve: (results: readonly EdgeAuditResult[] | null) => void;
@@ -229,16 +235,36 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
 
         case 'result': {
           const pending = pendingRef.current;
+          /*
+           * 【R4：requestId 配对】只接受在途批次的结果。
+           * 超时兜底后迟到的旧批次 result（pending 已空或已换批）
+           * 在此被丢弃并计数——否则旧结果会覆盖新批次的审计结论。
+           */
+          if (pending === null || message.requestId !== pending.requestId) {
+            telemetryTransientRef.glStats.workerStaleResults += 1;
+            break;
+          }
           pendingRef.current = null;
           setIsClassifying(false);
-          if (pending !== null) {
-            window.clearTimeout(pending.timer);
-            pending.resolve(message.results);
-          }
+          window.clearTimeout(pending.timer);
+          pending.resolve(message.results);
           break;
         }
 
         case 'error': {
+          const pending = pendingRef.current;
+          /*
+           * 【R4：带 requestId 的错误属于特定批次】不匹配即丢弃并计数，
+           * 不让已死批次的错误把当前批次拖进降级。
+           * 不带 requestId 的错误（init/全局）仍按引擎级故障处理。
+           */
+          if (
+            message.requestId !== undefined &&
+            (pending === null || message.requestId !== pending.requestId)
+          ) {
+            telemetryTransientRef.glStats.workerStaleResults += 1;
+            break;
+          }
           setError(message.message);
           setWorkerStatus('ERROR');
           setStatusLabel('ERROR');
@@ -247,7 +273,6 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
           setRuntime('builtin');
           setRuntimeLabel('builtin-classifier');
           setIsReady(true);
-          const pending = pendingRef.current;
           pendingRef.current = null;
           setIsClassifying(false);
           /*
@@ -402,24 +427,27 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
       }
 
       /*
-       * 【B1：并发上限 1】
-       * Worker 协议没有请求 id，两批同时在途必然结果错配。
-       * 这里第二批复用"直接拒绝"，由调用方串行化（审计面板天然串行）。
+       * 【B1：并发上限 1】审计场景串行批处理，第二批次直接拒绝，
+       * 由调用方串行化。requestId 配对（R4）另行防御迟到结果错配。
        */
       if (pendingRef.current !== null) return Promise.resolve(null);
 
       const startedAtMs = Date.now();
+      const requestId = nextRequestIdRef.current;
+      nextRequestIdRef.current += 1;
       setIsClassifying(true);
 
       /*
-       * 【B1：单批 3 秒超时兜底】
+       * 【B1：单批 3 秒超时兜底（R4：显式终态）】
        * Worker 若因设备丢失/OOM 永久挂起，既不回 result 也不回 error。
-       * 超时后用内置分类器在主线程算出结果，保证 runAudit 一定能结束。
+       * 超时即宣布本批终态：用内置分类器在主线程算出结果并清空 pending，
+       * 此后迟到的 Worker result 因 requestId 不匹配被丢弃，不会二次 resolve。
        */
       return new Promise<readonly EdgeAuditResult[] | null>((resolve): void => {
         const timer = window.setTimeout((): void => {
           const pending = pendingRef.current;
-          if (pending === null) return;
+          /* 只终结本批次：pending 已空或已换批时不得误伤 */
+          if (pending === null || pending.requestId !== requestId) return;
           pendingRef.current = null;
           setIsClassifying(false);
           setIsFallback(true);
@@ -435,8 +463,8 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
           resolve(classifyLogsWithBuiltin(pending.logs, pending.startedAtMs));
         }, EDGE_BATCH_TIMEOUT_MS);
 
-        pendingRef.current = { logs, startedAtMs, resolve, timer };
-        const request: ClassifierRequest = { type: 'classify', logs };
+        pendingRef.current = { requestId, logs, startedAtMs, resolve, timer };
+        const request: ClassifierRequest = { type: 'classify', requestId, logs };
         worker.postMessage(request);
       });
     },

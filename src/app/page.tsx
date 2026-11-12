@@ -195,8 +195,9 @@ export default function HomePage() {
 
   /* 遥测流激活：SSE 订阅 + 自愈免疫合并 + 双轨分发 + 本地降级兜底。
    * Hook 内部依赖严格锁定 [connectionMode, activeChaos]，其余字段变化
-   * 不会重建连接；返回值（传输形态/帧计数）本页暂不消费，
-   * 后续可由 TopBar 的「数据源徽标」接入展示。 */
+   * 不会重建连接；返回值（传输形态等）本页暂不消费。
+   * 【R4】帧计数已移入瞬态轨（glStats.telemetryFrameCount），
+   * 本 Hook 不再持有 1Hz state——page 根不会每帧重渲染。 */
   useTelemetryStream();
 
   /* 混沌模态框开关（订阅 store，由 TopBar 的 Inject Chaos 按钮写入）。

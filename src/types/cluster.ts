@@ -206,6 +206,19 @@ export interface TelemetrySnapshot {
   /** 快照生成时刻，Unix epoch 毫秒时间戳（数值型，便于时序差分计算） */
   readonly timestamp: number;
   /**
+   * 帧序号（R4：单调递增，每条连接/演进链内严格 +1）。
+   *
+   * 【为什么需要 seq】时间戳可能被服务端重启、代理缓存旧帧、多实例负载
+   * 不均打回过去；客户端若只按时间戳判新旧，重复帧会被当成新帧再走一遍
+   * 单调修正（+1 tick），时间轴逐步漂移。seq 是帧的**身份**：
+   * 前端对 seq <= lastSeq 的帧直接丢弃（计数见 glStats.staleSeqFrames），
+   * 时间戳以服务端为准，客户端只做单调修正，不用 Date.now() 覆盖。
+   *
+   * 【重连契约】新连接从种子 seq=0 重新起步，客户端在 SSE onopen 时
+   * 复位 lastSeq——跨连接不比较 seq，连接内严格单调。
+   */
+  readonly seq: number;
+  /**
    * 遥测 schema 版本号（当前为 {@link TELEMETRY_SCHEMA_VERSION}）。
    *
    * 【为什么快照必须带版本】SSE 是长连接、前后端可能不同版本并存
@@ -258,13 +271,14 @@ export interface TelemetrySnapshot {
  *
  * 【版本历史】
  * - v1：初始契约（timestamp / clusterHealthScore / totalQps / nodes / pods / activeAlerts）
- * - v2：新增 schemaVersion 字段本身（本轮），用于后续演进时的版本协商
+ * - v2：新增 schemaVersion 字段本身，用于后续演进时的版本协商
+ * - v3：新增 seq 帧序号（R4：时间轴去重，前端丢弃 seq <= lastSeq 的重复帧）
  *
  * 【兼容策略】客户端只接受 schemaVersion === 本文常量的帧；
  * 缺失（旧帧）或更高（新服务端）一律进入只读降级并提示，
  * 绝不"尽力解析"——错误字段语义比停更危险。
  */
-export const TELEMETRY_SCHEMA_VERSION = 2;
+export const TELEMETRY_SCHEMA_VERSION = 3;
 
 /** 种子快照基准时刻：2026-11-05T08:00:00Z（固定常量表达式，纯函数求值，SSR 安全） */
 const SEED_TIMESTAMP_MS: number = Date.UTC(2026, 10, 5, 8, 0, 0);
@@ -764,6 +778,7 @@ const SEED_NODES: WorkerNodeEntity[] = NODE_SEED_TABLE.map(
  */
 export const INITIAL_CLUSTER_SNAPSHOT: TelemetrySnapshot = {
   timestamp: SEED_TIMESTAMP_MS,
+  seq: 0,
   schemaVersion: TELEMETRY_SCHEMA_VERSION,
   clusterHealthScore: 100,
   totalQps: 12850,

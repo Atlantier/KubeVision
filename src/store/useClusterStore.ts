@@ -27,6 +27,7 @@
 
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import type { StateStorage } from 'zustand/middleware';
 
 import type {
   AlertEvent,
@@ -49,7 +50,7 @@ import { syncSnapshotToTransientRef } from '@/store/useTelemetryRef';
 import { HEAL_IMMUNITY_WINDOW_MS } from '@/constants/telemetryTuning';
 import { clearFrameBuffer } from '@/utils/snapshotRingBuffer';
 import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
-import { HEALTH_SCORE_MAX, computeClusterHealthScore } from '@/utils/clusterHealth';
+import { computeHealthScore } from '@/utils/clusterHealth';
 
 /* ========================================================================== */
 /* 模块级常量（容量上限与持久化键，集中定义防漂移）                               */
@@ -66,6 +67,87 @@ const TERMINAL_LOG_RUNTIME_LIMIT = 200;
 
 /** 终端日志持久化条数上限（仅最近 30 条落盘，防 localStorage 配额膨胀） */
 const TERMINAL_LOG_PERSIST_LIMIT = 30;
+
+/**
+ * persist 落盘最小间隔（R4：1Hz 成本）。
+ *
+ * 【为什么必须节流】zustand persist 在**每次 set** 都序列化并写 localStorage，
+ * 即使 partialize 白名单外的字段（如 1Hz 快照摘要）变化也照写不误。
+ * 遥测每秒 set 一次 + 终端日志追加，静置时主线程被同步 IO 持续占用。
+ * 白名单已只留 4 个跨会话字段，这里再把写入频率钳到 ≤1 次/秒（验收红线），
+ * 尾随节流保证最后一次变更最终落盘（最多延迟一个间隔）。
+ */
+const PERSIST_WRITE_INTERVAL_MS = 1000;
+
+/**
+ * createThrottledPersistStorage —— 尾随节流的 localStorage 包装（R4）。
+ *
+ * 【读写一致性】setItem 先把最新值存入 pending：getItem 命中 pending 时
+ * 直接返回它（read-your-writes），rehydrate 不会读到落后于内存的旧值。
+ * 【清理语义】removeItem 立即生效并作废 pending（clearStorage 不得被节流拖延）。
+ * 【SSR 安全】工厂只创建闭包，不触碰 localStorage；zustand 在服务端
+ * 求值 storage 失败时 persist 自动退化为无操作（与原实现一致）。
+ */
+function createThrottledPersistStorage(): StateStorage {
+  let lastWriteAt = 0;
+  let pendingValue: string | null = null;
+  let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const flush = (): void => {
+    pendingTimer = null;
+    if (pendingValue === null) return;
+    const value = pendingValue;
+    pendingValue = null;
+    lastWriteAt = Date.now();
+    try {
+      localStorage.setItem(PERSIST_STORAGE_KEY, value);
+    } catch {
+      /* 配额耗尽 / 隐私模式：静默降级为不持久化，绝不中断 UI */
+    }
+  };
+
+  return {
+    getItem: (name: string): string | null => {
+      if (name === PERSIST_STORAGE_KEY && pendingValue !== null) return pendingValue;
+      try {
+        return localStorage.getItem(name);
+      } catch {
+        return null;
+      }
+    },
+    setItem: (name: string, value: string): void => {
+      if (name !== PERSIST_STORAGE_KEY) {
+        try {
+          localStorage.setItem(name, value);
+        } catch {
+          /* 同上 */
+        }
+        return;
+      }
+      pendingValue = value;
+      const wait = PERSIST_WRITE_INTERVAL_MS - (Date.now() - lastWriteAt);
+      if (wait <= 0) {
+        flush();
+        return;
+      }
+      if (pendingTimer === null) pendingTimer = setTimeout(flush, wait);
+    },
+    removeItem: (name: string): void => {
+      if (name === PERSIST_STORAGE_KEY) {
+        pendingValue = null;
+        if (pendingTimer !== null) {
+          clearTimeout(pendingTimer);
+          pendingTimer = null;
+        }
+      }
+      try {
+        localStorage.removeItem(name);
+      } catch {
+        /* 同上 */
+      }
+    },
+  };
+}
 
 /*
  * 自愈免疫窗口：唯一事实源在 constants/telemetryTuning.ts（HEAL_IMMUNITY_WINDOW_MS），
@@ -90,19 +172,6 @@ const HEALED_POD_CPU = 28;
 
 /** 自愈后 Pod 的内存恢复水位（%）——堆已回收、缓存冷启动后的稳态基线 */
 const HEALED_POD_MEM = 42;
-
-/**
- * 自愈后集群健康分下限（%）。
- *
- * 【设计意图】healEntity 代表一次「控制器已验证」的自愈（日志尾句
- * Status verified: Running）。此时若健康分仍被尚未随下一轮 SSE tick
- * 清除的历史告警拖低，会出现「3D 场景全绿但 HUD 显示 42 分」的视觉矛盾。
- * 故对加权公式结果施加 96 分下限：既保留「未完全恢复到满分」的真实感
- * （余量 4 分对应尚在收敛的尾部指标），又保证自愈动作的成效立即可见。
- */
-const HEAL_RECOVERY_FLOOR = 96;
-
-/** 健康分上限（百分比量程封顶） */
 
 /** 历史序列长度契约（与 PodEntity.cpuHistory/memHistory「恒为 6 点」一致） */
 const RECOVERY_HISTORY_POINTS = 6;
@@ -188,7 +257,8 @@ function meanOf(values: number[]): number {
  *    真实派生而非魔法数字，保证节点读数与 Pod 读数永不自相矛盾。
  * 3. 告警轨：entityId 命中已自愈实体（Pod 或该节点）的告警予以清除，
  *    否则告警面板会对一个已验证 Running 的 Pod 持续闪烁 P0，视觉与语义双重矛盾。
- * 4. 健康分：按加权公式重算，再施加 HEAL_RECOVERY_FLOOR(96) 下限（见常量 JSDoc）。
+ * 4. 健康分：经唯一入口 computeHealthScore 按罚分模型重算（R4：无地板，
+ *    与引擎/live 同口径，三处展示同一个数）。
  *
  * 【顺序保持契约】pods/nodes 数组顺序严格不变（map 原位替换），
  * 使 InstancedMesh 的 instanceId 下标映射与 spatialLayout 槽位关系不被打乱。
@@ -231,15 +301,21 @@ function deriveHealedSnapshot(
     (alert): boolean => !healPodIds.has(alert.entityId) && alert.entityId !== healNodeId,
   );
 
-  const computedScore = computeClusterHealthScore(healedNodes, healedPods, healedAlerts);
-
-  return {
+  /*
+   * 【R4：健康分无地板】先组装自愈后的完整快照，再经唯一入口 computeHealthScore
+   * 重算。旧实现的 96 分地板会让「自愈后分数」与「引擎下一帧算出的分数」打架
+   * （地板值 ≠ 罚分模型值），三处展示自相矛盾。现在自愈派生与引擎同口径：
+   * 分数完全由实体状态决定，异常清干净自然回到满分，无需粉饰。
+   */
+  const healed: TelemetrySnapshot = {
     ...snapshot,
-    clusterHealthScore: Math.min(HEALTH_SCORE_MAX, Math.max(computedScore, HEAL_RECOVERY_FLOOR)),
     nodes: healedNodes,
     pods: healedPods,
     activeAlerts: healedAlerts,
+    clusterHealthScore: 0,
   };
+
+  return { ...healed, clusterHealthScore: computeHealthScore(healed) };
 }
 
 /**
@@ -968,13 +1044,14 @@ export const useClusterStore = create<ClusterStore>()(
       version: PERSIST_VERSION,
 
       /**
-       * createJSONStorage(() => localStorage)
+       * createJSONStorage(createThrottledPersistStorage)
        *
        * 【SSR 安全】zustand 的 createJSONStorage 内部以 try/catch 惰性求值
        * getStorage()：服务端 localStorage 未定义会抛 ReferenceError 并被捕获，
        * 返回 undefined 使 persist 退化为无操作，不会导致模块 import 崩溃。
+       * 【R4】包装层把落盘频率钳到 ≤1 次/秒（见 PERSIST_WRITE_INTERVAL_MS）。
        */
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(createThrottledPersistStorage),
 
       /**
        * skipHydration: true —— 禁用自动水合（Hydration Mismatch 根治手段）。

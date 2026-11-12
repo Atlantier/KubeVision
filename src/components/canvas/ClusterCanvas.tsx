@@ -33,6 +33,7 @@ import { useClusterStore } from '@/store/useClusterStore';
 import CyberMatrixRain3D from '@/components/canvas/CyberMatrixRain3D';
 import ProceduralPbrEnvironment from '@/components/canvas/ProceduralPbrEnvironment';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { getRecentFrames } from '@/utils/snapshotRingBuffer';
 import { MASTER_POSITION, getRackTransform } from '@/utils/spatialLayout';
 import { useInViewPause } from '@/hooks/useInViewPause';
 import { dispatchViewPreset, subscribeViewPreset } from '@/utils/viewPresetBus';
@@ -368,6 +369,7 @@ type DebuggableWindow = Window & {
   __KUBEVISION_R3F__?: unknown;
   __KUBEVISION_STORE__?: unknown;
   __KUBEVISION_TRANSIENT__?: unknown;
+  __KUBEVISION_FRAMES__?: unknown;
 };
 
 /**
@@ -387,6 +389,8 @@ function handleCanvasCreated(state: RootState): void {
     debugWindow.__KUBEVISION_R3F__ = state;
     debugWindow.__KUBEVISION_STORE__ = useClusterStore;
     debugWindow.__KUBEVISION_TRANSIENT__ = telemetryTransientRef;
+    /* R4：复盘报告数据源（环形缓冲）读取器——「三处同数」取证的第三处 */
+    debugWindow.__KUBEVISION_FRAMES__ = getRecentFrames;
   }
 }
 /**

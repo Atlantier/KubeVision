@@ -77,3 +77,33 @@
 |---|---|---|---|---|---|---|
 | R3-4 | 混沌/复盘等顶层模态无焦点陷阱：打开后焦点停在背景触发按钮（键盘路径探针 A2 实测 focusInDialog=false） | **OPEN（转 R12）** | R3 收敛了 Esc 分级栈但未做焦点陷阱/归还（属 R12「Overlay 栈与焦点」）；键盘路径仍可经 Tab 导航完成，不阻塞操作 | 「Esc 分层与键盘可达已验证；焦点陷阱与关闭归还焦点在 R12 统一治理。」 | 前端 | R12 |
 | R3-5 | 键盘路径/免疫对抗在 SwiftShader 软渲染下跑，启动需预热且不可并发多浏览器 | **MITIGATED** | 僵尸浏览器进程争 CPU 会致 Canvas 初始化超时；探针已加长轮询等待，单浏览器串行运行稳定 | 「探针串行运行可复现；真实 GPU 下启动更快。」 | 测试 | 持续 |
+
+---
+
+## R4 · 数据可信度与演示剧本一致性（2026-11-12 · main 完成）
+
+> 口令「完成 R4main」。9 项缺陷修复→证据→验收如下；所有数字来自本轮真实命令输出（日志在 `tmp-logs/tmp-r4-*.log`，本地不入库）。schema 升 v3（新增 seq 帧序号）。
+
+| 缺陷 | 改动 | 证据（本轮实测） | 结果 |
+|---|---|---|---|
+| P0-1 瞬态槽位只增不复用 + 耗尽 break（48 个 ID 后新 Pod 恒 0%） | freeSlots 栈：先回收后分配、分配先弹栈；高水位=max(占用,空闲)+1；耗尽 continue + truncated 上报（deliver 写终端告警） | `test:slots` 6/6：96 个不同 ID 两批 48 全着色、LIFO 身份复用、60 Pod 截断标志、200 轮随机 churn 槽位恒 ≤48 无重复 | CLOSED |
+| P0-2 剧本阶段重入（阶段 4 跑两遍→「自愈未验证」覆盖「闭环通过」） | enterPhase 首行 index<=phaseIndex 守卫（开发期 console.warn 打调用栈）；scheduleFrom 循环首行 i<=phaseIndex continue；「未验证」防御分支原样保留 | `probe:r4-oom10` **10/10** 终态「闭环校验通过：3/3 个受害者已自愈」，运行时错误 0，重入拦截 0 次 | CLOSED |
+| P0-3 Worker 迟到 result 无 requestId 错配 | classify 请求携带递增 requestId，Worker 原样回传（result/错误均带）；onmessage 不匹配丢弃并计数 glStats.workerStaleResults；超时显式终态（pending 清空后迟到结果必被丢弃） | typecheck/lint/verify 35/35（端侧引擎就绪+推理事件全绿）；错配竞态需超时才触发，运行期未实测（见 R4-4） | CLOSED |
+| P0-4 live 采样模块级基准被多连接交替覆盖（双标签页 CPU 恒 0） | 单一采样器+广播：acquireHostSampler/releaseHostSampler 引用计数，1Hz ticker 唯一写者，连接只读缓存；末个订阅者离开停 ticker 清基准；safeClose/降级双路径退订 | `probe:r4-consistency` X5：双独立 SSE 连接节点 CPU 逐值相等（56.1/50.8/52.2）且非 0，来源 LIVE-OS-BRIDGE 24 核 | CLOSED |
+| P0-5 useDemoDirector 卸载即 stop 杀路演 | 钩子只订阅（useSyncExternalStore），卸载不 stop；stop 仅 user/switch 两个显式原因（'unmount' 从类型域删除） | verify 35/35 + probe:r4-oom10 连跑 10 轮（含调试面板常驻订阅）无中断 | CLOSED |
+| P0-6 免疫窗口双常量 | R3 已收敛 HEAL_IMMUNITY_WINDOW_MS=15000，本轮复核：全仓仅 telemetryTuning.ts 一处定义，store/Hook 同引用 | grep 复核 + probe:escape 11/11 / probe:keyboard 15/15 回归无回退 | CLOSED |
+| P1 健康分三套口径 + 96 地板 + live 下限 50 | clusterHealth.ts 新增快照级唯一入口 computeHealthScore；删 store 96 地板、live 宿主机阈值公式+50 下限、live K8s Ready 占比公式；四处调用同归罚分模型 | X2a 稳态 100=100=100=独立 oracle 100；X2b 混沌 77=77=77=oracle 77（3 异常 Pod，分数真实下降无地板）；`verify:parity` 3/3（demo=live=93 同分） | CLOSED |
+| P1 persist 每 set 全量落盘 + page 根 1Hz 重渲染 | partialize 白名单复核（仅 4 字段）+ 尾随节流 storage ≤1 写/秒（read-your-writes）；frameCount 移瞬态轨 glStats.telemetryFrameCount，TelemetryStreamState 删除该字段 | P2 localStorage 0.933 次/s ≤1（30s 28 次）；P1 管线 0.240ms/s <3ms/s；page 根不再持有 1Hz state | CLOSED |
+| P1 时间轴 +1000 积分漂移 + 无 seq 去重 | TelemetrySnapshot 新增单调 seq（schema v3）；引擎/采集链 +1、叠加层保留；前端 seq<=lastSeq 丢弃计数，onopen 跨连接复位；时间戳仍以服务端为准只做单调修正 | P3 30 帧/30s ≈1Hz、staleSeqFrames=0；verify:telemetry A-3 时间戳严格 +1000ms 9/9 | CLOSED |
+
+**本轮验收汇总**：typecheck ✓ · lint ✓ · build ✓ · verify 35/35 · verify:telemetry 9/9 · sim-drift ✓ · verify:parity 3/3 · verify:stream ✓ · test:slots 6/6 · test:health 4/4 · test:demo 11/11 · probe:r4-consistency 8/8（X1 120 Pod×轮次误差 0.000%）· probe:r4-oom10 10/10 · probe:escape 11/11 · probe:keyboard 15/15 · check-dead-exports 新增 0。
+**顺手修复（既有 harness 缺口，非 R4 引入）**：sim-drift / verify-mode-parity 的转译别名表缺 clusterHealth 映射导致 MODULE_NOT_FOUND，已补齐（与 verify-telemetry 同款）。
+
+| # | 事项 | 状态 | 原因（证据） | 兜底话术 | 负责人 | 截止 |
+|---|---|---|---|---|---|---|
+| R4-1 | 删地板后混沌期健康分真实落到 77（旧实现被 96/50 地板托住） | **MITIGATED** | X2b 实测 77=罚分模型值；故障面已限 3 受害者，自愈后回 100。「难看」是真实故障的如实反映，正确解是缩小故障面而非打地板 | 「分数由故障面实时罚分得出，自愈闭环后回到满分——没有任何粉饰。」 | 前端 | 持续 |
+| R4-2 | 静置 <3ms/s 证据为**遥测管线级**（performance.now 包裹 deliver），SwiftShader 软渲染 GL 耗时不计入也不代表真实 GPU | **MITIGATED** | P1 0.240ms/s 为 reconcile+双轨分发+store 写入的实测主线程成本；软渲染整帧 ~700ms 属 GPU 替代开销，与 R3 同口径不宣称帧率 | 「1Hz 数据管线实测 <0.3ms/s；渲染帧率以真实 GPU 为准。」 | 前端 | 持续 |
+| R4-3 | live K8s API 分支的统一健康分未接真实集群实测（本机无 K8S_API_SERVER） | **OPEN** | 宿主机桥接已实测（X5）；K8s 分支走同一 computeHealthScore 入口，代码路径收敛但无真实集群证据 | 「实时模式双链路同口径；真实集群接入后复核一次。」 | 后端 | 现场 |
+| R4-4 | Worker requestId 错配丢弃路径需「超时后迟到结果」竞态才触发，运行期未实测 | **MITIGATED** | 配对/计数/终态逻辑经类型校验与 verify 端侧全链路覆盖；glStats.workerStaleResults 已暴露供进阶对抗探针取证 | 「配对契约已落地；竞态对抗在 R4 进阶用注入超时证明。」 | 前端 | R4 进阶 |
+| R4-5 | schema v3 与旧缓存客户端不兼容 | **MITIGATED** | 既有版本协商：不匹配即只读降级并提示（设计行为，非缺陷）；刷新即恢复 | 「协议升级有版本协商，旧页面只读提示刷新。」 | 前端 | 持续 |
+| R4-6 | persist 尾随节流最多延迟 1s 落盘，突然关页可能丢最后一次 UI 偏好变更 | **MITIGATED** | 仅影响 4 个跨会话偏好字段（连接模式/掩码计数/自愈历史/日志摘要），非关键数据；read-your-writes 保证会话内一致 | 「偏好落盘 ≤1s 延迟，换取静置零 IO 抖动。」 | 前端 | 持续 |
