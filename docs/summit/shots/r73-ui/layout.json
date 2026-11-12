@@ -1,0 +1,64 @@
+{
+  "at": "2026-11-12T03:01:46.150Z",
+  "presentLayout": {
+    "hud": {
+      "left": 21,
+      "top": 713,
+      "right": 236,
+      "bottom": 747,
+      "width": 215,
+      "height": 34
+    },
+    "tabs": null,
+    "viewport": {
+      "left": 8,
+      "top": 56,
+      "right": 889,
+      "bottom": 760,
+      "width": 881,
+      "height": 704
+    },
+    "overlapTabs": false,
+    "insideViewport": true
+  },
+  "legendLayout": {
+    "button": {
+      "left": 21,
+      "top": 69,
+      "right": 163,
+      "bottom": 98,
+      "width": 142,
+      "height": 29
+    },
+    "panel": {
+      "left": 21,
+      "top": 104,
+      "right": 277,
+      "bottom": 310,
+      "width": 256,
+      "height": 206
+    },
+    "panelText": "运行正常容器正常运行，服务健康调度启动中调度或启动中，尚未就绪异常告警CrashLoopBackOff / OOMKil"
+  },
+  "perfLayout": {
+    "perf": {
+      "left": 1086,
+      "top": 57.48832702636719,
+      "right": 1354,
+      "bottom": 627.4883270263672,
+      "width": 268,
+      "height": 570
+    },
+    "toolbar": {
+      "left": 826,
+      "top": 571,
+      "right": 876,
+      "bottom": 747,
+      "width": 50,
+      "height": 176
+    },
+    "overlapToolbar": false,
+    "scrollHeight": 568,
+    "clientHeight": 568
+  }
+}

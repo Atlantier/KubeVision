@@ -339,6 +339,10 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
           {/* R32：演示模式隐藏终端；Canvas 不卸载，切回无重建成本 */}
           {present ? null : <TerminalEcho className="absolute bottom-3 left-3 right-[74px]" />}
 
+          {/* R73：演示态状态胶囊锚定在 3D 视口左下角；终端隐藏后该区域为空闲安全区。
+              放在 section 内而非根容器，彻底避开右侧 Copilot 页签栏。 */}
+          {present ? <PresentStatusHud /> : null}
+
           {/* 性能遥测 HUD 已迁出本组件：由 page.tsx 通过 next/dynamic
               懒加载 PerfTelemetryHUD 挂载（按需载入，首屏零开销）。
               此处仅保留 Shift+P 的开关状态（isPerfHudOpen），
@@ -386,8 +390,7 @@ export default function ShellLayout({ viewport, drawer }: ShellLayoutProps) {
         </section>
       </main>
 
-      {/* R32：演示模式极简状态胶囊 + 快捷键帮助浮层 */}
-      {present ? <PresentStatusHud /> : null}
+      {/* R32：演示模式极简状态胶囊已移入 3D 视口 section 左下角（见上方） */}
       <ShortcutHelpOverlay open={helpOpen} onClose={(): void => setHelpOpen(false)} />
 
       {/* ============ 移动端底部浮动切换栏（< lg 可见） ============ */}

@@ -53,7 +53,7 @@ import {
   ChevronDown,
   Cpu,
   Filter,
-  LayoutGrid,
+  Layers,
   MemoryStick,
   MousePointerClick,
   Move3d,
@@ -720,74 +720,62 @@ function Sparkline({ series, width = SPARKLINE_WIDTH, height = SPARKLINE_HEIGHT 
 function TopologyLegendPanel() {
   const [expanded, setExpanded] = useState<boolean>(false);
 
+  /**
+   * R73：触发按钮与浮层彻底解耦。
+   *
+   * 【为什么不把按钮和内容放在同一个自适应容器里】旧实现在 open 切换时
+   * 直接改外框宽度与 rounded-full/rounded-2xl，0ms 内从 124px 跳到 256px，
+   * 收起时还会先变成畸形大胶囊。现在按钮几何恒定，只有下方的绝对浮层
+   * 通过 transform/opacity 进出，宽度不再参与动画。
+   */
   return (
-    <div
-      className={cn(
-        'pointer-events-auto relative max-w-full overflow-hidden border border-white/[0.08] bg-slate-950/75',
-        'transition-[border-radius] duration-200',
-        expanded ? 'rounded-2xl' : 'rounded-full',
-      )}
-    >
-      {/*
-       * ---- 与巡检卡同一套 HUD 语言（图例面板）----
-       *
-       * 图例是"空态"面板，与选中态的探针卡在视觉上必须同族，
-       * 否则用户点击实体时面板会突然"换了个 UI 系统"。
-       * 因此同样叠加扫描线底纹与四角折角；折角固定主题青。
-       *
-       * 【收起态为何保留折角】胶囊态高度只有一行，
-       * 四角折角在两端圆角处会被 overflow-hidden 裁掉一部分——
-       * 这是可接受的：展开后四角完整出现，收起时残留的痕迹
-       * 恰好强化"这是一块被标定的仪表"的印象。
-       */}
-      <HoloScanlines />
-      <HoloSpecularSheen />
-      <HoloCorners color="#22d3ee" />
-      {/*
-       * 光学折射亮边：上下沿各一条 1px 渐变（中段最亮、两端消融）。
-       * 原先这里只手工画了顶边，改成统一原语后上下都有——
-       * 玻璃板是被光"穿"过的，只有一条边的玻璃看起来仍像贴纸。
-       */}
-      <HoloRefractionEdges accent="#22d3ee" />
-      {/* ---- 常态：一行紧凑胶囊（点击切换展开） ---- */}
+    <div className="pointer-events-none relative flex flex-col items-start">
       <button
         type="button"
         onClick={(): void => setExpanded((prev): boolean => !prev)}
         aria-expanded={expanded}
-        aria-label="展开或收起读图说明"
-        className="flex w-full items-center gap-1.5 px-3 py-1 transition-colors hover:bg-white/[0.04]"
+        aria-label="切换 3D 拓扑读图说明"
+        className={cn(
+          'pointer-events-auto group flex items-center gap-2 rounded-lg border px-3 py-1.5 backdrop-blur-md transition-all duration-200',
+          expanded
+            ? 'border-cyan-400/45 bg-slate-900/90 text-cyan-200 shadow-[0_0_20px_-4px_rgba(34,211,238,0.35)]'
+            : 'border-slate-800/90 bg-slate-950/80 text-slate-300 hover:border-cyan-400/35 hover:text-cyan-200',
+        )}
       >
-        <LayoutGrid className="h-3 w-3 shrink-0 text-cyan-400" aria-hidden />
-        {/* 三个状态色点：图例语义在收起态由它们承载，无需文字也能读懂 */}
-        {TOPOLOGY_LEGEND.map((item): ReactNode => (
-          <span
-            key={item.key}
-            className={cn('h-1.5 w-1.5 shrink-0 rounded-full', TONE_BG_CLASS[item.tone])}
-            title={`${item.label} · ${item.description}`}
-            aria-hidden
-          />
-        ))}
-        <span className="ml-0.5 font-mono text-[10px] tracking-wider text-slate-400">读图说明</span>
+        <Layers className="h-3 w-3 shrink-0 text-cyan-400" aria-hidden />
+        <span className="flex items-center gap-1" aria-hidden>
+          {TOPOLOGY_LEGEND.map((item): ReactNode => (
+            <span
+              key={item.key}
+              className={cn('h-1.5 w-1.5 shrink-0 rounded-full', TONE_BG_CLASS[item.tone])}
+              title={`${item.label} · ${item.description}`}
+            />
+          ))}
+        </span>
+        <span className="font-mono text-[10px] tracking-wider">读图说明</span>
         <ChevronDown
           className={cn(
-            'ml-auto h-3 w-3 shrink-0 text-slate-500 transition-transform duration-200',
-            expanded && 'rotate-180',
+            'h-3 w-3 shrink-0 text-slate-500 transition-transform duration-200 ease-out',
+            expanded && 'rotate-180 text-cyan-300',
           )}
           aria-hidden
         />
       </button>
 
-      {/* ---- 展开态：完整图例 + 手势提示（弹簧高度动画） ---- */}
       <AnimatePresence initial={false}>
         {expanded ? (
           <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-            className="overflow-hidden"
+            key="topology-legend-dropdown"
+            initial={{ opacity: 0, y: -6, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.96 }}
+            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+            style={{ transformOrigin: 'top left' }}
+            className="pointer-events-auto relative mt-1.5 w-64 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/90 px-3.5 py-3 shadow-[0_16px_40px_-8px_rgba(2,6,23,0.92)] backdrop-blur-md"
           >
-            <div className="border-t border-white/[0.06] px-3 pb-2.5 pt-2">
+            <HoloRefractionEdges accent="#22d3ee" />
+            <HoloCorners color="#22d3ee" />
+            <div className="relative">
               {/* 状态图例 */}
               <ul className="space-y-1.5">
                 {TOPOLOGY_LEGEND.map((item) => (
