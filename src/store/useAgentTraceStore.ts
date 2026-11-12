@@ -50,7 +50,11 @@ export const useAgentTraceStore = create<AgentTraceState>((set) => ({
   begin: (): void => set({ traceId: null, spans: [], summary: null }),
   appendSpan: (span): void =>
     set((state): AgentTraceState => {
-      if (state.traceId !== null && state.traceId !== span.traceId) return state;
+      /* R2 · trace 换轮：traceId 变化即自动换轮（清空上一轮 span/summary），
+       * 不再拒收新轮事件——配合 sendMessage 开头的 begin()，跨轮不串味。 */
+      if (state.traceId !== null && state.traceId !== span.traceId) {
+        return { ...state, traceId: span.traceId, spans: [span], summary: null };
+      }
       return { ...state, traceId: span.traceId, spans: [...state.spans, span] };
     }),
   setSummary: (summary): void =>

@@ -171,7 +171,7 @@ export interface StreamViolation {
  * 1. toolCallId 不得重复（重复 start = 卡片重复挂载）；
  * 2. 不得出现孤儿 tool-result（result 必须能配到 start）；
  * 3. 流结束时不得有未配对的 tool-start（骨架屏悬空）；
- * 4. 流末必须且有且仅有一个终止事件（done 或 engine）；
+ * 4. 流末必须且有且仅有一个终止事件 done（R2：doneCount!==1 为唯一判据，engine 不算终止）；
  * 5. reasoning 步骤的 stepIndex 必须严格递增（思考链乱序）。
  *
  * @param events 事件序列
@@ -181,8 +181,6 @@ export function validateStreamEvents(events: readonly ChatStreamEvent[]): Stream
   const violations: StreamViolation[] = [];
   const started = new Map<string, string>();
   const results = new Set<string>();
-  const terminalKinds = new Set<string>();
-  let terminalCount = 0;
   let lastStepIndex = -1;
 
   events.forEach((event, index) => {
@@ -231,15 +229,11 @@ export function validateStreamEvents(events: readonly ChatStreamEvent[]): Stream
     }
 
     /*
-     * 【终止事件口径】
-     * - done 是**唯一**的终止标记（A8 新增），必须且只能出现一次；
-     * - engine 只是"实际引擎声明"，回落场景天然会出现两条
-     *   （先 llm 后 simulator），它不是终止标记，不参与唯一性校验。
+     * 【终止事件口径 · R2】done 是**唯一**终止标记，收尾判定只看 done（见下方 doneCount）。
+     * engine 只是"实际引擎声明"，回落场景天然会出现两条（先 llm 后 simulator），
+     * 它不是终止标记，不参与计数；reset 是轮换复位声明，同样不是终止标记。
+     * 这里不再维护只写不读的 terminalKinds / terminalCount。
      */
-    if (event.type === 'done' || event.type === 'engine') {
-      terminalCount += 1;
-      terminalKinds.add(event.type);
-    }
   });
 
   for (const [toolCallId, toolName] of started) {
@@ -252,24 +246,23 @@ export function validateStreamEvents(events: readonly ChatStreamEvent[]): Stream
     }
   }
 
-  if (terminalCount === 0) {
+  /*
+   * 【R2 · done 唯一判据】收尾只看 done：doneCount !== 1 即违例。
+   * 0 条 = 流末缺终止（截断）；>1 条 = 重复终止。engine / reset 不参与计数。
+   * 不再保留只写不读的 terminalKinds。
+   */
+  const doneCount = events.filter((event) => event.type === 'done').length;
+  if (doneCount === 0) {
     violations.push({
       index: events.length,
       kind: 'missing-terminal',
-      detail: '流末缺少终止事件（done 或 engine）',
+      detail: '流末缺少终止事件 done',
     });
-  }
-
-  /*
-   * terminalKinds 里同时出现 done 与 engine 是合法的（先声明引擎、再收尾），
-   * 但同一种终止事件重复出现属于缺陷。这里按类型计数再校验一次。
-   */
-  const doneCount = events.filter((event) => event.type === 'done').length;
-  if (doneCount > 1) {
+  } else if (doneCount > 1) {
     violations.push({
       index: events.length,
       kind: 'duplicate-terminal',
-      detail: `终止事件 done 出现 ${doneCount} 次`,
+      detail: `终止事件 done 出现 ${doneCount} 次（应唯一）`,
     });
   }
 

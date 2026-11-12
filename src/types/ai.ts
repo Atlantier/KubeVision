@@ -490,6 +490,25 @@ export interface ChatStreamDoneEvent {
 }
 
 /**
+ * ChatStreamResetEvent —— 轮换复位事件（R2 唯一允许新增的事件类型）。
+ *
+ * 【为什么需要】连续发起多条请求时，上一轮的思考链 / 卡片 / trace 若不清空，
+ * 会与新一轮事件混在同一条消息里，造成"重复气泡 / 跨轮 trace 串味"。
+ * 服务端在每条流的最开始下发 reset，前端据此把占位消息与 trace 复位到干净起点，
+ * 再消费后续事件。它不携带业务载荷，只声明"从这里开始是全新一轮"。
+ *
+ * 【兼容约定】旧前端忽略未知 type（向前兼容），因此新增 reset 不破坏既有消费端；
+ * 既有事件的结构与语义一律不变（不重构协议）。
+ */
+export interface ChatStreamResetEvent {
+  readonly type: 'reset';
+  /** 本次请求的 id（与 done/error 同源，便于对号） */
+  readonly requestId: string;
+  /** 复位原因（人类可读，便于排查；缺省 'new-round'） */
+  readonly reason?: string;
+}
+
+/**
  * ChatStreamEvent —— NDJSON 流式协议行级事件判别联合。
  *
  * 【解析契约】每行一个 JSON 对象，前端 ReadableStreamDefaultReader +
@@ -534,7 +553,8 @@ export type ChatStreamEvent =
   | ChatStreamToolResultEvent
   | ChatStreamEngineEvent
   | ChatStreamErrorEvent
-  | ChatStreamDoneEvent;
+  | ChatStreamDoneEvent
+  | ChatStreamResetEvent;
 
 /* ========================================================================== */
 /* GenUI 组件 Props（思考链 / 骨架屏）                                           */
@@ -814,6 +834,17 @@ export interface CopilotMessage {
   readonly errorCategory?: ChatErrorCategory;
   /** 服务端请求 id（A9：错误提示与日志对号） */
   readonly requestId?: string;
+  /**
+   * 是否为"收尾不完整"消息（R2 收尾三态之一）。
+   *
+   * 【三态口径】流结束（isStreaming=false）有三种结局：
+   * - 收到唯一 done → 正常（failed/incomplete 均不为 true）；
+   * - 未收到 done（连接被截断 / 代理切断）→ incomplete=true，
+   *   气泡底部渲染「回答可能不完整」+ 重新生成，而非冒充正常结束；
+   * - 解析出错 / 请求异常 → failed=true（走错误降级块）。
+   * incomplete 与 failed 刻意分开：前者"内容可能有但没把握"，后者"明确失败"。
+   */
+  readonly incomplete?: boolean;
   /**
    * 是否为自愈验证摘要消息（绿色系统级消息）。
    *

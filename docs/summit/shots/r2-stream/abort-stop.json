@@ -1,0 +1,16 @@
+{
+  "at": "2026-11-12T06:51:50.140Z",
+  "started": true,
+  "during": {
+    "copilotStreaming": true,
+    "streamingMessages": null
+  },
+  "afterAbort": {
+    "copilotStreaming": false,
+    "inputDisabled": false,
+    "assistantBubbles": 0,
+    "liveTimers": 0,
+    "hasAbortErrorText": false,
+    "hasIncompleteText": false
+  }
+}

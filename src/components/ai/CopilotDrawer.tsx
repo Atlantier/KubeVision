@@ -77,6 +77,15 @@ import { useAgentTraceStore } from '@/store/useAgentTraceStore';
 import AgentTracePanel from '@/components/ai/AgentTracePanel';
 import { embedQueryText } from '@/utils/edgeEmbedding';
 import { computeViewportPixelFeatures } from '@/utils/pixelFeatures';
+import {
+  createChatStreamSession,
+  createNdjsonLineParser,
+  createPromptQueue,
+  type ChatStreamSession,
+  type PromptQueue,
+  type SessionEndReason,
+} from '@/utils/chatStreamConsumer';
+import { isChatStreamEvent } from '@/utils/chatStreamSchema';
 import TraceIdChip from '@/components/hud/TraceIdChip';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
@@ -982,6 +991,31 @@ function MessageBubble({
           </button>
         </div>
       ) : null}
+
+      {/* ---- R2 · 收尾不完整提示（未收到 done）：气泡底部「回答可能不完整」+ 重新生成 ----
+        * 【设计意图】连接在收到完成标记前被截断时，不冒充正常结束，也不当成硬错误：
+        * 用克制的中性色提示"内容可能不全"，并给一个明确的「重新生成」动作。
+        * 已生成的内容保留，用户可一眼判断要不要重来。 */}
+      {message.incomplete === true && !message.isStreaming ? (
+        <div className="rounded-md border border-slate-500/40 bg-slate-500/[0.08] p-2">
+          <p className="flex items-start gap-1 text-[10px] leading-relaxed text-slate-300">
+            <AlertTriangle className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
+            <span>回答可能不完整：连接在收到完成标记前结束，已生成内容保留，可重新生成。</span>
+          </p>
+          <button
+            type="button"
+            onClick={(): void => {
+              if (onRetry !== undefined && message.failedPrompt !== undefined) {
+                onRetry(message.id, message.failedPrompt);
+              }
+            }}
+            className="mt-1.5 flex items-center gap-1 rounded border border-slate-500/50 bg-slate-500/[0.15] px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider text-slate-200 transition-colors hover:border-slate-400/70 hover:bg-slate-500/25"
+          >
+            <RotateCw className="h-2.5 w-2.5" aria-hidden />
+            重新生成
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1114,13 +1148,20 @@ export default function CopilotDrawer() {
   const skeletonWatchdogRef = useRef<Map<string, number>>(new Map());
 
   /**
-   * 排队中的 prompt（A5）。
+   * 排队中的 prompt —— FIFO 数组（R2，替代旧的单槽覆盖）。
    *
    * 【解决什么】流式期间用户点"快照诊断"等操作会调用 sendMessage，
-   * 旧实现直接 return——请求被静默丢弃，用户以为点了没反应。
-   * 现在记下来，当前流结束后自动发送，并给出"已排队"提示。
+   * 旧实现直接 return（丢弃）或单槽覆盖（连发丢第一条）。现在用跨会话共享的
+   * FIFO 队列：enqueue 追加尾部，每次流收尾 shift 出队首发送，连发不丢上下文。
    */
-  const queuedPromptRef = useRef<string | null>(null);
+  const promptQueueRef = useRef<PromptQueue>(createPromptQueue());
+  /**
+   * 当前活跃流式会话（R2）。
+   *
+   * 【为什么用 ref】卸载 / 全局中止（copilotAbortToken）时需要拿到正在跑的会话
+   * 做幂等收尾（清看门狗 + 复位 isStreaming/copilotStreaming），避免状态悬空。
+   */
+  const activeSessionRef = useRef<ChatStreamSession | null>(null);
   /**
    * sendMessage 的最新引用（A5 排队重发用）。
    *
@@ -1150,7 +1191,17 @@ export default function CopilotDrawer() {
    */
   useEffect((): (() => void) => {
     const watchdogs = skeletonWatchdogRef.current;
+    /* queue 引用恒定（createPromptQueue 只创建一次），在 effect 内捕获以避开
+     * react-hooks/exhaustive-deps 的 ref.current 变化告警。 */
+    const queue = promptQueueRef.current;
     return (): void => {
+      /* 卸载即收尾：中止在途流 + 幂等 finalize（清看门狗、复位 streaming），
+       * 并清空排队队列，避免卸载后定时器回调 / 排队重发对着失效闭包执行。 */
+      abortRef.current?.abort();
+      abortRef.current = null;
+      activeSessionRef.current?.finalize('abort');
+      activeSessionRef.current = null;
+      queue.clear();
       for (const timer of watchdogs.values()) {
         window.clearTimeout(timer);
       }
@@ -1201,8 +1252,11 @@ export default function CopilotDrawer() {
     abortRef.current = null;
     /*
      * 中止后必须把活动状态复位，否则阶段 3→4 的事件门会一直等
-     * copilotStreaming === false 而永远不推进。
+     * copilotStreaming === false 而永远不推进。R2：同时对活跃会话做幂等收尾，
+     * 立即复位消息级 isStreaming / 看门狗（abort 触发的 catch 也会再收尾一次，幂等安全）。
      */
+    activeSessionRef.current?.finalize('abort');
+    activeSessionRef.current = null;
     setCopilotStreaming(false);
   }, [copilotAbortToken, setCopilotStreaming]);
 
@@ -1530,14 +1584,12 @@ export default function CopilotDrawer() {
       if (text.length === 0) return;
 
       /*
-       * 【A5 自愈：流式期间不丢弃请求，改为排队】
-       * 旧实现 `if (isStreaming) return` 会让"快照诊断/主动诊断"在
-       * AI 正在回答时被静默吞掉——用户点了按钮，什么也没发生。
-       * 现在记入队列并在当前流结束后自动发送，同时明确提示"已排队"。
+       * 【R2 · FIFO 排队】流式期间不丢弃请求：enqueue 追加到共享队列尾部，
+       * 当前流收尾时 shift 出队首自动发送。连发多条按序执行，不再单槽覆盖丢上下文。
        */
       if (isStreaming) {
-        queuedPromptRef.current = text;
-        setQueuedPromptNotice('已排队：当前回答结束后自动发送本次请求');
+        promptQueueRef.current.enqueue(text);
+        setQueuedPromptNotice(`已排队 ${promptQueueRef.current.length()} 条：当前回答结束后按序自动发送`);
         return;
       }
 
@@ -1566,10 +1618,6 @@ export default function CopilotDrawer() {
       if (viewportForSend !== null) {
         setCapturedViewport(null);
       }
-
-      /* R46：无 Key 也能真看图 —— 端侧计算像素特征（无截图则跳过） */
-      const pixelFeatures =
-        viewportForSend === null ? null : await computeViewportPixelFeatures(viewportForSend);
 
       /* ---- 1. 用户消息入列 ---- */
       const userMessage: CopilotMessage = {
@@ -1614,16 +1662,70 @@ export default function CopilotDrawer() {
       setLastAssistantMessageId(assistantId);
       stickToBottomRef.current = true;
 
+      /* R2 · trace 换轮：新请求开始即清空上一轮 span/summary，避免跨轮串味 */
+      useAgentTraceStore.getState().begin();
+
       /**
-       * finalize —— 流收尾函数（在 try 内赋值，供 catch/finally 共用）。
-       *
-       * 【为什么提升到 try 之外】A3 要求 abort 与正常结束统一收尾，
-       * 而 catch/finally 在 try 块的作用域之外，看不到块内 const。
-       * 这里先占位，进入流读取后赋值为真正的实现。
+       * 【R2 · 收尾函数必须在任何 await 之前定义】旧实现先赋空函数、fetch 成功后才赋真值，
+       * 于是 embedQueryText / fetch 在赋值前抛错时 catch/finally 调到的是空函数，
+       * isStreaming / copilotStreaming 永不复位、输入框永久锁死。现在会话在第一个 await
+       * 之前就创建，finalize 从第一行起就是真实实现，任何失败路径都能幂等收尾。
        */
-      let finalize: () => void = (): void => {};
+      const session = createChatStreamSession({
+        setStreaming: setIsStreaming,
+        setCopilotStreaming,
+        patchAssistant: (patch): void => {
+          patchMessage(assistantId, (m): CopilotMessage => ({
+            ...m,
+            isStreaming: patch.isStreaming,
+            ...(patch.incomplete === true ? { incomplete: true, failedPrompt: text } : {}),
+            ...(patch.failed === true ? { failed: true } : {}),
+            toolCards: m.toolCards.map((card): CopilotToolCard =>
+              card.state === 'skeleton'
+                ? { ...card, state: 'error', errorMessage: '流已结束但未收到该卡片的渲染结果' }
+                : card,
+            ),
+          }));
+        },
+        schedule: (fn, ms): number => window.setTimeout(fn, ms),
+        cancel: (id): void => window.clearTimeout(id),
+        drainQueue: (): void => {
+          const next = promptQueueRef.current.shift();
+          if (next === undefined) {
+            setQueuedPromptNotice(null);
+            return;
+          }
+          setQueuedPromptNotice(
+            promptQueueRef.current.length() > 0
+              ? `已排队 ${promptQueueRef.current.length()} 条：当前回答结束后按序自动发送`
+              : null,
+          );
+          window.setTimeout((): void => {
+            sendMessageRef.current?.(next);
+          }, 0);
+        },
+        requestTts: (): void => {
+          if (ttsEnabled) setSpeechRequest({ messageId: assistantId, nonce: Date.now() });
+        },
+        onWatchdogTimeout: (toolCallId): void => {
+          patchMessage(assistantId, (m): CopilotMessage => ({
+            ...m,
+            toolCards: m.toolCards.map((c): CopilotToolCard =>
+              c.toolCallId === toolCallId && c.state === 'skeleton'
+                ? { ...c, state: 'error', errorMessage: '超过 8 秒未收到渲染结果，已终止等待' }
+                : c,
+            ),
+          }));
+        },
+      });
+      activeSessionRef.current = session;
+      const finalize = (reason: SessionEndReason): void => session.finalize(reason);
 
       try {
+        /* R46：端侧像素特征（无截图则跳过）——移入 try，失败也能被统一收尾 */
+        const pixelFeatures =
+          viewportForSend === null ? null : await computeViewportPixelFeatures(viewportForSend);
+
         /* R45：端侧模型就绪时带查询句向量（三路召回）；未就绪/300ms 超时自动两路 */
         const queryEmbedding = await embedQueryText(text);
 
@@ -1654,314 +1756,239 @@ export default function CopilotDrawer() {
           signal: controller.signal,
         });
 
+        /* 【R2 · 中止不回落】首行判 signal.aborted：用户主动停止直接收尾返回，
+         * 不 throw、不注入「诊断流意外中断」错误。 */
+        if (controller.signal.aborted) {
+          finalize('abort');
+          return;
+        }
         if (!response.ok || response.body === null) {
           throw new Error(`服务端返回 ${response.status}`);
         }
 
-        /* ---- 3. NDJSON 逐行解析 ---- */
+        /* ---- 3. NDJSON 逐行解析（UTF-8 跨 chunk 安全 + 半行缓冲 + 流末 flush） ---- */
         const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        /**
-         * clearAllSkeletonWatchdogs —— 清空所有骨架屏看门狗。
-         *
-         * 【必须清】流结束/中断后若定时器还在跑，8 秒后会对已经结束的消息
-         * 再 patch 一次（无用状态更新），且 StrictMode 下可能重复。
-         */
-        const clearAllSkeletonWatchdogs = (): void => {
-          for (const timer of skeletonWatchdogRef.current.values()) {
-            window.clearTimeout(timer);
-          }
-          skeletonWatchdogRef.current.clear();
-        };
+        let receivedDone = false;
 
         /**
-         * finalize —— 流收尾唯一入口（正常结束 / 异常 / abort 三条路径共用）。
+         * dispatch —— 事件分派：只消费已通过 isChatStreamEvent 形状校验的事件。
          *
-         * 【A3 自愈】旧实现只在正常结束分支把消息级 isStreaming 置 false；
-         * abort 分支什么都不做，于是"停止生成"后打字光标不消失、
-         * 朗读按钮也不出现（它依赖 !isStreaming）。现在三条路径统一收尾。
-         *
-         * 【幂等】catch 与 finally 都会调用，用 finalized 标记保证只执行一次。
+         * 【状态流转】reasoning 追加思考链 / text 累积正文 / tool-start 挂骨架并注册
+         * 看门狗 / tool-result 撤销看门狗并原地升级卡片 / done 立即 finalize 并置
+         * receivedDone 以跳出读循环。畸形帧在解析器层就被拦下（markParseError），
+         * 不会进入这里的深层属性访问，故不会崩溃。
          */
-        let finalized = false;
-        finalize = (): void => {
-          if (finalized) return;
-          finalized = true;
+        const dispatch = (event: ChatStreamEvent): void => {
+          switch (event.type) {
+            case 'reasoning': {
+              patchMessage(assistantId, (m): CopilotMessage => ({
+                ...m,
+                reasoningSteps: [...m.reasoningSteps, event.step],
+              }));
+              break;
+            }
 
-          clearAllSkeletonWatchdogs();
+            case 'text': {
+              patchMessage(assistantId, (m): CopilotMessage => ({
+                ...m,
+                text: m.text + event.content,
+              }));
+              break;
+            }
 
-          /* 消息级状态复位 + 骨架屏兜底（服务端未及补发 result 时） */
-          patchMessage(assistantId, (m): CopilotMessage => {
-            const hasOrphan = m.toolCards.some((card): boolean => card.state === 'skeleton');
-            return {
-              ...m,
-              isStreaming: false,
-              ...(hasOrphan
-                ? {
-                    toolCards: m.toolCards.map((card): CopilotToolCard =>
-                      card.state === 'skeleton'
-                        ? { ...card, state: 'error', errorMessage: '流已结束但未收到该卡片的渲染结果' }
-                        : card,
-                    ),
-                  }
-                : {}),
-            };
-          });
+            case 'tool-start': {
+              /* 【A1 自愈：按 toolCallId 去重】同 id 只挂一次，杜绝"两张指标卡"。 */
+              const card: CopilotToolCard = {
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                mcpUri: event.mcpUri,
+                state: 'skeleton',
+              };
+              patchMessage(assistantId, (m): CopilotMessage => {
+                if (m.toolCards.some((c): boolean => c.toolCallId === event.toolCallId)) return m;
+                return { ...m, toolCards: [...m.toolCards, card] };
+              });
+              /* R2：看门狗由会话统一管理；registerWatchdog 内部先 clearTimeout(prev)，
+               * 重复 tool-start 不会泄漏上一个定时器。 */
+              session.registerWatchdog(event.toolCallId, SKELETON_WATCHDOG_MS);
+              break;
+            }
 
-          setIsStreaming(false);
-          abortRef.current = null;
-          setCopilotStreaming(false);
+            case 'tool-result': {
+              /* 收到结果即撤销该卡的看门狗 */
+              session.clearWatchdog(event.toolCallId);
 
-          /*
-           * ---- A5：排队请求自动发送 ----
-           * 先清提示再发送；真正发送放到下一帧，确保本次状态已提交。
-           */
-          const queued = queuedPromptRef.current;
-          if (queued !== null) {
-            queuedPromptRef.current = null;
-            setQueuedPromptNotice(null);
-            window.setTimeout((): void => {
-              sendMessageRef.current?.(queued);
-            }, 0);
-          }
+              const failed = event.status === 'error';
+              patchMessage(assistantId, (m): CopilotMessage => {
+                const exists = m.toolCards.some((c): boolean => c.toolCallId === event.toolCallId);
+                /* 重复 result（旧服务端/重放）：已有 ready 卡片则忽略 */
+                const alreadyReady = m.toolCards.some(
+                  (c): boolean => c.toolCallId === event.toolCallId && c.state === 'ready',
+                );
+                if (alreadyReady) return m;
 
-          /*
-           * ---- A6：TTS 播报请求 ----
-           * 这里只发"请求"，真正播报由 effect 在 messages 提交后执行。
-           * 绝不把 speakMessage 写进 setMessages 的 updater（StrictMode 双播）。
-           */
-          if (ttsEnabled) {
-            setSpeechRequest({ messageId: assistantId, nonce: Date.now() });
+                if (!exists) {
+                  /* 孤儿 result：补一张卡（而非丢弃，避免用户永远等不到） */
+                  const created: CopilotToolCard =
+                    failed || event.args === null
+                      ? {
+                          toolCallId: event.toolCallId,
+                          toolName: event.toolName,
+                          mcpUri: `mcp://k8s-cluster/tools/${event.toolName}`,
+                          state: 'error',
+                          errorMessage: event.errorMessage ?? '工具调用失败',
+                        }
+                      : {
+                          toolCallId: event.toolCallId,
+                          toolName: event.toolName,
+                          mcpUri: `mcp://k8s-cluster/tools/${event.toolName}`,
+                          state: 'ready',
+                          args: event.args,
+                          synthesized: event.synthesized === true,
+                        };
+                  return { ...m, toolCards: [...m.toolCards, created] };
+                }
+
+                return {
+                  ...m,
+                  toolCards: m.toolCards.map((c): CopilotToolCard => {
+                    if (c.toolCallId !== event.toolCallId) return c;
+                    if (failed || event.args === null) {
+                      return { ...c, state: 'error', errorMessage: event.errorMessage ?? '工具调用失败' };
+                    }
+                    return {
+                      ...c,
+                      state: 'ready',
+                      args: event.args,
+                      synthesized: event.synthesized === true,
+                    };
+                  }),
+                };
+              });
+              break;
+            }
+
+            case 'engine': {
+              patchMessage(assistantId, (m): CopilotMessage => ({
+                ...m,
+                engine: event.engine,
+              }));
+              break;
+            }
+
+            case 'error': {
+              /* A9：结构化错误 → 分类文案 + requestId + 可重试标记 */
+              patchMessage(assistantId, (m): CopilotMessage => ({
+                ...m,
+                failed: true,
+                failedPrompt: text,
+                errorCategory: event.category,
+                requestId: event.requestId,
+              }));
+              break;
+            }
+
+            case 'span': {
+              useAgentTraceStore.getState().appendSpan({
+                traceId: event.traceId,
+                name: event.name,
+                startMs: event.startMs,
+                durationMs: event.durationMs,
+                status: event.status,
+                attrs: event.attrs,
+              });
+              break;
+            }
+
+            case 'trace-summary': {
+              useAgentTraceStore.getState().setSummary({
+                traceId: event.traceId,
+                engine: event.engine,
+                ttftMs: event.ttftMs,
+                totalMs: event.totalMs,
+                promptTokens: event.promptTokens,
+                completionTokens: event.completionTokens,
+                costCny: event.costCny,
+              });
+              break;
+            }
+
+            case 'reset': {
+              /* R2 新增事件：轮换复位声明。trace 已在 sendMessage 开头 begin() 清过，
+               * 且 reset 晚于流前的 intent/rag span，故这里只复位占位消息内容，
+               * 不再清 trace——避免把刚下发的诊断 span 抹掉。 */
+              patchMessage(assistantId, (m): CopilotMessage => ({
+                ...m,
+                text: '',
+                reasoningSteps: [],
+                toolCards: [],
+              }));
+              break;
+            }
+
+            case 'done': {
+              /* 【R2 · 收尾判定】收到 done 立即 finalize 并跳出读循环，不再等连接关闭。 */
+              session.markDone();
+              receivedDone = true;
+              finalize('done');
+              break;
+            }
+
+            default:
+              /* 未知事件类型：向前兼容，直接忽略（协议扩展不影响旧前端） */
+              break;
           }
         };
 
-        let buffer = '';
+        /* 解析器：consumeLine 内部 JSON.parse + isChatStreamEvent 校验，畸形帧走降级回调 */
+        const parser = createNdjsonLineParser({
+          onEvent: dispatch,
+          onMalformedLine: (): void => {
+            session.markParseError();
+          },
+          validate: isChatStreamEvent,
+        });
 
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-
-          /* 按 '\n' 切分；剩余不完整的半行留在 buffer 中等待下一 chunk */
-          let newlineIndex = buffer.indexOf('\n');
-          while (newlineIndex >= 0) {
-            const line = buffer.slice(0, newlineIndex).trim();
-            buffer = buffer.slice(newlineIndex + 1);
-            newlineIndex = buffer.indexOf('\n');
-            if (line.length === 0) continue;
-
-            let event: ChatStreamEvent;
-            try {
-              event = JSON.parse(line) as ChatStreamEvent;
-            } catch {
-              continue; /* 损坏行跳过，不中断整条流 */
-            }
-
-            /* ---- 4. 事件分派 ---- */
-            switch (event.type) {
-              case 'reasoning': {
-                patchMessage(assistantId, (m): CopilotMessage => ({
-                  ...m,
-                  reasoningSteps: [...m.reasoningSteps, event.step],
-                }));
-                break;
-              }
-
-              case 'text': {
-                patchMessage(assistantId, (m): CopilotMessage => ({
-                  ...m,
-                  text: m.text + event.content,
-                }));
-                break;
-              }
-
-              case 'tool-start': {
-                /*
-                 * 【A1 自愈：按 toolCallId 去重】
-                 * 回落引擎可能重发同一张卡（旧服务端行为），或代理重放同一帧。
-                 * 同 id 只挂一次，杜绝"两张指标卡"。
-                 */
-                const card: CopilotToolCard = {
-                  toolCallId: event.toolCallId,
-                  toolName: event.toolName,
-                  mcpUri: event.mcpUri,
-                  state: 'skeleton',
-                };
-                patchMessage(assistantId, (m): CopilotMessage => {
-                  if (m.toolCards.some((c): boolean => c.toolCallId === event.toolCallId)) return m;
-                  return { ...m, toolCards: [...m.toolCards, card] };
-                });
-
-                /*
-                 * 【A2 自愈：骨架屏 8 秒看门狗】
-                 * 服务端保证 start/result 配对，但网络中断/代理截断仍可能丢 result。
-                 * 旧实现只在"整条流结束"时兜底——流若挂住，卡片永久转圈。
-                 * 现在每张骨架独立计时：超时即转失败态，用户可点重试。
-                 */
-                const watchdogTimer = window.setTimeout((): void => {
-                  skeletonWatchdogRef.current.delete(event.toolCallId);
-                  patchMessage(assistantId, (m): CopilotMessage => ({
-                    ...m,
-                    toolCards: m.toolCards.map((c): CopilotToolCard =>
-                      c.toolCallId === event.toolCallId && c.state === 'skeleton'
-                        ? { ...c, state: 'error', errorMessage: '超过 8 秒未收到渲染结果，已终止等待' }
-                        : c,
-                    ),
-                  }));
-                }, SKELETON_WATCHDOG_MS);
-                skeletonWatchdogRef.current.set(event.toolCallId, watchdogTimer);
-                break;
-              }
-
-              case 'tool-result': {
-                /* 收到结果即撤销该卡的看门狗 */
-                const pendingTimer = skeletonWatchdogRef.current.get(event.toolCallId);
-                if (pendingTimer !== undefined) {
-                  window.clearTimeout(pendingTimer);
-                  skeletonWatchdogRef.current.delete(event.toolCallId);
-                }
-
-                const failed = event.status === 'error';
-                patchMessage(assistantId, (m): CopilotMessage => {
-                  const exists = m.toolCards.some((c): boolean => c.toolCallId === event.toolCallId);
-                  /* 重复 result（旧服务端/重放）：已有 ready 卡片则忽略 */
-                  const alreadyReady = m.toolCards.some(
-                    (c): boolean => c.toolCallId === event.toolCallId && c.state === 'ready',
-                  );
-                  if (alreadyReady) return m;
-
-                  if (!exists) {
-                    /* 孤儿 result：补一张卡（而非丢弃，避免用户永远等不到） */
-                    const created: CopilotToolCard =
-                      failed || event.args === null
-                        ? {
-                            toolCallId: event.toolCallId,
-                            toolName: event.toolName,
-                            mcpUri: `mcp://k8s-cluster/tools/${event.toolName}`,
-                            state: 'error',
-                            errorMessage: event.errorMessage ?? '工具调用失败',
-                          }
-                        : {
-                            toolCallId: event.toolCallId,
-                            toolName: event.toolName,
-                            mcpUri: `mcp://k8s-cluster/tools/${event.toolName}`,
-                            state: 'ready',
-                            args: event.args,
-                            synthesized: event.synthesized === true,
-                          };
-                    return { ...m, toolCards: [...m.toolCards, created] };
-                  }
-
-                  return {
-                    ...m,
-                    toolCards: m.toolCards.map((c): CopilotToolCard => {
-                      if (c.toolCallId !== event.toolCallId) return c;
-                      if (failed || event.args === null) {
-                        return { ...c, state: 'error', errorMessage: event.errorMessage ?? '工具调用失败' };
-                      }
-                      return {
-                        ...c,
-                        state: 'ready',
-                        args: event.args,
-                        synthesized: event.synthesized === true,
-                      };
-                    }),
-                  };
-                });
-                break;
-              }
-
-              case 'engine': {
-                patchMessage(assistantId, (m): CopilotMessage => ({
-                  ...m,
-                  engine: event.engine,
-                }));
-                break;
-              }
-
-              case 'error': {
-                /* A9：结构化错误 → 分类文案 + requestId + 可重试标记 */
-                patchMessage(assistantId, (m): CopilotMessage => ({
-                  ...m,
-                  failed: true,
-                  failedPrompt: text,
-                  errorCategory: event.category,
-                  requestId: event.requestId,
-                }));
-                break;
-              }
-
-              case 'span': {
-                useAgentTraceStore.getState().appendSpan({
-                  traceId: event.traceId,
-                  name: event.name,
-                  startMs: event.startMs,
-                  durationMs: event.durationMs,
-                  status: event.status,
-                  attrs: event.attrs,
-                });
-                break;
-              }
-
-              case 'trace-summary': {
-                useAgentTraceStore.getState().setSummary({
-                  traceId: event.traceId,
-                  engine: event.engine,
-                  ttftMs: event.ttftMs,
-                  totalMs: event.totalMs,
-                  promptTokens: event.promptTokens,
-                  completionTokens: event.completionTokens,
-                  costCny: event.costCny,
-                });
-                break;
-              }
-
-              case 'done': {
-                /* 终止事件由循环结束后的 finalize 统一处理，这里无需动作 */
-                break;
-              }
-
-              default:
-                /* 未知事件类型：向前兼容，直接忽略（协议扩展不影响旧前端） */
-                break;
-            }
-          }
+          parser.push(value);
+          if (receivedDone) break;
         }
 
-        /* 流正常结束（done 事件或连接关闭）→ 统一收尾 */
-        finalize();
+        /* 流末 flush：decoder.decode()(stream:false) + 消费最后一条残行，截断流不丢尾。
+         * 收尾三态：收到 done=正常 / 未收到=incomplete / 解析出错=error。 */
+        parser.flush();
+        const endState = session.resolveState();
+        finalize(endState === 'normal' ? 'done' : endState);
       } catch (error) {
-        const aborted = error instanceof Error && error.name === 'AbortError';
-        if (!aborted) {
-          /**
-           * 【错误降级契约】中断时不留下一条半截的"正在输入"气泡，
-           * 而是写入可读的错误说明并把原 prompt 记下来供重试。
-           * 空正文 → 直接给错误文案；已有部分正文 → 保留正文并追加错误尾注
-           * （用户已读到的内容不该被抹掉）。
-           */
-          const reason = error instanceof Error ? error.message : '未知错误';
-          patchMessage(assistantId, (m): CopilotMessage => ({
-            ...m,
-            text:
-              m.text.length > 0
-                ? `${m.text}\n\n> [WARN] 诊断流意外中断：${reason}`
-                : `> [ERR] 诊断请求失败：${reason}`,
-            failed: true,
-            failedPrompt: text,
-            errorCategory: 'network',
-          }));
+        /* 【R2 · 中止不回落】首行判 signal.aborted：用户主动停止不注入错误、直接收尾返回。 */
+        if (controller.signal.aborted) {
+          finalize('abort');
+          return;
         }
-        /*
-         * 【A3 自愈：abort 与正常结束统一走 finalize】
-         * 旧实现 abort 分支什么都不做，消息级 isStreaming 永远为 true，
-         * 表现为"停止生成后还显示打字光标、朗读按钮不出现"。
-         * 现在两条路径汇聚到同一个收尾函数，内容保留、状态复位。
+        /**
+         * 【错误降级契约】非中止异常：写入可读错误说明并记下原 prompt 供重试。
+         * 空正文 → 直接给错误文案；已有部分正文 → 保留正文并追加错误尾注。
          */
-        finalize();
+        const reason = error instanceof Error ? error.message : '未知错误';
+        patchMessage(assistantId, (m): CopilotMessage => ({
+          ...m,
+          text:
+            m.text.length > 0
+              ? `${m.text}\n\n> [WARN] 诊断流意外中断：${reason}`
+              : `> [ERR] 诊断请求失败：${reason}`,
+          failed: true,
+          failedPrompt: text,
+          errorCategory: 'network',
+        }));
+        finalize('error');
       } finally {
-        /* 兜底：任何异常路径都在这里收尾一次（finalize 幂等） */
-        finalize();
+        /* 兜底收尾（finalize 幂等）：任何路径都复位 streaming / 看门狗 / 排队提示。 */
+        const endState = session.resolveState();
+        finalize(endState === 'normal' ? 'done' : endState);
+        if (abortRef.current === controller) abortRef.current = null;
+        activeSessionRef.current = null;
       }    },
     [buildClusterContext, capturedViewportDataUrl, isStreaming, messages, patchMessage, setCapturedViewport,
       setCopilotStreaming,

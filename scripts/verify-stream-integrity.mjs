@@ -31,6 +31,7 @@ const BASE = process.env.KV_BASE_URL ?? 'http://127.0.0.1:3000';
 /* ========================================================================== */
 
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -510,6 +511,20 @@ if (REPRO) {
     failures += 1;
     console.log(`  ✗ 仍有 ${unpaired.length} 个未配对 tool-start`);
   }
+}
+
+/* ========================================================================== */
+/* R2 · 流式消费内核离线单测（不依赖服务端：收尾三态 / 兜底复位 / 截断流）          */
+/* ========================================================================== */
+console.log(`\n${'='.repeat(72)}`);
+console.log('R2 流式消费内核离线单测（收尾三态 / 生命周期兜底 / 截断流）');
+console.log('='.repeat(72));
+try {
+  execFileSync(process.execPath, ['scripts/run-chat-stream-tests.mjs'], { stdio: 'inherit', cwd: ROOT });
+  console.log('  ✓ 消费内核单测全绿（收尾三态 / 停止不回落 / 兜底复位 / FIFO / 截断流）');
+} catch {
+  failures += 1;
+  console.log('  ✗ 消费内核单测未全绿');
 }
 
 /* 清理转译产物 */

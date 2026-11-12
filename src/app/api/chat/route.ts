@@ -2831,6 +2831,10 @@ export async function POST(request: Request): Promise<Response> {
        */
       const requestId = `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+      /* R2 · 轮换复位：每条流下发 reset，声明"从这里开始是全新一轮"。
+       * 这是本轮唯一新增的事件类型，既有事件结构与语义一律不变（不重构协议）。 */
+      emit({ type: 'reset', requestId, reason: 'new-round' });
+
       try {
         /**
          * ============ 推理链：按意图与阶段渐进推送 ============
