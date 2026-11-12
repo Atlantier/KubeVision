@@ -58,3 +58,22 @@
 | R3-1 | IME 用合成 isComposing/keyCode 229 事件验证，未接真实操作系统输入法 | **MITIGATED** | headless Edge 无 OS IME；双判逻辑已单测+浏览器合成事件覆盖，真机 IME 未测 | 「中文输入防误触按标准 isComposing+229 双判实现；现场用真实输入法再复核一次。」 | 前端 | 现场 |
 | R3-2 | 键盘 E2E 在 SwiftShader 软渲染下跑，时序断言用轮询等待 | **MITIGATED** | 相机飞行阻塞主线程会拖慢退场动画（实测面板关闭可达 2.6s）；真实 GPU 时序未测 | 「交互逻辑正确性已验证；丝滑时序以真实 GPU 为准，软渲染不宣称帧率。」 | 前端 | 持续 |
 | R3-3 | verify 实际 35 项 vs README/verify-summary 记 34 | **OPEN（转 R14）** | 既有文档数字漂移，非 R3 引入；R3 不改文档数字 | 「以 verify 真实输出为准，文档同源在 R14 统一收口。」 | 文档 | R14 |
+
+---
+
+## R3 · 进阶：交互确定性运行期可证明（2026-11-12 · 进阶完成）
+
+> 口令「完成R3 进阶」。新增三个对抗探针，把 R3 main 的修复做成运行期可证明；本轮**未改应用代码**，仅新增探针/脚本与证据。
+
+| 进阶项 | 探针 | 实测结果 | 证据 |
+|---|---|---|---|
+| ① 键盘-only 全路径 | `probe:keyboard-path` | **12/12**：Tab/Enter/Space/方向键/Esc 走完「命令面板→worker-beta→故障演练→OOM→快照诊断→RAG→复盘→逐层回全景」；Esc 每次只关一层；20 次开合 keydown 监听净数 5→5 恒定（零泄漏） | `docs/evidence/r3-advanced/keyboard-path/`（分步截图可由探针再生 + listener-curve.json） |
+| ② 免疫合并对抗 | `probe:immune-adversarial` | **10/10**：FakeEventSource 注入 20 帧红绿抖动，窗口内 20/20 免疫保持绿、重复自愈被拒；remainingSec=15 与 store 推算一致；窗口外红帧显红/绿帧显绿；复位曲线 37.7→66.9（一帧插值）→96 | `docs/evidence/r3-advanced/immune-adversarial-curve.json` |
+| ③ 水合对抗 | `probe:hydration` | **20/20**：时区（沪/纽/伦/UTC）×语言（zh/en/ja）×时钟偏移（0/+5min/−2min）组合刷新，水合不一致 0 次、error 0 次 | `tmp-logs/tmp-r3adv-hydration.log`（本地） |
+
+**回归**：verify:quick 8/8 · probe:keyboard 15/15（无回退；本轮未改应用代码）。
+
+| # | 事项 | 状态 | 原因（证据） | 兜底话术 | 负责人 | 截止 |
+|---|---|---|---|---|---|---|
+| R3-4 | 混沌/复盘等顶层模态无焦点陷阱：打开后焦点停在背景触发按钮（键盘路径探针 A2 实测 focusInDialog=false） | **OPEN（转 R12）** | R3 收敛了 Esc 分级栈但未做焦点陷阱/归还（属 R12「Overlay 栈与焦点」）；键盘路径仍可经 Tab 导航完成，不阻塞操作 | 「Esc 分层与键盘可达已验证；焦点陷阱与关闭归还焦点在 R12 统一治理。」 | 前端 | R12 |
+| R3-5 | 键盘路径/免疫对抗在 SwiftShader 软渲染下跑，启动需预热且不可并发多浏览器 | **MITIGATED** | 僵尸浏览器进程争 CPU 会致 Canvas 初始化超时；探针已加长轮询等待，单浏览器串行运行稳定 | 「探针串行运行可复现；真实 GPU 下启动更快。」 | 测试 | 持续 |

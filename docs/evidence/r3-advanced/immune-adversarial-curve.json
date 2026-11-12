@@ -1,0 +1,188 @@
+{
+  "windowMs": 15000,
+  "target": "pod-redis-cluster-shard-0",
+  "jitter": [
+    {
+      "i": 0,
+      "injected": "red",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 1,
+      "injected": "green",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 2,
+      "injected": "red",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 3,
+      "injected": "green",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 4,
+      "injected": "red",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 5,
+      "injected": "green",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 6,
+      "injected": "red",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 7,
+      "injected": "green",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 8,
+      "injected": "red",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 9,
+      "injected": "green",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 10,
+      "injected": "red",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 11,
+      "injected": "green",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 12,
+      "injected": "red",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 13,
+      "injected": "green",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 14,
+      "injected": "red",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 15,
+      "injected": "green",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 16,
+      "injected": "red",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 17,
+      "injected": "green",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 18,
+      "injected": "red",
+      "status": "Running",
+      "mem": 37.7
+    },
+    {
+      "i": 19,
+      "injected": "green",
+      "status": "Running",
+      "mem": 37.7
+    }
+  ],
+  "curve": [
+    {
+      "t": 0,
+      "mem": 37.7,
+      "status": "Running"
+    },
+    {
+      "t": 1,
+      "mem": 37.7,
+      "status": "Running"
+    },
+    {
+      "t": 2,
+      "mem": 37.7,
+      "status": "Running"
+    },
+    {
+      "t": 3,
+      "mem": 66.9,
+      "status": "OOMKilled"
+    },
+    {
+      "t": 4,
+      "mem": 96,
+      "status": "OOMKilled"
+    },
+    {
+      "t": 5,
+      "mem": 96,
+      "status": "OOMKilled"
+    },
+    {
+      "t": 6,
+      "mem": 96,
+      "status": "OOMKilled"
+    },
+    {
+      "t": 7,
+      "mem": 96,
+      "status": "OOMKilled"
+    },
+    {
+      "t": 8,
+      "mem": 96,
+      "status": "OOMKilled"
+    },
+    {
+      "t": 9,
+      "mem": 96,
+      "status": "OOMKilled"
+    },
+    {
+      "t": 10,
+      "mem": 96,
+      "status": "OOMKilled"
+    },
+    {
+      "t": 11,
+      "mem": 96,
+      "status": "OOMKilled"
+    }
+  ]
+}

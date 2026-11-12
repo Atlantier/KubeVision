@@ -55,6 +55,10 @@ tmp-demo-test/
 # 验收失败证据（运行时生成，不入库）
 docs/summit/failures/
 
+# R3 进阶键盘路径分步截图（可由 pnpm probe:keyboard-path 再生，不入库防二进制膨胀；
+# 同目录 JSON 曲线证据入库）
+docs/evidence/r3-advanced/**/*.png
+
 # 脚本编译/转译临时目录（sim-drift / verify-telemetry 运行时生成）
 tmp-sim/
 tmp-telemetry/
