@@ -176,12 +176,28 @@ usage 裁剪，始终可被引用。
   - 静态拒绝 `--:` / `var(--)` / 空选择器 `. {}` / 双重透明度 / 非刻度裸透明度 / 半像素与 <10px 字号；
   - 校验 `tokens.GLASS` 与 `globals.css` blur 变量一致；
   - **全量透明度比对**：提取 src 全部含透明度修饰符的类，逐个与生产 CSS 选择器比对，
-    输出「源码类总数 / 已生成数 / 缺失清单」，缺失即阻断 verify，不设白名单。
+    输出「源码类总数 / 已生成数 / 缺失清单」，缺失即阻断 verify，不设白名单；
+  - **动态拼接闸门（R3）**：`.tsx` 的 className 里颜色/透明度类出现 `${…}` 插值即 fail
+    （Tailwind 无法静态生成）。`.ts`（API/工具/常量）无 className，不在扫描范围，
+    避免把 `fill-${toolName}` 这类 toolCallId 误判为颜色类；
+  - **`--require-build` 硬闸门（R3）**：缺生产 CSS 时全量比对不再 skip 而是 fail，
+    确保"类是否真实生成"永远被验证（配合先 `pnpm build`）。
 - `scripts/probe-glass-contract.mjs`（接入 `verify:all`，需 dev/preview 服务）：
   四档视口（1920×1080 / 1366×768 / 1024×768 / 800×600）实测 `.kv-panel / .kv-chip /
-  .kv-overlay` 的 `backdropFilter / backgroundColor / borderColor / boxShadow` 逐项符合令牌；
-  `prefers-reduced-motion` 下 `transition/animationDuration ≤ 1ms`。期望值从 `tokens.ts` 读取。
+  .kv-overlay` 的 `backdropFilter / backgroundColor / borderColor / boxShadow` 逐项符合令牌，
+  并读取 DOM 中真实挂载的 `.kv-panel` 业务面板复核；`prefers-reduced-motion` 下
+  `transition/animationDuration ≤ 1ms`，且 **BootController 开场直接完成**
+ （`window.__KUBEVISION_BOOT__ === 1`）。期望值从 `tokens.ts` 读取。
+  **R3 跨浏览器/跨 GPU**：`--browser edge|chrome`、`--gpu swiftshader|d3d11`（真实独显 ANGLE D3D11），
+  每档视口截图真实页面作视觉证据，并读 WebGL `UNMASKED_RENDERER` 证明 d3d11 走硬件。
 
-**能红能绿证明**：把 `.kv-panel` 的 `var(--kv-blur-panel)` 改回 `var(--)` → 契约脚本
-exit 1（红）；恢复 → exit 0（绿）。注入一个"合法刻度但不存在的颜色"类
-（如 `bg-notacolor-500/50`）→ 静态检查通过但全量比对报缺失、exit 1（红）；移除 → 绿。
+**能红能绿证明**：
+- 把 `.kv-panel` 的 `var(--kv-blur-panel)` 改回 `var(--)` → 契约脚本 exit 1（红）；恢复 → exit 0（绿）。
+- 注入"合法刻度但不存在的颜色"类（如 `bg-notacolor-500/50`）→ 静态检查通过但全量比对报缺失、
+  exit 1（红）；移除 → 绿。
+- **`--require-build`（R3）**：隐藏 `.next/static/css` → exit 1（红，不 skip）；恢复构建 → exit 0（绿）。
+
+**R3 已验证矩阵**（每组合 59 断言全过）：Edge×SwiftShader、Edge×d3d11（NVIDIA RTX 5070）、
+Chrome×d3d11，各覆盖四档视口 + 常规/reduced-motion 开场。证据：
+`docs/summit/shots/r2-glass/computed-style-{edge-swiftshader,edge-d3d11,chrome-d3d11}.json`
+及 `overview-<browser>-<gpu>-<viewport>.png`。

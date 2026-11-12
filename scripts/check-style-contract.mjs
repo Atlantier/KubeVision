@@ -14,6 +14,12 @@
  * 逐个与生产 CSS 选择器比对，输出「源码类总数 / 已生成数 / 缺失清单」。
  * 缺失即静默失效，必须阻断 verify；不设白名单掩盖。
  *
+ * 【R3 · 补齐验证边界】
+ *   - 动态拼接闸门：颜色/透明度类里出现 ${…} 插值即 fail（Tailwind 无法静态生成），
+ *     把"动态类名"从无能为力的边界变成可拦截的违约；
+ *   - --require-build：CI 硬闸门，缺生产 CSS 时全量比对不再 skip 而是 fail，
+ *     确保"类是否真实生成"永远被验证（配合先 pnpm build 使用）。
+ *
  * 【输入】src/app/globals.css、src/constants/tokens.ts、src/**\/*.{ts,tsx}、
  *         以及（若存在）.next/static/css/*.css 构建产物。
  * 【输出】--json 时输出 { ok, opacityReport, results:[{name,status,detail}] }；否则人类可读。
@@ -29,6 +35,9 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(fileURLToPath(import.meta.url), '..', '..');
 const JSON_MODE = process.argv.includes('--json');
+/* --require-build：CI 硬闸门。未提供生产 CSS 时，全量透明度比对不再 skip 而是 fail，
+ * 确保"类是否真实生成"这一项永远被验证，不会因缺构建而静默跳过。 */
+const REQUIRE_BUILD = process.argv.includes('--require-build');
 
 /** Tailwind v3 默认 opacity 刻度（裸值只有这些会生成） */
 const VALID_OPACITY = new Set([0, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 100]);
@@ -170,6 +179,7 @@ function checkTsx() {
   const doubleHits = [];
   const bareHits = [];
   const fontHits = [];
+  const dynamicHits = [];
   const bracketClasses = new Set();
   /* 全部含透明度修饰符的类（裸刻度值 + 括号任意值），供与生产 CSS 逐一比对 */
   const opacityClasses = new Set();
@@ -179,11 +189,15 @@ function checkTsx() {
   const bracketRe = new RegExp('\\b(' + COLOR_PREFIX + '-[a-zA-Z0-9-]+\\/\\[0\\.\\d+\\])', 'g');
   /* 统一提取：颜色工具类 + /裸数字 或 /[0.xxx]，一次抓全 */
   const opacityRe = new RegExp('\\b(' + COLOR_PREFIX + '-[a-zA-Z]+(?:-[a-zA-Z0-9]+)*\\/(?:\\d{1,3}|\\[0?\\.\\d+\\]))', 'g');
+  /* 动态拼接检测：颜色工具类 / 透明度修饰符里出现 ${…} 插值 → Tailwind 无法静态生成，
+   * 属静默失效。此闸门把"动态类名"从"无能为力的边界"变成"可被拦截的违约"。 */
+  const dynamicRe = new RegExp('\\b' + COLOR_PREFIX + '-[a-zA-Z0-9-]*(?:/)?\\$\\{', 'g');
   const fontRe = /text-\[(\d+(?:\.\d+)?)px\]/g;
 
   for (const file of files) {
     const rel = relative(ROOT, file).replace(/\\/g, '/');
-    const src = stripBlockComments(readFileSync(file, 'utf8'));
+    const original = readFileSync(file, 'utf8');
+    const src = stripBlockComments(original);
     const lines = src.split('\n');
     lines.forEach((line, idx) => {
       let m;
@@ -205,6 +219,18 @@ function checkTsx() {
     let om;
     opacityRe.lastIndex = 0;
     while ((om = opacityRe.exec(src)) !== null) opacityClasses.add(om[1]);
+    /* 动态拼接只可能出现在 className 里，而 className 只存在于 React 组件（.tsx）。
+     * .ts（API 路由 / 工具 / 常量）无 className——例如 route.ts 的 `fill-${toolName}`
+     * 是 toolCallId 前缀，不是颜色类，不应误报。故仅对 .tsx 扫描，且按原始文本定位行号。 */
+    if (file.endsWith('.tsx')) {
+      let dm;
+      dynamicRe.lastIndex = 0;
+      while ((dm = dynamicRe.exec(src)) !== null) {
+        const origIdx = original.indexOf(dm[0]);
+        const lineNo = origIdx >= 0 ? original.slice(0, origIdx).split('\n').length : '?';
+        dynamicHits.push(`${rel}:${lineNo} ${dm[0]}…}`);
+      }
+    }
   }
 
   if (doubleHits.length === 0) record('无双重透明度', 'pass', '0 处');
@@ -215,6 +241,9 @@ function checkTsx() {
 
   if (fontHits.length === 0) record('字号 ≥10px 且无半像素', 'pass', '0 处违规');
   else record('字号 ≥10px 且无半像素', 'fail', `${fontHits.length} 处，例: ${fontHits[0]}`);
+
+  if (dynamicHits.length === 0) record('无动态拼接颜色/透明度类', 'pass', '0 处（全部为静态字面量，可被 Tailwind 生成）');
+  else record('无动态拼接颜色/透明度类', 'fail', `${dynamicHits.length} 处，例: ${dynamicHits[0]}`);
 
   return { bracketClasses, opacityClasses };
 }
@@ -232,12 +261,14 @@ function checkBuiltCss(classes) {
 
   const cssDir = join(ROOT, '.next/static/css');
   if (!existsSync(cssDir)) {
-    record('构建 CSS 校验', 'skip', '未找到 .next/static/css（先运行 pnpm build）');
+    if (REQUIRE_BUILD) record('构建 CSS 校验', 'fail', '--require-build：未找到 .next/static/css，必须先 pnpm build');
+    else record('构建 CSS 校验', 'skip', '未找到 .next/static/css（先运行 pnpm build）');
     return;
   }
   const cssFiles = readdirSync(cssDir).filter((f) => f.endsWith('.css'));
   if (cssFiles.length === 0) {
-    record('构建 CSS 校验', 'skip', '目录为空（先运行 pnpm build）');
+    if (REQUIRE_BUILD) record('构建 CSS 校验', 'fail', '--require-build：.next/static/css 为空，必须先 pnpm build');
+    else record('构建 CSS 校验', 'skip', '目录为空（先运行 pnpm build）');
     return;
   }
   /* 取体积最大的构建产物（主样式 bundle） */

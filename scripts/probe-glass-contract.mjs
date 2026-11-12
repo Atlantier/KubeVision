@@ -1,19 +1,23 @@
 #!/usr/bin/env node
 /**
- * KubeVision AI — 玻璃契约浏览器计算样式探针（R2 · 跨视口可证明）
+ * KubeVision AI — 玻璃契约浏览器计算样式探针（R2 · R3 跨浏览器/跨 GPU 可证明）
  *
  * 【设计意图】静态契约（check-style-contract）只能证明"类生成了"，不能证明
  * "浏览器真的按令牌渲染"。本探针在真实浏览器里逐视口创建 .kv-panel / .kv-chip /
  * .kv-overlay 临时元素，读取 computedStyle 的 backdropFilter / backgroundColor /
  * borderColor / boxShadow，逐项与 tokens.ts 令牌比对；并在 prefers-reduced-motion
- * 下断言 transition/animationDuration ≤ 1ms。四档视口：1920×1080 / 1366×768 /
- * 1024×768 / 800×600。
+ * 下断言 transition/animationDuration ≤ 1ms，以及 BootController 开场直接完成
+ * （window.__KUBEVISION_BOOT__ === 1）。四档视口：1920×1080 / 1366×768 / 1024×768 / 800×600。
+ *
+ * 【R3 · 跨浏览器/跨 GPU】--browser edge|chrome 选择 Blink 载体；--gpu swiftshader|d3d11
+ * 选择软件光栅化或真实独显（ANGLE D3D11）。每档视口额外截图真实页面（业务面板视觉证据），
+ * 并读取 WebGL UNMASKED_RENDERER 以证明 d3d11 确实走了硬件。
  *
  * 【单一事实源】期望的 blur 半径 / 基色 / hairline 全部从 src/constants/tokens.ts
  * 读取（GLASS / COLORS / STROKE），不在探针里另写数值——改令牌即改期望。
  *
- * 【输入】--base <url>（默认 http://127.0.0.1:3000）、--out <dir>。
- * 【输出】<out>/computed-style-4vp.json + 控制台逐项 pass/fail。
+ * 【输入】--base <url>、--out <dir>、--browser edge|chrome、--gpu swiftshader|d3d11。
+ * 【输出】<out>/computed-style-<browser>-<gpu>.json + 每视口截图 + 控制台逐项 pass/fail。
  * 【退出码】0 = 全部断言通过；1 = 存在失败；2 = 探针自身错误。
  */
 
@@ -29,6 +33,8 @@ const argOf = (flag, fallback) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
 };
 const BASE = argOf('--base', 'http://127.0.0.1:3000');
+const BROWSER = argOf('--browser', 'edge');
+const GPU = argOf('--gpu', 'swiftshader');
 const OUT = join(ROOT, argOf('--out', 'docs/summit/shots/r2-glass'));
 const PORT = 9393;
 const VIEWPORTS = [
@@ -39,6 +45,18 @@ const VIEWPORTS = [
 ];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 mkdirSync(OUT, { recursive: true });
+
+if (!['edge', 'chrome'].includes(BROWSER)) { console.error('[glass-probe] --browser 必须 edge|chrome'); process.exit(2); }
+if (!['swiftshader', 'd3d11'].includes(GPU)) { console.error('[glass-probe] --gpu 必须 swiftshader|d3d11'); process.exit(2); }
+const BROWSER_PATHS = {
+  edge: ['C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'],
+  chrome: ['C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'],
+};
+const BROWSER_EXE = BROWSER_PATHS[BROWSER].find((p) => existsSync(p));
+if (!BROWSER_EXE) { console.error(`[glass-probe] 未找到 ${BROWSER}`); process.exit(2); }
+const GPU_FLAGS = GPU === 'swiftshader'
+  ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
+  : ['--use-gl=angle', '--use-angle=d3d11', '--ignore-gpu-blocklist', '--enable-gpu-rasterization'];
 
 /* ---- 从 tokens.ts 读取期望值（单一事实源） ---- */
 const tokensSrc = readFileSync(join(ROOT, 'src/constants/tokens.ts'), 'utf8');
@@ -64,9 +82,6 @@ const EXPECT = {
   chipBg: norm(`rgba(${panelRgb.join(',')},0.55)`),
   overlayBg: norm(`rgba(${voidRgb.join(',')},0.78)`),
 };
-
-const EDGE = ['C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'].find((p) => existsSync(p));
-if (!EDGE) { console.error('[glass-probe] 未找到 Edge'); process.exit(2); }
 
 async function connect(wsUrl) {
   const ws = new WebSocket(wsUrl);
@@ -112,6 +127,25 @@ const MEASURE = `(() => {
   return out;
 })()`;
 
+/* 真实业务面板：取 DOM 中首个挂载 .kv-panel 的真实元素，读其 backdropFilter */
+const MEASURE_REAL_PANEL = `(() => {
+  const el = document.querySelector('.kv-panel');
+  if (!el) return { present: false };
+  const cs = getComputedStyle(el);
+  return { present: true, backdropFilter: cs.backdropFilter || cs.webkitBackdropFilter || '(none)', tag: el.tagName, aria: el.getAttribute('aria-label') || '' };
+})()`;
+
+/* WebGL 渲染器（证明 d3d11 走硬件） */
+const MEASURE_GL = `(() => {
+  const c = document.querySelector('canvas');
+  if (!c) return { renderer: '(no canvas)' };
+  const gl = c.getContext('webgl2') || c.getContext('webgl');
+  if (!gl) return { renderer: '(no gl context)' };
+  const ext = gl.getExtension('WEBGL_debug_renderer_info');
+  const renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  return { renderer: String(renderer) };
+})()`;
+
 /* reduced-motion 测量：带过渡 + 动画的元素，读取时长 */
 const MEASURE_MOTION = `(() => {
   const el = document.createElement('div');
@@ -132,7 +166,7 @@ const toMs = (v) => {
   return parseFloat(first) || 0;
 };
 
-const browser = spawn(EDGE, ['--headless=new', '--no-first-run', '--hide-scrollbars', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', `--remote-debugging-port=${PORT}`, `--user-data-dir=${join(process.env.TEMP ?? '/tmp', 'kv-r2glass-' + Date.now())}`, 'about:blank'], { stdio: 'ignore' });
+const browser = spawn(BROWSER_EXE, ['--headless=new', '--no-first-run', '--hide-scrollbars', ...GPU_FLAGS, `--remote-debugging-port=${PORT}`, `--user-data-dir=${join(process.env.TEMP ?? '/tmp', 'kv-r3glass-' + BROWSER + '-' + GPU + '-' + Date.now())}`, 'about:blank'], { stdio: 'ignore' });
 process.on('exit', () => { try { browser.kill('SIGKILL'); } catch { /* ignore */ } });
 
 let target = null;
@@ -150,19 +184,31 @@ const assertions = [];
 function assert(vp, name, pass, detail) {
   assertions.push({ viewport: vp, name, pass, detail });
 }
+const shot = async (cdp, name) => {
+  const res = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+  if (typeof res.result?.data === 'string') {
+    writeFileSync(join(OUT, name), Buffer.from(res.result.data, 'base64'));
+    return name;
+  }
+  return null;
+};
 
 try {
   await cdp.send('Page.navigate', { url: BASE });
   for (let i = 0; i < 200; i += 1) { if ((await ev(cdp, 'document.querySelector("canvas") !== null')) === true) break; await sleep(400); }
   await sleep(2500);
 
-  const report = { at: new Date().toISOString(), base: BASE, expect: EXPECT, viewports: {} };
+  const glInfo = await ev(cdp, MEASURE_GL);
+  const report = { at: new Date().toISOString(), base: BASE, browser: BROWSER, gpu: GPU, glRenderer: glInfo.renderer, expect: EXPECT, viewports: {} };
 
   for (const vp of VIEWPORTS) {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: vp.width, height: vp.height, deviceScaleFactor: 1, mobile: false });
     await sleep(600);
     const m = await ev(cdp, MEASURE);
-    report.viewports[vp.name] = { glass: m };
+    const realPanel = await ev(cdp, MEASURE_REAL_PANEL);
+    report.viewports[vp.name] = { glass: m, realPanel };
+    const shotName = await shot(cdp, `overview-${BROWSER}-${GPU}-${vp.name}.png`);
+    report.viewports[vp.name].screenshot = shotName;
 
     /* kv-panel */
     const p = m['kv-panel'];
@@ -184,6 +230,11 @@ try {
     assert(vp.name, 'kv-overlay.backgroundColor', norm(o.backgroundColor) === EXPECT.overlayBg, o.backgroundColor);
     assert(vp.name, 'kv-overlay.boxShadow', o.boxShadow === 'none', o.boxShadow);
 
+    /* 真实业务面板（若 DOM 中存在 .kv-panel） */
+    if (realPanel.present) {
+      assert(vp.name, 'real-panel.backdropFilter', realPanel.backdropFilter.includes(`blur(${EXPECT.blur.panel}px)`), `${realPanel.tag}[${realPanel.aria}] ${realPanel.backdropFilter}`);
+    }
+
     /* prefers-reduced-motion：transition/animationDuration ≤ 1ms */
     await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     await sleep(300);
@@ -197,20 +248,39 @@ try {
     await sleep(200);
   }
 
+  /* 常规动效：开场应已完成（__KUBEVISION_BOOT__ === 1） */
+  const bootNormal = await ev(cdp, 'window.__KUBEVISION_BOOT__');
+  report.bootNormal = bootNormal;
+  assert('boot', 'normal-motion.bootCompleted(=1)', bootNormal === 1, `__KUBEVISION_BOOT__=${bootNormal}`);
+
+  /* reduced-motion 开场：加载前即 emulate reduce，BootController 应直接 uBoot=1 */
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await cdp.send('Page.navigate', { url: BASE });
+  for (let i = 0; i < 200; i += 1) { if ((await ev(cdp, 'document.querySelector("canvas") !== null')) === true) break; await sleep(400); }
+  await sleep(1800);
+  const rmMatches = await ev(cdp, 'window.matchMedia("(prefers-reduced-motion: reduce)").matches');
+  const bootReduced = await ev(cdp, 'window.__KUBEVISION_BOOT__');
+  report.reducedMotionBoot = { mediaMatches: rmMatches, boot: bootReduced };
+  assert('boot', 'reduced-motion.mediaEmulated', rmMatches === true, `matchMedia=${rmMatches}`);
+  assert('boot', 'reduced-motion.bootDirectComplete(=1)', bootReduced === 1, `__KUBEVISION_BOOT__=${bootReduced}`);
+  await cdp.send('Emulation.setEmulatedMedia', { features: [] });
+
   report.assertions = assertions;
   const failed = assertions.filter((a) => !a.pass);
   report.ok = failed.length === 0;
-  writeFileSync(join(OUT, 'computed-style-4vp.json'), JSON.stringify(report, null, 2) + '\n', 'utf8');
+  writeFileSync(join(OUT, `computed-style-${BROWSER}-${GPU}.json`), JSON.stringify(report, null, 2) + '\n', 'utf8');
 
-  console.log(`KubeVision AI — 玻璃契约 computedStyle 探针（${BASE}）`);
+  console.log(`KubeVision AI — 玻璃契约 computedStyle 探针（${BROWSER} / ${GPU} / ${BASE}）`);
+  console.log(`GL renderer: ${glInfo.renderer}`);
   console.log(`期望（tokens.ts）: blur panel=${EXPECT.blur.panel} chip=${EXPECT.blur.chip} overlay=${EXPECT.blur.overlay} · hairline=${EXPECT.hairline}`);
-  for (const vp of VIEWPORTS) {
-    const rows = assertions.filter((a) => a.viewport === vp.name);
+  for (const vp of [...VIEWPORTS.map((v) => v.name), 'boot']) {
+    const rows = assertions.filter((a) => a.viewport === vp);
+    if (rows.length === 0) continue;
     const bad = rows.filter((a) => !a.pass);
-    console.log(`\n  [${vp.name}] ${rows.length - bad.length}/${rows.length} 通过`);
+    console.log(`\n  [${vp}] ${rows.length - bad.length}/${rows.length} 通过`);
     for (const a of rows) console.log(`    ${a.pass ? '✓' : '✗'} ${a.name}  (${a.detail})`);
   }
-  console.log(failed.length === 0 ? `\n✓ 四档视口玻璃契约全部通过（${assertions.length} 断言）` : `\n✗ ${failed.length} 断言失败`);
+  console.log(failed.length === 0 ? `\n✓ 玻璃契约全部通过（${assertions.length} 断言）` : `\n✗ ${failed.length} 断言失败`);
   cdp.close(); browser.kill('SIGKILL');
   process.exit(failed.length === 0 ? 0 : 1);
 } catch (error) {
