@@ -103,7 +103,7 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
     <div
       role="region"
       aria-label="事故回放时间轴（只读）"
-      className="pointer-events-auto w-full max-w-[46rem] rounded-lg border border-amber-400/40 bg-slate-950/[0.92] px-3.5 py-2.5 shadow-[0_12px_36px_-8px_rgba(2,6,23,0.92)] backdrop-blur-md"
+      className="pointer-events-auto w-full max-w-[46rem] rounded-lg border border-amber-400/40 bg-slate-950/[0.92] px-3.5 py-2.5 shadow-[0_12px_36px_-8px_rgba(2,6,23,0.92)] kv-blur-panel"
     >
       {/* 顶缘：回放态醒目标识 —— 琥珀色与运行态青色区分开 */}
       <span

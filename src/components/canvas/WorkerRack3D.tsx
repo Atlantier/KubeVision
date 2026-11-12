@@ -2405,7 +2405,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
          *  - 信息只留节点名 / 状态徽标 / POD 数 / CPU·MEM 2px 迷你条。
          */}
         <div
-          className="relative rounded-[2px] bg-slate-950/80 px-2.5 py-1.5 backdrop-blur-[8px]"
+          className="relative rounded-[2px] bg-slate-950/80 px-2.5 py-1.5 kv-blur-chip"
           style={{
             boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)',
             background: 'transparent',

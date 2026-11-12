@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-11-10T14:10:37.153Z",
+  "generatedAt": "2026-11-12T08:24:58.236Z",
   "note": "死导出基线：仅记录当前静态分析可见的存量死导出；新增死导出由 scripts/check-dead-exports.mjs 拦截。通过 --update-baseline 重写此文件（需人工确认）。",
-  "count": 18,
+  "count": 12,
   "entries": [
     {
       "file": "src/constants/motion.ts",
@@ -40,27 +40,12 @@
     },
     {
       "file": "src/constants/tokens.ts",
-      "name": "getTokenCssVariables",
-      "kind": "function"
-    },
-    {
-      "file": "src/constants/tokens.ts",
       "name": "RADIUS",
       "kind": "variable"
     },
     {
       "file": "src/constants/tokens.ts",
       "name": "SPACE",
-      "kind": "variable"
-    },
-    {
-      "file": "src/constants/tokens.ts",
-      "name": "STROKE",
-      "kind": "variable"
-    },
-    {
-      "file": "src/constants/tokens.ts",
-      "name": "TYPE_SCALE",
       "kind": "variable"
     },
     {
@@ -72,21 +57,6 @@
       "file": "src/types/ai.ts",
       "name": "ChatToolName",
       "kind": "type"
-    },
-    {
-      "file": "src/utils/chatStreamProtocol.ts",
-      "name": "countDuplicateCardNames",
-      "kind": "function"
-    },
-    {
-      "file": "src/utils/snapshotRingBuffer.ts",
-      "name": "getFrameBufferSize",
-      "kind": "function"
-    },
-    {
-      "file": "src/utils/snapshotRingBuffer.ts",
-      "name": "getRecentFrames",
-      "kind": "function"
     },
     {
       "file": "src/utils/telemetryHealth.ts",

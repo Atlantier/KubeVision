@@ -1,0 +1,150 @@
+{
+  "startedAt": "2026-11-12T08:50:20.100Z",
+  "finishedAt": "2026-11-12T09:06:02.524Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "outDir": "C:\\Users\\Dannie\\Desktop\\AI项目\\KubeVision\\docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z",
+  "steps": [
+    {
+      "name": "tsc",
+      "exitCode": 0,
+      "durationMs": 2964,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\01-tsc.log"
+    },
+    {
+      "name": "next-lint",
+      "exitCode": 0,
+      "durationMs": 4482,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\02-next-lint.log"
+    },
+    {
+      "name": "lint-glsl",
+      "exitCode": 0,
+      "durationMs": 101,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\03-lint-glsl.log"
+    },
+    {
+      "name": "check-a11y",
+      "exitCode": 0,
+      "durationMs": 115,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\04-check-a11y.log"
+    },
+    {
+      "name": "check-emoji",
+      "exitCode": 0,
+      "durationMs": 139,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\05-check-emoji.log"
+    },
+    {
+      "name": "check-layering",
+      "exitCode": 0,
+      "durationMs": 91,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\06-check-layering.log"
+    },
+    {
+      "name": "check-dead-exports",
+      "exitCode": 0,
+      "durationMs": 416,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\07-check-dead-exports.log"
+    },
+    {
+      "name": "check-style-contract",
+      "exitCode": 0,
+      "durationMs": 99,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\08-check-style-contract.log"
+    },
+    {
+      "name": "probe-stream-determinism",
+      "exitCode": 0,
+      "durationMs": 446,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\09-probe-stream-determinism.log"
+    },
+    {
+      "name": "verify",
+      "exitCode": 0,
+      "durationMs": 71440,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\10-verify.log"
+    },
+    {
+      "name": "verify-stream-integrity",
+      "exitCode": 0,
+      "durationMs": 59200,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\11-verify-stream-integrity.log"
+    },
+    {
+      "name": "verify-telemetry",
+      "exitCode": 0,
+      "durationMs": 463,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\12-verify-telemetry.log"
+    },
+    {
+      "name": "verify-demo",
+      "exitCode": 0,
+      "durationMs": 107773,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\13-verify-demo.log"
+    },
+    {
+      "name": "probe-request-race",
+      "exitCode": 0,
+      "durationMs": 160896,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\14-probe-request-race.log"
+    },
+    {
+      "name": "probe-glass-contract",
+      "exitCode": 0,
+      "durationMs": 38588,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\15-probe-glass-contract.log"
+    },
+    {
+      "name": "probe-blackout-demo",
+      "exitCode": 0,
+      "durationMs": 105922,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\16-probe-blackout-demo.log"
+    },
+    {
+      "name": "probe-blackout-chaos-oom",
+      "exitCode": 0,
+      "durationMs": 105568,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\17-probe-blackout-chaos-oom.log"
+    },
+    {
+      "name": "probe-blackout-chaos-net",
+      "exitCode": 0,
+      "durationMs": 104922,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\18-probe-blackout-chaos-net.log"
+    },
+    {
+      "name": "probe-blackout-dpr-drop",
+      "exitCode": 0,
+      "durationMs": 106057,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\19-probe-blackout-dpr-drop.log"
+    },
+    {
+      "name": "eval-rag",
+      "exitCode": 0,
+      "durationMs": 1198,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\20-eval-rag.log"
+    },
+    {
+      "name": "mcp-smoke",
+      "exitCode": 0,
+      "durationMs": 838,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\21-mcp-smoke.log"
+    },
+    {
+      "name": "verify-privacy",
+      "exitCode": 0,
+      "durationMs": 54037,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\22-verify-privacy.log"
+    },
+    {
+      "name": "check-docs-consistency",
+      "exitCode": 0,
+      "durationMs": 116,
+      "logFile": "docs\\evidence\\verify-all\\2026-11-12T08-50-20-099Z\\23-check-docs-consistency.log"
+    }
+  ],
+  "failed": null,
+  "passCount": 23,
+  "failCount": 0,
+  "totalSteps": 23
+}

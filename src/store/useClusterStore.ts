@@ -46,6 +46,7 @@ import type {
   StatusFilter,
 } from '@/types/store';
 import { syncSnapshotToTransientRef } from '@/store/useTelemetryRef';
+import { clearFrameBuffer } from '@/utils/snapshotRingBuffer';
 import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
 import { HEALTH_SCORE_MAX, computeClusterHealthScore } from '@/utils/clusterHealth';
 
@@ -314,7 +315,7 @@ function createInitialClusterState(): ClusterState {
     isOrbitPatrolActive: false,
     activeMobileView: 'topology',
     terminalLogs: [],
-    quickPromptTrigger: null,
+    quickPromptQueue: [],
     capturedViewportDataUrl: null,
     healedPodIds: {},
     pendingRemediations: [],
@@ -706,8 +707,12 @@ export const useClusterStore = create<ClusterStore>()(
        *
        * 【刻意不清的东西】remediationHistory 与 totalMaskedSecrets 属于审计证据，
        * 清掉就是数据丢失；connectionMode / snapshotSummary 也不动（由调用方管理）。
+       *
+       * 【为什么顺带清帧缓冲】快照环形缓冲是"本次路演"的事故时间线素材。
+       * 复位后新一轮若还混着旧帧，复盘时间线会把两次路演拼在一起，拼接出并不存在的事故。
        */
       resetDemoEphemeralState: () => {
+        clearFrameBuffer();
         set({
           healedPodIds: {},
           pendingRemediations: [],
@@ -766,9 +771,14 @@ export const useClusterStore = create<ClusterStore>()(
         set((current) => ({ copilotAbortToken: current.copilotAbortToken + 1 }));
       },
 
-      /** clearQuickPromptTrigger —— 主动清空待消费的快捷指令 */
+      /** clearQuickPromptTrigger —— 主动清空待消费的快捷指令队列 */
       clearQuickPromptTrigger: () => {
-        set({ quickPromptTrigger: null });
+        set({ quickPromptQueue: [] });
+      },
+
+      /** shiftQuickPrompt —— 消费队首指令（Copilot 读取后调用，防重复触发） */
+      shiftQuickPrompt: () => {
+        set((current) => ({ quickPromptQueue: current.quickPromptQueue.slice(1) }));
       },
 
       /** setCapturedViewport —— 设置/清除 3D 视口多模态截图（非持久化，体积敏感） */
@@ -842,12 +852,16 @@ export const useClusterStore = create<ClusterStore>()(
        * 双联动保证任何视口宽度下指令都能得到即时视觉响应。
        */
       triggerQuickPrompt: (prompt) => {
-        set({ quickPromptTrigger: prompt, activeRightTab: 'copilot', activeMobileView: 'copilot' });
+        set((current) => ({
+          quickPromptQueue: [...current.quickPromptQueue, prompt],
+          activeRightTab: 'copilot',
+          activeMobileView: 'copilot',
+        }));
       },
 
-      /** clearQuickPrompt —— 消费侧复位指令载荷（Copilot 读取后调用，防重复触发） */
+      /** clearQuickPrompt —— 消费侧清空整个指令队列（停止路演等场景） */
       clearQuickPrompt: () => {
-        set({ quickPromptTrigger: null });
+        set({ quickPromptQueue: [] });
       },
 
       /**

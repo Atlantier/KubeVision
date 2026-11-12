@@ -1,0 +1,21 @@
+$ C:\Program Files\nodejs\node.exe scripts/lint-glsl.mjs
+
+--- output ---
+KubeVision AI — GLSL 静态高危检查（lint-glsl）
+  扫描文件: 122 个（含 GLSL 特征 7 个）
+  HIGH 命中: 0 · INFO 提示: 11
+
+  INFO —— 需人工判断（11 条，不影响退出码）：
+    src\components\canvas\ClusterTopologyFloor3D.tsx:935  float falloff = 1.0 - smoothstep(sectorHalfSafe * 0.6, max(sectorHalfSafe, sectorHalfSafe * 0.6 + 1.0e-4), dist);
+    src\components\canvas\CyberMatrixRain3D.tsx:154  float xMask = 1.0 - smoothstep(0.12, 0.38, abs(cellUv.x - 0.5));
+    src\components\canvas\CyberMatrixRain3D.tsx:171  float kvFog = 1.0 - smoothstep(0.75 * uFogFar, uFogFar, vFogDepth);
+    src\components\canvas\ErrorRippleRing.tsx:123  float peak = 1.0 - smoothstep(0.0, max(uPeakWidth, 1.0e-4), dist);
+    src\components\canvas\ErrorRippleRing.tsx:126  float trailBand = 1.0 - smoothstep(0.0, max(uTrailWidth, 1.0e-4), dist);
+    src\components\canvas\ErrorRippleRing.tsx:128  float behind = 1.0 - smoothstep(0.0, max(uBeamWidth, 1.0e-4), r - progress);
+    src\components\canvas\ErrorRippleRing.tsx:145  float kvFog = 1.0 - smoothstep(0.75 * uFogFar, uFogFar, vFogDepth);
+    src\components\canvas\GlowHalo3D.tsx:161  float kvFog = 1.0 - smoothstep(0.75 * uFogFar, uFogFar, vFogDepth);
+    src\components\canvas\NetworkStream3D.tsx:543  float excite = 1.0 - smoothstep(0.0, ${SPARK_EXCITE_WINDOW.toFixed(3)}, ringDist);
+    src\components\canvas\ProceduralPbrEnvironment.tsx:143  '#include <emissivemap_fragment>\n  float kvFres = pow(max(1.0 - abs(dot(normalize(kvNrm), normalize(kvViewPos))), 1.0e-
+    src\components\canvas\WorkerRack3D.tsx:575  float kvFog = 1.0 - smoothstep(0.75 * uFogFar, uFogFar, vFogDepth);
+
+  ✓ 无 HIGH 级命中

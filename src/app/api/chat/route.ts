@@ -64,6 +64,7 @@ import {
   recordToolResult,
   recordToolStart,
   repairPendingToolCalls,
+  validateStreamEvents,
 } from '@/utils/chatStreamProtocol';
 import type { ToolCallLedger } from '@/utils/chatStreamProtocol';
 /*
@@ -83,6 +84,35 @@ export const runtime = 'nodejs';
 
 /** NDJSON 响应头（每行一个 JSON 对象） */
 const NDJSON_CONTENT_TYPE = 'application/x-ndjson; charset=utf-8';
+
+/**
+ * SEVERE_ASSERT —— 是否启用"产侧流协议开发期断言"。
+ *
+ * 【为什么需要】`verify:stream` 只在 CI 里校验协议；开发期人工改坏 emit 顺序
+ * （发 start 不发 result、漏 done、重复 toolCallId）时，前端骨架屏会永久悬空，
+ * 但服务端日志一片安静。开启此断言后，每条流结束时自动做一次全局校验，
+ * 违例直接打到服务端控制台，改坏当场可见。
+ *
+ * 【为什么生产关闭】校验需要把整条流的事件留在内存里（O(事件数)，几十 KB）；
+ * 生产环境每个请求都多留一份没有必要，且协议已由 CI 金样 + 前端守卫覆盖。
+ * 因此仅 `NODE_ENV !== 'production'` 时启用——生产构建里该分支被 tree-shake，
+ * 连事件数组都不会创建（见 emittedForAssert 的初始化注释）。
+ */
+const SEVERE_ASSERT = process.env.NODE_ENV !== 'production';
+
+/**
+ * assertStreamProtocol —— 产侧流协议开发期校验（生产为空操作）。
+ *
+ * @param events 本条流已 emit 的全部事件（仅开发期累积）
+ * @param requestId 请求 id（违例日志对号用）
+ */
+function assertStreamProtocol(events: readonly ChatStreamEvent[], requestId: string): void {
+  if (!SEVERE_ASSERT) return;
+  const violations = validateStreamEvents(events);
+  if (violations.length > 0) {
+    console.error(`[stream-protocol:server] ${requestId} 产侧协议违例`, violations);
+  }
+}
 
 /** 工具调用延迟：引擎 A 用 300ms（需求契约），引擎 B 用 450ms（骨架屏更明显） */
 const TOOL_RESULT_DELAY_MS_A = 300;
@@ -2798,6 +2828,8 @@ export async function POST(request: Request): Promise<Response> {
 
       /** 第一个 token 到达时刻（TTFT 只计正文 token） */
       let firstEventAt: number | null = null;
+      /** R2 · 开发期产侧协议断言累积器（生产构建为 false 时恒空） */
+      const emittedForAssert: ChatStreamEvent[] = [];
       /** R43：AI SDK usage 容器（缺省时 trace-summary 不填 token/成本） */
       const usageHolder: { value: { promptTokens?: number; completionTokens?: number } | null } = {
         value: null,
@@ -2808,6 +2840,8 @@ export async function POST(request: Request): Promise<Response> {
       /** 单帧写入（带状态锁与异常兜底） */
       const emit = (event: ChatStreamEvent): void => {
         if (isClosed) return;
+        /* 开发期产侧协议断言用的事件累积（生产构建 SEVERE_ASSERT 为 false，不产生开销） */
+        if (SEVERE_ASSERT) emittedForAssert.push(event);
         if (firstEventAt === null && event.type === 'text') {
           firstEventAt = performance.now();
         }
@@ -2818,22 +2852,28 @@ export async function POST(request: Request): Promise<Response> {
         }
       };
 
-      /* R43：intent / rag / prompt 三段已在流创建前完成，emit 就绪后补发 */
+      /*
+       * requestId 必须在 try 之外声明：catch 分支的 error 事件也要带上它，
+       * 否则"用户看到的报错"与"服务端日志"无法对号（A9 的硬性要求）。
+       * 也必须在 pendingSpanEvents 之前声明：reset 要用它，且 reset 必须是**整条流的第一帧**。
+       */
+      const requestId = `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+      /*
+       * R2 · 轮换复位：reset 必须是整条流的第一帧，声明"从这里开始是全新一轮"。
+       * 【为什么排在 pendingSpanEvents 之前】那三段 span 属于本轮诊断，若 reset 晚于它们，
+       * 客户端按"复位到干净起点"语义处理时就会与本轮 span 冲突（只能退化成不动 trace）。
+       * 排在最前，reset 与后续所有帧的顺序语义就完全一致：先复位，再进本轮事实。
+       * 这也是本轮唯一新增的事件类型，既有事件结构与语义一律不变（不重构协议）。
+       */
+      emit({ type: 'reset', requestId, reason: 'new-round' });
+
+      /* R43：intent / rag / prompt 三段已在流创建前完成，emit 就绪后补发（在 reset 之后） */
       for (const spanEvent of pendingSpanEvents) {
         emit({ type: 'span', ...spanEvent });
       }
 
       const signal = request.signal;
-
-      /*
-       * requestId 必须在 try 之外声明：catch 分支的 error 事件也要带上它，
-       * 否则"用户看到的报错"与"服务端日志"无法对号（A9 的硬性要求）。
-       */
-      const requestId = `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-
-      /* R2 · 轮换复位：每条流下发 reset，声明"从这里开始是全新一轮"。
-       * 这是本轮唯一新增的事件类型，既有事件结构与语义一律不变（不重构协议）。 */
-      emit({ type: 'reset', requestId, reason: 'new-round' });
 
       try {
         /**
@@ -3164,6 +3204,7 @@ export async function POST(request: Request): Promise<Response> {
 
         /* ---- A8：流末必有 done（前端不再靠 socket 关闭判断结束） ---- */
         emit({ type: 'done', requestId, engine: actualEngine });
+        assertStreamProtocol(emittedForAssert, requestId);
 
         safeClose();
       } catch (error) {
@@ -3215,6 +3256,7 @@ export async function POST(request: Request): Promise<Response> {
           retryable: category !== 'abort',
         });
         emit({ type: 'done', requestId, engine: 'simulator' });
+        assertStreamProtocol(emittedForAssert, requestId);
         safeClose();
       }
     },

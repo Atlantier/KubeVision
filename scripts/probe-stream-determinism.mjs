@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * KubeVision AI — 流式确定性对抗探针（R3）
+ * KubeVision AI — 流式确定性对抗探针（R2 次轮）
  *
  * 【守护什么】流式链路的缺陷大多只在"网络不老实"时出现：半包、代理缓冲、
  * 畸形帧、中途断网、重复帧、异 traceId、缺 done……普通回归（连一次真实服务）几乎照不出来。
@@ -42,7 +42,7 @@ const ts = require('typescript');
 const ROOT = process.cwd();
 const FIXTURE = join(ROOT, 'docs/summit/artifacts/r17-stream-fixture.jsonl');
 const OUT_DIR = join(ROOT, 'tmp-stream-determinism');
-const OUT_JSON = join(ROOT, 'docs/summit/artifacts/r3-stream-determinism.json');
+const OUT_JSON = join(ROOT, 'docs/summit/artifacts/r2b-stream-determinism.json');
 const RUNS = (() => {
   const i = process.argv.indexOf('--runs');
   return i >= 0 ? Number(process.argv[i + 1]) : 20;

@@ -1,6 +1,6 @@
-# R3 · 流式确定性门禁（可回放 / 可对抗）
+# R2 次轮 · 流式确定性门禁（可回放 / 可对抗）
 
-> 承 R2 (`779c3e9`)。目标：把 R2 修好的流式链路变成**可回放、可对抗、可计量**的门禁，
+> R2 的**次轮**（非新 R）。承 R2 主轮 `779c3e9`。目标：把 R2 修好的流式链路变成**可回放、可对抗、可计量**的门禁，
 > 并把协议校验引入开发期生产路径。不重构协议、不改演示选择器、不改四语义色。
 
 ## 1. 确定性对抗探针 `scripts/probe-stream-determinism.mjs`
@@ -43,7 +43,7 @@
 
 **能红能绿**：临时移除 `finalize` 里的 `setStreaming(false)/setCopilotStreaming(false)`
 → 8 类全部 20/20 命中「卡住」（exit 1，160 缺陷）；恢复 → 全 0（exit 0）。证明探针不是常绿摆设。
-证据：`docs/summit/artifacts/r3-stream-determinism.json`。
+证据：`docs/summit/artifacts/r2b-stream-determinism.json`。
 
 ## 2. 请求竞态矩阵 `scripts/probe-request-race.mjs`
 
@@ -62,7 +62,7 @@
 | E 刷新后再发送 | 能正常进入流式（链路未卡死） | ✓ |
 | E | 全矩阵零 console.error / 零未捕获异常 | ✓ 0 errors |
 
-**10/10 通过**。证据：`docs/summit/artifacts/r3-request-race.json`。
+**10/10 通过**。证据：`docs/summit/artifacts/r2b-request-race.json`。
 
 > 输入区可用性的真实契约（探针按此测量，而非猜测）：流式中发送按钮被「停止」按钮
 > **条件替换**（不是 disabled）；恢复后出现可用发送按钮、停止按钮消失。

@@ -23,6 +23,7 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,29 +59,35 @@ const GPU_FLAGS = GPU === 'swiftshader'
   ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
   : ['--use-gl=angle', '--use-angle=d3d11', '--ignore-gpu-blocklist', '--enable-gpu-rasterization'];
 
-/* ---- 从 tokens.ts 读取期望值（单一事实源） ---- */
-const tokensSrc = readFileSync(join(ROOT, 'src/constants/tokens.ts'), 'utf8');
-const glassBlur = (key) => {
-  const m = tokensSrc.match(new RegExp(key + '\\s*:\\s*\\{[^}]*blurPx\\s*:\\s*(\\d+)'));
-  return m ? Number(m[1]) : null;
-};
-const colorHex = (key) => {
-  const m = tokensSrc.match(new RegExp(key + "\\s*:\\s*'(#[0-9a-fA-F]{6})'"));
-  return m ? m[1] : null;
-};
+/* ---- 从 tokens.ts 读取期望值（单一事实源） ----
+ * 【为什么真实 import 而不是正则解析】正则只能"看着像"，且 tokens.ts 一改注释/换行就可能
+ * 解析失败；转译后 require 拿到的是真正的 token 对象，COLORS/GLASS/STROKE/MOTION 也因此
+ * 有了真实消费者（不会沦为死导出）。 */
+const require = createRequire(import.meta.url);
+const ts = require('typescript');
+const TOKENS_TMP = join(ROOT, 'tmp-glass-tokens');
+mkdirSync(TOKENS_TMP, { recursive: true });
+{
+  const result = ts.transpileModule(readFileSync(join(ROOT, 'src/constants/tokens.ts'), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    fileName: 'tokens.ts',
+  });
+  writeFileSync(join(TOKENS_TMP, 'tokens.js'), result.outputText, 'utf8');
+}
+const { COLORS, GLASS, STROKE, MOTION } = require(join(TOKENS_TMP, 'tokens.js'));
 const hexToRgb = (hex) => {
   const n = parseInt(hex.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 };
-const strokeHairline = (tokensSrc.match(/hairline:\s*'([^']+)'/) ?? [])[1] ?? '';
 const norm = (s) => String(s).replace(/\s+/g, '');
-const panelRgb = hexToRgb(colorHex('panel'));
-const voidRgb = hexToRgb(colorHex('void'));
+const panelRgb = hexToRgb(COLORS.panel);
+const voidRgb = hexToRgb(COLORS.void);
 const EXPECT = {
-  blur: { panel: glassBlur('panel'), chip: glassBlur('chip'), overlay: glassBlur('overlay') },
-  hairline: norm(strokeHairline),
+  blur: { panel: GLASS.panel.blurPx, chip: GLASS.chip.blurPx, overlay: GLASS.overlay.blurPx },
+  hairline: norm(STROKE.hairline),
   chipBg: norm(`rgba(${panelRgb.join(',')},0.55)`),
   overlayBg: norm(`rgba(${voidRgb.join(',')},0.78)`),
+  fadeInMs: MOTION.base,
 };
 
 async function connect(wsUrl) {
@@ -234,6 +241,18 @@ try {
     if (realPanel.present) {
       assert(vp.name, 'real-panel.backdropFilter', realPanel.backdropFilter.includes(`blur(${EXPECT.blur.panel}px)`), `${realPanel.tag}[${realPanel.aria}] ${realPanel.backdropFilter}`);
     }
+
+    /* 正常动效：kv-fade-in 的 animationDuration 应等于 tokens.MOTION.base
+     * （这条断言让 MOTION 令牌有真实消费者，也验证"令牌 → CSS → computed"整条链路） */
+    const normalMotion = await ev(cdp, MEASURE_MOTION);
+    const normalAnimMs = toMs(normalMotion.animationDuration);
+    report.viewports[vp.name].normalMotion = normalMotion;
+    assert(
+      vp.name,
+      'normal-motion.animationDuration===MOTION.base',
+      normalAnimMs === EXPECT.fadeInMs,
+      `${normalMotion.animationDuration} (${normalAnimMs}ms) vs MOTION.base=${EXPECT.fadeInMs}ms`,
+    );
 
     /* prefers-reduced-motion：transition/animationDuration ≤ 1ms */
     await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });

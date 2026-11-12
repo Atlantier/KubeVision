@@ -352,3 +352,44 @@ test('畸形帧降级：非法 JSON / 形状不符都走 onMalformedLine，不�
   assert.equal(malformed, 3, '三帧畸形/未知都降级而非崩溃');
   assert.equal(got[1].type, 'done');
 });
+
+/* ========================================================================== */
+/* 7. 消息状态纯变换（抽屉与探针共用）                                           */
+/* ========================================================================== */
+
+const EMPTY = { text: '', reasoningSteps: [], toolCards: [] };
+
+test('upsertToolStart 幂等：同 toolCallId 只挂一张骨架卡', () => {
+  const once = consumer.upsertToolStart(EMPTY, 'call-1', 'renderPodMetrics', 'mcp://x');
+  assert.equal(once.toolCards.length, 1);
+  assert.equal(once.toolCards[0].state, 'skeleton');
+  const twice = consumer.upsertToolStart(once, 'call-1', 'renderPodMetrics', 'mcp://x');
+  assert.equal(twice, once, '重复 start 返回原状态（引用不变，便于跳过渲染）');
+  assert.equal(twice.toolCards.length, 1);
+});
+
+test('applyToolResult 升级 / 孤儿补齐 / 重复幂等', () => {
+  const started = consumer.upsertToolStart(EMPTY, 'call-1', 'renderPodMetrics', 'mcp://x');
+  const args = { podId: 'p', podName: 'n', namespace: 'ns', cpuUsage: 1, memoryUsage: 2, restarts: 0, cpuHistory: [1, 2, 3, 4, 5, 6], memHistory: [1, 2, 3, 4, 5, 6] };
+  const upgraded = consumer.applyToolResult(started, { type: 'tool-result', toolCallId: 'call-1', toolName: 'renderPodMetrics', args });
+  assert.equal(upgraded.toolCards[0].state, 'ready');
+  /* 重复 result：已 ready 的卡不再变动 */
+  assert.equal(consumer.applyToolResult(upgraded, { type: 'tool-result', toolCallId: 'call-1', toolName: 'renderPodMetrics', args }), upgraded);
+  /* 孤儿 result：补一张卡而非丢弃 */
+  const orphan = consumer.applyToolResult(EMPTY, { type: 'tool-result', toolCallId: 'ghost', toolName: 'renderRootCauseAnalysis', args: null, status: 'error' });
+  assert.equal(orphan.toolCards.length, 1);
+  assert.equal(orphan.toolCards[0].state, 'error');
+});
+
+test('resetRound 只清正文/思考链，保留工具卡片（反作弊硬约束）', () => {
+  const withCard = consumer.applyToolResult(
+    consumer.upsertToolStart(consumer.appendText(EMPTY, '已生成正文'), 'call-1', 'renderPodMetrics', 'mcp://x'),
+    { type: 'tool-result', toolCallId: 'call-1', toolName: 'renderPodMetrics', args: { podId: 'p' } },
+  );
+  assert.equal(withCard.toolCards.length, 1);
+  const reset = consumer.resetRound(withCard);
+  assert.equal(reset.text, '', '正文被复位');
+  assert.equal(reset.reasoningSteps.length, 0, '思考链被复位');
+  assert.equal(reset.toolCards.length, 1, '工具卡片必须保留（不被 reset 清空）');
+  assert.equal(reset.toolCards[0].state, 'ready');
+});

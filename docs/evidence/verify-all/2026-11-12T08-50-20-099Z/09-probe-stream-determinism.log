@@ -1,0 +1,15 @@
+$ C:\Program Files\nodejs\node.exe scripts/probe-stream-determinism.mjs
+
+--- output ---
+  ✓ chunk-half       runs=20  卡住=0 丢帧=0 重复卡=0 误回落=0 乱码=0
+  ✓ proxy-buffer     runs=20  卡住=0 丢帧=0 重复卡=0 误回落=0 乱码=0
+  ✓ malformed-frame  runs=20  卡住=0 丢帧=0 重复卡=0 误回落=0 乱码=0
+  ✓ mid-abort        runs=20  卡住=0 丢帧=0 重复卡=0 误回落=0 乱码=0
+  ✓ stop-resend      runs=20  卡住=0 丢帧=0 重复卡=0 误回落=0 乱码=0
+  ✓ dup-tool-start   runs=20  卡住=0 丢帧=0 重复卡=0 误回落=0 乱码=0
+  ✓ foreign-trace    runs=20  卡住=0 丢帧=0 重复卡=0 误回落=0 乱码=0
+  ✓ no-done          runs=20  卡住=0 丢帧=0 重复卡=0 误回落=0 乱码=0
+
+金样期望: text=309 reasoning=3 readyCards=3 done=1
+扰动总数: 8 × 20 = 160 次
+✓ 8 类扰动全部零缺陷（卡住/丢帧/重复卡/误回落/乱码 均为 0）

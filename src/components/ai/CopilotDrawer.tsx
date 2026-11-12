@@ -1069,8 +1069,8 @@ export default function CopilotDrawer() {
     }
     return 'MASTER 控制平面 · API-Server';
   }, [selectedEntityId, selectedEntityType]);
-  const quickPromptTrigger = useClusterStore((s): string | null => s.quickPromptTrigger);
-  const clearQuickPrompt = useClusterStore((s): (() => void) => s.clearQuickPrompt);
+  const quickPromptQueue = useClusterStore((s): readonly string[] => s.quickPromptQueue);
+  const shiftQuickPrompt = useClusterStore((s): (() => void) => s.shiftQuickPrompt);
   /* 主动嗅探数据源：异常 Pod 列表 + 混沌场景（细粒度订阅，仅这两项变化时重渲染） */
   const faultyPodCount = useClusterStore(
     (s): number =>
@@ -1729,7 +1729,7 @@ export default function CopilotDrawer() {
       activeSessionRef.current = session;
 
       /*
-       * 【R3 · 开发期协议断言】非生产构建下把已分发事件收集起来，收尾时用
+       * 【R2 次轮 · 开发期协议断言】非生产构建下把已分发事件收集起来，正常收尾时用
        * validateStreamEvents 校验全局性质（重复 id / 孤儿 result / 未配对 start / done 唯一）。
        * 生产构建 tree-shake 掉（NODE_ENV === 'production' 时 collected 恒为 null、不记录、不校验），
        * 因此零运行时开销、零用户可见影响；开发期一旦协议被改坏，控制台立即报出违例。
@@ -1737,7 +1737,12 @@ export default function CopilotDrawer() {
       const devCollected: ChatStreamEvent[] | null =
         process.env.NODE_ENV === 'production' ? null : [];
       const finalize = (reason: SessionEndReason): void => {
-        if (devCollected !== null && !session.isFinalized()) {
+        /*
+         * 【只在正常收尾（收到 done）时校验】validateStreamEvents 要求"有且仅有一个 done"；
+         * 若本就把流截断/中止（没有 done），missing-terminal 是**预期**结果而非产侧缺陷，
+         * 对它告警属于误报。因此仅 reason === 'done' 时做开发期断言。
+         */
+        if (devCollected !== null && reason === 'done' && !session.isFinalized()) {
           const violations = validateStreamEvents(devCollected);
           if (violations.length > 0) {
             console.error('[stream-protocol] 开发期协议违例', violations);
@@ -1878,9 +1883,10 @@ export default function CopilotDrawer() {
             }
 
             case 'reset': {
-              /* R2 新增事件：轮换复位声明。trace 已在 sendMessage 开头 begin() 清过，
-               * 且 reset 晚于流前的 intent/rag span，故这里只复位本轮正文/思考链，
-               * **保留工具卡片**（卡片是用户已看到的诊断产物，清掉等于丢信息）。 */
+              /* R2 新增事件：轮换复位声明。服务端已保证它是整条流的第一帧，
+               * 因此这里可以连带把 trace 复位到干净起点（不会误清本轮 span），
+               * 同时只复位正文/思考链，**保留工具卡片**（用户已看到的诊断产物不丢）。 */
+              useAgentTraceStore.getState().begin();
               patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, resetRound(m)));
               break;
             }
@@ -2113,15 +2119,18 @@ export default function CopilotDrawer() {
   /* ========================================================================== */
 
   /**
-   * 消费外部快捷指令（如 3D 画布工具条的"快照诊断"经 triggerQuickPrompt 写入）。
-   * 读取后立即清空 store 载荷，防止重复触发。
+   * 消费外部快捷指令队列（如 3D 画布工具条的"快照诊断"经 triggerQuickPrompt 写入）。
+   *
+   * 【为什么是队列而不是单槽】单槽会被后一条覆盖，流式期间连点就丢指令。这里每次取队首、
+   * 立即出队，再交给 sendMessage；sendMessage 若正流式会把它转入内部 FIFO 排队，
+   * 从而"外部连点 → 内部排队"形成一条不丢消息的链路。
    */
   useEffect(() => {
-    if (quickPromptTrigger === null) return;
-    const prompt = quickPromptTrigger;
-    clearQuickPrompt();
-    void sendMessage(prompt);
-  }, [quickPromptTrigger, clearQuickPrompt, sendMessage]);
+    const next = quickPromptQueue[0];
+    if (next === undefined) return;
+    shiftQuickPrompt();
+    void sendMessage(next);
+  }, [quickPromptQueue, shiftQuickPrompt, sendMessage]);
 
   /* 组件卸载：中止在途流 + 停止拾音 + 停止播报 */
   useEffect(() => {

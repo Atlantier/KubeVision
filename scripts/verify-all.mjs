@@ -69,10 +69,13 @@ const STEPS = [
   { name: 'check-layering', cmd: node, args: ['scripts/check-layering.mjs'], needsDev: false },
   { name: 'check-dead-exports', cmd: node, args: ['scripts/check-dead-exports.mjs'], needsDev: false },
   { name: 'check-style-contract', cmd: node, args: ['scripts/check-style-contract.mjs'], needsDev: false },
+  /* R2 次轮 · 流式确定性对抗门禁（离线回放，8×20 扰动，无需服务） */
+  { name: 'probe-stream-determinism', cmd: node, args: ['scripts/probe-stream-determinism.mjs'], needsDev: false, timeoutMs: 120000 },
   { name: 'verify', cmd: node, args: ['scripts/verify.mjs'], needsDev: true, timeoutMs: 420000 },
   { name: 'verify-stream-integrity', cmd: node, args: ['scripts/verify-stream-integrity.mjs'], needsDev: true, timeoutMs: 180000 },
   { name: 'verify-telemetry', cmd: node, args: ['scripts/verify-telemetry.mjs'], needsDev: false, timeoutMs: 180000 },
   { name: 'verify-demo', cmd: node, args: ['scripts/verify-demo.mjs'], needsDev: true, timeoutMs: 420000 },
+  { name: 'probe-request-race', cmd: node, args: ['scripts/probe-request-race.mjs'], needsDev: true, timeoutMs: 600000 },
   { name: 'probe-glass-contract', cmd: node, args: ['scripts/probe-glass-contract.mjs'], needsDev: true, timeoutMs: 180000 },
   { name: 'probe-blackout-demo', cmd: node, args: ['scripts/probe-blackout.mjs', '--action', 'demo', '--repeat', '3', '--duration', '10'], needsDev: true, timeoutMs: 240000 },
   { name: 'probe-blackout-chaos-oom', cmd: node, args: ['scripts/probe-blackout.mjs', '--action', 'chaos-oom', '--repeat', '3', '--duration', '10'], needsDev: true, timeoutMs: 240000 },

@@ -1,0 +1,8 @@
+$ C:\Program Files\nodejs\node.exe scripts/check-dead-exports.mjs
+
+--- output ---
+死导出守卫（check-dead-exports）
+  扫描 122 个文件 / 537 个具名导出
+  基线存量：12 条 · 当前死导出：12 条 · 新增：0 条
+
+  ✓ 没有新增死导出

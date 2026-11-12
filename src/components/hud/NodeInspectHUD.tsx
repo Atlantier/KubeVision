@@ -765,7 +765,7 @@ function TopologyLegendPanel() {
         aria-expanded={expanded}
         aria-label="切换 3D 拓扑读图说明"
         className={cn(
-          'pointer-events-auto group flex items-center gap-2 rounded-lg border px-3 py-1.5 backdrop-blur-md transition-all duration-200',
+          'pointer-events-auto group flex items-center gap-2 rounded-lg border px-3 py-1.5 kv-blur-chip transition-all duration-200',
           expanded
             ? 'border-cyan-400/[0.45] bg-slate-900/90 text-cyan-200 shadow-[0_0_20px_-4px_rgba(34,211,238,0.35)]'
             : 'border-slate-800/90 bg-slate-950/80 text-slate-300 hover:border-cyan-400/[0.35] hover:text-cyan-200',
@@ -800,7 +800,7 @@ function TopologyLegendPanel() {
             exit={{ opacity: 0, y: -6, scale: 0.96 }}
             transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
             style={{ transformOrigin: 'top left' }}
-            className="pointer-events-auto relative mt-1.5 w-64 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/90 px-3.5 py-3 shadow-[0_16px_40px_-8px_rgba(2,6,23,0.92)] backdrop-blur-md"
+            className="pointer-events-auto relative mt-1.5 w-64 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/90 px-3.5 py-3 shadow-[0_16px_40px_-8px_rgba(2,6,23,0.92)] kv-blur-panel"
           >
             <HoloRefractionEdges accent="#22d3ee" />
             <HoloCorners color="#22d3ee" />

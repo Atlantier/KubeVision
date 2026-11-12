@@ -13,8 +13,13 @@
  * 静态不可见残留；一刀切 0 会逼着开发者加各种假引用。基线的语义是
  * "存量可解释、增量零容忍"。
  *
+ * 【引用统计的覆盖范围】导出从 `src/**` 清点，但**引用**还统计
+ * `scripts/**` 与 `tailwind.config.ts`——验证脚本（如 verify-telemetry 调
+ * clearFrameBuffer）与构建配置（如 tailwind.config 用 TYPE_SCALE）是这些导出的
+ * 合法消费者。只数 src 会把"被脚本/配置真实使用"的导出误判成死代码。
+ *
  * 【静态分析的已知边界】
- *  - 只统计 src 内的代码引用，文档/测试字符串不算；
+ *  - 只做单词边界文本匹配；文档/注释里的同名字样也会被计入（已知误差）；
  *  - 通过字符串/反射/动态 import 变量名的引用无法识别（会在报告中注明）；
  *  - 框架入口（route.ts 的 GET/POST 等、page.tsx 的 default）自动豁免。
  *
@@ -115,6 +120,32 @@ function countReferences(name, corpus, cache) {
   return count;
 }
 
+/** 递归收集 scripts 下的 .mjs/.js 文件（作为引用语料，不参与导出清点） */
+function collectScriptFiles(dir = join(ROOT, 'scripts')) {
+  if (!existsSync(dir)) return [];
+  const out = [];
+  for (const entry of readdirSync(dir)) {
+    const absolute = join(dir, entry);
+    const stats = statSync(absolute);
+    if (stats.isDirectory()) out.push(...collectScriptFiles(absolute));
+    else if (/\.(mjs|js)$/.test(entry)) out.push(relative(ROOT, absolute).split(sep).join('/'));
+  }
+  return out;
+}
+
+/**
+ * collectReferenceCorpus —— 引用统计语料：src 全量 + scripts 全量 + 构建配置。
+ *
+ * 【为什么包含后两者】验证脚本与 tailwind.config 是真实消费者（如
+ * verify-telemetry.mjs → clearFrameBuffer、probe-glass-contract.mjs → GLASS/COLORS、
+ * tailwind.config.ts → TYPE_SCALE）。只数 src 会把它们误报成死导出。
+ */
+function collectReferenceCorpus() {
+  const files = [...collectSourceFiles(), ...collectScriptFiles()];
+  if (existsSync(join(ROOT, 'tailwind.config.ts'))) files.push('tailwind.config.ts');
+  return [...new Set(files)];
+}
+
 function readBaseline() {
   if (!existsSync(BASELINE_PATH)) return { entries: [] };
   try {
@@ -128,7 +159,8 @@ function readBaseline() {
 function main() {
   const files = collectSourceFiles();
   const corpus = new Map();
-  for (const file of files) corpus.set(file, readFileSync(join(ROOT, file), 'utf8'));
+  /* 导出清点只看 src；引用统计额外覆盖 scripts 与 tailwind.config（合法消费者） */
+  for (const file of collectReferenceCorpus()) corpus.set(file, readFileSync(join(ROOT, file), 'utf8'));
 
   const allExports = [];
   for (const file of files) allExports.push(...extractExports(file, corpus.get(file)));

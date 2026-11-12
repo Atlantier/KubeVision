@@ -1,0 +1,21 @@
+$ C:\Program Files\nodejs\node.exe scripts/check-style-contract.mjs
+
+--- output ---
+KubeVision AI — 样式契约守卫（R2 · CI 可校验）
+  ✓ globals.css 无坏变量/空选择器  (无 --: / var(--) / . {})
+  ✓ 玻璃五类均有非空规则  (.kv-panel .kv-chip .kv-overlay .kv-blur-panel .kv-blur-chip)
+  ✓ .kv-panel 单一基础规则  (1 条（另含 @supports 降级）)
+  ✓ 焦点环用 outline  (outline + outline-offset)
+  ✓ backdrop-filter 降级存在  (@supports not)
+  ✓ tokens.GLASS 与 globals 一致  (panel=20 chip=8 overlay=30)
+  ✓ 无未接线的 getTokenCssVariables  (已删除，改由本脚本校验一致)
+  ✓ 无双重透明度  (0 处)
+  ✓ 无非刻度裸透明度  (0 处)
+  ✓ 字号 ≥10px 且无半像素  (0 处违规)
+  ✓ 无动态拼接颜色/透明度类  (0 处（全部为静态字面量，可被 Tailwind 生成）)
+  · 构建 CSS 校验  (目录为空（先运行 pnpm build）)
+
+  透明度类比对（生产 CSS: 无构建）
+    源码类总数: 221 · 已生成: 0 · 缺失: 0
+
+✓ 样式契约全部通过

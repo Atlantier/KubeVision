@@ -266,8 +266,14 @@ export interface ClusterState {
   readonly activeMobileView: MobileViewKey;
   /** 底部终端日志行缓冲（运行期上限 200 条 FIFO；持久化仅最近 30 条） */
   readonly terminalLogs: string[];
-  /** AI 快捷诊断指令触发载荷（Copilot 消费后置回 null，非持久化） */
-  readonly quickPromptTrigger: string | null;
+  /**
+   * AI 快捷诊断指令 FIFO 队列（Copilot 消费队首后出队，非持久化）。
+   *
+   * 【为什么是数组而不是单槽】单槽赋值会让"流式期间连点多次快照诊断"只剩最后一条，
+   * 前面的指令被静默丢弃。改为 FIFO：连点全部保留，Copilot 按序逐条消费，
+   * 与 CopilotDrawer 内部的 promptQueue（流式期间排队）语义一致。
+   */
+  readonly quickPromptQueue: readonly string[];
   /** 3D 画布多模态视觉快照 Base64 DataURL（VLM 输入素材，非持久化） */
   readonly capturedViewportDataUrl: string | null;
   /** 自愈免疫时间戳字典：targetId → 最近自愈 epoch 毫秒（免疫窗口去重依据） */
@@ -465,6 +471,8 @@ export interface ClusterActions {
    * 下次挂载抽屉时被重放——表现为"点了停止，结果又跑了一次诊断"。
    */
   clearQuickPromptTrigger: () => void;
+  /** 消费队首快捷指令（Copilot 读取后调用；无指令时为空操作） */
+  shiftQuickPrompt: () => void;
   /** 设置/清除 3D 视口多模态截图（dataUrl=null 即清除） */
   setCapturedViewport: (dataUrl: string | null) => void;
   /** 累加端侧脱敏计数（负数/小数防御：截断为非负整数） */

@@ -1,0 +1,4 @@
+$ C:\Program Files\nodejs\node.exe C:\Users\Dannie\Desktop\AI项目\KubeVision\node_modules\next\dist\bin\next lint
+
+--- output ---
+✔ No ESLint warnings or errors
