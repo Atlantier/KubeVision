@@ -1,0 +1,58 @@
+{
+  "at": "2026-11-12T07:21:31.441Z",
+  "base": "http://127.0.0.1:3000",
+  "results": [
+    {
+      "name": "A. 快速连发 5 条：首条进入流式、发送按钮禁用（输入区不可提交）、无重复气泡",
+      "pass": true,
+      "detail": "{\"copilotStreaming\":true,\"hasTextarea\":true,\"textareaDisabled\":false,\"hasStopButton\":true,\"hasSendButton\":false,\"sendDisabled\":null,\"assistantBubbles\":1,\"userBubbles\":1,\"queueNotice\":null}"
+    },
+    {
+      "name": "A. 连发期间零 console.error / 零未捕获异常",
+      "pass": true,
+      "detail": "0 errors"
+    },
+    {
+      "name": "B. 流式中切页签：无卸载后更新、无异常",
+      "pass": true,
+      "detail": "0 errors"
+    },
+    {
+      "name": "B. 切页签后气泡不重复",
+      "pass": true,
+      "detail": "assistantBubbles=1"
+    },
+    {
+      "name": "C. 流式中关闭抽屉：无 setState-on-unmounted",
+      "pass": true,
+      "detail": "0 errors"
+    },
+    {
+      "name": "C. 关闭后 copilotStreaming 复位（无悬挂活动态）",
+      "pass": true,
+      "detail": "copilotStreaming=false closed=[object Object]"
+    },
+    {
+      "name": "D. 流式中刷新：无卸载后更新、无异常",
+      "pass": true,
+      "detail": "0 errors"
+    },
+    {
+      "name": "D. 刷新后 copilotStreaming=false、textarea 可用、无残留气泡",
+      "pass": true,
+      "detail": "{\"copilotStreaming\":false,\"hasTextarea\":true,\"textareaDisabled\":false,\"hasStopButton\":false,\"hasSendButton\":true,\"sendDisabled\":true,\"assistantBubbles\":0,\"userBubbles\":0,\"queueNotice\":null}"
+    },
+    {
+      "name": "E. 刷新后重新发送能正常进入流式（链路未卡死）",
+      "pass": true,
+      "detail": "streaming=true"
+    },
+    {
+      "name": "E. 全矩阵零 console.error / 零未捕获异常",
+      "pass": true,
+      "detail": "0 errors"
+    }
+  ],
+  "passed": 10,
+  "failed": 0
+}

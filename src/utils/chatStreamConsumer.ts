@@ -14,7 +14,12 @@
  * 最后一条没有 '\n' 结尾的残行当作完整行消费——否则"去掉 done 的截断流"会丢尾。
  */
 
-import type { ChatStreamEvent } from '@/types/ai';
+import type {
+  AgentReasoningStep,
+  ChatStreamEvent,
+  ChatStreamToolResultEvent,
+  CopilotToolCard,
+} from '@/types/ai';
 
 /* ========================================================================== */
 /* 收尾三态                                                                     */
@@ -121,6 +126,154 @@ export function createNdjsonLineParser(handlers: NdjsonLineParserHandlers): Ndjs
       buffer = '';
     },
   };
+}
+
+/* ========================================================================== */
+/* 消息状态纯变换（抽屉与确定性探针共用同一份真实逻辑）                            */
+/* ========================================================================== */
+
+/**
+ * StreamMessageState —— 一条流式 AI 消息的可变部分（纯数据，无 React）。
+ *
+ * 【为什么抽出来】事件分派里的"追加正文 / 挂骨架 / 升级卡片 / 轮换复位"是纯函数，
+ * 但此前写在 React 组件的 switch 里，无法被回放探针直接复用。抽到此处后，
+ * 生产组件与 `probe-stream-determinism` 走的是**同一份**变换，探针结论才代表真实行为。
+ */
+export interface StreamMessageState {
+  readonly text: string;
+  readonly reasoningSteps: readonly AgentReasoningStep[];
+  readonly toolCards: readonly CopilotToolCard[];
+  readonly engine?: 'llm' | 'simulator';
+}
+
+/**
+ * mergeStreamState —— 把纯变换结果并回宿主消息类型（保留宿主自己的字段）。
+ *
+ * 【为什么需要】变换层只认识流式相关字段（正文/思考链/卡片/引擎），而宿主消息
+ * （CopilotMessage）还有 id / role / isStreaming 等字段。用"仅展开可变字段"的方式
+ * 合并，既让变换保持与 React 无关，又不让宿主字段被意外抹掉。
+ *
+ * @param host 宿主消息
+ * @param state 变换结果
+ * @returns 合并后的宿主消息（类型由调用方保留）
+ */
+export function mergeStreamState<T extends StreamMessageState>(host: T, state: StreamMessageState): T {
+  return {
+    ...host,
+    text: state.text,
+    reasoningSteps: state.reasoningSteps,
+    toolCards: state.toolCards,
+    ...(state.engine !== undefined ? { engine: state.engine } : {}),
+  };
+}
+
+/** 追加一条思考链步骤 */
+export function appendReasoning(state: StreamMessageState, step: AgentReasoningStep): StreamMessageState {
+  return { ...state, reasoningSteps: [...state.reasoningSteps, step] };
+}
+
+/** 追加一段正文增量 */
+export function appendText(state: StreamMessageState, content: string): StreamMessageState {
+  return { ...state, text: state.text + content };
+}
+
+/** 记录实际引擎 */
+export function setEngine(state: StreamMessageState, engine: 'llm' | 'simulator'): StreamMessageState {
+  return { ...state, engine };
+}
+
+/**
+ * upsertToolStart —— 挂载骨架卡（按 toolCallId 幂等去重）。
+ *
+ * 【去重为什么在这里】回落引擎可能重发同一张卡、代理也可能重放同一帧；
+ * 同 id 只挂一次，杜绝"两张指标卡"。重复 start 返回原状态（引用不变，便于上层跳过渲染）。
+ *
+ * @param state 当前消息状态
+ * @param toolCallId 工具调用 id（配对键）
+ * @param toolName 工具名
+ * @param mcpUri MCP 端点
+ * @returns 新状态（重复 start 时原样返回）
+ */
+export function upsertToolStart(
+  state: StreamMessageState,
+  toolCallId: string,
+  toolName: string,
+  mcpUri: string,
+): StreamMessageState {
+  if (state.toolCards.some((card): boolean => card.toolCallId === toolCallId)) return state;
+  const card: CopilotToolCard = { toolCallId, toolName, mcpUri, state: 'skeleton' };
+  return { ...state, toolCards: [...state.toolCards, card] };
+}
+
+/**
+ * applyToolResult —— 用 tool-result 升级卡片（幂等、容忍孤儿 result）。
+ *
+ * 【三种情形】
+ * 1. 该卡已是 ready → 重复 result（旧服务端/重放），忽略（返回原状态）；
+ * 2. 找不到 start（孤儿 result）→ 补一张卡，避免用户永远等不到；
+ * 3. 已挂骨架 → 原地升级为 ready（有载荷）或 error（失败/无载荷）。
+ *
+ * @param state 当前消息状态
+ * @param event tool-result 事件
+ * @returns 新状态
+ */
+export function applyToolResult(
+  state: StreamMessageState,
+  event: ChatStreamToolResultEvent,
+): StreamMessageState {
+  const alreadyReady = state.toolCards.some(
+    (card): boolean => card.toolCallId === event.toolCallId && card.state === 'ready',
+  );
+  if (alreadyReady) return state;
+
+  const failed = event.status === 'error';
+  const exists = state.toolCards.some((card): boolean => card.toolCallId === event.toolCallId);
+  const mcpUri = `mcp://k8s-cluster/tools/${event.toolName}`;
+
+  if (!exists) {
+    const created: CopilotToolCard =
+      failed || event.args === null
+        ? {
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            mcpUri,
+            state: 'error',
+            errorMessage: event.errorMessage ?? '工具调用失败',
+          }
+        : {
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            mcpUri,
+            state: 'ready',
+            args: event.args,
+            synthesized: event.synthesized === true,
+          };
+    return { ...state, toolCards: [...state.toolCards, created] };
+  }
+
+  return {
+    ...state,
+    toolCards: state.toolCards.map((card): CopilotToolCard => {
+      if (card.toolCallId !== event.toolCallId) return card;
+      if (failed || event.args === null) {
+        return { ...card, state: 'error', errorMessage: event.errorMessage ?? '工具调用失败' };
+      }
+      return { ...card, state: 'ready', args: event.args, synthesized: event.synthesized === true };
+    }),
+  };
+}
+
+/**
+ * resetRound —— 轮换复位：清正文与思考链，**保留工具卡片**。
+ *
+ * 【反作弊硬约束】reset 绝不清空整条消息或工具卡片——卡片是用户已经看到的诊断产物，
+ * 清掉等于丢信息。它只复位"本轮流式累积的正文与思考链"，卡片原样保留。
+ *
+ * @param state 当前消息状态
+ * @returns 复位后的状态（toolCards 原样保留）
+ */
+export function resetRound(state: StreamMessageState): StreamMessageState {
+  return { ...state, text: '', reasoningSteps: [] };
 }
 
 /* ========================================================================== */

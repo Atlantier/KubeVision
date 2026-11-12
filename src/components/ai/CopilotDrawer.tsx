@@ -78,14 +78,22 @@ import AgentTracePanel from '@/components/ai/AgentTracePanel';
 import { embedQueryText } from '@/utils/edgeEmbedding';
 import { computeViewportPixelFeatures } from '@/utils/pixelFeatures';
 import {
+  appendReasoning,
+  mergeStreamState,
+  appendText,
+  applyToolResult,
   createChatStreamSession,
   createNdjsonLineParser,
   createPromptQueue,
+  resetRound,
+  setEngine,
+  upsertToolStart,
   type ChatStreamSession,
   type PromptQueue,
   type SessionEndReason,
 } from '@/utils/chatStreamConsumer';
 import { isChatStreamEvent } from '@/utils/chatStreamSchema';
+import { validateStreamEvents } from '@/utils/chatStreamProtocol';
 import TraceIdChip from '@/components/hud/TraceIdChip';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
@@ -786,7 +794,7 @@ function MessageBubble({
             </p>
           </div>
         ) : null}
-        <div className="max-w-[85%] rounded-lg rounded-br-sm border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5">
+        <div data-copilot-msg="user" className="max-w-[85%] rounded-lg rounded-br-sm border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5">
           <p className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-cyan-50">
             {message.text}
           </p>
@@ -798,7 +806,7 @@ function MessageBubble({
   /* ---- 自愈验证摘要：绿色系统级回执，与 AI 回答明确区分 ---- */
   if (message.isVerification === true) {
     return (
-      <div className="flex items-start gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-2 shadow-glow-emerald">
+      <div data-copilot-msg="verification" className="flex items-start gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-2 shadow-glow-emerald">
         <CheckCircle2 className="mt-[1px] h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden />
         <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-caption leading-relaxed text-emerald-100">
           {/* 行内富文本：回执里的目标名与 MCP 端点用反引号包裹，渲染为代码胶囊 */}
@@ -810,7 +818,7 @@ function MessageBubble({
 
   /* ---- AI 消息：思考链 + 正文 + 卡片 ---- */
   return (
-    <div className="flex flex-col gap-1.5">
+    <div data-copilot-msg="assistant" className="flex flex-col gap-1.5">
       {/* 思考链（流式过程中实时追加，默认折叠） */}
       {message.reasoningSteps.length > 0 ? (
         <AgentThoughtChain
@@ -1719,7 +1727,24 @@ export default function CopilotDrawer() {
         },
       });
       activeSessionRef.current = session;
-      const finalize = (reason: SessionEndReason): void => session.finalize(reason);
+
+      /*
+       * 【R3 · 开发期协议断言】非生产构建下把已分发事件收集起来，收尾时用
+       * validateStreamEvents 校验全局性质（重复 id / 孤儿 result / 未配对 start / done 唯一）。
+       * 生产构建 tree-shake 掉（NODE_ENV === 'production' 时 collected 恒为 null、不记录、不校验），
+       * 因此零运行时开销、零用户可见影响；开发期一旦协议被改坏，控制台立即报出违例。
+       */
+      const devCollected: ChatStreamEvent[] | null =
+        process.env.NODE_ENV === 'production' ? null : [];
+      const finalize = (reason: SessionEndReason): void => {
+        if (devCollected !== null && !session.isFinalized()) {
+          const violations = validateStreamEvents(devCollected);
+          if (violations.length > 0) {
+            console.error('[stream-protocol] 开发期协议违例', violations);
+          }
+        }
+        session.finalize(reason);
+      };
 
       try {
         /* R46：端侧像素特征（无截图则跳过）——移入 try，失败也能被统一收尾 */
@@ -1779,35 +1804,24 @@ export default function CopilotDrawer() {
          * 不会进入这里的深层属性访问，故不会崩溃。
          */
         const dispatch = (event: ChatStreamEvent): void => {
+          /* 开发期协议断言用的事件收集（生产构建 devCollected 为 null，不产生开销） */
+          if (devCollected !== null) devCollected.push(event);
           switch (event.type) {
             case 'reasoning': {
-              patchMessage(assistantId, (m): CopilotMessage => ({
-                ...m,
-                reasoningSteps: [...m.reasoningSteps, event.step],
-              }));
+              patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, appendReasoning(m, event.step)));
               break;
             }
 
             case 'text': {
-              patchMessage(assistantId, (m): CopilotMessage => ({
-                ...m,
-                text: m.text + event.content,
-              }));
+              patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, appendText(m, event.content)));
               break;
             }
 
             case 'tool-start': {
-              /* 【A1 自愈：按 toolCallId 去重】同 id 只挂一次，杜绝"两张指标卡"。 */
-              const card: CopilotToolCard = {
-                toolCallId: event.toolCallId,
-                toolName: event.toolName,
-                mcpUri: event.mcpUri,
-                state: 'skeleton',
-              };
-              patchMessage(assistantId, (m): CopilotMessage => {
-                if (m.toolCards.some((c): boolean => c.toolCallId === event.toolCallId)) return m;
-                return { ...m, toolCards: [...m.toolCards, card] };
-              });
+              /* 【A1 自愈：按 toolCallId 去重】upsertToolStart 幂等，同 id 只挂一次。 */
+              patchMessage(assistantId, (m): CopilotMessage =>
+                mergeStreamState(m, upsertToolStart(m, event.toolCallId, event.toolName, event.mcpUri)),
+              );
               /* R2：看门狗由会话统一管理；registerWatchdog 内部先 clearTimeout(prev)，
                * 重复 tool-start 不会泄漏上一个定时器。 */
               session.registerWatchdog(event.toolCallId, SKELETON_WATCHDOG_MS);
@@ -1817,62 +1831,12 @@ export default function CopilotDrawer() {
             case 'tool-result': {
               /* 收到结果即撤销该卡的看门狗 */
               session.clearWatchdog(event.toolCallId);
-
-              const failed = event.status === 'error';
-              patchMessage(assistantId, (m): CopilotMessage => {
-                const exists = m.toolCards.some((c): boolean => c.toolCallId === event.toolCallId);
-                /* 重复 result（旧服务端/重放）：已有 ready 卡片则忽略 */
-                const alreadyReady = m.toolCards.some(
-                  (c): boolean => c.toolCallId === event.toolCallId && c.state === 'ready',
-                );
-                if (alreadyReady) return m;
-
-                if (!exists) {
-                  /* 孤儿 result：补一张卡（而非丢弃，避免用户永远等不到） */
-                  const created: CopilotToolCard =
-                    failed || event.args === null
-                      ? {
-                          toolCallId: event.toolCallId,
-                          toolName: event.toolName,
-                          mcpUri: `mcp://k8s-cluster/tools/${event.toolName}`,
-                          state: 'error',
-                          errorMessage: event.errorMessage ?? '工具调用失败',
-                        }
-                      : {
-                          toolCallId: event.toolCallId,
-                          toolName: event.toolName,
-                          mcpUri: `mcp://k8s-cluster/tools/${event.toolName}`,
-                          state: 'ready',
-                          args: event.args,
-                          synthesized: event.synthesized === true,
-                        };
-                  return { ...m, toolCards: [...m.toolCards, created] };
-                }
-
-                return {
-                  ...m,
-                  toolCards: m.toolCards.map((c): CopilotToolCard => {
-                    if (c.toolCallId !== event.toolCallId) return c;
-                    if (failed || event.args === null) {
-                      return { ...c, state: 'error', errorMessage: event.errorMessage ?? '工具调用失败' };
-                    }
-                    return {
-                      ...c,
-                      state: 'ready',
-                      args: event.args,
-                      synthesized: event.synthesized === true,
-                    };
-                  }),
-                };
-              });
+              patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, applyToolResult(m, event)));
               break;
             }
 
             case 'engine': {
-              patchMessage(assistantId, (m): CopilotMessage => ({
-                ...m,
-                engine: event.engine,
-              }));
+              patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, setEngine(m, event.engine)));
               break;
             }
 
@@ -1915,14 +1879,9 @@ export default function CopilotDrawer() {
 
             case 'reset': {
               /* R2 新增事件：轮换复位声明。trace 已在 sendMessage 开头 begin() 清过，
-               * 且 reset 晚于流前的 intent/rag span，故这里只复位占位消息内容，
-               * 不再清 trace——避免把刚下发的诊断 span 抹掉。 */
-              patchMessage(assistantId, (m): CopilotMessage => ({
-                ...m,
-                text: '',
-                reasoningSteps: [],
-                toolCards: [],
-              }));
+               * 且 reset 晚于流前的 intent/rag span，故这里只复位本轮正文/思考链，
+               * **保留工具卡片**（卡片是用户已看到的诊断产物，清掉等于丢信息）。 */
+              patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, resetRound(m)));
               break;
             }
 
