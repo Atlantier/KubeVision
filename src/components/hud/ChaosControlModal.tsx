@@ -224,7 +224,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
       <button
         type="button"
         aria-label="关闭混沌演练控制台"
-        className="absolute inset-0 cursor-default bg-slate-950/85"
+        className="absolute inset-0 cursor-default bg-slate-950/[0.85]"
         onClick={(): void => setChaosModalOpen(false)}
       />
 
@@ -234,7 +234,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.94, y: 16 }}
         transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-        className="relative w-full max-w-2xl overflow-hidden rounded-lg border border-rose-500/40 bg-slate-950/95 shadow-[0_0_40px_-8px_rgba(244,63,94,0.55)]"
+        className="relative w-full max-w-2xl overflow-hidden rounded-lg border border-rose-500/40 kv-panel shadow-modal"
       >
         {/* ---- 顶部红黑斜纹警戒条 ---- */}
         <div className="h-2 w-full" style={HAZARD_STRIPE_STYLE} aria-hidden />
@@ -242,7 +242,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
         <div className="p-5">
           {/* ======== 头部：警示图标 + 标题 + 关闭 ======== */}
           <div className="mb-1 flex items-start gap-2.5">
-            <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded border border-rose-500/50 bg-rose-500/15">
+            <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded border border-rose-500/50 bg-rose-500/[0.15]">
               <AlertTriangle className="h-4 w-4 animate-glow-pulse text-rose-400" aria-hidden />
             </span>
             <div className="min-w-0 flex-1">
@@ -291,7 +291,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
                       className={cn(
                         'flex h-5 w-5 shrink-0 items-center justify-center rounded border font-mono text-[10px] font-bold',
                         card.isRecovery
-                          ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
+                          ? 'border-emerald-500/50 bg-emerald-500/[0.15] text-emerald-300'
                           : 'border-rose-500/40 bg-rose-500/10 text-rose-300',
                       )}
                     >
@@ -314,13 +314,13 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
                   </span>
 
                   {/* 详细说明 */}
-                  <span className="text-[10.5px] leading-relaxed text-slate-500 group-hover:text-slate-400">
+                  <span className="text-caption leading-relaxed text-slate-500 group-hover:text-slate-400">
                     {card.description}
                   </span>
 
                   {/* 受灾机架徽标（恢复卡不显示） */}
                   {card.targetRackIndex !== null ? (
-                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-white/[0.07]/70 bg-slate-800/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-slate-400">
+                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-white/[0.05] bg-slate-800/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-slate-400">
                       target&nbsp;·&nbsp;rack-{card.targetRackIndex}
                     </span>
                   ) : (

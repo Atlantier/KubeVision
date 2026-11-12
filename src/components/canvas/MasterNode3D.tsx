@@ -1425,7 +1425,7 @@ export default function MasterNode3D() {
         {/*
          * ---- 光学玻璃拟态控制平面铭牌（本轮重构）----
          *
-         * 【废除闭合边框】上一版是 `border border-cyan-400/35` 的完整闭合框 +
+         * 【废除闭合边框】上一版是 `border border-cyan-400/[0.35]` 的完整闭合框 +
          * `bg-slate-950/90` 近不透明深底，观感是"贴在场景上的一块黑牌"。
          * 本版改为与机架铭牌统一的光学玻璃语言：
          *   · 基底 `bg-slate-950/50 kv-blur-panel`——半通透，

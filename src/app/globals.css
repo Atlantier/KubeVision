@@ -5,9 +5,13 @@
  * 严禁 Tailwind v4 的 `@import "tailwindcss"` 语法。
  *
  * 【分层职责】
- *   - @layer base：深空暗黑根容器、字体平滑、选区高亮、细滚动条
- *   - @layer components：可复用的运维面板/状态徽标复合样式
- *   - @layer utilities：.bg-cyber-grid 网格背景、发光阴影工具类、文字辉光
+ *   - @layer base：深空暗黑根容器、字体平滑、选区高亮、细滚动条、设计令牌 :root
+ *   - @layer components：可复用的运维面板/状态徽标复合样式（玻璃三层）
+ *   - @layer utilities：.bg-cyber-grid 网格背景、可组合的 blur 工具类
+ *
+ * 【玻璃单一事实源】blur 数值只来自 :root 的 --kv-blur-panel/chip/overlay，
+ * 三者与 src/constants/tokens.ts 的 GLASS（20/8/30）由
+ * scripts/check-style-contract.mjs 静态校验一致；此处不再另写第二套 .kv-panel。
  */
 
 @tailwind base;
@@ -32,10 +36,38 @@
     --font-mono:
       ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'JetBrains Mono',
       'Liberation Mono', monospace;
+
+    /* ===== R31 设计令牌（与 src/constants/tokens.ts 同源） =====
+     * tailwind.config.ts 的 colors.kv.* 通过 var(--kv-*) 消费这些值，
+     * 因此它们必须在 :root 真实存在，否则 text-kv-primary / bg-kv-panel 等会失效。 */
+    --kv-void: #020617;
+    --kv-panel: #0b1220;
+    --kv-border: rgba(255, 255, 255, 0.075);
+    --kv-border-active: rgba(255, 255, 255, 0.14);
+    --kv-text-primary: #e2e8f0;
+    --kv-text-secondary: #94a3b8;
+    --kv-text-tertiary: #64748b;
+    --kv-text-muted: #475569;
+    --kv-emerald: #34d399;
+    --kv-amber: #fbbf24;
+    --kv-rose: #f43f5e;
+    --kv-cyan: #22d3ee;
+
+    /* 玻璃三层 blur（唯一真源 = tokens.ts GLASS；check-style-contract 校验一致） */
+    --kv-blur-panel: 20px;
+    --kv-blur-chip: 8px;
+    --kv-blur-overlay: 30px;
+
+    /* 动效节拍（与 constants/motion.ts、tailwind transitionDuration 对应） */
+    --kv-motion-fast: 140ms;
+    --kv-motion-base: 200ms;
+    --kv-motion-slow: 320ms;
+    --kv-ease: cubic-bezier(0.22, 1, 0.36, 1);
+    --kv-inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
   * {
-    @apply border-white/[0.07];
+    @apply border-white/[0.075];
   }
 
   html {
@@ -114,8 +146,8 @@
    *     inset 用 0.09 而非旧的 0.06，因为白色描边本身更淡，需要更亮的内高光配对。
    *
    * 【为何不用 @apply 写 backdrop-filter / box-shadow】
-   * Tailwind 的-* 粒度只能到预设档位（md/lg/xl），
-   * 无法表达 saturate 组合与精确的 rgba 值；直接写 CSS 属性更精确且更易读。
+   * Tailwind 的预设粒度只能到 md/lg/xl，无法表达 saturate 组合与精确 rgba 值；
+   * 直接写 CSS 属性更精确且更易读。blur 半径取自 --kv-blur-panel（=tokens GLASS.panel）。
    * 注意：`backdrop-filter` 需同时写 `-webkit-` 前缀以兼容 Safari。
    */
   .kv-panel {
@@ -126,13 +158,41 @@
       rgba(6, 10, 19, 0.88) 100%
     );
     border: 1px solid rgba(255, 255, 255, 0.075);
-    -webkit-backdrop-filter: blur(20px) saturate(140%);
-    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(var(--kv-blur-panel)) saturate(140%);
+    backdrop-filter: blur(var(--kv-blur-panel)) saturate(140%);
     box-shadow:
       inset 0 1px 0 0 rgba(255, 255, 255, 0.09),
       0 16px 40px -12px rgba(0, 0, 0, 0.65);
   }
 
+  /**
+   * 状态徽标 / 终端条 / 工具条 / 图例：轻量玻璃（Chip Glass）
+   *
+   * 【设计意图】小面积控件不需要面板级的大投影与渐变底，否则在密集 HUD 里
+   * 会显得"每个小条都在悬浮"。这里只保留 8px 轻毛玻璃 + 发丝描边 + 顶部内高光，
+   * 背景用半透明面板色，让背后的 3D 场景隐约透出但不喧宾夺主。
+   * blur 半径取自 --kv-blur-chip（=tokens GLASS.chip）。
+   */
+  .kv-chip {
+    background: rgba(11, 18, 32, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.075);
+    -webkit-backdrop-filter: blur(var(--kv-blur-chip));
+    backdrop-filter: blur(var(--kv-blur-chip));
+    box-shadow: var(--kv-inset-highlight);
+  }
+
+  /**
+   * 全屏遮罩：重毛玻璃（Overlay Glass）
+   *
+   * 【设计意图】模态背后的 scrim 需要把整屏内容柔化到"几乎不可辨认"，
+   * 让前景对话框成为唯一焦点。30px 是三层里最强的模糊，配合深色半透明底
+   * 既压暗又柔化。blur 半径取自 --kv-blur-overlay（=tokens GLASS.overlay）。
+   */
+  .kv-overlay {
+    background: rgba(2, 6, 23, 0.78);
+    -webkit-backdrop-filter: blur(var(--kv-blur-overlay));
+    backdrop-filter: blur(var(--kv-blur-overlay));
+  }
 }
 
 @layer utilities {
@@ -159,64 +219,61 @@
       0 0;
   }
 
+  /**
+   * .kv-blur-panel / .kv-blur-chip — 可组合的毛玻璃工具类
+   *
+   * 【设计意图】许多 HUD（3D 铭牌、模态遮罩、悬浮胶囊）已经用 Tailwind 的
+   * `bg-slate-950/50` 等工具类声明了背景，只缺一个"真实生效"的 backdrop-filter。
+   * 这两个工具类只提供 blur（+面板级 saturate），不写背景/描边，
+   * 因此能与任意 bg-* 工具类叠加而不互相覆盖。blur 半径同样取自 :root 令牌，
+   * 与 .kv-panel / .kv-chip 同源。此前它们是空选择器 `. {}`（静默失效），现补全。
+   */
+  .kv-blur-panel {
+    -webkit-backdrop-filter: blur(var(--kv-blur-panel)) saturate(140%);
+    backdrop-filter: blur(var(--kv-blur-panel)) saturate(140%);
+  }
 
+  .kv-blur-chip {
+    -webkit-backdrop-filter: blur(var(--kv-blur-chip));
+    backdrop-filter: blur(var(--kv-blur-chip));
+  }
 }
-
 
 /* ==========================================================================
- * R31 设计令牌（与 src/constants/tokens.ts 同源）
+ * 焦点环统一（可访问性）
+ *
+ * 【为何用 outline 而不是 box-shadow】box-shadow 焦点环会与 .kv-panel 的
+ * 外投影 / inset 高光叠加互相"吃掉"，且在被 overflow-hidden 裁切的容器里
+ * 会整圈消失。outline 不占布局、不参与 box-shadow 合成，是更稳的焦点指示。
+ * 带 overflow-hidden 的容器把 outline  inward 偏移 2px，避免被裁掉。
  * ========================================================================== */
-:root {
-  --kv-void: #020617;
-  --kv-panel: #0b1220;
-  --kv-border: rgba(255, 255, 255, 0.075);
-  --kv-border-active: rgba(255, 255, 255, 0.14);
-  --kv-text-primary: #e2e8f0;
-  --kv-text-secondary: #94a3b8;
-  --kv-text-tertiary: #64748b;
-  --kv-text-muted: #475569;
-  --kv-emerald: #34d399;
-  --kv-amber: #fbbf24;
-  --kv-rose: #f43f5e;
-  --kv-cyan: #22d3ee;
-  --: 20px;
-  --: 8px;
-  --kv-blur-overlay: 30px;
-  --kv-motion-fast: 140ms;
-  --kv-motion-base: 200ms;
-  --kv-motion-slow: 320ms;
-  --kv-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --kv-inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.08);
-}
-
-/* 玻璃三层：blur 只能来自这里 */
-.kv-panel {
-  background: color-mix(in srgb, var(--kv-panel) 72%, transparent);
-  backdrop-filter: blur(var(--));
-  -webkit-backdrop-filter: blur(var(--));
-  border: 1px solid var(--kv-border);
-  box-shadow: var(--kv-inset-highlight);
-}
-.kv-chip {
-  background: color-mix(in srgb, var(--kv-panel) 55%, transparent);
-  backdrop-filter: blur(var(--));
-  -webkit-backdrop-filter: blur(var(--));
-  border: 1px solid var(--kv-border);
-  box-shadow: var(--kv-inset-highlight);
-}
-.kv-overlay {
-  background: color-mix(in srgb, var(--kv-void) 78%, transparent);
-  backdrop-filter: blur(var(--kv-blur-overlay));
-  -webkit-backdrop-filter: blur(var(--kv-blur-overlay));
-}
-/* 供 Tailwind class 直接引用的两个 blur token */
-. { backdrop-filter: blur(var(--)); -webkit-backdrop-filter: blur(var(--)); }
-. { backdrop-filter: blur(var(--)); -webkit-backdrop-filter: blur(var(--)); }
-
-/* 焦点环统一（可访问性） */
 *:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.6);
+  outline: 2px solid rgba(34, 211, 238, 0.6);
+  outline-offset: 2px;
+}
+
+.overflow-hidden:focus-visible,
+.kv-panel:focus-visible {
+  outline-offset: -2px;
+}
+
+/* ==========================================================================
+ * 降级：不支持 backdrop-filter 的浏览器（旧版 Firefox / 部分内嵌 WebView）
+ *
+ * 【为何提高不透明度】没有毛玻璃时，半透明面板会让背后的 3D 场景直接透出来，
+ * 文字与背景对比度骤降。这里把面板/徽标/遮罩的底色提到接近不透明，
+ * 牺牲"玻璃感"换取"可读性"，保证核心信息在任何环境都能看清。
+ * ========================================================================== */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .kv-panel {
+    background: rgba(11, 18, 32, 0.96);
+  }
+  .kv-chip {
+    background: rgba(11, 18, 32, 0.92);
+  }
+  .kv-overlay {
+    background: rgba(2, 6, 23, 0.96);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

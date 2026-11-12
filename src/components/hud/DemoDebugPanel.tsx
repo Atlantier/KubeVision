@@ -66,7 +66,7 @@ export default function DemoDebugPanel(): React.ReactElement | null {
   return (
     <div
       aria-label="路演可观测性自检面板"
-      className="pointer-events-none fixed bottom-3 left-3 z-40 w-[19rem] select-none rounded border border-cyan-400/25 bg-slate-950/88 p-2 font-mono text-[10px] leading-relaxed text-slate-300"
+      className="pointer-events-none fixed bottom-3 left-3 z-40 w-[19rem] select-none rounded border border-cyan-400/25 bg-slate-950/[0.88] p-2 font-mono text-[10px] leading-relaxed text-slate-300"
       style={{ boxShadow: '0 8px 28px rgba(2,6,23,0.7)' }}
     >
       <div className="mb-1 flex items-center justify-between">
@@ -75,11 +75,11 @@ export default function DemoDebugPanel(): React.ReactElement | null {
           className={cn(
             'rounded px-1 py-[1px] text-[10px] uppercase tracking-wider',
             demo.status === 'running'
-              ? 'bg-emerald-400/15 text-emerald-300'
+              ? 'bg-emerald-400/[0.15] text-emerald-300'
               : demo.status === 'paused'
-                ? 'bg-amber-400/15 text-amber-300'
+                ? 'bg-amber-400/[0.15] text-amber-300'
                 : demo.status === 'finished'
-                  ? 'bg-cyan-400/15 text-cyan-300'
+                  ? 'bg-cyan-400/[0.15] text-cyan-300'
                   : 'bg-white/[0.06] text-slate-400',
           )}
         >

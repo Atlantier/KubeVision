@@ -325,7 +325,7 @@ export default function AgentThoughtChain({
                      * 为青色代码胶囊，用户一眼就能定位"这条结论引自哪本手册"。
                      * whitespace-pre-wrap 保留在段落上，多行 detail 的换行不变。
                      */}
-                    <p className="mt-0.5 whitespace-pre-wrap break-words text-[10.5px] leading-relaxed text-slate-500">
+                    <p className="mt-0.5 whitespace-pre-wrap break-words text-caption leading-relaxed text-slate-500">
                       <InlineMarkdown text={step.detail} highlightRunbookIds />
                     </p>
 

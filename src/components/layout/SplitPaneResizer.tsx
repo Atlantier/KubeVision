@@ -389,7 +389,7 @@ export default function SplitPaneResizer({
           'border transition-all duration-150',
           dragging
             ? 'border-cyan-400 bg-cyan-400 shadow-glow-cyan'
-            : 'border-white/15 bg-slate-800/90 group-hover:border-cyan-400/80 group-hover:bg-cyan-400 group-hover:shadow-glow-cyan',
+            : 'border-white/[0.15] bg-slate-800/90 group-hover:border-cyan-400/80 group-hover:bg-cyan-400 group-hover:shadow-glow-cyan',
         )}
       >
         {[0, 1].map((bar): React.ReactElement => (
@@ -397,7 +397,7 @@ export default function SplitPaneResizer({
             key={bar}
             className={cn(
               'block h-[10px] w-[1.5px] rounded-full transition-colors duration-150',
-              dragging ? 'bg-slate-950' : 'bg-white/45 group-hover:bg-slate-950',
+              dragging ? 'bg-slate-950' : 'bg-white/[0.45] group-hover:bg-slate-950',
             )}
           />
         ))}

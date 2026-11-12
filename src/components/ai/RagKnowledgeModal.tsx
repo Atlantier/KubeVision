@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 /**
  * KubeVision AI — SRE 领域知识库弹窗（RAG Runbook Explorer）
@@ -389,7 +389,7 @@ function DetailSection({
   readonly children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <section className="mt-4 border-t border-white/[0.07]/80 pt-3">
+    <section className="mt-4 border-t border-white/[0.05] pt-3">
       <h4 className="mb-1.5 flex items-center gap-1.5 font-mono text-[10px] tracking-[0.2em] text-cyan-400/80">
         <span className="h-2.5 w-0.5 shrink-0 rounded-full bg-cyan-400/60" aria-hidden />
         {title}
@@ -645,7 +645,7 @@ export default function RagKnowledgeModal({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.18, ease: 'easeOut' }}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 kv-blur-panel sm:p-4"
+        className="fixed inset-0 z-50 flex items-center justify-center p-3 kv-overlay sm:p-4"
         role="dialog"
         aria-modal="true"
         aria-label="SRE 领域知识库"
@@ -664,7 +664,7 @@ export default function RagKnowledgeModal({
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.96, y: 14 }}
           transition={{ type: 'spring', stiffness: 320, damping: 30 }}
-          className="relative flex h-[80vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-cyan-400/30 bg-slate-950/95 shadow-[0_24px_80px_rgba(2,6,23,0.9)] kv-blur-panel"
+          className="relative flex h-[80vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl kv-panel shadow-modal"
         >
           {/* ---- 顶部主题流光细线 ---- */}
           <div
@@ -874,7 +874,7 @@ export default function RagKnowledgeModal({
                           <div className="mt-1.5 flex flex-wrap items-center gap-1">
                             <CategoryTag category={doc.category} />
                             {isCustom ? (
-                              <span className="inline-flex shrink-0 items-center rounded border border-cyan-400/50 bg-cyan-400/15 px-1.5 py-px font-mono text-[10px] text-cyan-300">
+                              <span className="inline-flex shrink-0 items-center rounded border border-cyan-400/50 bg-cyan-400/[0.15] px-1.5 py-px font-mono text-[10px] text-cyan-300">
                                 自定义
                               </span>
                             ) : null}
@@ -917,7 +917,7 @@ export default function RagKnowledgeModal({
                           {selectedDoc.title}
                         </h3>
                         {selectedDoc.isCustom === true ? (
-                          <span className="inline-flex shrink-0 items-center rounded border border-cyan-400/50 bg-cyan-400/15 px-1.5 py-px font-mono text-[10px] text-cyan-300">
+                          <span className="inline-flex shrink-0 items-center rounded border border-cyan-400/50 bg-cyan-400/[0.15] px-1.5 py-px font-mono text-[10px] text-cyan-300">
                             自定义
                           </span>
                         ) : null}
@@ -1165,7 +1165,7 @@ export default function RagKnowledgeModal({
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <button
                           type="submit"
-                          className="flex items-center gap-1.5 rounded-md border border-cyan-400/50 bg-cyan-400/15 px-3 py-1.5 font-mono text-[10px] tracking-[0.08em] text-cyan-200 transition-colors hover:bg-cyan-400/25 active:scale-[0.98]"
+                          className="flex items-center gap-1.5 rounded-md border border-cyan-400/50 bg-cyan-400/[0.15] px-3 py-1.5 font-mono text-[10px] tracking-[0.08em] text-cyan-200 transition-colors hover:bg-cyan-400/25 active:scale-[0.98]"
                         >
                           <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />
                           提交入库

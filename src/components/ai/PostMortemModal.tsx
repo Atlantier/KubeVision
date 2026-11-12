@@ -223,7 +223,7 @@ export default function PostMortemModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 kv-blur-panel sm:p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 kv-overlay sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="SRE 故障复盘报告"
@@ -237,7 +237,7 @@ export default function PostMortemModal({
       />
 
       {/* ============ 主面板：深空毛玻璃 ============ */}
-      <div className="relative flex h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-cyan-400/30 bg-slate-950/95 shadow-[0_24px_80px_rgba(2,6,23,0.9)] kv-blur-panel">
+      <div className="relative flex h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl kv-panel shadow-modal">
         {/* ---- 顶部主题流光细线 ---- */}
         <div
           className="h-px w-full shrink-0 bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent"
@@ -295,7 +295,7 @@ export default function PostMortemModal({
                 className={cn(
                   'rounded px-2.5 py-1 font-mono text-[10px] tracking-wider transition-colors',
                   isActive
-                    ? 'border border-cyan-400/50 bg-cyan-400/15 text-cyan-300'
+                    ? 'border border-cyan-400/50 bg-cyan-400/[0.15] text-cyan-300'
                     : 'border border-transparent text-slate-500 hover:bg-white/[0.05] hover:text-slate-300',
                 )}
               >
@@ -335,7 +335,7 @@ export default function PostMortemModal({
             type="button"
             onClick={handleDownload}
             aria-label="下载 Markdown 报告"
-            className="flex items-center gap-1.5 rounded-md border border-cyan-500/50 bg-cyan-500/15 px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300 transition-colors hover:border-cyan-400/70 hover:bg-cyan-500/25 active:scale-[0.985]"
+            className="flex items-center gap-1.5 rounded-md border border-cyan-500/50 bg-cyan-500/[0.15] px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300 transition-colors hover:border-cyan-400/70 hover:bg-cyan-500/25 active:scale-[0.985]"
           >
             <Download className="h-2.5 w-2.5" aria-hidden />
             下载 .md
@@ -348,7 +348,7 @@ export default function PostMortemModal({
             className={cn(
               'flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors active:scale-[0.985]',
               copied
-                ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
+                ? 'border-emerald-500/50 bg-emerald-500/[0.15] text-emerald-300'
                 : 'border-white/[0.07] bg-slate-800/50 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
             )}
           >

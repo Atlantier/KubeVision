@@ -1,4 +1,5 @@
 import type { Config } from 'tailwindcss';
+import { TYPE_SCALE } from './src/constants/tokens';
 
 /**
  * KubeVision AI — Tailwind CSS v3 设计令牌（深空赛博运维美学）
@@ -22,6 +23,13 @@ const config: Config = {
     './src/**/*.{ts,tsx}',
   ],
   darkMode: 'class',
+  /**
+   * 玻璃四层 + 两个可组合 blur 工具类是设计系统基元，必须"真实存在"于构建产物，
+   * 供 2D HUD 与 3D <Html> 随时引用。Tailwind v3 会按 content 使用情况裁剪
+   * @layer components/utilities 里的自定义类（例如 kv-blur-chip 暂未被引用就会被删），
+   * 用 safelist 强制保留，避免"类名写了但构建里不存在"的静默失效。
+   */
+  safelist: ['kv-panel', 'kv-chip', 'kv-overlay', 'kv-blur-panel', 'kv-blur-chip'],
   theme: {
     extend: {
       spacing: {
@@ -79,6 +87,20 @@ const config: Config = {
         sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         mono: ['var(--font-mono)', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
+      /**
+       * 语义字号 7 级（映射自 tokens.ts TYPE_SCALE，单一事实源）。
+       * 全站用 text-micro / text-caption / text-body / text-body-lg /
+       * text-title / text-h2 / text-h1，禁止 <10px 与半像素裸值。
+       */
+      fontSize: {
+        micro: [`${TYPE_SCALE.micro}px`, { lineHeight: '1.4' }],
+        caption: [`${TYPE_SCALE.caption}px`, { lineHeight: '1.45' }],
+        body: [`${TYPE_SCALE.body}px`, { lineHeight: '1.5' }],
+        'body-lg': [`${TYPE_SCALE.bodyLg}px`, { lineHeight: '1.5' }],
+        title: [`${TYPE_SCALE.title}px`, { lineHeight: '1.45' }],
+        h2: [`${TYPE_SCALE.h2}px`, { lineHeight: '1.35' }],
+        h1: [`${TYPE_SCALE.h1}px`, { lineHeight: '1.25' }],
+      },
       boxShadow: {
         // 自定义发光阴影：0 位移 + 大范围低透明度外发光，营造霓虹辉光
         'glow-cyan': '0 0 12px 0 rgba(34, 211, 238, 0.45), 0 0 32px -4px rgba(34, 211, 238, 0.35)',
@@ -93,6 +115,9 @@ const config: Config = {
         'glow-rose': '0 0 12px 0 rgba(244, 63, 94, 0.45), 0 0 32px -4px rgba(244, 63, 94, 0.35)',
         // 面板抬升阴影：深空环境下用近黑投影而非灰色
         panel: '0 8px 32px -8px rgba(0, 0, 0, 0.6)',
+        // 顶层模态抬升阴影：保留顶部 1px 内高光 + 比面板更深更远的外投影，
+        // 与 .kv-panel 叠加时不丢失玻璃受光棱边（utilities 层覆盖 components 层 box-shadow）
+        modal: 'inset 0 1px 0 0 rgba(255, 255, 255, 0.09), 0 24px 80px 0 rgba(2, 6, 23, 0.9)',
       },
       keyframes: {
         // 主题流光：沿边框缓慢扫过的高光，用于加载态与 Copilot 思考指示

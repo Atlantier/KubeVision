@@ -116,7 +116,7 @@ export default function StartupStatusCapsule(): React.ReactElement | null {
       aria-label="系统启动状态"
       role="group"
     >
-      <div className="kv-chip overflow-hidden rounded-lg border border-white/[0.075] bg-slate-950/85">
+      <div className="kv-chip overflow-hidden rounded-lg border border-white/[0.075] bg-slate-950/[0.85]">
         <button
           type="button"
           onClick={(): void => setExpanded((open): boolean => !open)}

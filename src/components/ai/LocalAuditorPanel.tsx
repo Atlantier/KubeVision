@@ -68,22 +68,22 @@ const LABEL_META: Readonly<
 > = {
   CRITICAL_PANIC: {
     text: '致命崩溃',
-    badge: 'border-rose-500/60 bg-rose-500/15 text-rose-300',
+    badge: 'border-rose-500/60 bg-rose-500/[0.15] text-rose-300',
     dot: 'bg-rose-500',
   },
   RESOURCE_EXHAUSTED: {
     text: '资源耗尽',
-    badge: 'border-amber-500/60 bg-amber-500/15 text-amber-300',
+    badge: 'border-amber-500/60 bg-amber-500/[0.15] text-amber-300',
     dot: 'bg-amber-400',
   },
   NETWORK_TIMEOUT: {
     text: '网络超时',
-    badge: 'border-fuchsia-500/60 bg-fuchsia-500/15 text-fuchsia-300',
+    badge: 'border-fuchsia-500/60 bg-fuchsia-500/[0.15] text-fuchsia-300',
     dot: 'bg-fuchsia-400',
   },
   NORMAL_INFO: {
     text: '常规信息',
-    badge: 'border-emerald-500/60 bg-emerald-500/15 text-emerald-300',
+    badge: 'border-emerald-500/60 bg-emerald-500/[0.15] text-emerald-300',
     dot: 'bg-emerald-400',
   },
 };
@@ -284,8 +284,8 @@ const SENSITIVE_RULE_META: Readonly<
     className: 'border-rose-500/50 bg-rose-500/10 text-rose-300',
   },
   'password-field': { text: '密码字段', className: 'border-rose-500/50 bg-rose-500/10 text-rose-300' },
-  ipv4: { text: '内网 IPv4', className: 'border-amber-500/45 bg-amber-500/10 text-amber-300' },
-  email: { text: '邮箱', className: 'border-amber-500/45 bg-amber-500/10 text-amber-300' },
+  ipv4: { text: '内网 IPv4', className: 'border-amber-500/[0.45] bg-amber-500/10 text-amber-300' },
+  email: { text: '邮箱', className: 'border-amber-500/[0.45] bg-amber-500/10 text-amber-300' },
 };
 
 /**
@@ -314,7 +314,7 @@ function MaskedTypeChips({
             key={rule}
             className={cn(
               'rounded border px-1 py-0.5 font-mono text-[10px] font-bold leading-none tabular-nums',
-              meta?.className ?? 'border-white/[0.07]/50 bg-slate-500/10 text-slate-400',
+              meta?.className ?? 'border-white/[0.04] bg-slate-500/10 text-slate-400',
             )}
             title={`规则 ${rule} 命中 ${count} 次`}
           >
@@ -507,7 +507,7 @@ function SensitiveLogProbe({
           className={cn(
             'flex items-center gap-1 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             canSubmit
-              ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-300 hover:border-cyan-400/70 hover:bg-cyan-500/25'
+              ? 'border-cyan-500/50 bg-cyan-500/[0.15] text-cyan-300 hover:border-cyan-400/70 hover:bg-cyan-500/25'
               : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-500',
           )}
         >
@@ -594,8 +594,8 @@ function AuditCard({
           className={cn(
             'flex items-center gap-0.5 rounded border px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors',
             showRaw
-              ? 'border-rose-500/50 bg-rose-500/15 text-rose-300'
-              : 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300',
+              ? 'border-rose-500/50 bg-rose-500/[0.15] text-rose-300'
+              : 'border-emerald-500/50 bg-emerald-500/[0.15] text-emerald-300',
           )}
         >
           {showRaw ? <Eye className="h-2.5 w-2.5" aria-hidden /> : <EyeOff className="h-2.5 w-2.5" aria-hidden />}
@@ -1149,10 +1149,10 @@ export default function LocalAuditorPanel() {
             className={cn(
               'ml-auto flex shrink-0 items-center gap-0.5 rounded border px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider',
               runtimeKind === 'webgpu'
-                ? 'border-amber-500/50 bg-amber-500/15 text-amber-300'
+                ? 'border-amber-500/50 bg-amber-500/[0.15] text-amber-300'
                 : runtimeKind === 'wasm'
-                  ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-300'
-                  : 'border-slate-500/50 bg-slate-500/15 text-slate-300',
+                  ? 'border-cyan-500/50 bg-cyan-500/[0.15] text-cyan-300'
+                  : 'border-slate-500/50 bg-slate-500/[0.15] text-slate-300',
             )}
             title={`当前端侧运行时：${classifier.runtimeLabel}`}
             aria-label={`当前端侧运行时：${runtimeBadgeLabel}`}
@@ -1282,7 +1282,7 @@ export default function LocalAuditorPanel() {
             'flex shrink-0 items-center gap-1 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             isFetching || !classifier.isReady
               ? 'cursor-not-allowed border-white/[0.05] bg-white/[0.02] text-slate-500'
-              : 'border-cyan-400/60 bg-cyan-400/15 text-cyan-200 shadow-glow-cyan hover:border-cyan-300 hover:bg-cyan-400/25',
+              : 'border-cyan-400/60 bg-cyan-400/[0.15] text-cyan-200 shadow-glow-cyan hover:border-cyan-300 hover:bg-cyan-400/25',
           )}
         >
           <Satellite className="h-2.5 w-2.5" aria-hidden />
@@ -1298,7 +1298,7 @@ export default function LocalAuditorPanel() {
           className={cn(
             'flex shrink-0 items-center gap-0.5 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             autoStream
-              ? 'border-rose-500/60 bg-rose-500/15 text-rose-300'
+              ? 'border-rose-500/60 bg-rose-500/[0.15] text-rose-300'
               : 'border-white/[0.07] bg-white/[0.02] text-slate-500 hover:text-slate-300',
           )}
         >
@@ -1454,7 +1454,7 @@ export default function LocalAuditorPanel() {
           <>
             {/* 高危计数摘要 */}
             {criticalCount > 0 ? (
-              <p className="flex items-center gap-1 rounded border border-rose-500/30 bg-rose-500/8 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-rose-300">
+              <p className="flex items-center gap-1 rounded border border-rose-500/30 bg-rose-500/[0.08] px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-rose-300">
                 <Play className="h-2.5 w-2.5 shrink-0" aria-hidden />
                 {criticalCount} 条高危日志待移交 Copilot
               </p>

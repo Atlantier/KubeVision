@@ -68,6 +68,7 @@ const STEPS = [
   { name: 'check-emoji', cmd: node, args: ['scripts/check-emoji.mjs'], needsDev: false },
   { name: 'check-layering', cmd: node, args: ['scripts/check-layering.mjs'], needsDev: false },
   { name: 'check-dead-exports', cmd: node, args: ['scripts/check-dead-exports.mjs'], needsDev: false },
+  { name: 'check-style-contract', cmd: node, args: ['scripts/check-style-contract.mjs'], needsDev: false },
   { name: 'verify', cmd: node, args: ['scripts/verify.mjs'], needsDev: true, timeoutMs: 420000 },
   { name: 'verify-stream-integrity', cmd: node, args: ['scripts/verify-stream-integrity.mjs'], needsDev: true, timeoutMs: 180000 },
   { name: 'verify-telemetry', cmd: node, args: ['scripts/verify-telemetry.mjs'], needsDev: false, timeoutMs: 180000 },

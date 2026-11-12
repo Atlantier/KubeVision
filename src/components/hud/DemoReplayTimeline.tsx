@@ -103,7 +103,7 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
     <div
       role="region"
       aria-label="事故回放时间轴（只读）"
-      className="pointer-events-auto w-full max-w-[46rem] rounded-lg border border-amber-400/40 bg-slate-950/92 px-3.5 py-2.5 shadow-[0_12px_36px_-8px_rgba(2,6,23,0.92)] backdrop-blur-md"
+      className="pointer-events-auto w-full max-w-[46rem] rounded-lg border border-amber-400/40 bg-slate-950/[0.92] px-3.5 py-2.5 shadow-[0_12px_36px_-8px_rgba(2,6,23,0.92)] backdrop-blur-md"
     >
       {/* 顶缘：回放态醒目标识 —— 琥珀色与运行态青色区分开 */}
       <span
@@ -116,7 +116,7 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
       />
 
       <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-1.5">
-        <span className="flex items-center gap-1.5 rounded border border-amber-400/50 bg-amber-400/12 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">
+        <span className="flex items-center gap-1.5 rounded border border-amber-400/50 bg-amber-400/[0.12] px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-amber-300">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300" aria-hidden />
           回放中 · 只读
         </span>

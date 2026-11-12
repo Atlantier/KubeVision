@@ -31,7 +31,7 @@ export default function PresentStatusHud(): React.ReactElement {
   return (
     <div
       aria-label="演示状态"
-      className="pointer-events-none absolute bottom-3 left-3 z-20 flex items-center gap-3 rounded-lg border border-cyan-400/25 bg-slate-950/85 px-3.5 py-2 font-mono text-xs text-slate-200 shadow-lg backdrop-blur-md"
+      className="pointer-events-none absolute bottom-3 left-3 z-20 flex items-center gap-3 rounded-lg border border-cyan-400/25 bg-slate-950/[0.85] px-3.5 py-2 font-mono text-xs text-slate-200 shadow-lg backdrop-blur-md"
     >
       <span className="flex items-center gap-1">
         <span aria-hidden className="h-1.5 w-1.5 rounded-full" style={{ background: tone }} />

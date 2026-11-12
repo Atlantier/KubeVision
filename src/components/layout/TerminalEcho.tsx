@@ -181,7 +181,7 @@ export default function TerminalEcho({ className, defaultCollapsed = true }: Ter
       aria-label="集群事件流终端"
     >
       {/* ============ 头部状态栏（恒 h-8，点击切换折叠） ============ */}
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/[0.07]/80 bg-slate-900/60">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/[0.05] bg-slate-900/60">
         <button
           type="button"
           onClick={(): void => setCollapsed((prev): boolean => !prev)}
@@ -219,7 +219,7 @@ export default function TerminalEcho({ className, defaultCollapsed = true }: Ter
           type="button"
           onClick={clearTerminalLogs}
           aria-label="清空终端日志"
-          className="mr-2 flex shrink-0 items-center gap-1 rounded border border-white/[0.07]/70 bg-slate-800/50 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400 transition-colors hover:border-rose-500/50 hover:text-rose-300 active:scale-95"
+          className="mr-2 flex shrink-0 items-center gap-1 rounded border border-white/[0.05] bg-slate-800/50 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400 transition-colors hover:border-rose-500/50 hover:text-rose-300 active:scale-95"
           title="清空终端滚动日志（不影响数据源偏好、脱敏计数与自愈审计历史）"
         >
           <Trash2 className="h-3 w-3" aria-hidden />

@@ -58,8 +58,8 @@ const SEVERITY_BORDER: Readonly<Record<RootCauseAlertProps['severity'], string>>
 /** severity → 徽标样式 */
 const SEVERITY_BADGE: Readonly<Record<RootCauseAlertProps['severity'], string>> = {
   P0: 'border-rose-500/60 bg-rose-500/20 text-rose-300',
-  P1: 'border-amber-500/50 bg-amber-500/15 text-amber-300',
-  P2: 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300',
+  P1: 'border-amber-500/50 bg-amber-500/[0.15] text-amber-300',
+  P2: 'border-cyan-500/40 bg-cyan-500/[0.15] text-cyan-300',
 };
 
 /** severity → 外辉光（P0 最强） */
@@ -345,10 +345,10 @@ export default function RootCauseAlert({
                 className={cn(
                   'rounded border px-1 py-0.5 font-mono text-[10px] transition-colors',
                   term.weight >= 3
-                    ? 'border-cyan-400/60 bg-cyan-400/15 font-bold text-cyan-200'
+                    ? 'border-cyan-400/60 bg-cyan-400/[0.15] font-bold text-cyan-200'
                     : term.weight === 2
                       ? 'border-cyan-400/40 bg-cyan-400/[0.09] text-cyan-300'
-                      : 'border-white/[0.07]/60 bg-slate-800/50 text-slate-400',
+                      : 'border-white/[0.04] bg-slate-800/50 text-slate-400',
                 )}
                 title={
                   term.source === 'engine'
@@ -383,7 +383,7 @@ export default function RootCauseAlert({
         <div className="px-2.5 pb-2">
           <p className="font-mono text-[11px] uppercase tracking-wider text-slate-500">故障爆炸半径</p>
           {/* 单段文本 → InlineMarkdown，避免块级容器撑散卡片 */}
-          <p className="mt-0.5 text-[10.5px] leading-relaxed text-amber-300/90">
+          <p className="mt-0.5 text-caption leading-relaxed text-amber-300/90">
             <InlineMarkdown text={impactScope} />
           </p>
         </div>
@@ -465,7 +465,7 @@ export default function RootCauseAlert({
                         <span className="shrink-0 rounded bg-slate-500/60 px-1 py-0.5 font-mono text-[10px] font-bold tracking-wider text-slate-300">
                           {docIndex + 1}/{ragReferences.length}
                         </span>
-                        <span className="shrink-0 rounded bg-emerald-500/15 px-1 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
+                        <span className="shrink-0 rounded bg-emerald-500/[0.15] px-1 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
                           {doc.id}
                         </span>
                         <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-slate-400">
@@ -598,7 +598,7 @@ export default function RootCauseAlert({
                           className="w-full p-1.5 text-left"
                         >
                           <div className="flex items-start gap-1.5">
-                            <span className="shrink-0 rounded bg-emerald-500/15 px-1 py-0.5 font-mono text-[11px] font-bold text-emerald-300">
+                            <span className="shrink-0 rounded bg-emerald-500/[0.15] px-1 py-0.5 font-mono text-[11px] font-bold text-emerald-300">
                               {doc.id}
                             </span>
                             {doc.isCustom === true ? (
@@ -671,7 +671,7 @@ export default function RootCauseAlert({
                               {doc.matchedTerms.map((term): ReactNode => (
                                 <span
                                   key={term}
-                                  className="rounded border border-cyan-400/35 bg-cyan-400/[0.08] px-1 py-0.5 font-mono text-[10px] text-cyan-200"
+                                  className="rounded border border-cyan-400/[0.35] bg-cyan-400/[0.08] px-1 py-0.5 font-mono text-[10px] text-cyan-200"
                                 >
                                   {term}
                                 </span>

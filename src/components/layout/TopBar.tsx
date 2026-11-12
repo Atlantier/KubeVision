@@ -500,7 +500,7 @@ function ChaosDrillControl({
   return (
     <div
       role="alert"
-      className="flex items-center gap-0.5 rounded-lg border border-rose-500/45 bg-rose-500/10 pl-2 pr-0.5 py-0.5"
+      className="flex items-center gap-0.5 rounded-lg border border-rose-500/[0.45] bg-rose-500/10 pl-2 pr-0.5 py-0.5"
     >
       {/* ---- 左侧主体：点击切换场景 ---- */}
       <button
@@ -1338,7 +1338,7 @@ export default function TopBar() {
             type="button"
             role="status"
             onClick={(): void => setMode('demo')}
-            className="flex shrink-0 items-center gap-1 rounded-md border border-amber-500/35 bg-amber-500/[0.08] px-2 py-1 font-mono text-[10px] tracking-tight text-amber-300/90 transition-colors hover:border-amber-400/60 hover:bg-amber-500/15"
+            className="flex shrink-0 items-center gap-1 rounded-md border border-amber-500/[0.35] bg-amber-500/[0.08] px-2 py-1 font-mono text-[10px] tracking-tight text-amber-300/90 transition-colors hover:border-amber-400/60 hover:bg-amber-500/[0.15]"
             title="当前构建未接入真实集群 Agent，实时隧道无可推送数据帧。点击切回合成演练流"
             aria-label="切回合成演练数据流"
           >
@@ -1379,8 +1379,8 @@ export default function TopBar() {
               'flex items-center gap-1.5 rounded-lg border px-2 py-1.5',
               'font-mono text-[11px] tracking-tight transition-colors duration-150',
               isDemoActive
-                ? 'border-rose-400/45 bg-rose-500/[0.12] text-rose-200 hover:border-rose-400/70 hover:bg-rose-500/20'
-                : 'border-cyan-400/45 bg-cyan-400/[0.14] text-cyan-200 hover:border-cyan-300/70 hover:bg-cyan-400/25',
+                ? 'border-rose-400/[0.45] bg-rose-500/[0.12] text-rose-200 hover:border-rose-400/70 hover:bg-rose-500/20'
+                : 'border-cyan-400/[0.45] bg-cyan-400/[0.14] text-cyan-200 hover:border-cyan-300/70 hover:bg-cyan-400/25',
             )}
           >
             <Radar
@@ -1396,7 +1396,7 @@ export default function TopBar() {
             <div
               role="menu"
               aria-label="选择路演剧本"
-              className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/92 p-1 shadow-[0_16px_40px_rgba(2,6,23,0.85)]"
+              className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/[0.92] p-1 shadow-[0_16px_40px_rgba(2,6,23,0.85)]"
             >
               <p className="px-2 pb-1 pt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
                 自动路演剧本
@@ -1433,7 +1433,7 @@ export default function TopBar() {
             'flex items-center gap-1.5 rounded-lg border px-2 py-1.5',
             'font-mono text-[11px] tracking-tight transition-colors duration-150',
             presentMode
-              ? 'border-cyan-400/35 bg-cyan-400/[0.08] text-cyan-300'
+              ? 'border-cyan-400/[0.35] bg-cyan-400/[0.08] text-cyan-300'
               : 'border-white/[0.08] bg-slate-950/70 text-slate-400 hover:border-white/[0.12] hover:text-slate-200',
           )}
           title="演示模式（隐藏终端/极简 HUD/抽屉 34%）"
@@ -1452,7 +1452,7 @@ export default function TopBar() {
             'flex items-center gap-1.5 rounded-lg border px-2 py-1.5',
             'font-mono text-[11px] tracking-tight transition-colors duration-150',
             isPerfHudOpen
-              ? 'border-cyan-400/35 bg-cyan-400/[0.08] text-cyan-300'
+              ? 'border-cyan-400/[0.35] bg-cyan-400/[0.08] text-cyan-300'
               : 'border-white/[0.08] bg-slate-950/70 text-slate-400 hover:border-white/[0.12] hover:text-slate-200',
           )}
           title="性能监控 HUD（快捷键 Shift+P）"

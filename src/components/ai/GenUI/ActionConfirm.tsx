@@ -574,7 +574,7 @@ export default function ActionConfirm({
           className={cn(
             'mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border',
             isHighRisk
-              ? 'border-rose-500/60 bg-rose-500/15'
+              ? 'border-rose-500/60 bg-rose-500/[0.15]'
               : 'border-cyan-500/40 bg-cyan-500/10',
           )}
         >
@@ -595,7 +595,7 @@ export default function ActionConfirm({
               {ACTION_LABEL[actionType]}
             </span>
             {isHighRisk ? (
-              <span className="rounded border border-rose-500/50 bg-rose-500/15 px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-rose-300">
+              <span className="rounded border border-rose-500/50 bg-rose-500/[0.15] px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-rose-300">
                 高危变更
               </span>
             ) : null}
@@ -608,7 +608,7 @@ export default function ActionConfirm({
 
       {/* ============ MCP 协议端点标识 ============ */}
       <div className="px-2.5 pb-2">
-        <div className="flex items-center gap-1 rounded border border-white/[0.07]/70 bg-slate-800/50 px-1.5 py-1">
+        <div className="flex items-center gap-1 rounded border border-white/[0.05] bg-slate-800/50 px-1.5 py-1">
           <Terminal className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
           <code className="truncate font-mono text-[11px] text-slate-400">{mcpEndpoint}</code>
         </div>
@@ -661,14 +661,14 @@ export default function ActionConfirm({
           className={cn(
             'relative w-full overflow-hidden rounded border px-2 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-all',
             isDone
-              ? 'cursor-default border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
+              ? 'cursor-default border-emerald-500/50 bg-emerald-500/[0.15] text-emerald-300'
               : isExecuting
-                ? 'cursor-wait border-cyan-500/50 bg-cyan-500/15 text-cyan-200'
+                ? 'cursor-wait border-cyan-500/50 bg-cyan-500/[0.15] text-cyan-200'
                 : buttonDisabled
                   ? 'cursor-not-allowed border-white/[0.07] bg-slate-800/50 text-slate-500'
                   : isHighRisk
-                    ? 'border-rose-500/60 bg-rose-500/15 text-rose-200 hover:border-rose-400 hover:bg-rose-500/25 active:scale-[0.985]'
-                    : 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200 hover:border-cyan-400 hover:bg-cyan-500/25 active:scale-[0.985]',
+                    ? 'border-rose-500/60 bg-rose-500/[0.15] text-rose-200 hover:border-rose-400 hover:bg-rose-500/25 active:scale-[0.985]'
+                    : 'border-cyan-500/50 bg-cyan-500/[0.15] text-cyan-200 hover:border-cyan-400 hover:bg-cyan-500/25 active:scale-[0.985]',
           )}
         >
           {/* 600ms 流光扫过（执行中可见，方向左→右，与骨架屏动画语言一致）。

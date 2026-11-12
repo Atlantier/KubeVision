@@ -69,7 +69,7 @@ export default function GenUISkeleton({ toolName, mcpUri, className }: GenUISkel
       </div>
 
       {/* ============ MCP URI 提示 ============ */}
-      <div className="relative mt-1.5 flex items-center gap-1 rounded border border-white/[0.07]/70 bg-slate-800/50 px-1.5 py-1">
+      <div className="relative mt-1.5 flex items-center gap-1 rounded border border-white/[0.05] bg-slate-800/50 px-1.5 py-1">
         <Plug className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
         <code className="truncate font-mono text-[11px] text-slate-400">{mcpUri}</code>
       </div>

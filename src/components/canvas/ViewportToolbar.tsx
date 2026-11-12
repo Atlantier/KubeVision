@@ -47,8 +47,8 @@ function ToolbarButton({ label, active = false, onClick, children }: ToolbarButt
       className={cn(
         'flex h-9 w-9 items-center justify-center rounded-md border transition-all duration-150 active:scale-90',
         active
-          ? 'border-cyan-400/60 bg-cyan-400/15 text-cyan-300 shadow-glow-cyan'
-          : 'border-white/[0.07]/70 bg-slate-800/50 text-slate-400 hover:border-white/[0.07] hover:text-slate-200',
+          ? 'border-cyan-400/60 bg-cyan-400/[0.15] text-cyan-300 shadow-glow-cyan'
+          : 'border-white/[0.05] bg-slate-800/50 text-slate-400 hover:border-white/[0.07] hover:text-slate-200',
       )}
     >
       {children}

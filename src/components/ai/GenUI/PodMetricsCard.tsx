@@ -230,7 +230,7 @@ export default function PodMetricsCard({
       </div>
 
       {/* ============ 近 6 周期 SVG 面积折线图（双序列叠加） ============ */}
-      <div className="mt-2 rounded border border-white/[0.07]/80 bg-slate-950/40 p-1">
+      <div className="mt-2 rounded border border-white/[0.05] bg-slate-950/40 p-1">
         <svg
           viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
           width="100%"

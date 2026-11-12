@@ -648,13 +648,13 @@ function ProactiveAnomalyBanner({
   const isChaos = chaosActive;
   const tone = isChaos
     ? {
-        wrapper: 'border-amber-500/60 bg-amber-500/12 shadow-glow-amber',
+        wrapper: 'border-amber-500/60 bg-amber-500/[0.12] shadow-glow-amber',
         icon: 'text-amber-400',
         title: 'text-amber-200',
         btn: 'border-amber-500/60 bg-amber-500/20 text-amber-100 hover:bg-amber-500/30',
       }
     : {
-        wrapper: 'border-rose-500/60 bg-rose-500/12 shadow-glow-rose',
+        wrapper: 'border-rose-500/60 bg-rose-500/[0.12] shadow-glow-rose',
         icon: 'text-rose-400',
         title: 'text-rose-200',
         btn: 'border-rose-500/60 bg-rose-500/20 text-rose-100 hover:bg-rose-500/30',
@@ -791,7 +791,7 @@ function MessageBubble({
     return (
       <div className="flex items-start gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-2 shadow-glow-emerald">
         <CheckCircle2 className="mt-[1px] h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden />
-        <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-[10.5px] leading-relaxed text-emerald-100">
+        <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-caption leading-relaxed text-emerald-100">
           {/* 行内富文本：回执里的目标名与 MCP 端点用反引号包裹，渲染为代码胶囊 */}
           <InlineMarkdown text={message.text} />
         </p>
@@ -838,7 +838,7 @@ function MessageBubble({
               {/* ---- 左侧导轨：序号徽标 + 连接线 ---- */}
               <div className="flex shrink-0 flex-col items-center">
                 <span
-                  className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-cyan-500/50 bg-cyan-500/15 font-mono text-[10px] font-bold text-cyan-300"
+                  className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-cyan-500/50 bg-cyan-500/[0.15] font-mono text-[10px] font-bold text-cyan-300"
                   aria-hidden
                 >
                   {cardIndex + 1}
@@ -895,8 +895,8 @@ function MessageBubble({
             className={cn(
               'flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-wide transition-colors',
               isSpeaking === true
-                ? 'border-cyan-400/50 bg-cyan-400/15 text-cyan-200'
-                : 'border-white/[0.07]/60 bg-slate-800/40 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
+                ? 'border-cyan-400/50 bg-cyan-400/[0.15] text-cyan-200'
+                : 'border-white/[0.04] bg-slate-800/40 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
             )}
           >
             {/* 朗读中：跳动的声波条；静止：喇叭图标 */}
@@ -939,7 +939,7 @@ function MessageBubble({
        * 而是一个克制的琥珀色提示 + 明确的「一键重试」——
        * 让用户知道"发生了什么"且"下一步只需点一下"，而不是陷入困惑。 */}
       {message.failed === true && !message.isStreaming ? (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/8 p-2">
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/[0.08] p-2">
           <p className="flex items-start gap-1 text-[10px] leading-relaxed text-amber-200">
             <AlertTriangle className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
             <span>
@@ -973,7 +973,7 @@ function MessageBubble({
                 );
               }
             }}
-            className="mt-1.5 flex items-center gap-1 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider text-amber-200 transition-colors hover:border-amber-400/70 hover:bg-amber-500/25"
+            className="mt-1.5 flex items-center gap-1 rounded border border-amber-500/50 bg-amber-500/[0.15] px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider text-amber-200 transition-colors hover:border-amber-400/70 hover:bg-amber-500/25"
           >
             <RotateCw className="h-2.5 w-2.5" aria-hidden />
             {message.errorCategory === 'network' || message.errorCategory === 'server'
@@ -2374,7 +2374,7 @@ export default function CopilotDrawer() {
               title={tab.label}
             >
               <TabIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-              <span className="truncate text-[11.5px] font-medium leading-none">{tab.label}</span>
+              <span className="truncate text-body font-medium leading-none">{tab.label}</span>
               {/*
                * 测试锚点：英文原名仅存在于可访问性树（sr-only），
                * 视觉上不渲染任何英文副标。
@@ -2438,7 +2438,7 @@ export default function CopilotDrawer() {
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-50" />
                 <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
               </span>
-              <span className="font-mono text-[10px] tracking-wide text-emerald-400/85">在线</span>
+              <span className="font-mono text-[10px] tracking-wide text-emerald-400/[0.85]">在线</span>
             </span>
 
             {/* 已绑定实体上下文胶囊 */}
@@ -2462,7 +2462,7 @@ export default function CopilotDrawer() {
               onClick={(): void => setRagModalOpen(true)}
               aria-label="打开 SRE 领域知识库"
               title="SRE 领域知识库：浏览语料、实时检索沙盒、现场新增 Runbook"
-              className="flex shrink-0 items-center gap-1 rounded border border-cyan-400/25 bg-cyan-400/[0.07] px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wide text-cyan-300 transition-colors hover:border-cyan-300/60 hover:bg-cyan-400/15"
+              className="flex shrink-0 items-center gap-1 rounded border border-cyan-400/25 bg-cyan-400/[0.07] px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wide text-cyan-300 transition-colors hover:border-cyan-300/60 hover:bg-cyan-400/[0.15]"
             >
               <BookOpen className="h-2.5 w-2.5" aria-hidden />
               RAG 知识库
@@ -2488,7 +2488,7 @@ export default function CopilotDrawer() {
                 onClick={handleExportPostMortem}
                 aria-label="导出 SRE 故障复盘报告"
                 title="基于本次会话的时间线、推理链、RAG 引用与自愈动作生成复盘报告"
-                className="flex shrink-0 items-center gap-1 rounded border border-emerald-400/25 bg-emerald-400/[0.07] px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wide text-emerald-300 transition-colors hover:border-emerald-300/60 hover:bg-emerald-400/15"
+                className="flex shrink-0 items-center gap-1 rounded border border-emerald-400/25 bg-emerald-400/[0.07] px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wide text-emerald-300 transition-colors hover:border-emerald-300/60 hover:bg-emerald-400/[0.15]"
               >
                 <FileText className="h-2.5 w-2.5" aria-hidden />
                 复盘报告
@@ -2787,7 +2787,7 @@ export default function CopilotDrawer() {
                           />
                         </div>
                         {/* 悬停放大预览：绝对定位，向上浮出，不挤动任何布局 */}
-                        <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden w-72 overflow-hidden rounded-lg border border-cyan-400/45 bg-slate-950/95 p-1 shadow-[0_12px_36px_rgba(2,6,23,0.9)] group-hover/thumb:block">
+                        <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden w-72 overflow-hidden rounded-lg border border-cyan-400/[0.45] bg-slate-950/95 p-1 shadow-[0_12px_36px_rgba(2,6,23,0.9)] group-hover/thumb:block">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={capturedViewportDataUrl}
@@ -2859,8 +2859,8 @@ export default function CopilotDrawer() {
                     className={cn(
                       'shrink-0 rounded px-1 py-0.5 font-mono text-[10px] tracking-wider',
                       speechInput.mode === 'cloud'
-                        ? 'bg-sky-500/15 text-sky-300'
-                        : 'bg-amber-500/15 text-amber-300',
+                        ? 'bg-sky-500/[0.15] text-sky-300'
+                        : 'bg-amber-500/[0.15] text-amber-300',
                     )}
                   >
                     {speechInput.mode === 'cloud' ? 'CLOUD' : '端侧声学'}
@@ -2968,7 +2968,7 @@ export default function CopilotDrawer() {
               {/* ---- A5：排队提示（流式期间用户点了诊断，请求已排队） ---- */}
               {queuedPromptNotice !== null ? (
                 <p
-                  className="mb-1 rounded border border-cyan-400/25 bg-cyan-400/8 px-1.5 py-1 font-mono text-[10px] text-cyan-300"
+                  className="mb-1 rounded border border-cyan-400/25 bg-cyan-400/[0.08] px-1.5 py-1 font-mono text-[10px] text-cyan-300"
                   role="status"
                   aria-label="排队提示"
                 >
@@ -3029,7 +3029,7 @@ export default function CopilotDrawer() {
                   className={cn(
                     'relative flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-1 font-mono text-[10px] tracking-tight transition-colors',
                     isListening
-                      ? 'bg-rose-500/15 text-rose-300'
+                      ? 'bg-rose-500/[0.15] text-rose-300'
                       : 'text-slate-400 hover:bg-white/[0.05] hover:text-cyan-300',
                   )}
                 >
@@ -3126,7 +3126,7 @@ export default function CopilotDrawer() {
                     onClick={handleStopGeneration}
                     aria-label="停止生成"
                     title="停止生成（保留已生成内容）"
-                    className="flex shrink-0 items-center gap-1 rounded-md border border-rose-500/50 bg-rose-500/15 px-2 py-1 font-mono text-[10px] font-semibold text-rose-300 transition-colors hover:bg-rose-500/25 active:scale-95"
+                    className="flex shrink-0 items-center gap-1 rounded-md border border-rose-500/50 bg-rose-500/[0.15] px-2 py-1 font-mono text-[10px] font-semibold text-rose-300 transition-colors hover:bg-rose-500/25 active:scale-95"
                   >
                     <Square className="h-2.5 w-2.5" aria-hidden />
                     停止
@@ -3141,7 +3141,7 @@ export default function CopilotDrawer() {
                     className={cn(
                       'flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] font-semibold transition-colors',
                       canSend
-                        ? 'border-cyan-400/50 bg-cyan-400/15 text-cyan-300 shadow-glow-cyan hover:bg-cyan-400/25'
+                        ? 'border-cyan-400/50 bg-cyan-400/[0.15] text-cyan-300 shadow-glow-cyan hover:bg-cyan-400/25'
                         : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-500',
                     )}
                   >

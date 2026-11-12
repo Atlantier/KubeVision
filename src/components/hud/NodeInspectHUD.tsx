@@ -767,8 +767,8 @@ function TopologyLegendPanel() {
         className={cn(
           'pointer-events-auto group flex items-center gap-2 rounded-lg border px-3 py-1.5 backdrop-blur-md transition-all duration-200',
           expanded
-            ? 'border-cyan-400/45 bg-slate-900/90 text-cyan-200 shadow-[0_0_20px_-4px_rgba(34,211,238,0.35)]'
-            : 'border-slate-800/90 bg-slate-950/80 text-slate-300 hover:border-cyan-400/35 hover:text-cyan-200',
+            ? 'border-cyan-400/[0.45] bg-slate-900/90 text-cyan-200 shadow-[0_0_20px_-4px_rgba(34,211,238,0.35)]'
+            : 'border-slate-800/90 bg-slate-950/80 text-slate-300 hover:border-cyan-400/[0.35] hover:text-cyan-200',
         )}
       >
         <Layers className="h-3 w-3 shrink-0 text-cyan-400" aria-hidden />
@@ -1012,7 +1012,7 @@ function EntityProbeCard({
           className={cn(
             'shrink-0 rounded border px-1 py-0.5 font-mono text-[10px] font-bold leading-none tabular-nums tracking-wide',
             view.restarts === 0
-              ? 'border-white/[0.07]/50 text-slate-400'
+              ? 'border-white/[0.04] text-slate-400'
               : restartsTone === 'critical'
                 ? 'border-rose-500/50 text-rose-300'
                 : 'border-amber-500/50 text-amber-300',
@@ -1269,7 +1269,7 @@ function FilterStatusBanner() {
       aria-live="polite"
       className={cn(
         'kv-panel pointer-events-auto flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-2 rounded-full px-3 py-1.5',
-        isEmpty ? 'border-amber-500/45' : 'border-cyan-500/40',
+        isEmpty ? 'border-amber-500/[0.45]' : 'border-cyan-500/40',
       )}
     >
       <Filter
@@ -1319,7 +1319,7 @@ function FilterStatusBanner() {
         <button
           type="button"
           onClick={handleExitFilteredView}
-          className="shrink-0 rounded-full border border-cyan-500/40 px-2 py-0.5 font-mono text-[10px] tracking-tight text-cyan-300 transition-colors hover:bg-cyan-500/15"
+          className="shrink-0 rounded-full border border-cyan-500/40 px-2 py-0.5 font-mono text-[10px] tracking-tight text-cyan-300 transition-colors hover:bg-cyan-500/[0.15]"
         >
           重置为全部 (ESC)
         </button>

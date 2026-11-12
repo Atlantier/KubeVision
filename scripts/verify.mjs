@@ -248,6 +248,29 @@ async function phaseStatic() {
     }
     bad('文档数字一致性', detail);
   }
+
+  /*
+   * ---- 样式契约（R1 · 视觉地基） ----
+   *
+   * 【为何放进 --quick】只读 globals.css / tokens.ts / src tsx 与构建产物，
+   * 不启浏览器，单次 < 300ms。它拦截"写了但静默失效"的样式缺陷：
+   * 坏 CSS 变量、空选择器、非刻度 Tailwind 透明度、双重透明度、半像素字号，
+   * 并校验玻璃 blur 令牌三处一致、构建 CSS 真的生成了修复的类。
+   */
+  const styleContract = await run('node', ['scripts/check-style-contract.mjs', '--json']);
+  if (styleContract.code === 0) {
+    ok('样式契约', '玻璃四层 / 透明度档位 / 字号 全部合规');
+  } else {
+    let detail = 'exit ' + styleContract.code;
+    try {
+      const parsed = JSON.parse(styleContract.stdout);
+      const failed = (parsed.results ?? []).filter((entry) => entry.status === 'fail');
+      detail = failed.map((entry) => entry.name).join('；') || detail;
+    } catch {
+      /* 保留 exit code 描述 */
+    }
+    bad('样式契约', detail);
+  }
 }
 
 /* ========================================================================== */

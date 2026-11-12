@@ -26,7 +26,7 @@ export default function GlowDebugOverlay(): React.ReactElement | null {
   return (
     <div
       aria-label="glow debug"
-      className="pointer-events-none fixed left-3 top-16 z-40 w-[360px] rounded border border-cyan-500/25 bg-slate-950/85 p-3 font-mono text-[10px] text-slate-300"
+      className="pointer-events-none fixed left-3 top-16 z-40 w-[360px] rounded border border-cyan-500/25 bg-slate-950/[0.85] p-3 font-mono text-[10px] text-slate-300"
     >
       <div className="mb-1 text-[11px] font-semibold tracking-wider text-cyan-300">
         GLOW BUDGET · additive alpha

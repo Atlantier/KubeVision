@@ -225,7 +225,7 @@ function renderInline(segments: readonly InlineSegment[], keyPrefix: string): Re
            * 两个坏处相权，溢出比中间折行严重得多。
            * 配合 break-words 兜底（长英文单词场景），保证任何输入都不溢出。
            */
-          className="break-all rounded border border-white/[0.07]/60 bg-slate-800/90 px-1 py-0.5 font-mono text-[0.92em] text-cyan-300"
+          className="break-all rounded border border-white/[0.04] bg-slate-800/90 px-1 py-0.5 font-mono text-[0.92em] text-cyan-300"
         >
           {seg.text}
         </code>
@@ -644,7 +644,7 @@ function CodeBlock({ code, lang }: { readonly code: string; readonly lang?: stri
   }, [code, writeToClipboard]);
 
   return (
-    <div className="my-1.5 overflow-hidden rounded border border-white/[0.07]/70 bg-slate-950/80">
+    <div className="my-1.5 overflow-hidden rounded border border-white/[0.05] bg-slate-950/80">
       {/* 头部：左侧语言标识，右侧一键复制 */}
       <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] bg-slate-900/60 px-2 py-0.5">
         <span className="min-w-0 truncate font-mono text-[10px] uppercase tracking-wider text-slate-500">
@@ -759,7 +759,7 @@ export default function MarkdownLite({
             return (
               <blockquote
                 key={key}
-                className="rounded-r border-l-2 border-amber-500/70 bg-amber-500/[0.07] px-2 py-1 text-[11.5px] leading-relaxed text-amber-200/90"
+                className="rounded-r border-l-2 border-amber-500/70 bg-amber-500/[0.07] px-2 py-1 text-body leading-relaxed text-amber-200/90"
               >
                 {block.lines.map((line, i): ReactNode => (
                   <p key={`${key}-q-${i}`}>{renderInline(parseInline(line), `${key}-q-${i}`)}</p>
@@ -864,7 +864,7 @@ export default function MarkdownLite({
                   </thead>
                   <tbody>
                     {(block.rows ?? []).map((row, rowIndex): ReactNode => (
-                      <tr key={`${key}-tr-${rowIndex}`} className="border-b border-white/[0.07]/60 last:border-b-0">
+                      <tr key={`${key}-tr-${rowIndex}`} className="border-b border-white/[0.04] last:border-b-0">
                         {row.map((cell, cellIndex): ReactNode => (
                           <td
                             key={`${key}-td-${rowIndex}-${cellIndex}`}

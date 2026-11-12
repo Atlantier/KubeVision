@@ -94,26 +94,36 @@ export const GLASS = {
 /** 焦点环（可访问性统一） */
 export const FOCUS_RING = 'focus-visible:ring-1 focus-visible:ring-cyan-400/60 focus-visible:outline-none';
 
-/** 把令牌输出为 CSS 变量声明（globals.css 与 3D 铭牌共用） */
-export function getTokenCssVariables(): Record<string, string> {
-  return {
-    '--kv-void': COLORS.void,
-    '--kv-panel': COLORS.panel,
-    '--kv-border': COLORS.border,
-    '--kv-border-active': COLORS.borderActive,
-    '--kv-text-primary': COLORS.textPrimary,
-    '--kv-text-secondary': COLORS.textSecondary,
-    '--kv-text-tertiary': COLORS.textTertiary,
-    '--kv-text-muted': COLORS.textMuted,
-    '--kv-emerald': COLORS.emerald,
-    '--kv-amber': COLORS.amber,
-    '--kv-rose': COLORS.rose,
-    '--kv-cyan': COLORS.cyan,
-    '--kv-blur-panel': `${GLASS.panel.blurPx}px`,
-    '--kv-blur-chip': `${GLASS.chip.blurPx}px`,
-    '--kv-blur-overlay': `${GLASS.overlay.blurPx}px`,
-    '--kv-motion-fast': `${MOTION.fast}ms`,
-    '--kv-motion-base': `${MOTION.base}ms`,
-    '--kv-motion-slow': `${MOTION.slow}ms`,
-  };
-}
+/**
+ * 状态语义色令牌表（text / ring / badge 三态）
+ *
+ * 【设计意图】把"健康/高负载/崩溃/主题"四种状态在文字、焦点环、徽标上的
+ * 配色收敛为单一事实源，避免各组件各自拼 `text-emerald-400` / `bg-emerald-500/10`
+ * 导致色阶漂移。四语义色沿用 AGENTS.md（emerald-400 / amber-400 / rose-500 / cyan-400），
+ * 不修改色值本身；这里只统一"用在哪种 UI 元素上"的组合。
+ *
+ * 【透明度档位】全部使用 Tailwind 默认 opacity 刻度（/10、/40），
+ * 不使用 /8、/12 等非刻度裸值（那类值在 Tailwind v3 会静默失效）。
+ */
+export const STATUS = {
+  healthy: {
+    text: 'text-emerald-400',
+    ring: 'ring-emerald-400/40',
+    badge: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
+  },
+  warning: {
+    text: 'text-amber-400',
+    ring: 'ring-amber-400/40',
+    badge: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
+  },
+  critical: {
+    text: 'text-rose-500',
+    ring: 'ring-rose-500/40',
+    badge: 'border-rose-500/40 bg-rose-500/10 text-rose-300',
+  },
+  accent: {
+    text: 'text-cyan-400',
+    ring: 'ring-cyan-400/40',
+    badge: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300',
+  },
+} as const;

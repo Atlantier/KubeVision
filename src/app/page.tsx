@@ -316,7 +316,7 @@ export default function HomePage() {
       {escapeHint !== null ? (
         <div className="pointer-events-none fixed bottom-3 left-1/2 z-40 -translate-x-1/2">
           <div
-            className="kv-chip flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-slate-950/85 px-2.5 py-1 font-mono text-[10px] tracking-wider text-cyan-300 shadow-[0_0_18px_rgba(34,211,238,0.18)]"
+            className="kv-chip flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-slate-950/[0.85] px-2.5 py-1 font-mono text-[10px] tracking-wider text-cyan-300 shadow-[0_0_18px_rgba(34,211,238,0.18)]"
             role="status"
             aria-live="polite"
             aria-label={`Esc 关闭：${escapeHint}`}
