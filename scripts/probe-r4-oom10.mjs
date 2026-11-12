@@ -18,7 +18,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const BASE_URL = process.env.KV_BASE_URL ?? 'http://127.0.0.1:3000';
@@ -107,6 +107,23 @@ await sleep(2000);
 console.log('KubeVision AI — R4 OOM 剧本终态一致性（连跑 10 次）');
 console.log(`  目标: ${BASE_URL} · 每轮超时 ${PER_RUN_TIMEOUT_MS / 1000}s\n`);
 
+/*
+ * 【X4 反作弊 · 静态断言】防御分支与重入守卫必须真实存在于源码——
+ * 不许靠删「自愈未验证」分支来让终态"看起来全绿"。
+ * KV_BASELINE=1 仅用于「改前基线」测量（旧代码无守卫是已知事实），
+ * 此时静态断言降级为如实打印，运行期判定照常执行。
+ */
+const BASELINE_MODE = process.env.KV_BASELINE === '1';
+const directorSrc = readFileSync(join(process.cwd(), 'src/utils/demoDirector.ts'), 'utf8');
+const defensePresent = directorSrc.includes('自愈未验证');
+const guardPresent = /if \(index <= phaseIndex\)/.test(directorSrc);
+console.log(`  静态断言：「自愈未验证」防御分支存在=${defensePresent} · enterPhase 重入守卫存在=${guardPresent}${BASELINE_MODE ? '（基线模式）' : ''}`);
+if ((!defensePresent || !guardPresent) && !BASELINE_MODE) {
+  console.error('  ✗ 防御分支/守卫缺失——拒绝继续（反作弊）');
+  cleanup();
+  process.exit(1);
+}
+
 const START_AND_COMPACT = `(async () => {
   const b = Array.from(document.querySelectorAll('button')).find((x) =>
     (x.getAttribute('aria-label') || '').startsWith('启动全自动剧本路演'));
@@ -166,6 +183,10 @@ for (let run = 1; run <= RUNS; run += 1) {
 
   const t0 = Date.now();
   let outcome = null;
+  /* X4：phaseIndex 轨迹必须单调不减（重入会让阶段回头或重复执行动作） */
+  let lastPhase = -1;
+  let phaseMonotonic = true;
+  const trajectory = [];
   while (Date.now() - t0 < PER_RUN_TIMEOUT_MS) {
     await sleep(1000);
     const st = await ev(`(() => {
@@ -181,13 +202,18 @@ for (let run = 1; run <= RUNS; run += 1) {
       };
     })()`);
     if (st?.__err !== undefined) continue;
+    if (typeof st.phase === 'number' && st.phase >= 0) {
+      if (st.phase < lastPhase) phaseMonotonic = false;
+      if (trajectory[trajectory.length - 1] !== st.phase) trajectory.push(st.phase);
+      lastPhase = st.phase;
+    }
     if (st.lastPass !== null && st.lastPass !== baseline.lastPass) {
-      outcome = { ...st, elapsedSec: Math.round((Date.now() - t0) / 1000) };
+      outcome = { ...st, elapsedSec: Math.round((Date.now() - t0) / 1000), phaseMonotonic, trajectory };
       break;
     }
     /* 未验证终态出现且剧本已收尾 → 本轮失败（不必等超时） */
     if (st.lastUnverified !== null && st.lastUnverified !== baseline.lastUnverified && (st.status === 'finished' || st.status === 'idle')) {
-      outcome = { ...st, failed: true, elapsedSec: Math.round((Date.now() - t0) / 1000) };
+      outcome = { ...st, failed: true, elapsedSec: Math.round((Date.now() - t0) / 1000), phaseMonotonic, trajectory };
       break;
     }
   }
@@ -198,9 +224,12 @@ for (let run = 1; run <= RUNS; run += 1) {
   } else if (outcome.failed === true) {
     results.push({ run, verdict: 'UNVERIFIED', detail: outcome });
     console.log(`  ✗ 第 ${run} 轮终态「自愈未验证」: ${JSON.stringify(outcome)}`);
+  } else if (outcome.phaseMonotonic !== true) {
+    results.push({ run, verdict: 'REENTRY', detail: outcome });
+    console.log(`  ✗ 第 ${run} 轮 phaseIndex 回退（重入）: 轨迹 ${JSON.stringify(outcome.trajectory)}`);
   } else {
     results.push({ run, verdict: 'PASS', detail: outcome });
-    console.log(`  ✓ 第 ${run} 轮 闭环校验通过（${outcome.elapsedSec}s）:: ${outcome.lastPass}`);
+    console.log(`  ✓ 第 ${run} 轮 闭环校验通过（${outcome.elapsedSec}s）· 阶段轨迹 ${JSON.stringify(outcome.trajectory)} 单调 · ${outcome.lastPass}`);
   }
 
   /* 等收尾稳态展示结束再进下一轮（startDemoDirector 内部也会先 stop('switch')） */
@@ -208,8 +237,10 @@ for (let run = 1; run <= RUNS; run += 1) {
 }
 
 const passed = results.filter((r) => r.verdict === 'PASS').length;
+const monotonic = results.filter((r) => r.detail?.phaseMonotonic === true).length;
 console.log(`\n══════ 汇总 ══════`);
 console.log(`  终态「闭环校验通过」: ${passed}/${RUNS}`);
+console.log(`  X4 阶段轨迹单调（不重入）: ${monotonic}/${RUNS} · 防御分支与守卫静态断言通过`);
 console.log(`  阶段重入守卫拦截次数（console.warn）: ${reentryWarns}（>0 说明竞态被守卫拦下，终态仍须全绿）`);
 const realErrors = consoleErrors.filter((e) => !/SwiftShader|swiftshader|GPU|WebGL/i.test(e));
 console.log(`  运行时错误: ${realErrors.length}`);

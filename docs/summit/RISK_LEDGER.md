@@ -107,3 +107,31 @@
 | R4-4 | Worker requestId 错配丢弃路径需「超时后迟到结果」竞态才触发，运行期未实测 | **MITIGATED** | 配对/计数/终态逻辑经类型校验与 verify 端侧全链路覆盖；glStats.workerStaleResults 已暴露供进阶对抗探针取证 | 「配对契约已落地；竞态对抗在 R4 进阶用注入超时证明。」 | 前端 | R4 进阶 |
 | R4-5 | schema v3 与旧缓存客户端不兼容 | **MITIGATED** | 既有版本协商：不匹配即只读降级并提示（设计行为，非缺陷）；刷新即恢复 | 「协议升级有版本协商，旧页面只读提示刷新。」 | 前端 | 持续 |
 | R4-6 | persist 尾随节流最多延迟 1s 落盘，突然关页可能丢最后一次 UI 偏好变更 | **MITIGATED** | 仅影响 4 个跨会话偏好字段（连接模式/掩码计数/自愈历史/日志摘要），非关键数据；read-your-writes 保证会话内一致 | 「偏好落盘 ≤1s 延迟，换取静置零 IO 抖动。」 | 前端 | 持续 |
+
+---
+
+## R4 · 进阶：同一事实三处同数·运行期可证明（2026-11-12 · 进阶完成）
+
+> 口令「完成R4 进阶」。把 R4 main 的修复做成「同一事实三处同数」的反作弊运行期证据：新增 `frameTimeline.ts` 纯函数（isDuplicateSeq/guardFrameTimestamp，零 Date.now）+ verify-telemetry/sim-drift 静态断言 + 三个浏览器探针（advanced/oom10/perf）。**改前基线在 git worktree a1ba445 实测对照**（旧代码独立 dev server，逐值采集）。所有数字来自本轮真实命令输出（日志 `tmp-logs/tmp-r4*.log`，本地不入库）。
+
+| 项 | 改前（a1ba445 实测） | 改后（实测） | 样本数 | 证据 |
+|---|---|---|---|---|
+| X1 同 Pod CPU 三处一致 | `test:slots` **1/6**（S-2..S-6 失败：槽位碰撞/不复用/耗尽 break） | `test:slots` **6/6** + 运行期 126 ID 三处全一致 + freeSlots 复用 48/48、30/30；结构断言 3D 读 `podCpuFloat32`（非 HUD） | 静态 696 ID + 运行 126 + main 120 Pod，误差 0 | verify-telemetry X1 · probe:r4-advanced X1 · tmp-r4-before-slots.log |
+| X2 三处健康分相等·无地板 | heal 1/3 受害者→**96**（HEAL_RECOVERY_FLOOR 托住；真实 post-heal 84，虚高 +12） | heal 1/3→**84**==oracle<96；故障帧 76/恢复帧 100 三处相等；300 帧逐帧==独立 oracle 违例 0 | 3 受害者×多帧 + 300 帧 | probe:r4-advanced X2 · sim-drift X2 · tmp-r4-before-measure.log |
+| X3 免疫剩余秒==store | R3 已修（R3 进阶 immune-adversarial 10/10 同源） | 15/12/5s == store 时间戳推算（±1s 边界容差） | 3 采样 | probe:r4-advanced X3 |
+| X4 剧本终态 10 次一致·不重入 | 10/10 终态 + 10/10 单调，但 enterPhase 重入守卫**缺失**（潜在竞态未防护） | 10/10 终态 + 10/10 单调 + 守卫存在 + 「自愈未验证」防御分支原样保留 | 10 轮×改前/改后 | probe:r4-oom10（KV_BASELINE 对照）|
+| X5 双客户端一致·单一采样器 | **12/12 不一致**（每连接独立 setInterval；L1 alpha 57.6 vs L2 50.9）；liveTelemetry 0 ticker | **12/12 逐值相等非 0** + 源码仅 1 setInterval + 审计 1start/1reuse/1stop | 12 采样×2 连接 | probe:r4-advanced X5a/b/c · tmp-r4-before-measure.log |
+| X6 时钟+5min 重连不跳未来 + seq 去重 | 回退帧照收，首 Pod CPU **46→11 被改写**；无 staleSeqFrames 计数器 | **6/6 重复/回退帧丢弃零改写** + 重连 Δts=2214ms 连续（客户端钟快 300000ms）；纯函数零 Date.now | 6 帧 + 重连 + 100 帧攻击 | probe:r4-advanced X6a/b · verify-telemetry X6 |
+| P1 静置主线程<3ms/s | 无管线埋点（不可测）；1 条 dev-GC longtask 1522ms（非 GC 0）；React commit 12.72/s | 管线 **0.258ms/s** + 非 GC longtask **0.000ms/s**（1487ms GC 单独归因）；commit 11.95/s | 60s | probe:r4-perf（PerformanceObserver）|
+| P2 localStorage≤1/s | 0.983/s ✓ | 0.983/s ✓（59 次/60s） | 60s | probe:r4-perf |
+
+**本轮验收汇总**：typecheck ✓ · build ✓（Compiled successfully）· verify-telemetry **12/12** · sim-drift ✓（X2 300 帧违例 0 / X6 seq 断裂 0）· test:slots **6/6** · probe:r4-advanced **13/13** · probe:r4-oom10 **10/10**（单调 10/10）· probe:r4-perf **3/3**。
+
+**反作弊守住（逐条）**：① 3D 仍读瞬态 `podCpuFloat32`（结构断言，未改读 HUD 值）；② 健康分无地板/天花板（300 帧==独立罚分 oracle，删 96 地板后混沌真实落 76/84）；③ 「自愈未验证」防御分支原样保留（静态断言）；④ 单一 setInterval 采样器（源码断言 + 服务端 acquire/release 审计 1/1/1，非抖动）；⑤ frameTimeline 纯函数零 Date.now（注释剥离后正则断言）；⑥ GC 归因用**窗口内堆降**（100ms 密采样 sawtooth）而非松断言——改前改后同一条 dev-GC 暂停均如实归因，未把基础设施暂停冒充应用成本，也未把应用成本藏进 GC。
+
+| # | 事项 | 状态 | 原因（证据） | 兜底话术 | 负责人 | 截止 |
+|---|---|---|---|---|---|---|
+| R4-7 | P1 的 ~1.5s longtask 是 **dev 构建 V8 major GC**（堆 113~146MB），改前改后同源（1522/1487ms），非应用成本、R4 未改变它；生产构建堆更小未测 | **MITIGATED** | 三证据：窗口内堆降 2.5~4.0MB（密采样）+ about:blank 对照 0 longtask + 全部应用定时器 <1ms；应用管线实测 0.258ms/s、非 GC longtask 0 | 「静置应用主线程 <0.3ms/s；那一条 ~1.5s 暂停是 dev 构建的 V8 GC，生产构建会消失，与业务代码无关。」 | 前端 | 持续 |
+| R4-8 | X4 重入为**潜在竞态**：改前改后 benign 时序均 10/10 单调；守卫价值是竞态硬化（guardPresent false→true）+ 可证明单调，非保证性失败修复 | **MITIGATED** | 20 轮（改前 10+改后 10）均未触发竞态；守卫存在性静态断言 + 单调轨迹运行期断言双证据；console.warn 拦截计数暴露供观测 | 「阶段单调已 10/10 证明；重入守卫把竞态从『可能回头』变成『硬拦截』， benign 跑不触发不代表没有防护。」 | 前端 | 持续 |
+| R4-9 | R4-4 的 Worker requestId 错配竞态本轮**未注入证明**（进阶 X6 覆盖客户端 seq 去重，非 Worker classify 配对）；仍 MITIGATED | **MITIGATED（承 R4-4）** | 配对/计数/终态逻辑经 typecheck + verify 端侧全链路覆盖；glStats.workerStaleResults 已暴露；进阶 Prompt 的 X1–X6 不含 Worker 超时注入 | 「客户端帧去重已运行期证明；Worker 配对竞态的超时注入不在本轮进阶清单，留待专项对抗。」 | 前端 | 后续 |
+| R4-10 | 探针在 SwiftShader 软渲染 + dev 构建串行运行；React commit 11.95/s 为 dev 口径，真实 GPU/生产未测（R3-2 同源） | **MITIGATED** | 双 live 页串行（同源 localStorage + GPU 争用）；commit 计数为 React dev devtools hook，生产无此开销；不宣称帧率 | 「数据一致性与管线成本已证明；渲染帧率与 commit 开销以真实 GPU/生产构建为准。」 | 测试 | 持续 |

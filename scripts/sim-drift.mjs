@@ -87,6 +87,7 @@ transpile('src/utils/syntheticEngine.ts', 'syntheticEngine', rewriteAliases);
 const engine = require(join(OUT_DIR, 'syntheticEngine.cjs'));
 const cluster = require(join(OUT_DIR, 'cluster.cjs'));
 const tuning = require(join(OUT_DIR, 'telemetryTuning.cjs'));
+const clusterHealth = require(join(OUT_DIR, 'clusterHealth.cjs'));
 
 /* ========================================================================== */
 /* 2. 角色基线一致性校验                                                        */
@@ -131,11 +132,25 @@ const statusChanges = [];
 /** 单帧最大变化量（过阻尼保护的核心指标） */
 let maxCpuStep = 0;
 let maxMemStep = 0;
+/** R4 进阶 X2：健康分偏离唯一罚分模型的帧数（必须为 0，无地板/天花板） */
+let healthViolations = 0;
+/** R4 进阶 X6：seq 链断裂次数（必须为 0） */
+let seqViolations = 0;
 
 for (let i = 0; i < TICKS; i += 1) {
   const prevStatus = snapshot.nodes.map((n) => n.status);
   const prevNodes = snapshot.nodes;
   snapshot = engine.stepTelemetrySimulation(snapshot, 'NONE');
+  /* X2：每帧健康分 == 独立罚分模型重算（引擎侧无地板的直接证据） */
+  if (
+    snapshot.clusterHealthScore !==
+      clusterHealth.computeClusterHealthScore(snapshot.nodes, snapshot.pods, snapshot.activeAlerts) ||
+    snapshot.clusterHealthScore !== clusterHealth.computeHealthScore(snapshot)
+  ) {
+    healthViolations += 1;
+  }
+  /* X6：seq 严格 +1 */
+  if (snapshot.seq !== i + 1) seqViolations += 1;
   qpsSeries.push(snapshot.totalQps);
   snapshot.nodes.forEach((node, idx) => {
     cpuSeries[idx].push(node.cpuUsage);
@@ -160,6 +175,13 @@ for (let i = 0; i < 60; i += 1) {
   const scenario = i < 20 ? 'NODE_CPU_SPIKE' : 'NONE';
   const prev = recoverySnap;
   recoverySnap = engine.stepTelemetrySimulation(recoverySnap, scenario);
+  /* X2：故障/恢复全程健康分同样必须等于罚分模型（混沌帧也不例外） */
+  if (
+    recoverySnap.clusterHealthScore !==
+    clusterHealth.computeClusterHealthScore(recoverySnap.nodes, recoverySnap.pods, recoverySnap.activeAlerts)
+  ) {
+    healthViolations += 1;
+  }
   const alpha = recoverySnap.nodes.find((n) => n.rackIndex === 0);
   const prevAlpha = prev.nodes.find((n) => n.rackIndex === 0);
   recovery.push({
@@ -307,7 +329,13 @@ console.log('── 节点状态变更 ─────────────�
 if (statusChanges.length === 0) console.log('  （全程无状态跳变）');
 else for (const c of statusChanges.slice(0, 12)) console.log(`  tick ${c.tick}: ${c.node} ${c.from} → ${c.to}`);
 console.log('');
+console.log('── R4 进阶 · X2/X6 一致性断言 ─────────────────────────');
+console.log(`  X2 健康分 == 唯一罚分模型：${TICKS} 帧逐帧重算，违例 ${healthViolations}（无地板/天花板）`);
+console.log(`  X6 seq 链严格 +1：${TICKS} 帧，断裂 ${seqViolations}`);
+if (healthViolations === 0 && seqViolations === 0) console.log('  ✓ X2/X6 全绿');
+else console.log('  ✗ X2/X6 存在违例');
+console.log('');
 console.log('JSON 摘要:');
 console.log(JSON.stringify(summary, null, 2));
 
-process.exit(roleMismatches.length === 0 ? 0 : 1);
+process.exit(roleMismatches.length === 0 && healthViolations === 0 && seqViolations === 0 ? 0 : 1);

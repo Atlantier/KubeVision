@@ -42,6 +42,7 @@ import { HEAL_IMMUNITY_WINDOW_MS } from '@/constants/telemetryTuning';
 import { syncSnapshotToTransientRef, telemetryTransientRef } from '@/store/useTelemetryRef';
 import { TICK_INTERVAL_MS, stepTelemetrySimulation } from '@/utils/syntheticEngine';
 import { computeClusterHealthScore } from '@/utils/clusterHealth';
+import { guardFrameTimestamp, isDuplicateSeq } from '@/utils/frameTimeline';
 import {
   recordImmuneRewrites,
   recordSchemaStatus,
@@ -601,7 +602,7 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
   const deliver = useCallback(
     (rawSnapshot: TelemetrySnapshot): void => {
       /* ---- 0. seq 去重（R4：重复帧是时间轴漂移的根源，先于一切处理丢弃） ---- */
-      if (rawSnapshot.seq <= lastSeqRef.current) {
+      if (isDuplicateSeq(rawSnapshot.seq, lastSeqRef.current)) {
         telemetryTransientRef.glStats.staleSeqFrames += 1;
         return;
       }
@@ -625,10 +626,9 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
        * 仅是时间轴需要一个合理的落点。
        */
       const knownTs = evolutionBaseRef.current.timestamp;
+      const guardedTs = guardFrameTimestamp(rawSnapshot.timestamp, knownTs, TICK_INTERVAL_MS);
       const guarded: TelemetrySnapshot =
-        rawSnapshot.timestamp > knownTs
-          ? rawSnapshot
-          : { ...rawSnapshot, timestamp: knownTs + TICK_INTERVAL_MS };
+        guardedTs === rawSnapshot.timestamp ? rawSnapshot : { ...rawSnapshot, timestamp: guardedTs };
 
       /* ---- 0. 演进基准留存（连续性核心，详见 evolutionBaseRef 契约） ---- */
       /* 保存的是**未合并的原始帧**：免疫是「展示层修正」，不应污染演进基准，

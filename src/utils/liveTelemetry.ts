@@ -396,11 +396,16 @@ function sampleHostOnce(): HostSample {
  */
 export function acquireHostSampler(): void {
   hostSamplerSubscribers += 1;
-  if (hostSamplerTimer !== null) return;
+  if (hostSamplerTimer !== null) {
+    /* 审计行（R4 进阶 X5）：复用既有 ticker，绝不新建第二个采样源 */
+    console.log(`[LIVE-SAMPLER] acquire subscribers=${hostSamplerSubscribers} ticker=reuse`);
+    return;
+  }
   latestHostSample = sampleHostOnce();
   hostSamplerTimer = setInterval((): void => {
     latestHostSample = sampleHostOnce();
   }, HOST_SAMPLE_INTERVAL_MS);
+  console.log(`[LIVE-SAMPLER] acquire subscribers=${hostSamplerSubscribers} ticker=start interval=${HOST_SAMPLE_INTERVAL_MS}ms`);
 }
 
 /**
@@ -412,7 +417,10 @@ export function acquireHostSampler(): void {
  */
 export function releaseHostSampler(): void {
   hostSamplerSubscribers = Math.max(0, hostSamplerSubscribers - 1);
-  if (hostSamplerSubscribers > 0) return;
+  if (hostSamplerSubscribers > 0) {
+    console.log(`[LIVE-SAMPLER] release subscribers=${hostSamplerSubscribers} ticker=keep`);
+    return;
+  }
   if (hostSamplerTimer !== null) {
     clearInterval(hostSamplerTimer);
     hostSamplerTimer = null;
@@ -420,6 +428,7 @@ export function releaseHostSampler(): void {
   latestHostSample = null;
   previousCoreTimes = null;
   previousNicBytes = null;
+  console.log('[LIVE-SAMPLER] release subscribers=0 ticker=stop baseline=cleared');
 }
 
 /**

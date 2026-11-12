@@ -83,12 +83,16 @@ transpile('src/types/cluster.ts', 'cluster', rewriteAliases);
 transpile('src/utils/clusterHealth.ts', 'clusterHealth', rewriteAliases);
 transpile('src/utils/syntheticEngine.ts', 'syntheticEngine', rewriteAliases);
 transpile('src/utils/snapshotRingBuffer.ts', 'snapshotRingBuffer', rewriteAliases);
+transpile('src/utils/frameTimeline.ts', 'frameTimeline', rewriteAliases);
+transpile('src/store/useTelemetryRef.ts', 'useTelemetryRef', rewriteAliases);
 
 const engine = require(join(OUT_DIR, 'syntheticEngine.cjs'));
 const clusterHealth = require(join(OUT_DIR, 'clusterHealth.cjs'));
 const cluster = require(join(OUT_DIR, 'cluster.cjs'));
 const tuning = require(join(OUT_DIR, 'telemetryTuning.cjs'));
 const ring = require(join(OUT_DIR, 'snapshotRingBuffer.cjs'));
+const timeline = require(join(OUT_DIR, 'frameTimeline.cjs'));
+const transient = require(join(OUT_DIR, 'useTelemetryRef.cjs'));
 
 /* ========================================================================== */
 /* 2. 公共夹具                                                                  */
@@ -536,7 +540,185 @@ test('B-2 环形缓冲保留最近 120 帧，并可从告警变化推导事故�
 });
 
 /* ========================================================================== */
-/* 12. 收尾：清理转译产物                                                       */
+/* 12. R4 进阶 · X1/X2/X6 一致性断言（同一事实三处同数）                          */
+/* ========================================================================== */
+
+/**
+ * X1 · 同一 Pod CPU 三处一致 + freeSlots 真复用。
+ *
+ * 【三处】3D = 瞬态池 podCpuFloat32[槽位]（渲染循环的真实读法）；
+ *         面板 = 快照 pods[i].cpuUsage（store.snapshotSummary 的数据源）；
+ *         报告 = 环形缓冲帧（复盘报告的数据源）。
+ * 【反作弊】结构断言渲染器必须读瞬态池，不许把 3D 改读 HUD 值来"凑一致"；
+ *           freeSlots 栈深度与复用数逐批打印，证明是真复用而非恒等式造假。
+ */
+test('X1 同 Pod CPU 三处一致 + freeSlots 真复用（累计 696 个不同 ID）', () => {
+  ring.clearFrameBuffer();
+  const t = transient.telemetryTransientRef;
+
+  /* 结构断言：3D 渲染循环读瞬态轨（PodInstancedMesh useFrame 内） */
+  const rendererSrc = readFileSync(join(ROOT, 'src/components/canvas/PodInstancedMesh.tsx'), 'utf8');
+  assert.ok(
+    /telemetryTransientRef\.podCpuFloat32/.test(rendererSrc),
+    '3D 渲染循环必须读瞬态池 podCpuFloat32（不许改读 HUD/面板值）',
+  );
+
+  const mkPods = (ids, base) =>
+    ids.map((id, i) => ({
+      ...SEED.pods[i % SEED.pods.length],
+      id,
+      name: id,
+      cpuUsage: base + (i % 17),
+      memoryUsage: 30 + (i % 23),
+    }));
+
+  /* 模拟 deliver 的双轨分发（无免疫场景：reconciled === raw） */
+  const deliver = (pods, seq) => {
+    const frame = { ...SEED, pods, seq, timestamp: SEED.timestamp + seq * TICK_MS };
+    transient.syncSnapshotToTransientRef(frame);
+    ring.pushSnapshotFrame(frame);
+    return frame;
+  };
+  const checkThreeWay = (frame) => {
+    const report = ring.getRecentFrames(1)[0];
+    for (const pod of frame.pods) {
+      const slot = transient.getPodSlotIndex(pod.id);
+      assert.ok(slot >= 0 && slot < transient.MAX_PODS, `${pod.id} 必须有合法槽位`);
+      const gl = t.podCpuFloat32[slot];
+      const rep = report.pods.find((p) => p.id === pod.id);
+      assert.ok(rep !== undefined, `${pod.id} 必须在报告帧中`);
+      assert.equal(gl, pod.cpuUsage, `${pod.id} 3D≠面板`);
+      assert.equal(rep.cpuUsage, pod.cpuUsage, `${pod.id} 报告≠面板`);
+    }
+  };
+
+  /* 批 A 48 个 ID 占满 → 批 B 48 个全新 ID（累计 96）必须全复用 */
+  const idsA = Array.from({ length: 48 }, (_, i) => `pod-xA-${i}`);
+  checkThreeWay(deliver(mkPods(idsA, 40), 1));
+  const slotsA = idsA.map((id) => transient.getPodSlotIndex(id));
+  console.log(`    [freeSlots] 批A 48 占满：栈深 ${t.podFreeSlots.length}，高水位 ${Math.max(...slotsA) + 1}`);
+
+  const idsB = Array.from({ length: 48 }, (_, i) => `pod-xB-${i}`);
+  checkThreeWay(deliver(mkPods(idsB, 60), 2));
+  const slotsB = idsB.map((id) => transient.getPodSlotIndex(id));
+  const reused = slotsB.filter((s) => slotsA.includes(s)).length;
+  console.log(`    [freeSlots] 批B 复用：${reused}/48 槽位来自批A回收，栈深 ${t.podFreeSlots.length}`);
+  assert.equal(reused, 48, '整批换血必须 100% 复用回收槽位');
+
+  /* 20 轮 churn × 30 个全新 ID（累计 96+600=696 个不同 ID） */
+  const distinct = new Set([...idsA, ...idsB]);
+  for (let round = 0; round < 20; round += 1) {
+    const ids = Array.from({ length: 30 }, (_, i) => {
+      const id = `pod-xC-${round}-${i}`;
+      distinct.add(id);
+      return id;
+    });
+    checkThreeWay(deliver(mkPods(ids, 20 + round), 3 + round));
+  }
+  console.log(`    [freeSlots] 累计不同 ID ${distinct.size}（>48），终态占用 ${t.podSlotById.size}，栈深 ${t.podFreeSlots.length}`);
+  assert.ok(distinct.size > 48);
+  assert.ok(t.podSlotById.size <= transient.MAX_PODS);
+
+  ring.clearFrameBuffer();
+});
+
+/**
+ * X2 · 三处健康分相等且无地板/天花板。
+ *
+ * 【反作弊】独立罚分表 oracle 逐帧重算比对；构造满载故障证明分数能低于 50
+ * （旧 live 下限 50 会托住），健康态精确 100（不依赖 96 地板）。
+ */
+test('X2 健康分 == 唯一罚分模型（300 帧逐帧重算，无地板/天花板）', () => {
+  const frames = runSequence(buildRotation());
+  for (const f of frames) {
+    const oracle = clusterHealth.computeClusterHealthScore(f.nodes, f.pods, f.activeAlerts);
+    assert.equal(f.clusterHealthScore, oracle, '引擎帧健康分必须等于罚分模型');
+    assert.equal(clusterHealth.computeHealthScore(f), oracle, '快照级入口必须同值');
+  }
+
+  /* 无 50 地板：满载故障（3 节点分区 + 24 Pod OOM + 10 条 P0）→ 罚 195 → 0 */
+  const worst = {
+    ...SEED,
+    nodes: SEED.nodes.map((n) => ({ ...n, status: 'NetworkPartition' })),
+    pods: SEED.pods.map((p) => ({ ...p, status: 'OOMKilled' })),
+    activeAlerts: Array.from({ length: 10 }, (_, i) => ({
+      id: `a${i}`,
+      timestamp: '',
+      level: 'P0',
+      entityId: 'x',
+      entityName: 'x',
+      message: '',
+    })),
+  };
+  const worstScore = clusterHealth.computeHealthScore(worst);
+  assert.equal(worstScore, 0, '满载故障应罚到 0（任何地板都会托住它）');
+
+  /* 无 96 地板依赖：健康态精确 100；轻故障（1 条 P1）= 98.5 → 99，不是 96+ */
+  const healthy = { ...SEED, activeAlerts: [] };
+  assert.equal(clusterHealth.computeHealthScore(healthy), 100);
+  const mild = {
+    ...SEED,
+    activeAlerts: [{ id: 'm', timestamp: '', level: 'P1', entityId: 'x', entityName: 'x', message: '' }],
+  };
+  assert.equal(clusterHealth.computeHealthScore(mild), 99);
+
+  console.log(`    [X2] 300 帧全等于 oracle；满载故障=${worstScore}（无 50 地板）；轻故障=99（无 96 地板）；健康=100`);
+});
+
+/**
+ * X6 · seq 去重 + 时间戳单调修正（客户端时钟快 5 分钟不跳未来）。
+ *
+ * 【反作弊】模拟 100 帧重复攻击断言零漂移；guardFrameTimestamp 源码禁用 Date.now；
+ * 修正量恒为 +1 tick，与客户端墙钟无关。
+ */
+test('X6 seq 去重 + 时间戳服务端为准（时钟 +5min 不跳未来）', () => {
+  /* seq 链：300 tick 严格 +1 */
+  const frames = runSequence(buildRotation());
+  let prev = SEED.seq;
+  for (const f of frames) {
+    assert.equal(f.seq, prev + 1, '引擎 seq 必须严格 +1');
+    prev = f.seq;
+  }
+
+  /* 去重判定契约 */
+  assert.equal(timeline.isDuplicateSeq(5, 5), true, '相等 seq 是重复');
+  assert.equal(timeline.isDuplicateSeq(4, 5), true, '回退 seq 是重复');
+  assert.equal(timeline.isDuplicateSeq(6, 5), false, '前进 seq 接受');
+  assert.equal(timeline.isDuplicateSeq(0, -1), false, '新连接首帧（复位 -1）接受');
+
+  /* 100 帧重复攻击：全丢弃，时间轴零漂移 */
+  let lastSeq = 10;
+  let knownTs = SEED.timestamp + 10 * TICK_MS;
+  const originTs = knownTs;
+  let dropped = 0;
+  for (let i = 0; i < 100; i += 1) {
+    const dupSeq = 10;
+    if (timeline.isDuplicateSeq(dupSeq, lastSeq)) {
+      dropped += 1;
+      continue;
+    }
+    lastSeq = dupSeq;
+    knownTs = timeline.guardFrameTimestamp(knownTs, knownTs, TICK_MS);
+  }
+  assert.equal(dropped, 100, '重复帧必须全部丢弃');
+  assert.equal(knownTs, originTs, '重复帧不得推动时间轴（旧实现每帧 +1000 漂移）');
+
+  /* 客户端时钟快 5 分钟：乱序帧修正只 +1 tick，绝不采用客户端墙钟 */
+  const serverTs = SEED.timestamp + 20 * TICK_MS;
+  const clientNowFast = serverTs + 5 * 60 * 1000;
+  const guarded = timeline.guardFrameTimestamp(serverTs - TICK_MS, serverTs, TICK_MS);
+  assert.equal(guarded, serverTs + TICK_MS, '修正量恒为 +1 tick');
+  assert.ok(guarded < clientNowFast, '不得跳到客户端未来时刻');
+  const src = readFileSync(join(ROOT, 'src/utils/frameTimeline.ts'), 'utf8');
+  /* 只检查代码本体（JSDoc 里提及 Date.now 是说明文字，不算引用） */
+  const codeOnly = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  assert.ok(!/Date\.now/.test(codeOnly), '时间轴纯函数禁止引用客户端墙钟');
+
+  console.log(`    [X6] 300 帧 seq 严格 +1；100/100 重复帧丢弃零漂移；时钟 +5min 修正仅 +1 tick（${guarded} < 客户端 ${clientNowFast}）`);
+});
+
+/* ========================================================================== */
+/* 13. 收尾：清理转译产物                                                       */
 /* ========================================================================== */
 
 process.on('exit', () => {

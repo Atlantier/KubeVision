@@ -544,7 +544,7 @@ export const useClusterStore = create<ClusterStore>()(
        * 3. **状态自愈（不可变派生）**：以当前 snapshotSummary 为基底调用
        *    deriveHealedSnapshot 产出全新快照——命中 Pod 置 Running、
        *    cpuUsage=28、memoryUsage=42 并重建 6 点恢复曲线；清除相关告警；
-       *    健康分按加权公式重算并施加 96 分下限。
+       *    健康分经唯一入口 computeHealthScore 重算（R4：无地板，与引擎同口径）。
        *    **严禁原地修改**：原快照极可能就是模块级种子常量
        *    INITIAL_CLUSTER_SNAPSHOT 本身，mutate 会永久污染种子。
        * 4. **双轨贯通**：自愈后的快照一次性写入两条轨道——
