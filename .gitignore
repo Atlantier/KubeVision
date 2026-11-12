@@ -63,6 +63,7 @@ tmp-telemetry/
 /tmp-dev.log
 # ---- 本地临时产物（评测/构建日志、临时副本）----
 /tmp-*.log
+/tmp-logs/
 /KubeVision-build-tmp/
 # 端侧 ONNX 权重必须入库（public/models/**/onnx/*.onnx），上面只忽略 .glb/.gltf/.bin/.fbx
 
