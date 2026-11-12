@@ -1161,33 +1161,53 @@ export default function TopBar() {
   }, [tts]);
 
   /**
-   * 路演进行中：跟随 3D 视口尺寸变化更新字幕条定位。
+   * 持续追踪 3D 视口矩形（R71）。
    *
-   * 【为何用 ResizeObserver 而不只监听 window.resize】拖拽左右分栏时
-   * 窗口尺寸不变、只有视口元素变窄；只监听 resize 会让字幕条在拖拽后
-   * 停在错误位置、重新压住抽屉。
+   * 【为何不再依赖 demo.status】路演收起后回放条仍要显示；旧逻辑在
+   * status === 'idle' 时把 sceneRect 置 null，回放条只能退化为全屏居中，
+   * 正好压在底部终端与右下工具条上。现在只要 TopBar 挂载就持续测量，
+   * idle / finished 期间保留最后一次视口矩形。
+   *
+   * 【为何用 ResizeObserver + window.resize】拖拽分栏只改变视口元素宽度，
+   * window 尺寸不变；必须观察元素本身。额外观察 body 以捕捉视口挂载/
+   * 布局替换等非 window resize 场景。
    */
-  useEffect((): (() => void) | undefined => {
-    if (demo.status === 'idle') {
-      setSceneRect(null);
-      return undefined;
-    }
+  useEffect((): (() => void) => {
     const measure = (): void => {
-      const el = document.querySelector('[aria-label="3D 集群拓扑视口"]');
+      const el =
+        document.querySelector('#kubevision-3d-viewport') ??
+        document.querySelector('[aria-label="3D 集群拓扑视口"]');
       if (el === null) return;
       const rect = el.getBoundingClientRect();
-      setSceneRect({ left: rect.left, width: rect.width });
+      setSceneRect((previous): { left: number; width: number } | null => {
+        if (
+          previous !== null &&
+          Math.abs(previous.left - rect.left) < 0.5 &&
+          Math.abs(previous.width - rect.width) < 0.5
+        ) {
+          return previous;
+        }
+        return { left: rect.left, width: rect.width };
+      });
     };
+
     measure();
     window.addEventListener('resize', measure);
-    const target = document.querySelector('[aria-label="3D 集群拓扑视口"]');
-    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
-    if (observer !== null && target !== null) observer.observe(target);
+    const observer =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (observer !== null) {
+      const target =
+        document.querySelector('#kubevision-3d-viewport') ??
+        document.querySelector('[aria-label="3D 集群拓扑视口"]');
+      if (target !== null) observer.observe(target);
+      /* body 观测兜底：视口被挂载/替换时也能重新测量 */
+      observer.observe(document.body);
+    }
     return (): void => {
       window.removeEventListener('resize', measure);
       if (observer !== null) observer.disconnect();
     };
-  }, [demo.status]);
+  }, []);
 
   /* 卸载即停由 useDemoDirector 钩子内部负责（见 demoDirector.ts），此处不重复注册 */
 
@@ -1498,7 +1518,18 @@ export default function TopBar() {
       * 若把它写在演示态里面，字幕条一收起回放入口就跟着消失。
       * 组件自身在无录像时返回 null，所以常驻渲染不占位。
       */}
-    <div className="pointer-events-none fixed bottom-6 left-1/2 z-40 flex w-full max-w-[54rem] -translate-x-1/2 justify-center px-4">
+    <div
+      className={
+        sceneRect !== null
+          ? 'pointer-events-none fixed bottom-14 z-30 flex justify-center pl-3 pr-[76px]'
+          : 'pointer-events-none fixed bottom-14 left-3 right-[76px] z-30 flex justify-center lg:right-[440px]'
+      }
+      style={
+        sceneRect !== null
+          ? { left: `${sceneRect.left}px`, width: `${sceneRect.width}px` }
+          : undefined
+      }
+    >
       <DemoReplayTimeline />
     </div>
 

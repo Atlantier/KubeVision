@@ -17,7 +17,7 @@
  */
 
 import { useEffect } from 'react';
-import { History, RotateCcw, X } from 'lucide-react';
+import { ChevronDown, History, RotateCcw, X } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 import {
@@ -86,11 +86,12 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
         onClick={enterDemoReplay}
         aria-label={`打开事故回放（已录 ${recorder.frames.length} 帧）`}
         title="事故回放（只读）"
-        className="pointer-events-auto flex items-center gap-1.5 rounded border border-cyan-400/30 bg-slate-950/80 px-2.5 py-1 font-mono text-[10px] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:text-cyan-100"
+        className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-slate-950/80 px-3 py-1 font-mono text-[10px] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:text-cyan-100"
       >
         <History className="h-3 w-3" aria-hidden />
         事故回放
         <span className="text-[10px] text-cyan-400/70">{recorder.frames.length} 帧</span>
+        <ChevronDown className="h-3 w-3 text-cyan-400/70" aria-hidden />
       </button>
     );
   }
@@ -102,8 +103,7 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
     <div
       role="region"
       aria-label="事故回放时间轴（只读）"
-      className="pointer-events-auto w-full max-w-[54rem] overflow-hidden rounded-md border border-amber-400/40 bg-slate-950/88"
-      style={{ boxShadow: '0 10px 34px rgba(2,6,23,0.8), inset 0 0 24px rgba(251,191,36,0.05)' }}
+      className="pointer-events-auto w-full max-w-[46rem] rounded-lg border border-amber-400/40 bg-slate-950/92 px-3.5 py-2.5 shadow-[0_12px_36px_-8px_rgba(2,6,23,0.92)] backdrop-blur-md"
     >
       {/* 顶缘：回放态醒目标识 —— 琥珀色与运行态青色区分开 */}
       <span
