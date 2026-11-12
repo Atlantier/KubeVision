@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { isImeComposing } from '@/utils/keyboardTargets';
 import { useClusterStore } from '@/store/useClusterStore';
 import { dispatchViewPreset } from '@/utils/viewPresetBus';
 import type { ChaosScenario } from '@/types/cluster';
@@ -311,15 +312,29 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
    * 键盘处理。
    *
    * 【为何在输入框而非 window 上监听】面板打开时输入框有焦点，
-   * 事件自然冒泡到此处；在 window 上监听会与 ShellLayout 的 Esc 处理
-   * 竞争，导致一次按键触发两次关闭。
+   * 事件自然冒泡到此处；方向键/Enter 只属于面板，不上 window 与全局快捷键抢键。
+   * Esc 是唯一例外：由 useEscapeStack 在 window 统一派发（本层优先级 100）。
    */
   /* 【C1】命令面板由父级按需挂载（打开时才存在），因此注册即代表打开；
-     优先级 100：从页面任意位置按 Esc 都先关它。 */
-  useEscapeLayer({ id: 'command-palette', priority: 100, label: '运维命令面板', onEscape: onClose });
+     优先级 100：从页面任意位置按 Esc 都先关它。
+     【R3】consumeInEditable：面板打开时焦点恒在搜索框，Esc 的语义是关面板
+     而非清空输入——声明后由分级栈统一消费，输入框上不再另挂 Esc 分支。 */
+  useEscapeLayer({
+    id: 'command-palette',
+    priority: 100,
+    label: '运维命令面板',
+    onEscape: onClose,
+    consumeInEditable: true,
+  });
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>): void => {
+      /*
+       * 【R3 · IME 让位】中文输入组合期间（compositionstart~compositionend），
+       * Enter 只上屏候选、↑↓ 只移动候选——全部让位给输入法，绝不执行命令。
+       * isComposing 主判 + keyCode 229 兜底（旧 IME 确认帧 isComposing 已 false）。
+       */
+      if (isImeComposing(event.nativeEvent)) return;
       if (event.key === 'ArrowDown') {
         event.preventDefault();
         setActiveIndex((prev): number => (prev + 1) % Math.max(1, filtered.length));
@@ -335,12 +350,9 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
         runActive();
         return;
       }
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-      }
+      /* Esc 由 useEscapeStack 统一派发（本层 consumeInEditable），此处不再处理 */
     },
-    [filtered.length, runActive, onClose],
+    [filtered.length, runActive],
   );
 
   /* 高亮项滚动进视野（键盘导航时不会跑到视口外） */

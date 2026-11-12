@@ -48,20 +48,36 @@ export default function DemoDebugPanel(): React.ReactElement | null {
 
   const demo = useDemoDirector();
 
+  /*
+   * 【R3 · 渲染纯度】nowMs 由 Effect 定时器写入，render 体内不再读 Date.now()。
+   * 旧实现每次渲染现读时钟：StrictMode 双渲染/并发重放时同一帧产出两个值，
+   * 是不纯渲染（水合与并发安全的隐患）。250ms 节拍对「秒级剩余 / 0.1s 阶段已过」
+   * 的调试显示足够，且面板仅 ?demoDebug=1 挂载，成本可忽略。
+   */
+  const [nowMs, setNowMs] = useState<number | null>(null);
+  useEffect((): (() => void) | undefined => {
+    if (!enabled) return undefined;
+    setNowMs(Date.now());
+    const timer = setInterval((): void => setNowMs(Date.now()), 250);
+    return (): void => clearInterval(timer);
+  }, [enabled]);
+
   if (!enabled) return null;
 
   const trace = getDemoEffectTrace();
   const recent = trace.slice(-12).reverse();
 
-  /* deadline 剩余秒数（仅事件驱动阶段会被填上） */
+  /* deadline 剩余秒数（仅事件驱动阶段会被填上；时钟未就绪时显示 —） */
   const deadlineRemainSec =
-    demo.phaseDeadline === null ? null : Math.max(0, Math.ceil((demo.phaseDeadline - Date.now()) / 1000));
+    demo.phaseDeadline === null || nowMs === null
+      ? null
+      : Math.max(0, Math.ceil((demo.phaseDeadline - nowMs) / 1000));
 
   /* 距本阶段开始已过秒数 */
   const phaseAgeSec =
-    demo.phaseStartedAt === null
+    demo.phaseStartedAt === null || nowMs === null
       ? null
-      : Math.max(0, Math.round((Date.now() - demo.phaseStartedAt) / 100) / 10);
+      : Math.max(0, Math.round((nowMs - demo.phaseStartedAt) / 100) / 10);
 
   return (
     <div

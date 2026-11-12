@@ -73,6 +73,7 @@ import MarkdownLite, { InlineMarkdown } from '@/components/ai/MarkdownLite';
 import PodMetricsCard from '@/components/ai/GenUI/PodMetricsCard';
 import RootCauseAlert from '@/components/ai/GenUI/RootCauseAlert';
 import { cn } from '@/utils/cn';
+import { isImeComposing } from '@/utils/keyboardTargets';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
 import AgentTracePanel from '@/components/ai/AgentTracePanel';
 import { embedQueryText } from '@/utils/edgeEmbedding';
@@ -2976,8 +2977,8 @@ export default function CopilotDrawer() {
                 value={inputValue}
                 onChange={(e): void => setInputValue(e.target.value)}
                 onKeyDown={(e): void => {
-                  /* Enter 发送，Shift+Enter 换行 */
-                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  /* Enter 发送，Shift+Enter 换行；IME 组合期让位（isComposing + 229 双判） */
+                  if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e.nativeEvent)) {
                     e.preventDefault();
                     void sendMessage(inputValue);
                   }

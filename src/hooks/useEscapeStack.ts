@@ -17,8 +17,10 @@
  * - 弹层打开时 `useEscapeLayer` 注册 { id, priority, onEscape }；
  * - 全局只有 `useEscapeDispatcher`（仅 page.tsx 调用）安装一个 keydown；
  * - 按下 Esc 时：取**优先级最高**的已启用层，只调用它一个，然后停止；
- * - 输入框/文本域/contentEditable 内的 Esc 直接让位（不关闭任何层），
- *   交给输入控件自己处理（IME 取消、清空等）。
+ * - 输入框/文本域/contentEditable 内的 Esc 默认让位（不关闭任何层），
+ *   交给输入控件自己处理（IME 取消、清空等）；仅 consumeInEditable 层
+ *   （命令面板）例外——它的搜索框即主体，Esc 语义就是关面板；
+ * - IME 组合期（isComposing / keyCode 229）的 Esc 一律让位给输入法。
  *
  * 【优先级约定】数值越大越靠上层：
  *   命令面板 100 > 混沌弹窗 90 > RAG 知识库 80 > 复盘弹窗 70 > 页面兜底 0。
@@ -27,6 +29,8 @@
  */
 
 import { useEffect, useState } from 'react';
+
+import { isEditableTarget } from '@/utils/keyboardTargets';
 
 /** 一个可被 Esc 关闭的层 */
 export interface EscapeLayer {
@@ -38,6 +42,13 @@ export interface EscapeLayer {
   readonly onEscape: () => void;
   /** 人类可读层名（Q3：底部 chip 提示用，如 '混沌演练控制台'） */
   readonly label: string;
+  /**
+   * 焦点在输入框内时是否仍消费 Esc（默认 false 让位）。
+   * 命令面板这类「搜索框即主体」的层置 true：用户按 Esc 的意图是关面板，
+   * 而不是在输入框里清空内容；普通弹窗（RAG/混沌）保持 false，
+   * 输入框内的 Esc 留给 IME 取消候选/清空输入。
+   */
+  readonly consumeInEditable?: boolean;
 }
 
 /** 注册表（模块级单例；组件挂载注册、卸载注销） */
@@ -62,30 +73,16 @@ export function registerEscapeLayer(layer: EscapeLayer): () => void {
 }
 
 /**
- * isEditableTarget —— 判断事件目标是否是可编辑控件。
- *
- * 【为何让位】输入框里的 Esc 常用于：
- * - 取消输入法候选（中文输入中按 Esc 是"取消候选"而非"关闭弹窗"）；
- * - 清空/回滚当前输入。
- * 若全局栈抢先关闭弹窗，用户会丢失正在输入的内容——所以输入框内一律让位。
- *
- * @param target 事件目标
- * @returns 是否可编辑
- */
-export function isEditableTarget(target: EventTarget | null): boolean {
-  if (target === null || !(target instanceof HTMLElement)) return false;
-  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return true;
-  return target.isContentEditable;
-}
-
-/**
  * dispatchEscape —— 执行一次 Esc 分级退出（纯函数，便于单测）。
+ *
+ * 【让位规则】先取最上层，再判输入框：默认输入框内 Esc 让位（IME 取消候选/
+ * 清空输入优先）；仅当最上层显式声明 consumeInEditable（命令面板）时才消费。
+ * 让位判断必须挂在「最上层」而非全局——否则命令面板会被其他层的输入框误让位。
  *
  * @param target 事件目标（用于输入框让位判断）
  * @returns 是否消费了本次 Esc
  */
 export function dispatchEscape(target: EventTarget | null): boolean {
-  if (isEditableTarget(target)) return false;
   if (layers.length === 0) return false;
 
   let top: EscapeLayer | null = null;
@@ -93,6 +90,8 @@ export function dispatchEscape(target: EventTarget | null): boolean {
     if (top === null || layer.priority > top.priority) top = layer;
   }
   if (top === null) return false;
+
+  if (isEditableTarget(target) && top.consumeInEditable !== true) return false;
 
   /*
    * 【只退一层】调用后立即返回 true。
@@ -117,11 +116,12 @@ export function useEscapeLayer(layer: EscapeLayer | null): void {
   const priority = layer?.priority ?? 0;
   const onEscape = layer?.onEscape;
   const label = layer?.label ?? '';
+  const consumeInEditable = layer?.consumeInEditable ?? false;
 
   useEffect((): (() => void) | undefined => {
     if (id === null || onEscape === undefined) return undefined;
-    return registerEscapeLayer({ id, priority, onEscape, label });
-  }, [id, priority, onEscape, label]);
+    return registerEscapeLayer({ id, priority, onEscape, label, consumeInEditable });
+  }, [id, priority, onEscape, label, consumeInEditable]);
 }
 
 /* ========================================================================== */
@@ -195,6 +195,9 @@ export function useEscapeDispatcher(enabled = true): void {
     if (!enabled) return undefined;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return;
+      /* IME 组合期的 Esc 是「取消候选」而非「关闭弹层」，让位给输入法
+         （keyCode 229 兜底旧 IME：组合确认帧 isComposing 可能已置 false） */
+      if (event.isComposing || event.keyCode === 229) return;
       const consumed = dispatchEscape(event.target);
       if (consumed) {
         event.preventDefault();

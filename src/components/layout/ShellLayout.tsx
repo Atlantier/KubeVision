@@ -37,6 +37,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Bot, Layers, ShieldCheck } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { isInteractiveTarget } from '@/utils/keyboardTargets';
 import { useClusterStore } from '@/store/useClusterStore';
 import type { ChaosScenario } from '@/types/cluster';
 import type { RightPanelTab } from '@/types/store';
@@ -226,15 +227,14 @@ export default function ShellLayout({ viewport, drawer, perfHud }: ShellLayoutPr
   /* ---- 全局键盘：Shift+P 切换性能 HUD ---- */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      // 输入焦点让位：Copilot 输入框内打大写 P 不应触发 HUD
-      const target = event.target;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        (target instanceof HTMLElement && target.isContentEditable)
-      ) {
-        return;
-      }
+      /*
+       * 【交互元素让位（R3）】焦点在 input/textarea/contentEditable/button/a/
+       * select/summary/role=button|tab|menuitem|radio|checkbox/audio/video 上时，
+       * 按键属于该控件：空格必须保留原生激活（旧实现只判输入框，焦点停在
+       * 按钮上按空格会被 preventDefault 劫持，按钮永远按不动）。
+       * 全局快捷键只在非交互背景生效；Ctrl/Cmd+K 在 page.tsx，不受此限。
+       */
+      if (isInteractiveTarget(event.target)) return;
       if (event.shiftKey && (event.key === 'P' || event.key === 'p')) {
         event.preventDefault();
         setPerfHudOpen(!useClusterStore.getState().isPerfHudOpen);
@@ -267,9 +267,9 @@ export default function ShellLayout({ viewport, drawer, perfHud }: ShellLayoutPr
         setHelpOpen((open): boolean => !open);
         return;
       }
-      if (event.key === 'Escape') {
-        setHelpOpen(false);
-      }
+      /* Esc 不在此处理：全站唯一派发器是 useEscapeStack（page.tsx），
+         帮助浮层已注册为 Esc 层（ShortcutHelpOverlay），此处再写一份
+         就会与分级栈抢键，一次 Esc 退多层。 */
     };
     window.addEventListener('keydown', onKeyDown);
     return (): void => window.removeEventListener('keydown', onKeyDown);

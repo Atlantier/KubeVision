@@ -38,6 +38,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useClusterStore } from '@/store/useClusterStore';
+import { HEAL_IMMUNITY_WINDOW_MS } from '@/constants/telemetryTuning';
 import { syncSnapshotToTransientRef, telemetryTransientRef } from '@/store/useTelemetryRef';
 import { TICK_INTERVAL_MS, stepTelemetrySimulation } from '@/utils/syntheticEngine';
 import { computeClusterHealthScore } from '@/utils/clusterHealth';
@@ -65,17 +66,14 @@ const DEFAULT_ERROR_THRESHOLD = 2;
 const DEFAULT_FALLBACK_INTERVAL_MS = TICK_INTERVAL_MS;
 
 /**
- * 自愈免疫窗口（毫秒）—— 本 Hook 侧契约值 15000。
+ * 自愈免疫窗口（毫秒）—— 唯一事实源在 constants/telemetryTuning.ts。
  *
- * 【与 store 侧 30000 的关系（重要，勿混淆）】
- * store 的 healEntity 用 30000ms 作为**动作去重窗口**：窗口内重复点击
- * 「隔离并重启」会被 BLOCKED 并记日志，防止用户连点导致重复自愈。
- * 而本 Hook 的 15000ms 是**视觉保持窗口**：自愈后让该 Pod 在 3D 视口
- * 中稳定呈翠绿健康态 15 秒，不被服务端仍在下发的故障帧推翻。
- * 二者是不同层的两个常量，语义不同、互不替代——视觉窗口短于去重窗口
- * 是合理设计：去重保护更久，视觉证明期更短。
+ * 【R3 单常量契约】store.healEntity 的「重复自愈去重」与本 Hook 的
+ * 「免疫期视觉保持」共用 HEAL_IMMUNITY_WINDOW_MS（15s）：动作卡提示的
+ * 「剩余 N 秒」与 3D 视口的翠绿保持期严格一致，不再出现 30s/15s 两套口径
+ * 「画面已回落故障态、卡片仍说免疫中」的同屏矛盾。
  */
-const DEFAULT_IMMUNITY_WINDOW_MS = 15_000;
+const DEFAULT_IMMUNITY_WINDOW_MS = HEAL_IMMUNITY_WINDOW_MS;
 
 /** 免疫期 Pod 的 CPU 钳制区间（%，需求契约 20~35） */
 const IMMUNE_CPU_MIN = 20;
@@ -668,10 +666,11 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
         );
       }
 
-      /* ---- 5. 观测状态更新（免疫计数变化才 setState，避免每帧重渲染） ---- */
-      if (reconciledCount > 0) {
-        setLastReconciledCount((prev): number => (prev === reconciledCount ? prev : reconciledCount));
-      }
+      /* ---- 5. 观测状态更新（免疫计数变化才 setState，避免每帧重渲染） ----
+       * 【R3】窗口结束 reconciledCount=0 也必须写回：旧实现只在 >0 时更新，
+       * 免疫到期后 lastReconciledCount 永远停在旧值，观测面谎报「仍在免疫」。
+       * 相等性守卫保证稳态（恒 0）不触发任何重渲染。 */
+      setLastReconciledCount((prev): number => (prev === reconciledCount ? prev : reconciledCount));
 
       setFrameCount((prev): number => prev + 1);
     },

@@ -46,6 +46,7 @@ import type {
   StatusFilter,
 } from '@/types/store';
 import { syncSnapshotToTransientRef } from '@/store/useTelemetryRef';
+import { HEAL_IMMUNITY_WINDOW_MS } from '@/constants/telemetryTuning';
 import { clearFrameBuffer } from '@/utils/snapshotRingBuffer';
 import { MASTER_ENTITY_ID } from '@/utils/cameraFocus';
 import { HEALTH_SCORE_MAX, computeClusterHealthScore } from '@/utils/clusterHealth';
@@ -66,8 +67,10 @@ const TERMINAL_LOG_RUNTIME_LIMIT = 200;
 /** 终端日志持久化条数上限（仅最近 30 条落盘，防 localStorage 配额膨胀） */
 const TERMINAL_LOG_PERSIST_LIMIT = 30;
 
-/** 自愈免疫窗口（毫秒）：同一 targetId 在此窗口内的重复自愈请求将被去重 */
-const HEAL_IMMUNITY_WINDOW_MS = 30_000;
+/*
+ * 自愈免疫窗口：唯一事实源在 constants/telemetryTuning.ts（HEAL_IMMUNITY_WINDOW_MS），
+ * 与 useTelemetryStream 的视觉保持窗口同引用——「剩余秒数提示」与 3D 免疫态同生共死。
+ */
 
 /**
  * 自愈记录 ID 单调计数器（模块级，非持久化）。
@@ -452,9 +455,9 @@ export const useClusterStore = create<ClusterStore>()(
        * healEntity —— 自愈动作闭环回写（登记 + 自愈 + 双轨贯通 + 审计）。
        *
        * 【核心逻辑：五步闭环】
-       * 1. **免疫去重**：查 healedPodIds[targetId]，若距上次自愈 < 30s 免疫窗口，
-       *    直接拒绝并写终端日志——防止 Agent 在告警风暴期对同一 Pod 反复重启
-       *    形成「自愈抖动」（真实 SRE 事故模式）。
+       * 1. **免疫去重**：查 healedPodIds[targetId]，若距上次自愈 < 免疫窗口
+       *    （HEAL_IMMUNITY_WINDOW_MS，与视觉保持同值），直接拒绝并写终端日志——
+       *    防止 Agent 在告警风暴期对同一 Pod 反复重启形成「自愈抖动」（真实 SRE 事故模式）。
        * 2. **解析自愈范围**：targetId 支持两种粒度——
        *    - Pod 粒度（snapshot.pods 中存在该 id）：仅自愈自身；
        *    - Node 粒度（snapshot.nodes 中存在该 id）：批量自愈该节点下**所有异常 Pod**
@@ -681,8 +684,8 @@ export const useClusterStore = create<ClusterStore>()(
       /**
        * clearHealedPodIds —— 清空自愈免疫表。
        *
-       * 【为何必须有】`healEntity` 对同一目标有 30 秒免疫窗口：窗口内重复自愈
-       * 会被转入退避队列而非真正执行。自动路演若在 30 秒内连跑第二遍，
+       * 【为何必须有】`healEntity` 对同一目标有免疫窗口（HEAL_IMMUNITY_WINDOW_MS）：
+       * 窗口内重复自愈会被明确拒绝。自动路演若在窗口内连跑第二遍，
        * 第二遍的自愈会被免疫窗口整体吞掉，表现为"跑了但没自愈"。
        * 自愈前 Store 没有任何清除入口，这是"连跑两遍第二遍失败"的根因。
        *

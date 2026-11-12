@@ -68,6 +68,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import {
   HoloCorners,
   HoloMicroRuler,
@@ -728,7 +729,16 @@ function TopologyLegendPanel() {
    * 只用 pointerdown 而不是 click：拖拽 3D 相机时 pointerup 可能落在画布外，
    * click 不一定触发；pointerdown 能稳定表达“用户开始操作别处”。
    * 点击面板/按钮内部不关闭（root.contains 判断）。
+   *
+   * 【R3】Esc 关闭注册进分级退出栈（优先级 30：视口浮层，低于一切功能模态）。
+   * 旧实现自挂 window keydown 且不判层级——混沌弹窗开着时按 Esc 会把图例
+   * 一起关掉；入栈后一次 Esc 只退最上层。
    */
+  const closeLegend = useCallback((): void => setExpanded(false), []);
+  useEscapeLayer(
+    expanded ? { id: 'topology-legend', priority: 30, label: '读图说明', onEscape: closeLegend } : null,
+  );
+
   useEffect((): (() => void) | undefined => {
     if (!expanded) return undefined;
     const handlePointerDown = (event: PointerEvent): void => {
@@ -738,14 +748,9 @@ function TopologyLegendPanel() {
       }
       setExpanded(false);
     };
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setExpanded(false);
-    };
     document.addEventListener('pointerdown', handlePointerDown);
-    window.addEventListener('keydown', handleKeyDown);
     return (): void => {
       document.removeEventListener('pointerdown', handlePointerDown);
-      window.removeEventListener('keydown', handleKeyDown);
     };
   }, [expanded]);
 
@@ -1224,32 +1229,19 @@ function FilterStatusBanner() {
   /**
    * ESC 退出筛选视图（同时清空选中实体）。
    *
-   * 【为何要判 defaultPrevented 与输入焦点】全局 ESC 栈上已有
-   * 「命令面板 / 混沌模态 / 抽屉」等更高层级的消费者，它们会先处理并
-   * preventDefault；这里只在无人认领时兜底，避免"关掉弹窗的同时
-   * 顺手把过滤器也重置了"这种连带操作。
+   * 【R3：入栈而非自挂监听】优先级 10——高于页面兜底（清选中/关 HUD），
+   * 低于一切模态与视口浮层。分级栈结构性保证「关掉弹窗绝不顺手重置过滤器」，
+   * 不再依赖 defaultPrevented 的监听器注册顺序碰巧成立。
    *
    * 【触发条件严格限定 statusFilter !== 'ALL'】只有处于筛选态时 ESC 才是
    * "退出筛选"。全量视图下 ESC 不该顺手清掉用户正在看的实体——
    * 那属于探针卡关闭按钮（X）的职责，两条路径语义不同。
    */
-  useEffect(() => {
-    if (statusFilter === 'ALL') return;
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      const target = event.target;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        (target instanceof HTMLElement && target.isContentEditable)
-      ) {
-        return;
-      }
-      handleExitFilteredView();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return (): void => window.removeEventListener('keydown', onKeyDown);
-  }, [statusFilter, handleExitFilteredView]);
+  useEscapeLayer(
+    statusFilter !== 'ALL'
+      ? { id: 'status-filter', priority: 10, label: '筛选视图', onEscape: handleExitFilteredView }
+      : null,
+  );
 
   /* 全量视图：默认态，不渲染任何说明 */
   if (statusFilter === 'ALL') return null;

@@ -35,3 +35,26 @@
 
 | 16 | 页面左下持续出现「1 error」控制台错误（与 verify-demo J-4 的 Uncaught 对应） | **OPEN** | 走查截图左下角可见；verify-demo J-4 记录 `pageErrors:["Uncaught"]`；未定位到具体堆栈 | 「主链路不中断；现场若出现红条，刷新页面后继续，不现场调试。」 | 工程 | T-1 |
 | 17 | verify:all 后续步骤未由聚合脚本执行 | **CLOSED** | 聚合脚本在 verify-demo 处按规则停止；其后 8 步已手动串行执行并全部通过：probe-blackout ×4（各 0/3）、eval-rag、mcp-smoke 10/10、verify-privacy 5/5、docs-consistency | 「聚合脚本已验证失败即停与现场保存；后续步骤有独立日志可在 `docs/evidence/verify-all-continue-2026-11-11/` 复核。」 | 测试 | 已完成 |
+
+---
+
+## R3 · 状态与交互确定性 Bug 包（2026-11-12 · main 完成）
+
+> 口令「完成R3 main」。改动→证据→验收结果如下；所有「通过」来自本轮真实命令输出（日志在 `tmp-logs/tmp-r3-*.log`，本地不入库）。
+
+| 缺陷 | 改动 | 证据（本轮实测） | 结果 |
+|---|---|---|---|
+| Esc 散落监听抢键（ShellLayout 帮助/NodeInspectHUD 图例+筛选/DemoReplayTimeline 回放/CommandPalette 输入框各挂一份） | 全部入栈 useEscapeStack：帮助 60/图例 30/回放 20/筛选 10；命令面板层声明 consumeInEditable；派发器补 IME 让位 | `probe:escape` 11/11；`probe:keyboard` K4（帮助+混沌同开一次 Esc 只关混沌）15/15 | CLOSED |
+| IME 组合期 Enter 误执行命令 | 抽 isImeComposing 纯函数（isComposing + keyCode 229 双判），命令面板/副驾输入框共用 | `test:keyboard` 15/15；`probe:keyboard` K3（isComposing/229 不执行、普通 Enter 执行） | CLOSED |
+| 空格/1/2/F/? 劫持交互元素 | 抽 isInteractiveTarget 纯函数（8 标签 + 5 role + contentEditable），ShellLayout 全局快捷键统一让位 | `test:keyboard`；`probe:keyboard` K1（真 Space 激活按钮）/K2/K5 | CLOSED |
+| DemoDebugPanel render 体读 Date.now()（不纯渲染） | nowMs 改 Effect 250ms 时钟写入，render 只读状态 | 水合专项：普通页 + ?demoDebug=1 各加载，0 水合警告 0 异常 | CLOSED |
+| 免疫窗口 30s/15s 双常量 + reconciledCount 不归零 | 单常量 HEAL_IMMUNITY_WINDOW_MS=15000 入 telemetryTuning.ts，store/Hook 同引用；setLastReconciledCount 无条件相等性写回 | `probe:immune` 6/6（remainingSec=15）；`probe:r13` 11/11 曲线 22.7→50.1→80（比例 0.48≈0.5） | CLOSED |
+| layout.tsx maximumScale:1 禁缩放 | 删除 maximumScale，保留 initialScale/themeColor/colorScheme | typecheck/build 通过；viewport 元数据不再含 maximum-scale | CLOSED |
+
+**本轮验收汇总**：typecheck ✓ · lint ✓ · build ✓ · verify:quick 8/8 · verify 35/35 · verify:telemetry 9/9 · probe:escape 11/11 · probe:keyboard 15/15 · test:keyboard 15/15 · probe:immune 6/6 · probe:r13 11/11 · strictmode:audit 6/6 · 水合 0 警告。
+
+| # | 事项 | 状态 | 原因（证据） | 兜底话术 | 负责人 | 截止 |
+|---|---|---|---|---|---|---|
+| R3-1 | IME 用合成 isComposing/keyCode 229 事件验证，未接真实操作系统输入法 | **MITIGATED** | headless Edge 无 OS IME；双判逻辑已单测+浏览器合成事件覆盖，真机 IME 未测 | 「中文输入防误触按标准 isComposing+229 双判实现；现场用真实输入法再复核一次。」 | 前端 | 现场 |
+| R3-2 | 键盘 E2E 在 SwiftShader 软渲染下跑，时序断言用轮询等待 | **MITIGATED** | 相机飞行阻塞主线程会拖慢退场动画（实测面板关闭可达 2.6s）；真实 GPU 时序未测 | 「交互逻辑正确性已验证；丝滑时序以真实 GPU 为准，软渲染不宣称帧率。」 | 前端 | 持续 |
+| R3-3 | verify 实际 35 项 vs README/verify-summary 记 34 | **OPEN（转 R14）** | 既有文档数字漂移，非 R3 引入；R3 不改文档数字 | 「以 verify 真实输出为准，文档同源在 R14 统一收口。」 | 文档 | R14 |

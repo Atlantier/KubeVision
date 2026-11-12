@@ -16,10 +16,10 @@
  * 【退出方式】Esc 或点「退出回放」。Esc 是演示者最顺手的"退出"肌肉记忆。
  */
 
-import { useEffect } from 'react';
 import { ChevronDown, History, RotateCcw, X } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import {
   enterDemoReplay,
   exitDemoReplay,
@@ -53,24 +53,16 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
   const isReplaying = recorder.replayIndex !== null;
 
   /*
-   * Esc 退出回放。
+   * Esc 退出回放（R3：注册进分级退出栈，优先级 20）。
    *
-   * 【为什么挂在 window 而不是面板上】演示者按 Esc 时焦点可能停在
-   * range 滑块或按钮上，挂在面板上会因事件冒泡路径不同而失效。
-   * 仅在回放态才注册，避免长期占用 Esc。
+   * 【为什么入栈而非自挂 window】旧实现自挂 keydown 且无条件 preventDefault——
+   * 回放期间打开命令面板按 Esc，面板与回放被一次关掉两层。入栈后只有最上层
+   * 响应：命令面板(100) 先于回放(20)，一次 Esc 只退一层。
+   * 仅在回放态注册，避免长期占用 Esc。
    */
-  useEffect((): (() => void) | undefined => {
-    if (!isReplaying) return undefined;
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      exitDemoReplay();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return (): void => {
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [isReplaying]);
+  useEscapeLayer(
+    isReplaying ? { id: 'demo-replay', priority: 20, label: '事故回放', onEscape: exitDemoReplay } : null,
+  );
 
   /* 没有录像就不占位 */
   if (recorder.frames.length === 0) return null;

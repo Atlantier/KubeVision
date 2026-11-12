@@ -11,11 +11,13 @@
  *   Esc    → 关闭浮层
  * 每行带 aria-keyshortcuts，读屏可播报。
  *
- * 【焦点】打开时聚焦关闭按钮；Esc 关闭；关闭后焦点归还由触发方处理
- * （键盘监听在 ShellLayout，不抢页面焦点）。
+ * 【焦点】打开时聚焦关闭按钮；Esc 经 useEscapeStack 分级栈关闭（本层优先级 60）；
+ * 关闭后焦点归还由触发方处理（不抢页面焦点）。
  */
 
 import { useEffect, useRef } from 'react';
+
+import { useEscapeLayer } from '@/hooks/useEscapeStack';
 
 interface ShortcutHelpOverlayProps {
   /** 是否显示 */
@@ -36,6 +38,13 @@ const SHORTCUTS: ReadonlyArray<{ keys: string; label: string; aria: string }> = 
 /** ShortcutHelpOverlay 组件 */
 export default function ShortcutHelpOverlay({ open, onClose }: ShortcutHelpOverlayProps): React.ReactElement | null {
   const closeRef = useRef<HTMLButtonElement>(null);
+
+  /*
+   * 【R3】Esc 关闭注册进全站分级退出栈（优先级 60：低于命令面板/混沌/RAG/复盘
+   * 等功能层，高于视口浮层与页面兜底）。旧实现挂在 ShellLayout 的 window 监听里，
+   * 不判 defaultPrevented——混沌弹窗开着时按 Esc 会连帮助浮层一起关掉。
+   */
+  useEscapeLayer(open ? { id: 'shortcut-help', priority: 60, label: '快捷键帮助', onEscape: onClose } : null);
 
   useEffect((): void => {
     if (open) closeRef.current?.focus();
