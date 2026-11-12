@@ -50,18 +50,36 @@ npx next lint    → No ESLint warnings or errors
 npx next build   → exit 0（4/4 static pages，First Load 177 kB）
 ```
 
+### 4.1 真实回放实测（R72 补证）
+
+用 headless Edge 完整跑一遍自动路演，结束后点击「事故回放」展开面板，
+读取三个元素的实际矩形：
+
+```text
+panel    left=152.1 top=789.0 right=888.1 bottom=944.0
+terminal left= 21.0 top=947.0 right=1021.3 bottom=979.0
+toolbar  left=1033.3 top=803.0 right=1083.3 bottom=979.0
+overlapTerminal = false
+overlapToolbar  = false
+```
+
+- 面板底边 944 与终端顶边 947 之间保留 3px 间隔；
+- 面板右边 888 与工具条左边 1033 之间保留 145px 间隔；
+- 截图：`docs/summit/shots/r71-replay/replay-expanded-1680x1000.png`；
+- 测量数据：`docs/summit/shots/r71-replay/layout.json`。
+
+### 4.2 其他约束
+
 - `sceneRect` 不再因 idle 重置，回放条在路演结束后仍绑定 3D 视口；
-- 底部 56px 安全区 + 右侧 76px 安全区，理论上与 `TerminalEcho` / `ViewportToolbar`
-  零交集；
-- 回放面板宽度上限 46rem，窄视口下自动收缩。
+- 底部 56px + 右侧 76px 安全区，实测与 `TerminalEcho` / `ViewportToolbar` 零交集；
+- 回放面板宽度 736px（46rem），窄视口下自动收缩。
 
 ## 5. 风险
 
-1. 未在浏览器中实际生成录像并展开回放做像素级截图验证（需完整跑一遍路演）；
-   本轮以 CSS/布局约束和构建验证为主。建议现场跑完一次路演后点「事故回放」确认。
-2. 若未来 `TerminalEcho` / `ViewportToolbar` 尺寸变化，`bottom-14 / pr-[76px] /
-   right-[76px]` 常量需同步调整。
-3. `ResizeObserver` 同时观察 body，极少数布局循环可能触发多次 measure；
+1. 实测只覆盖 1680×1000 视口；其他尺寸仍依赖同一套安全区常量，
+   若 `TerminalEcho` / `ViewportToolbar` 尺寸变化，`bottom-14 / pr-[76px] /
+   right-[76px]` 需同步调整。
+2. `ResizeObserver` 同时观察 body，极少数布局循环可能触发多次 measure；
    已用“相同矩形返回 previous”抑制重渲染。
 
 ## 6. 回滚

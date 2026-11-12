@@ -1,0 +1,35 @@
+{
+  "at": "2026-11-12T02:52:00.877Z",
+  "done": true,
+  "replay": {
+    "ok": true
+  },
+  "layout": {
+    "panel": {
+      "left": 152.125,
+      "top": 789,
+      "right": 888.125,
+      "bottom": 944,
+      "width": 736,
+      "height": 155
+    },
+    "terminal": {
+      "left": 21,
+      "top": 947,
+      "right": 1021.25,
+      "bottom": 979,
+      "width": 1000.25,
+      "height": 32
+    },
+    "toolbar": {
+      "left": 1033.25,
+      "top": 803,
+      "right": 1083.25,
+      "bottom": 979,
+      "width": 50,
+      "height": 176
+    },
+    "overlapTerminal": false,
+    "overlapToolbar": false
+  }
+}

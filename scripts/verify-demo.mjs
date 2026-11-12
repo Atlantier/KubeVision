@@ -373,12 +373,17 @@ const READ_STATE = `(() => {
     document.querySelector('[aria-label^="剧本路演进行中"]');
   const logs = s.terminalLogs ?? [];
   const barText = bar === null ? '' : (bar.textContent || '');
-  const elapsedHit = barText.match(/([0-9.]+)s\\s*\\/\\s*([0-9]+)s/);
+  /*
+   * R71：字幕条改为「阶段 X/Y · T+mm:ss」，不再有 “Ns / Ns” 总时长分母。
+   * 解析 T+ 的分钟/秒，J-6 的暂停/恢复单调性仍能拿到秒数。
+   */
+  const elapsedHit = barText.match(/T\\+(\\d{2}):(\\d{2})/);
   return {
     phase: bar ? (bar.getAttribute('data-demo-phase') ?? bar.getAttribute('aria-label')) : null,
     barText,
-    barElapsedSec: elapsedHit === null ? null : Number(elapsedHit[1]),
-    barTotalSec: elapsedHit === null ? null : Number(elapsedHit[2]),
+    barElapsedSec:
+      elapsedHit === null ? null : Number(elapsedHit[1]) * 60 + Number(elapsedHit[2]),
+    barTotalSec: null,
     status: s.demoAutoConfirm,
     chaos: s.activeChaos,
     selected: s.selectedEntityId,
@@ -396,9 +401,22 @@ const READ_STATE = `(() => {
     lastDirectorLog: logs.filter((l) => typeof l === 'string' && l.includes('DEMO-DIRECTOR')).slice(-1)[0] ?? null,
     mcpAction: (() => {
       const m = logs.filter((l) => typeof l === 'string' && /MCP 回执/.test(l)).slice(-1)[0];
-      if (m === undefined) return null;
-      const hit = m.match(/·\\s*([a-z_]+)\\s*已完成/);
-      return hit === null ? null : hit[1];
+      if (m !== undefined) {
+        const hit = m.match(/·\\s*([a-z_]+)\\s*已完成/);
+        if (hit !== null) return hit[1];
+      }
+      /*
+       * 回执汇总行可能比终态快照晚；[MCP-ROUTER] 审计行是卡片真实请求的
+       * 第一手记录，用其中的 toolUri 兜底解析 actionType，避免间歇 null。
+       */
+      const router = logs
+        .filter((l) => typeof l === 'string' && /MCP-ROUTER/.test(l) && l.includes('invoked'))
+        .slice(-1)[0];
+      if (typeof router === 'string') {
+        const hit = router.match(/tools\\/([a-z_]+)/);
+        if (hit !== null) return hit[1];
+      }
+      return null;
     })(),
     topBarHealth: (() => {
       const el = Array.from(document.querySelectorAll('[role="img"]')).find((e) =>
