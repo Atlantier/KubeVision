@@ -78,6 +78,7 @@ import { useAgentTraceStore } from '@/store/useAgentTraceStore';
 import AgentTracePanel from '@/components/ai/AgentTracePanel';
 import { embedQueryText } from '@/utils/edgeEmbedding';
 import { computeViewportPixelFeatures } from '@/utils/pixelFeatures';
+import { requestViewportCapture } from '@/utils/viewportCapture';
 import {
   appendReasoning,
   mergeStreamState,
@@ -2152,22 +2153,17 @@ export default function CopilotDrawer() {
   /**
    * captureViewport —— 捕获当前 3D 视口快照。
    *
-   * 【为何需要 preserveDrawingBuffer】three 的 WebGLRenderer 默认在每帧
-   * 渲染后清空 drawing buffer，此时 canvas.toDataURL() 会得到一张全黑图。
-   * 但本项目画布未开启 preserveDrawingBuffer（会损失性能），因此必须在
-   * **同一帧内**请求渲染后再立刻读像素。这里采用 requestAnimationFrame
-   * 后置读取：多数驱动的实现中，rAF 回调执行时上一帧内容仍可读。
-   * 若得到全黑图，属浏览器实现差异，用户可重试。
+   * 【取图路径】画布不再常开 preserveDrawingBuffer（R5 第8步），直接
+   * canvas.toDataURL() 会读到黑图。改为向 viewportCapture 队列排队：
+   * 画布内的 FrameCaptureProvider 在渲染后同帧读取并兑现 Promise。
+   * 画布未挂载（抽屉独立打开等）时得到 null，静默忽略。
    */
   const captureViewport = useCallback((): void => {
-    const canvas = document.querySelector('canvas');
-    if (canvas === null) return;
-    try {
-      const dataUrl = canvas.toDataURL('image/jpeg', CAPTURE_QUALITY);
-      setCapturedViewport(dataUrl);
-    } catch {
-      /* 跨域/安全上下文限制导致污染画布：静默失败 */
-    }
+    void requestViewportCapture({ mime: 'image/jpeg', quality: CAPTURE_QUALITY }).then(
+      (dataUrl): void => {
+        if (dataUrl !== null) setCapturedViewport(dataUrl);
+      },
+    );
   }, [setCapturedViewport]);
 
   /* ========================================================================== */

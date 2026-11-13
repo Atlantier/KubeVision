@@ -43,6 +43,7 @@ import {
   type ChaosRemediationAction,
 } from '@/utils/chaosTargets';
 import { isActionAllowedForPod, resolvePodAction } from '@/utils/chaosFacts';
+import { requestViewportCapture } from '@/utils/viewportCapture';
 import {
   captureDemoFrame,
   clearDemoRecording,
@@ -1303,17 +1304,15 @@ function enterAiDiagnosis(
 ): void {
   const api = actions();
 
-  /* ---- 多模态快照（尽力而为，失败静默降级） ---- */
+  /* ---- 多模态快照（尽力而为，失败静默降级；R5：经画布同帧取图队列） ---- */
   if (typeof document !== 'undefined') {
-    const canvas = document.querySelector('canvas');
-    if (canvas instanceof HTMLCanvasElement) {
-      try {
-        const dataUrl = canvas.toDataURL('image/png');
-        if (dataUrl.startsWith('data:image/png')) api.setCapturedViewport(dataUrl);
-      } catch {
+    void requestViewportCapture({ mime: 'image/png' }).then((dataUrl): void => {
+      if (dataUrl !== null && dataUrl.startsWith('data:image/png')) {
+        api.setCapturedViewport(dataUrl);
+      } else if (dataUrl === null) {
         api.appendTerminalLog('[DEMO-DIRECTOR] 3D 快照导出失败，本轮以纯文本诊断继续');
       }
-    }
+    });
   }
 
   /*

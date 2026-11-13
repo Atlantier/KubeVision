@@ -10,16 +10,17 @@
  * 【SSR 边界】首行 'use client'；实际挂载由 page.tsx 经 next/dynamic(ssr:false)
  * 懒加载完成——three/R3F 代码永不进入服务端 bundle（AGENTS.md 第 4 条）。
  *
- * 【preserveDrawingBuffer 契约】gl.preserveDrawingBuffer = true 使 WebGL
- * 绘制缓冲在帧合成后仍可读取，支撑「多模态视觉快照」——Copilot 的
- * VLM 通道经 canvas.toDataURL() 截取 3D 视口写入 capturedViewportDataUrl
- * （AGENTS.md 多模态视觉分析的取数前提；性能代价仅在此画布，可接受）。
+ * 【视口截图契约（R5 第8步）】渲染器**不常开** preserveDrawingBuffer（那会让
+ * 浏览器额外保留整帧缓冲，属白付成本）。多模态快照改走 utils/viewportCapture
+ * 的请求队列：FrameCaptureProvider 在每帧渲染完成后（useFrame 优先级 2）
+ * 同帧调用 toDataURL——此时尚未进入合成阶段，缓冲仍有效。
+ * 调用方（工具条快照 / Copilot 截图 / 演示编排）统一经 requestViewportCapture 取图。
  *
  * 【层级契约】drei <Html> 标注一律 zIndexRange=[10,0] + 容器 pointer-events-none，
  * 永不遮挡 Copilot 抽屉（z-30+）与顶层 Modal（z-50）（AGENTS.md 第 6 条）。
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Canvas, useFrame, useThree, type RootState } from '@react-three/fiber';
 import { ContactShadows, Grid, MeshReflectorMaterial, PerformanceMonitor, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
@@ -37,6 +38,7 @@ import { getRecentFrames } from '@/utils/snapshotRingBuffer';
 import { MASTER_POSITION, getRackTransform } from '@/utils/spatialLayout';
 import { useInViewPause } from '@/hooks/useInViewPause';
 import { dispatchViewPreset, subscribeViewPreset } from '@/utils/viewPresetBus';
+import { flushViewportCapture, registerFrameCapture, requestViewportCapture } from '@/utils/viewportCapture';
 import type { WorkerNodeEntity } from '@/types/cluster';
 import type { ViewPresetKey } from '@/types/canvas';
 import type { SelectedEntityType } from '@/types/store';
@@ -203,6 +205,60 @@ function DofFocusDriver({
 }
 
 /**
+ * ToneMappingSync —— R5 第6步：toneMapping 与渲染路径同源（逐帧守卫）。
+ *
+ * 【为何不用 useEffect】实测发现 EffectComposer 卸载时会把渲染器 toneMapping
+ * 回写为它挂载前的值，且这个回写发生在 passive effect 之后——effect 里设好
+ * Neutral 又被打回 NoToneMapping。改在 useFrame（默认优先级 0，早于渲染）逐帧校验：
+ * 期望值与当前不符才写一次，稳定后零开销，且天然晚于任何挂载/卸载副作用。
+ *
+ * 【为何必须是 Canvas 子组件】useFrame 依赖 R3F 上下文，放在渲染 <Canvas>
+ * 的组件本体里会抛 "R3F: Hooks can only be used within the Canvas component!"。
+ *
+ * 兜底路径（qualityPost=false）→ Neutral；Composer 路径 → NoToneMapping
+ * （线性→sRGB 交给链内 ToneMapping pass，避免双重映射）。
+ */
+function ToneMappingSync({ qualityPost }: { readonly qualityPost: boolean }): null {
+  useFrame(({ gl }): void => {
+    const desired = qualityPost ? NoToneMapping : NeutralToneMapping;
+    if (gl.toneMapping !== desired) {
+      gl.toneMapping = desired;
+      gl.toneMappingExposure = TONEMAP_EXPOSURE;
+    }
+  });
+  return null;
+}
+
+/**
+ * FrameCaptureProvider —— R5 第8步：按需视口截图（preserveDrawingBuffer 不常开）。
+ *
+ * 【为什么必须在渲染之后】toDataURL 只有与渲染处于同一任务内才读得到有效
+ * drawing buffer。useFrame 优先级 2 晚于 EffectComposer（优先级 1），
+ * 因此读取时后处理已出最终帧。
+ *
+ * 【为什么兜底路径要自己 render】R3F 的规则是：只要存在优先级 > 0 的
+ * useFrame 订阅，就关闭内置的自动渲染（loop 里 `!state.internal.priority`）。
+ * 本组件固定优先级 2，所以 Composer 关闭时由这里显式 gl.render 补上主渲染，
+ * 输出与 R3F 自动渲染完全一致（同 scene/camera、autoClear 默认开）。
+ */
+function FrameCaptureProvider({ composerActive }: { readonly composerActive: boolean }): null {
+  const gl = useThree((state): THREE.WebGLRenderer => state.gl);
+
+  useFrame((state): void => {
+    if (!composerActive) state.gl.render(state.scene, state.camera);
+    flushViewportCapture();
+  }, 2);
+
+  useEffect((): (() => void) => {
+    return registerFrameCapture(
+      (options): string | null => gl.domElement.toDataURL(options.mime, options.quality),
+    );
+  }, [gl]);
+
+  return null;
+}
+
+/**
  * ClusterCanvas —— R3F 根画布（page.tsx 经 dynamic(ssr:false) 懒加载挂载）。
  *
  * 【渲染树结构】
@@ -279,14 +335,27 @@ const RENDER_TIER: RenderTier =
   RENDER_QUALITY_TIER === 'high' ? 'T3' : RENDER_QUALITY_TIER === 'balanced' ? 'T2' : 'T1';
 
 /**
- * DPR 上下限（L5）。
+ * DPR 上下限（R5 第7步：按屏密度分档，替代单一 1.75/0.85）。
  *
- * 【为什么上限 1.75】DPR 从 2.0 降到 1.75 只损失约 12% 的线性分辨率，
- * 但像素数减少 23%——这是 Retina 屏上性价比最高的一刀。下限 0.85 保证
- * 弱 GPU 降级后仍不至于糊到读不清状态色；降级链只允许向下（R01 约束）。
+ * 【为何按屏密度分档】1x 屏上把 DPR 拉到 1.75 会做无意义的超采样（源像素本就
+ * 1 个），只烧填充率不增清晰度；2x 屏上把下限压到 0.85 又会让 Retina 糊。
+ * 因此：
+ * - 1x 屏（devicePixelRatio ≤ 1.25）：[0.75, 1]，低端可降到底换流畅；
+ * - 2x 屏（高分屏）：[1, 1.5]，下限 1 保清晰，上限 1.5 比 2.0 省约 44% 像素。
+ * 与 PerformanceMonitor 降档联动：只会朝 floor 方向降，不回弹（避免 RT 反复重建）。
  */
-const DPR_MAX = 1.75;
-const DPR_FLOOR = 0.85;
+const DPR_BOUNDS_1X: { readonly floor: number; readonly max: number } = { floor: 0.75, max: 1 };
+const DPR_BOUNDS_2X: { readonly floor: number; readonly max: number } = { floor: 1, max: 1.5 };
+
+/**
+ * resolveDprBounds —— 依据当前屏密度返回 DPR 区间（挂载期一次）。
+ *
+ * @returns [floor, max]
+ */
+function resolveDprBounds(): { floor: number; max: number } {
+  if (typeof window === 'undefined') return DPR_BOUNDS_2X;
+  return (window.devicePixelRatio || 1) <= 1.25 ? DPR_BOUNDS_1X : DPR_BOUNDS_2X;
+}
 
 /**
  * 固定曝光（L1 / R62）。
@@ -295,6 +364,22 @@ const DPR_FLOOR = 0.85;
  * 若这里再设 >1 会与后处理乘性曝光叠加成双重曝光（旧值 1.05 与 1.18 相乘）。
  */
 const TONEMAP_EXPOSURE = 1.0;
+
+/**
+ * syncRendererToneMapping —— 把渲染器 tone mapping 与「是否走后处理链」同步（R5 第6步）。
+ *
+ * 【为何必须与档位同源】后处理链内部有 ToneMapping 节点（Neutral），渲染器自身
+ * 必须 NoToneMapping，否则线性→sRGB 被映射两次；兜底路径没有后处理，改用渲染器
+ * 内置 Neutral 对齐色相。旧实现只在 onCreated 设一次，运行期降档到 T0 时不更新，
+ * 会出现"降档后画面发灰/发暗"的错配。抽成单一函数，创建期与档位切换共用。
+ *
+ * @param gl WebGLRenderer
+ * @param useComposer 是否走后处理链（qualityPost）
+ */
+function syncRendererToneMapping(gl: THREE.WebGLRenderer, useComposer: boolean): void {
+  gl.toneMapping = useComposer ? NoToneMapping : NeutralToneMapping;
+  gl.toneMappingExposure = TONEMAP_EXPOSURE;
+}
 
 /**
  * detectRenderCapabilities —— 挂载期能力探测（L8）。
@@ -327,6 +412,59 @@ function detectRenderCapabilities(): { software: boolean; webgl2: boolean; halfF
     return { software: true, webgl2: false, halfFloat: false };
   }
 }
+
+/**
+ * 能力探测的进程级缓存（R5 清白付成本）。
+ *
+ * 【为何缓存】原实现每次组件挂载会在两个 useState 初始化器里各调一次
+ * detectRenderCapabilities —— 每次都新建一个临时 canvas + WebGL 上下文
+ * 再显式 lose，等于 2 个上下文槽与 2 次 GPU 字符串读取。能力在会话内恒定，
+ * 缓存成模块级单例后全程只探测一次（StrictMode 双挂载也复用）。
+ */
+let cachedCapabilities: { software: boolean; webgl2: boolean; halfFloat: boolean } | null = null;
+
+/**
+ * getRenderCapabilities —— 读取（或首次计算并缓存）渲染能力。
+ *
+ * @returns 软件光栅化标记 + WebGL2/half-float 能力位
+ */
+function getRenderCapabilities(): { software: boolean; webgl2: boolean; halfFloat: boolean } {
+  if (cachedCapabilities === null) cachedCapabilities = detectRenderCapabilities();
+  return cachedCapabilities;
+}
+
+/**
+ * 后处理效果矩阵（R5 第5步：档位 → 效果同源）。
+ *
+ * 【为何用一张常量表】此前 T2 与 T3/T1 走两个不同的 EffectComposer，DoF 挂在
+ * T2 分支（而 DofFocusDriver 却按 T3 挂载）——档位与效果各说各话。现在所有
+ * 后处理开关（DoF / FXAA / MSAA 采样数 / Bloom 档位 / 暗角）都从这一份表按
+ * `qualityTier` 同一处推导，档位即事实源。
+ *
+ * 【SSAO 说明】本渲染管线未接入 SSAO（成本高、与星环加色叠加观感差），
+ * 表中不设该字段——R5 不新增任何效果成本。
+ */
+interface TierEffects {
+  /** 是否启用景深（仅最高档） */
+  readonly dof: boolean;
+  /** 是否用 FXAA 抗锯齿（Composer 内 MSAA 关闭时的低成本替代） */
+  readonly fxaa: boolean;
+  /** EffectComposer 的 MSAA 采样数（0 = 关闭；2 = ×2，禁 ×8 以控 HDR RT 体积） */
+  readonly multisampling: number;
+  /** Bloom mip 层数（越低越省，T1 降级） */
+  readonly bloomLevels: number;
+  /** Bloom 强度 */
+  readonly bloomIntensity: number;
+  /** 是否启用暗角 */
+  readonly vignette: boolean;
+}
+
+const TIER_EFFECT_MATRIX: Readonly<Record<0 | 1 | 2 | 3, TierEffects>> = {
+  3: { dof: true, fxaa: false, multisampling: 2, bloomLevels: 5, bloomIntensity: 0.48, vignette: true },
+  2: { dof: false, fxaa: true, multisampling: 0, bloomLevels: 5, bloomIntensity: 0.48, vignette: true },
+  1: { dof: false, fxaa: false, multisampling: 0, bloomLevels: 3, bloomIntensity: 0.34, vignette: true },
+  0: { dof: false, fxaa: false, multisampling: 0, bloomLevels: 0, bloomIntensity: 0, vignette: false },
+};
 
 /** DPR 下调的最小间隔（毫秒） */
 const DPR_ADJUST_COOLDOWN_MS = 8_000;
@@ -476,14 +614,18 @@ export default function ClusterCanvas() {
    */
   const [adaptiveDpr, setAdaptiveDpr] = useState<number>(() => {
     /*
-     * L5：挂载期常量（R01 约束）。软件渲染直接锁 1.0；
-     * 真机取 min(devicePixelRatio, 1.75) 并 clamp 到下限 0.85。
+     * R5：挂载期常量（R01 约束）。软件渲染直接锁 1.0；
+     * 真机按屏密度取 clamp(devicePixelRatio, floor, max)。
      * 这是"挂载期一次定死"的初始值，后续只允许单向下调。
      */
-    if (typeof window === 'undefined') return 1.75;
-    if (detectRenderCapabilities().software) return 1;
-    return Math.min(DPR_MAX, Math.max(DPR_FLOOR, window.devicePixelRatio));
+    if (typeof window === 'undefined') return DPR_BOUNDS_2X.max;
+    if (getRenderCapabilities().software) return 1;
+    const bounds = resolveDprBounds();
+    return Math.min(bounds.max, Math.max(bounds.floor, window.devicePixelRatio));
   });
+
+  /** DPR 区间（挂载期一次，供 Canvas dpr 与降档下限复用） */
+  const dprBounds = useMemo(resolveDprBounds, []);
 
   /**
    * 自适应 dpr 的稳定性约束。
@@ -569,7 +711,7 @@ export default function ClusterCanvas() {
    * 软渲染下两者都关（HDR Bloom 的 halffloat RT 在 SwiftShader 上会静默黑屏），
    * 但几何/材质/灯光保持不变——画面内容不减，只是去掉重后处理。
    */
-  const [envCaps] = useState(detectRenderCapabilities);
+  const [envCaps] = useState(getRenderCapabilities);
   const [postEnabled, setPostEnabled] = useState<boolean>(!envCaps.software);
   const [reflectorEnabled, setReflectorEnabled] = useState<boolean>(!envCaps.software);
 
@@ -579,6 +721,9 @@ export default function ClusterCanvas() {
   /** R27：T3 景深 Effect 实例（T2/T1/T0 不挂载、不分配） */
   const dofEffectRef = useRef<DepthOfFieldEffect | null>(null);
 
+  /** R5 第6步：渲染器引用（供档位切换时同步 toneMapping，不依赖 onCreated 一次性设置） */
+  const glRef = useRef<THREE.WebGLRenderer | null>(null);
+
   /* R29 F：质量档位（非持久化）+ 自动治理（2Hz 采样、带迟滞与冷却） */
   const qualityTier = useQualityStore((state): number => state.tier);
   useQualityGovernor();
@@ -587,14 +732,17 @@ export default function ClusterCanvas() {
    * R30：质量档位 → 渲染开关（手动 ?quality= 或治理器自动）。
    * 【R5 第2步·方案A】真反射（MeshReflectorMaterial 整场景再渲染）只在最高档 T3 开启；
    *   T2/T1/T0 改用已有的 RackGroundReflection 假反射带（成本仅 3 draw，省掉整场景重渲染）。
-   * 降档顺序（先反射 → 再阴影 → 再 Bloom → 最后后处理全关）：
-   *   T3：全开（含真反射）；T2：关真反射→假反射带、关 DoF；T1：再关阴影、Bloom 降级；
-   *   T0：后处理全关。
+   * 【R5 第5步】后处理效果全部从 TIER_EFFECT_MATRIX 按 qualityTier 同源推导；
+   *   阴影固定（不再随档位运行期切换，避免材质重编译），见 Canvas shadows 属性。
+   * 降档顺序（先反射 → 再 Bloom/DoF → 最后后处理全关）：
+   *   T3：全开（含真反射 + DoF）；T2：关真反射→假反射带、关 DoF、FXAA；
+   *   T1：Bloom 降级；T0：后处理全关。
    * 【R01】只改开关与参数，绝不改 DPR / RenderTarget 尺寸。
    */
   const qualityPost = postEnabled && qualityTier > 0;
   const qualityReflector = reflectorEnabled && qualityTier >= 3;
-  const qualitySoftShadows = envCaps.software ? 'basic' : qualityTier >= 2 ? 'soft' : false;
+  /** R5 第5步：当前档位对应的后处理效果组合（单一事实源） */
+  const tierEffects: TierEffects = TIER_EFFECT_MATRIX[(qualityTier as 0 | 1 | 2 | 3)];
 
   /**
    * R24 追问 3：把"当前渲染路径 + 原因"写入瞬态轨。
@@ -618,6 +766,21 @@ export default function ClusterCanvas() {
   }, [qualityPost, postEnabled, envCaps, qualityTier]);
 
   /**
+   * R5 第7步：tier ≤ 1 时把 DPR 锁到区间下限（只降不升）。
+   *
+   * 低档本就为弱 GPU 设计，DPR 直接压到 floor（1x 屏 0.75、2x 屏 1）换流畅；
+   * 之后档位回升也不回弹——回升意味着又一次 RT 重建，且"刚降就升"会在临界点抖动。
+   *
+   * 【软件光栅化例外】SwiftShader 的 FPS 天然极低，治理器会把档位降到 ≤1，
+   * 但它只用于无 GPU 的 CI/截图环境，DPR 压到 0.75 只会让证据图变糊而无收益，
+   * 因此软渲染保持既有的 DPR=1.0 锁（L8），不参与低档 0.75 锁。
+   */
+  useEffect((): void => {
+    if (envCaps.software) return;
+    if (qualityTier <= 1) setAdaptiveDpr(dprBounds.floor);
+  }, [qualityTier, dprBounds.floor, envCaps.software]);
+
+  /**
    * L11：渲染路径一致性对比钩子（仅开发构建暴露）。
    *
    * 不做任何产品 UI：A/B 脚本通过它把同一条管线切成
@@ -634,6 +797,12 @@ export default function ClusterCanvas() {
       getReflector: (): boolean => reflectorEnabled,
       getEnvCaps: (): { software: boolean; webgl2: boolean; halfFloat: boolean } => envCaps,
       getTier: (): RenderTier => RENDER_TIER,
+      /* R5：档位切换取证（renderer.info.programs 是否随降档重编译） */
+      setQualityTier: (tier: 0 | 1 | 2 | 3): void => useQualityStore.getState().setTier(tier, 'hud'),
+      getQualityTier: (): number => useQualityStore.getState().tier,
+      /* R5：按需截图取证（preserveDrawingBuffer 已关闭，只能同帧读取） */
+      capture: (options: { mime: 'image/jpeg' | 'image/png'; quality?: number }): Promise<string | null> =>
+        requestViewportCapture(options),
     };
     (window as unknown as Record<string, unknown>).__KUBEVISION_RENDER__ = handle;
     return (): void => {
@@ -680,10 +849,10 @@ export default function ClusterCanvas() {
 
     dprAdjustRef.current = { count: state.count + 1, lastAt: now };
     setAdaptiveDpr((prev): number => {
-      const next = Math.max(DPR_FLOOR, Math.round((prev - 0.25) * 100) / 100);
+      const next = Math.max(dprBounds.floor, Math.round((prev - 0.25) * 100) / 100);
       return next;
     });
-  }, []);
+  }, [dprBounds.floor]);
 
   /**
    * 档位重挂载遮罩。
@@ -740,34 +909,32 @@ export default function ClusterCanvas() {
    * handleCaptureDiagnose —— 3D 视口多模态快照诊断（契约链路）。
    *
    * 【核心流转】
-   * 1. document.querySelector('canvas')?.toDataURL('image/jpeg', 0.8)
-   *    读取当前 3D 帧（gl.preserveDrawingBuffer=true 是本调用的生效前提）；
+   * 1. requestViewportCapture：向画布内的 FrameCaptureProvider 排队，结果在
+   *    下一帧渲染完成后同帧读取（无需常开 preserveDrawingBuffer）；
    * 2. setCapturedViewport(dataUrl) 存入 Store（非持久化字段——DataURL 可达
    *    数 MB，partialize 白名单刻意排除，防 localStorage 配额击穿）；
    * 3. triggerQuickPrompt(固定诊断指令) 唤醒 Copilot：桌面端切页签、
    *    移动端联动切视图（Store 双联动契约）；
    * 4. 终端审计行记录快照体积（KB），供答辩演示「取图→送诊」链路可追溯。
    *
-   * 【防御】canvas 不存在或 toDataURL 抛错（极端 WebGL 上下文丢失场景）时
+   * 【防御】画布未挂载或导出失败（极端 WebGL 上下文丢失场景）时得到 null，
    * 写 WARN 日志并中止，绝不让异常打断工具条交互。
    */
   const handleCaptureDiagnose = useCallback((): void => {
-    try {
-      const canvas = document.querySelector('canvas');
-      const dataUrl = canvas?.toDataURL('image/jpeg', SNAPSHOT_JPEG_QUALITY);
-      if (dataUrl === undefined || dataUrl.length === 0) {
-        appendTerminalLog('[WARN] viewport snapshot failed: canvas unavailable');
-        return;
-      }
-      setCapturedViewport(dataUrl);
-      triggerQuickPrompt(MULTIMODAL_DIAGNOSIS_PROMPT);
-      const sizeKb = Math.round((dataUrl.length * 0.75) / 1024);
-      appendTerminalLog(
-        `[EDGE-WASM] viewport snapshot captured -> jpeg@0.8 (${sizeKb} KB base64) -> multimodal diagnosis dispatched to Copilot`,
-      );
-    } catch {
-      appendTerminalLog('[ERR] viewport snapshot failed: WebGL context unavailable');
-    }
+    void requestViewportCapture({ mime: 'image/jpeg', quality: SNAPSHOT_JPEG_QUALITY }).then(
+      (dataUrl): void => {
+        if (dataUrl === null || dataUrl.length === 0) {
+          appendTerminalLog('[WARN] viewport snapshot failed: canvas unavailable');
+          return;
+        }
+        setCapturedViewport(dataUrl);
+        triggerQuickPrompt(MULTIMODAL_DIAGNOSIS_PROMPT);
+        const sizeKb = Math.round((dataUrl.length * 0.75) / 1024);
+        appendTerminalLog(
+          `[EDGE-WASM] viewport snapshot captured -> jpeg@0.8 (${sizeKb} KB base64) -> multimodal diagnosis dispatched to Copilot`,
+        );
+      },
+    );
   }, [appendTerminalLog, setCapturedViewport, triggerQuickPrompt]);
 
   /* ---- 机架模型数据源：低频轨订阅节点实体数组（快照整体替换才重渲染；
@@ -802,6 +969,49 @@ export default function ClusterCanvas() {
     };
   }, []);
 
+  /**
+   * R5 第5步：后处理效果子节点按 tierEffects 组装成数组。
+   *
+   * 【为何用数组而非内联条件 JSX】@react-three/postprocessing 的 EffectComposer
+   * children 类型为 `ReactElement | ReactElement[]`，不接受 `null`，因此无法用
+   * `cond ? <X/> : null` 的写法省略效果。改为按档位 push 到数组，天然跳过不需要的
+   * 效果（DoF/FXAA/暗角），且顺序固定：DoF → Bloom → ToneMapping → AA → 暗角 → 噪点。
+   */
+  const postEffectChildren: React.ReactElement[] = [];
+  if (tierEffects.dof) {
+    /* R27：DoF 在 Bloom 之前（失焦发生在成像面，Bloom 是镜头后的光溢出） */
+    postEffectChildren.push(
+      <DepthOfField
+        key="dof"
+        ref={dofEffectRef}
+        focusDistance={12}
+        focalLength={0.02}
+        focusRange={26}
+        bokehScale={1.2}
+      />,
+    );
+  }
+  postEffectChildren.push(
+    <Bloom
+      key="bloom"
+      intensity={tierEffects.bloomIntensity}
+      luminanceThreshold={0.92}
+      luminanceSmoothing={0.28}
+      mipmapBlur
+      radius={0.45}
+      levels={tierEffects.bloomLevels}
+    />,
+    <ExposureEffect key="exposure" ref={exposureEffectRef} />,
+    <ToneMapping key="tonemap" mode={ToneMappingMode.NEUTRAL} />,
+  );
+  if (tierEffects.fxaa) {
+    postEffectChildren.push(<FXAA key="fxaa" />);
+  }
+  if (tierEffects.vignette) {
+    postEffectChildren.push(<Vignette key="vignette" eskil={false} offset={0.22} darkness={0.28} />);
+  }
+  postEffectChildren.push(<Noise key="noise" opacity={0.03} />);
+
   return (
     /*
      * 【兜底背景】容器自带一层与场景同色的 CSS 背景。
@@ -823,28 +1033,28 @@ export default function ClusterCanvas() {
       <Canvas
         key={`canvas-${canvasRemountKey}`}
         /**
-         * 【自适应 DPR 契约】dpr 由状态驱动而非写死：
-         * - 正常态 [1, 2]：高分屏享受 2x 清晰度；
-         * - 持续低帧率（<40FPS）时被 PerformanceMonitor 下调至 1.0，
-         *   牺牲清晰度换回流畅度——掉帧对交互的伤害远大于分辨率下降。
-         * 这个降级是**单向保守**的：一旦降下来，只有帧率稳定回升才会恢复，
-         * 避免在临界点反复横跳造成视觉抖动。
+         * 【自适应 DPR 契约】dpr 由状态驱动而非写死（R5 第7步按屏密度分档）：
+         * - 1x 屏 [0.75, 1]；2x 屏 [1, 1.5]；
+         * - 持续低帧率时被 PerformanceMonitor 下调至下限，牺牲清晰度换流畅。
+         * 降级单向保守：降下来后只有帧率稳定回升才会恢复，避免临界点横跳。
          */
-        dpr={[DPR_FLOOR, adaptiveDpr]}
+        dpr={[dprBounds.floor, adaptiveDpr]}
         /**
-         * 【实时软阴影】`shadows="soft"` 让 three 使用 PCFSoft 阴影贴图过滤：
-         * 硬边阴影在机柜这种大面积几何上会显出锯齿与"剪纸感"，
-         * 软边才能让机架真正"压"在地面上。代价是每帧一次阴影贴图渲染，
-         * 但场景只有 3 座机架 + 48 个实例，绝对开销可控。
+         * 【实时软阴影·固定不随档位切换（R5 第8步）】
+         * `shadows` 在 Canvas 创建期定死：软渲染用 basic，真机固定 soft。
+         * 旧实现随 qualityTier 运行期切 `shadows`（soft/false），切换会触发
+         * renderer.shadowMap 重建 + 全部材质 needsUpdate → 材质重编译，
+         * 正是"降档卡一下"的根因。现在档位只影响后处理与反射，不动阴影。
          */
-        shadows={qualitySoftShadows}
+        shadows={envCaps.software ? 'basic' : 'soft'}
         camera={{ position: INITIAL_CAMERA_POSITION, fov: CAMERA_FOV }}
         gl={{
           /* L4：Composer 路径下 canvas MSAA 无效（离屏 RT 才是最终画面），关掉省带宽 */
           antialias: !qualityPost,
           powerPreference: 'high-performance',
-          // 多模态视觉快照前提：帧合成后仍可 toDataURL 读取绘制缓冲
-          preserveDrawingBuffer: true,
+          /* R5 第8步：不常开 preserveDrawingBuffer；截图由 FrameCaptureProvider
+             在渲染后同帧读取（见 utils/viewportCapture）。 */
+          preserveDrawingBuffer: false,
         }}
         /**
          * 【视口休眠契约】页面切到后台或画布滚出视口时，
@@ -884,14 +1094,10 @@ export default function ClusterCanvas() {
            * 【为什么必须 preventDefault】默认行为下浏览器不会尝试恢复上下文。
            * 只有显式 preventDefault，才会在后续派发 webglcontextrestored。
            */
-          /* L1：固定曝光；后处理链负责 Neutral ToneMapping，渲染器本身关闭 tone mapping */
-          if (postEnabled) {
-            state.gl.toneMapping = NoToneMapping;
-          } else {
-            /* L11：兜底路径用渲染器内置 Neutral tone mapping 对齐色相 */
-            state.gl.toneMapping = NeutralToneMapping;
-          }
-          state.gl.toneMappingExposure = TONEMAP_EXPOSURE;
+          /* R5 第6步：toneMapping 抽到 syncRendererToneMapping，创建期与档位切换共用。
+           * 创建期先做一次（避免兜底路径首帧用错 tone mapping）；运行期由 useEffect 跟随档位。 */
+          glRef.current = state.gl;
+          syncRendererToneMapping(state.gl, qualityPost);
           /*
            * ---- R5 测量契约：先修测量再优化 ----
            *
@@ -1017,12 +1223,12 @@ export default function ClusterCanvas() {
            * ---- 首帧静态快照（兜底展示）----
            *
            * 【为什么延迟 12 帧】onCreated 触发时场景刚装配完，相机可能还在
-           * 初始飞行动画里。此时 toDataURL 会拍到一张"斜的/空的"画面，
+           * 初始飞行动画里。此时截图会拍到一张"斜的"/"空的"画面，
            * 作为兜底反而更糟。等 12 帧后画面基本稳定。
            *
-           * 【为什么能 toDataURL】Canvas 的 gl 配置里已有
-           * preserveDrawingBuffer: true（多模态快照的前提），因此任何时刻
-           * 都能读到绘制缓冲。
+           * 【取图路径】经 requestViewportCapture 排队，由 FrameCaptureProvider
+           * 在渲染后同帧读取——preserveDrawingBuffer 已按需关闭，这里不能再
+           * 直接 toDataURL（跨任务读会得到黑图）。
            *
            * 【体积闸门】超过 200KB 直接放弃：兜底图不值得为它冒内存风险。
            */
@@ -1035,16 +1241,14 @@ export default function ClusterCanvas() {
                 requestAnimationFrame(captureOnFrame);
                 return;
               }
-              try {
-                const dataUrl = state.gl.domElement.toDataURL('image/png');
+              void requestViewportCapture({ mime: 'image/png' }).then((dataUrl): void => {
+                if (dataUrl === null) return;
                 /* base64 膨胀约 4/3，用长度反推原始字节数 */
                 const approxBytes = Math.floor((dataUrl.length * 3) / 4);
                 if (dataUrl.startsWith('data:image/png') && approxBytes <= SNAPSHOT_MAX_BYTES) {
                   setSnapshotDataUrl(dataUrl);
                 }
-              } catch {
-                /* toDataURL 失败不影响渲染，只是没有兜底图 */
-              }
+              });
             };
             requestAnimationFrame(captureOnFrame);
           }
@@ -1067,6 +1271,12 @@ export default function ClusterCanvas() {
         {/* ---- WebGL 指标采集探针（无渲染，每 500ms 写入瞬态轨） ---- */}
         <GlStatsCollector />
 
+        {/* ---- R5 第6步：toneMapping 逐帧与渲染路径同源（须在 Canvas 上下文内） ---- */}
+        <ToneMappingSync qualityPost={qualityPost} />
+
+        {/* ---- R5 第8步：按需视口截图（渲染后同帧读取，无需常开 preserveDrawingBuffer） ---- */}
+        <FrameCaptureProvider composerActive={qualityPost} />
+
         {/* R29 B：开场编排唯一推进者（uBoot 0→1，1.2s） */}
         <BootController />
 
@@ -1076,8 +1286,8 @@ export default function ClusterCanvas() {
         {/* ---- R24：自适应曝光驱动（≤4Hz 估计亮度、每帧阻尼插值） ---- */}
         <ExposureDriver effectRef={exposureEffectRef} />
 
-        {/* ---- R27：T3 景深焦点阻尼跟随（T2/T1/T0 完全不渲染） ---- */}
-        {postEnabled && RENDER_TIER === 'T3' && qualityTier >= 3 ? (
+        {/* ---- R27：景深焦点阻尼跟随（仅当 DoF 真渲染时挂载，与 tierEffects.dof 同源） ---- */}
+        {qualityPost && tierEffects.dof ? (
           <DofFocusDriver effectRef={dofEffectRef} />
         ) : null}
 
@@ -1354,62 +1564,18 @@ export default function ClusterCanvas() {
          * 而运维语义色必须保色相（绿=健康、琥珀=高负载、绯红=故障）。
          * Neutral 只做线性到 sRGB 的中性映射，色相偏移最小。
          *
-         * 【AA 策略】T3 = MSAA×2（禁止 ×8：HDR 8× RT > 200MB）；
-         * T2 = FXAA；T1 = 不加 AA（最低端路径，DPR 已降）。
+         * 【AA / 效果矩阵】所有开关来自 TIER_EFFECT_MATRIX（按 qualityTier 同源推导）：
+         *   T3 = MSAA×2 + DoF + Bloom(5) + Vignette；T2 = FXAA + Bloom(5)；
+         *   T1 = Bloom(3，降级)；禁止 ×8 MSAA（HDR 8× RT > 200MB）。
          */}
         {qualityPost ? (
-          RENDER_TIER === 'T2' ? (
-            <EffectComposer
-              key={`composer-${canvasRemountKey}`}
-              multisampling={0}
-              frameBufferType={HalfFloatType}
-            >
-              {/*
-               * R27：DoF 在 Bloom **之前**（物理顺序：失焦发生在成像面，
-               * Bloom 是镜头后的光溢出）。focusRange 取大值保证前排机架与
-               * 晶核都在焦内，只虚化最远节点与背景粒子。
-               */}
-              <DepthOfField
-                ref={dofEffectRef}
-                focusDistance={12}
-                focalLength={0.02}
-                focusRange={26}
-                bokehScale={1.2}
-              />
-              <Bloom
-                intensity={0.48}
-                luminanceThreshold={0.92}
-                luminanceSmoothing={0.28}
-                mipmapBlur
-                radius={0.45}
-                levels={5}
-              />
-              <ExposureEffect ref={exposureEffectRef} />
-              <ToneMapping mode={ToneMappingMode.NEUTRAL} />
-              <FXAA />
-              <Vignette eskil={false} offset={0.22} darkness={0.28} />
-              <Noise opacity={0.03} />
-            </EffectComposer>
-          ) : (
-            <EffectComposer
-              key={`composer-${canvasRemountKey}`}
-              multisampling={RENDER_TIER === 'T3' ? 2 : 0}
-              frameBufferType={HalfFloatType}
-            >
-              <Bloom
-                intensity={0.48}
-                luminanceThreshold={0.92}
-                luminanceSmoothing={0.28}
-                mipmapBlur
-                radius={0.45}
-                levels={5}
-              />
-              <ExposureEffect ref={exposureEffectRef} />
-              <ToneMapping mode={ToneMappingMode.NEUTRAL} />
-              <Vignette eskil={false} offset={0.22} darkness={0.28} />
-              <Noise opacity={0.03} />
-            </EffectComposer>
-          )
+          <EffectComposer
+            key={`composer-${canvasRemountKey}-${qualityTier}`}
+            multisampling={tierEffects.multisampling}
+            frameBufferType={HalfFloatType}
+          >
+            {postEffectChildren}
+          </EffectComposer>
         ) : null}
       </Canvas>
 
