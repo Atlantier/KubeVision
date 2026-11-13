@@ -296,6 +296,8 @@ interface PerfSample {
   readonly fps: number;
   readonly frameTimeMs: number;
   readonly drawCalls: number;
+  readonly drawCallsMain: number;
+  readonly drawCallsReflection: number;
   readonly triangles: number;
   readonly sseLatencyMs: number;
   readonly workerStatus: string;
@@ -418,6 +420,8 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
         fps: stats.fps,
         frameTimeMs: stats.frameTimeMs,
         drawCalls: stats.drawCalls,
+        drawCallsMain: stats.drawCallsMain,
+        drawCallsReflection: stats.drawCallsReflection,
         triangles: stats.triangles,
         sseLatencyMs: stats.sseLatencyMs,
         workerStatus: stats.workerStatus,
@@ -509,14 +513,19 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
           </p>
         </div>
 
-        {/* Draw Calls */}
+        {/* Draw Calls（R5：主场景 / 反射 / 合计三数，反射 pass 成本可见） */}
         <div className="rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
           <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
             <Layers className="h-2 w-2" aria-hidden />
-            draws
+            draws 合计
           </p>
           <p className="font-mono text-[11px] font-bold tabular-nums text-cyan-300">
             {sample !== null && sample.drawCalls > 0 ? sample.drawCalls : '--'}
+          </p>
+          <p className="font-mono text-[10px] tabular-nums text-slate-500">
+            主 {sample !== null && sample.drawCalls > 0 ? sample.drawCallsMain : '--'}
+            <span className="mx-0.5 text-slate-600">·</span>
+            反射 {sample !== null && sample.drawCalls > 0 ? sample.drawCallsReflection : '--'}
           </p>
         </div>
 

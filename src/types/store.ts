@@ -44,7 +44,12 @@ import type { ChaosScenario, PodStatus, TelemetrySnapshot } from '@/types/cluste
 export interface GlStatsSnapshot {
   fps: number;
   frameTimeMs: number;
+  /** 整帧 draw call 合计（主场景 + 反射 pass + 后处理）。R5：gl.info.autoReset=false 逐帧 reset 后读取 */
   drawCalls: number;
+  /** 主场景 draw call（= 合计 − 反射 pass）。R5：把反射的整场景再渲染成本单独可见 */
+  drawCallsMain: number;
+  /** 反射 pass draw call（MeshReflectorMaterial 用虚拟相机把整场景再渲染一遍的增量）。R5：gl.render 包裹实测 */
+  drawCallsReflection: number;
   triangles: number;
   sseLatencyMs: number;
   workerStatus: string;

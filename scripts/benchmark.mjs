@@ -216,7 +216,7 @@ async function collectRendering(baseUrl) {
     const s = await evaluate(`(() => {
       const g = window.__KUBEVISION_TRANSIENT__.glStats;
       const st = window.__KUBEVISION_R3F__.get();
-      return { fps: g.fps, frameTimeMs: g.frameTimeMs, drawCalls: g.drawCalls, triangles: g.triangles, dpr: st.viewport.dpr };
+      return { fps: g.fps, frameTimeMs: g.frameTimeMs, drawCalls: g.drawCalls, drawCallsMain: g.drawCallsMain, drawCallsReflection: g.drawCallsReflection, triangles: g.triangles, dpr: st.viewport.dpr };
     })()`);
     samples.push(s);
     await sleep(600);
@@ -235,6 +235,8 @@ async function collectRendering(baseUrl) {
     fps: stats(valid.map((s) => s.fps)),
     frameTimeMs: stats(valid.map((s) => s.frameTimeMs)),
     drawCalls: stats(valid.map((s) => s.drawCalls)),
+    drawCallsMain: stats(valid.map((s) => s.drawCallsMain)),
+    drawCallsReflection: stats(valid.map((s) => s.drawCallsReflection)),
     triangles: stats(valid.map((s) => s.triangles)),
     sampleCount: valid.length,
     dprSettled: valid[valid.length - 1]?.dpr ?? null,
@@ -249,7 +251,8 @@ async function collectRendering(baseUrl) {
   }
 
   console.log(`  FPS: ${JSON.stringify(report.rendering.fps)}${isSoftwareRenderer ? ' [软件渲染]' : ''}`);
-  console.log(`  Draw Calls: ${JSON.stringify(report.rendering.drawCalls)}`);
+  console.log(`  Draw Calls 合计: ${JSON.stringify(report.rendering.drawCalls)}`);
+  console.log(`  Draw Calls 主场景: ${JSON.stringify(report.rendering.drawCallsMain)} · 反射 pass: ${JSON.stringify(report.rendering.drawCallsReflection)}`);
 
   /* InstancedMesh 批渲染效果：统计场景对象构成 */
   const sceneComposition = await evaluate(`(() => {
@@ -492,7 +495,9 @@ function renderMarkdown() {
     const row = (label, s) => s ? `| ${label} | ${s.mean} | ${s.median} | ${s.p95} | ${s.min} | ${s.max} |` : null;
     md.push(row('FPS', r.rendering.fps));
     md.push(row('Frame Time (ms)', r.rendering.frameTimeMs));
-    md.push(row('Draw Calls', r.rendering.drawCalls));
+    md.push(row('Draw Calls (合计)', r.rendering.drawCalls));
+    md.push(row('Draw Calls (主场景)', r.rendering.drawCallsMain));
+    md.push(row('Draw Calls (反射 pass)', r.rendering.drawCallsReflection));
     md.push(row('Triangles', r.rendering.triangles));
     md.push('');
 

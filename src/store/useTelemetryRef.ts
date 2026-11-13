@@ -88,6 +88,8 @@ export const telemetryTransientRef: TelemetryTransientRef = {
     fps: 0,
     frameTimeMs: 0,
     drawCalls: 0,
+    drawCallsMain: 0,
+    drawCallsReflection: 0,
     triangles: 0,
     sseLatencyMs: 0,
     workerStatus: 'idle',

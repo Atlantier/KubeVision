@@ -43,6 +43,13 @@ import { telemetryTransientRef } from '@/store/useTelemetryRef';
 /** 采样间隔（秒）——契约要求 500ms */
 const SAMPLE_INTERVAL_S = 0.5;
 
+/**
+ * 反射 pass 计量累加器（模块级单例，零分配）。
+ * ClusterCanvas 的 gl.render 包裹器在反射 pass 后写入本帧增量；
+ * 本探针每帧读取后清零。用对象而非 export let——跨模块可写。
+ */
+export const reflectionMeter = { calls: 0 };
+
 /* ========================================================================== */
 /* 组件主体                                                                    */
 /* ========================================================================== */
@@ -51,6 +58,9 @@ const SAMPLE_INTERVAL_S = 0.5;
  * GlStatsCollector —— 无渲染 WebGL 指标探针。
  *
  * 【返回值】null —— 本组件不产生任何场景图节点，零渲染开销。
+ * 【priority 0 + 挂载顺序】本组件在场景树中先于反射材质挂载，故同 priority 0 下
+ * 先于反射 useFrame 运行；EffectComposer 为 priority 1 更晚。于是每帧先在干净基线上
+ * reset 并读到上一完整帧累计值（R5 测量契约）。
  */
 export default function GlStatsCollector(): null {
   /** 距上次采样累计的时间（秒） */
@@ -59,39 +69,36 @@ export default function GlStatsCollector(): null {
   const frameCountRef = useRef<number>(0);
 
   useFrame((state, delta): void => {
-    /* ---- 累加（纯数值运算，零分配） ---- */
+    const gl = state.gl;
+    const stats = telemetryTransientRef.glStats;
+
+    /* ---- 每帧：先读上一完整帧累计，再 reset（R5：autoReset 已在 onCreated 关闭）----
+       total=整帧合计（主场景+反射+后处理）；reflection=反射 pass 增量（gl.render 包裹写入）；
+       main=total-reflection。读到的恒为上一完整帧，对采样/HUD 无影响。 */
+    const frameTotal = gl.info.render.calls;
+    const frameReflection = reflectionMeter.calls;
+    stats.drawCalls = frameTotal;
+    stats.drawCallsReflection = frameReflection;
+    stats.drawCallsMain = frameTotal > frameReflection ? frameTotal - frameReflection : 0;
+    stats.triangles = gl.info.render.triangles;
+    gl.info.reset();
+    reflectionMeter.calls = 0;
+
+    /* ---- fps/帧耗时：跨帧窗口平均（瞬时值抖动剧烈，平均才反映手感）---- */
     accumulatorRef.current += delta;
     frameCountRef.current += 1;
-
-    /* ---- 未达采样间隔：直接返回，不做任何工作 ---- */
     if (accumulatorRef.current < SAMPLE_INTERVAL_S) return;
 
-    /* ---- 到达采样点：计算窗口平均并写入瞬态轨 ---- */
     const elapsed = accumulatorRef.current;
     const frames = frameCountRef.current;
-
-    /* 防御：delta 异常（切标签页回来时 delta 可能是数秒）导致 elapsed 极大，
-       此时 frames/elapsed 会算出接近 0 的假低帧率。限制在合理窗口内。 */
+    /* 防御：切标签页回来 delta 可能是数秒，避免算出接近 0 的假低帧率 */
     if (frames > 0 && elapsed > 0) {
-      const stats = telemetryTransientRef.glStats;
-
-      /* FPS：窗口内帧数 / 窗口时长 */
       stats.fps = Math.round(frames / elapsed);
-
-      /* 单帧耗时：窗口时长的平均值，转毫秒 */
       stats.frameTimeMs = Math.round((elapsed / frames) * 1000 * 10) / 10;
-
-      /* Draw Calls 与三角形数：直接透传 WebGLRenderer.info.render。
-         这两个值是"批量渲染优化效果"的直观证据——48 个 Pod 用单个
-         InstancedMesh 渲染时，drawCalls 应稳定在个位数而非 48+。 */
-      stats.drawCalls = state.gl.info.render.calls;
-      stats.triangles = state.gl.info.render.triangles;
     }
-
-    /* ---- 重置累加器，开始下一个窗口 ---- */
     accumulatorRef.current = 0;
     frameCountRef.current = 0;
-  });
+  }, 0);
 
   return null;
 }

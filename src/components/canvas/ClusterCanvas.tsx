@@ -43,7 +43,7 @@ import type { SelectedEntityType } from '@/types/store';
 
 import CameraRig from '@/components/canvas/CameraRig';
 import ErrorRippleRing from '@/components/canvas/ErrorRippleRing';
-import GlStatsCollector from '@/components/canvas/GlStatsCollector';
+import GlStatsCollector, { reflectionMeter } from '@/components/canvas/GlStatsCollector';
 import MasterNode3D from '@/components/canvas/MasterNode3D';
 import NetworkStream3D from '@/components/canvas/NetworkStream3D';
 import GroundHorizonFade from '@/components/canvas/GroundHorizonFade';
@@ -627,6 +627,9 @@ export default function ClusterCanvas() {
     const handle = {
       setPost: (enabled: boolean): void => setPostEnabled(enabled),
       getPost: (): boolean => postEnabled,
+      /* R5：反射 pass 计量需能在软渲染下强制开反射（仅开发期测量用，生产无此 handle） */
+      setReflector: (enabled: boolean): void => setReflectorEnabled(enabled),
+      getReflector: (): boolean => reflectorEnabled,
       getEnvCaps: (): { software: boolean; webgl2: boolean; halfFloat: boolean } => envCaps,
       getTier: (): RenderTier => RENDER_TIER,
     };
@@ -634,7 +637,7 @@ export default function ClusterCanvas() {
     return (): void => {
       delete (window as unknown as Record<string, unknown>).__KUBEVISION_RENDER__;
     };
-  }, [qualityPost, postEnabled, envCaps, qualityTier]);
+  }, [qualityPost, postEnabled, reflectorEnabled, envCaps, qualityTier]);
 
   /**
    * 帧率走低：只关装饰层，不动 dpr。
@@ -887,6 +890,35 @@ export default function ClusterCanvas() {
             state.gl.toneMapping = NeutralToneMapping;
           }
           state.gl.toneMappingExposure = TONEMAP_EXPOSURE;
+          /*
+           * ---- R5 测量契约：先修测量再优化 ----
+           *
+           * 【为何关 autoReset】默认 true 时每次 gl.render 开头清零 info.render，
+           * 一帧里反射/后处理多次 gl.render，采样点读到的只是最后一个 pass 的计数，
+           * 反射「整场景再渲染一遍」的真实成本被隐藏。关掉后由 GlStatsCollector
+           * 每帧手动 reset() 并读上一完整帧累计，得到整帧合计。
+           *
+           * 【反射 pass 单独计量】drei MeshReflectorMaterial 用虚拟相机把整场景
+           * 渲染进反射 RT。包裹 gl.render：凡「透视相机 ≠ 根相机 且 RT 非空」即反射
+           * pass，读前后 info.render.calls 差值写入 reflectionMeter（GlStatsCollector
+           * 每帧读取后清零）。主场景用根相机、后处理用正交全屏相机，不会误判。
+           */
+          state.gl.info.autoReset = false;
+          const rootCamera = state.camera;
+          const originalRender = state.gl.render.bind(state.gl);
+          state.gl.render = (scene, camera): void => {
+            const isReflectionPass =
+              camera !== rootCamera &&
+              (camera as THREE.PerspectiveCamera).isPerspectiveCamera === true &&
+              state.gl.getRenderTarget() !== null;
+            if (isReflectionPass) {
+              const callsBefore = state.gl.info.render.calls;
+              originalRender(scene, camera);
+              reflectionMeter.calls = state.gl.info.render.calls - callsBefore;
+            } else {
+              originalRender(scene, camera);
+            }
+          };
           /* L8：软渲染锁 DPR=1.0（只降一次，且不参与后续自适应升回） */
           if (isSoftware) {
             setAdaptiveDpr(1);
