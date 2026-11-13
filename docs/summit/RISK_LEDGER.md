@@ -151,7 +151,7 @@
 | ⑤ 档位效果同源 P0-04 | DoF 档位写反：T2 常驻 DoF、T3 无 DoF 但 DofFocusDriver 空转 | `TIER_EFFECT_MATRIX` 单一事实源：DoF 仅 T3；T2=FXAA；T1=Bloom 降级（levels 5→3, 0.48→0.34）；T0 全关；DofFocusDriver 与 DoF 同条件挂载 | 档位循环探针 programs 90→85→82 单调；draw calls 425→414→407 单调 |
 | ⑥ toneMapping 同源 P0-05 | 仅 onCreated 设一次；降档不更新；实测 EffectComposer 卸载还会在 passive effect 之后把 toneMapping 回写挂载前值 | `ToneMappingSync`（Canvas 子组件 useFrame 优先级 0）逐帧守卫：兜底→Neutral(7)，Composer→NoToneMapping(0) | 探针：兜底 7 ✓ / Composer 0 ✓ / 关后处理回 7 ✓（轮询 8 次稳定） |
 | ⑦ dpr 分档 P0-06 | DPR_FLOOR=0.85 单一值，2x 屏不生效 | 1x 屏 [0.75,1]、2x 屏 [1,1.5]（devicePixelRatio≤1.25 判定）；tier≤1 锁 floor（软渲染保持 1.0 锁不参与）；PerformanceMonitor 降档联动 `max(floor,…)` | 探针 dpr=1（1x 屏 + 软渲染例外路径）；代码审查挂载期常量 |
-| ⑧ 清白付成本 | linewidth 动画死代码；shadows 运行期切换触发材质重编译；能力探测 render 阶段建 WebGL 上下文；preserveDrawingBuffer 常开 | 删 linewidth 动画（WebGL 恒 1px）；shadows 固定（软件 basic/真机 soft）；探测结果模块级缓存单次；`preserveDrawingBuffer:false` + 截图改走 viewportCapture 同帧读取队列（工具条快照/Copilot 截图/首帧兜底/演示编排 4 处统一） | 截图探针：ctx attrs preserveDrawingBuffer=false，两条路径均取到非黑帧（96%/100% 像素非黑） |
+| ⑧ 清白付成本 | linewidth 动画死代码（手册判定）；shadows 运行期切换触发材质重编译；能力探测 render 阶段建 WebGL 上下文；preserveDrawingBuffer 常开 | **linewidth 动画复审后保留**（drei `<Edges>`=three-stdlib `LineSegments2`+`LineMaterial` fat-line，linewidth 是屏幕空间像素宽度真实生效，手册「死代码」前提与依赖版本不符——5623e2f 曾误删，后一提交恢复）；shadows 固定（软件 basic/真机 soft）；探测结果模块级缓存单次；`preserveDrawingBuffer:false` + 截图改走 viewportCapture 同帧读取队列（工具条快照/Copilot 截图/首帧兜底/演示编排 4 处统一） | 截图探针：ctx attrs preserveDrawingBuffer=false，两条路径均取到非黑帧（96%/100% 像素非黑）；drei Line.js 源码 + 误删→恢复提交链 |
 
 **降档单调与重编译判据**：draw calls T3 425 → T2 414 → T1 407 → T0 401 单调下降；programs T3→T2→T1→T2→T3 = 90→85→82→82→90，**同档往返净增 0**（无重编译泄漏）；toneMapping 全程随路径正确。60s 堆增量（HeapProfiler 双端强 GC）+2.34MB < 5MB ✓。
 
@@ -167,3 +167,4 @@
 | R5-4 | preserveDrawingBuffer:false 后截图依赖 FrameCaptureProvider 同帧读取；首帧兜底快照 PNG 实测 ≈719KB，超 200KB 体积闸门被拒（改造前亦如此，非回归） | **OPEN** | 1244×1014 PNG ≈719KB > 200KB 闸门，首帧兜底图基本不会生效；改造前 preserveDrawingBuffer=true 时同样被闸门拒收 | 「兜底图闸门按设计拒绝大图；多模态截图走 JPEG 0.8，编码行为与改造前一致、不受影响。」 | 前端 | R6 |
 | R5-5 | dpr 低档锁仅在真实 GPU 生效；SwiftShader 治理器降档时保持 DPR=1（证据截图清晰度优先） | **MITIGATED** | 软渲染仅 CI/截图环境，FPS 无证据价值；锁 floor 会让证据图变糊无收益 | 「低档 dpr 锁面向真机演示；软渲染环境按 L8 惯例单独锁 1.0。」 | 前端 | 持续 |
 | R5-6 | dev-only 调试把手新增 setQualityTier/capture（L11 handle），仅开发构建暴露 | **MITIGATED** | 与既有 setPost/setReflector 同一 dev-only effect；生产构建 DCE 掉调试钩子（handleCanvasCreated 同款边界） | 「取证把手只在 dev 构建存在，生产零调试面。」 | 前端 | 关闭 |
+| R5-7 | 手册第8步「删 linewidth 动画死代码」前提错误：实际是活的 fat-line 动画（5623e2f 误删，下一提交恢复） | **CLOSED** | 源码证据：drei Edges→Line→`LineSegments2`+`LineMaterial`（three-stdlib），linewidth 为屏幕空间像素宽度真实生效；删除会丢失选中呼吸线宽 1.6→3.4px 视觉（违反「不降可视信息量」红线）；已恢复并与 a4aa114 逐字对齐（仅注释记录保留理由） | 「第8步该项按实际依赖版本复核后不成立，未删——手册的『死代码』判定基于 LineBasicMaterial 的 1px 限制，不适用 fat-line。」 | 前端 | 关闭 |

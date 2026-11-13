@@ -196,19 +196,24 @@ const EDGE_HOVER_OPACITY = 0.72;
  * 选中态呼吸描边参数（青色高亮 + 正弦脉动）。
  *
  * 【视觉推导】opacity 在 [0.62, 1.0] 间以 2.8 rad/s（≈2.24 秒/次）正弦呼吸，
+ * linewidth 同步在 [1.6, 3.4] px 间脉动——fat-line 的像素级线宽随呼吸增粗，
  * 形成「装甲轮廓被能量充盈」的高亮描边观感；呼吸频率刻意慢于导光柱的
  * 告警脉冲（4.0 rad/s），二者在视觉上可区分：慢呼吸 = 已选中的稳定强调，
  * 快脉冲 = 分区故障的紧急告警。
  *
- * 【为何不再动画 linewidth】WebGL 的 LineBasicMaterial.linewidth 在绝大多数
- * 平台恒为 1px（受驱动限制），逐帧写它既无可见效果又占一次材质 uniform 写，
- * 属纯白付成本，已删除该动画（R5）。
+ * 【为何保留 linewidth 动画（R5 复审）】drei <Edges> 渲染的是 three-stdlib
+ * 的 LineSegments2 + LineMaterial（fat-line），linewidth 是屏幕空间像素宽度、
+ * 真实生效——与 LineBasicMaterial 的 1px 驱动限制无关。手册「删 linewidth
+ * 动画死代码」的前提与当前依赖版本不符，删除会丢失选中/常态的线宽视觉差异
+ * （违反「不降可视信息量」），故保留。
  */
 const EDGE_BREATH_RATE = RACK_BREATH_RATE;
 const EDGE_BREATH_OPACITY_MIN = 0.62;
 const EDGE_BREATH_OPACITY_MAX = 1.0;
+const EDGE_BREATH_WIDTH_MIN = 1.6;
+const EDGE_BREATH_WIDTH_MAX = 3.4;
 
-/** 棱线常态线宽（px，fat-line 屏幕空间宽度；WebGL 下恒为 1px，仅作初始种子） */
+/** 棱线常态线宽（px，fat-line 屏幕空间宽度） */
 const EDGE_IDLE_WIDTH = 1.0;
 
 /** 节点状态 → 铭牌文字色（与导光柱色语义一致，HTML 层用 HEX 字符串） */
@@ -1609,14 +1614,16 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
     if (edges !== null) {
       const edgeMat = edges.material;
       if (isSelected) {
-        // 正弦归一化到 [0,1] 后映射到透明度区间（慢呼吸 = 稳定选中强调）
+        // 正弦归一化到 [0,1] 后映射到透明度/线宽区间（慢呼吸 = 稳定选中强调）
         const breath = 0.5 + 0.5 * Math.sin(state.clock.getElapsedTime() * EDGE_BREATH_RATE);
         edgeMat.color.copy(COLOR_SELECTED);
         edgeMat.opacity = EDGE_BREATH_OPACITY_MIN + (EDGE_BREATH_OPACITY_MAX - EDGE_BREATH_OPACITY_MIN) * breath;
+        edgeMat.linewidth = EDGE_BREATH_WIDTH_MIN + (EDGE_BREATH_WIDTH_MAX - EDGE_BREATH_WIDTH_MIN) * breath;
       } else {
-        // 非选中：颜色平滑回归常态深蓝，透明度按 hover 与否二值切换
+        // 非选中：颜色平滑回归常态深蓝，透明度/线宽按 hover 与否二值切换
         edgeMat.color.lerp(COLOR_EDGE_IDLE, alpha);
         edgeMat.opacity = hovered ? EDGE_HOVER_OPACITY : EDGE_IDLE_OPACITY;
+        edgeMat.linewidth = EDGE_IDLE_WIDTH;
       }
     }
   });
@@ -1667,10 +1674,9 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
          【点击选中职责】原外框是 handleSelect 的主要落点。现在改由
          四条竖直导轨承担（每条都有 onClick + 足够长的可点区域），
          底座与顶盖也保留 onClick，选中路径完全不减少。
-         【Edges 控制权契约】color/opacity 两个动画属性的初始值仅作
+         【Edges 控制权契约】color/opacity/linewidth 三个动画属性的初始值仅作
          首帧种子，此后由 useFrame 独占驱动；React prop 保持恒定字面量，
-         1Hz 重渲染经 R3F props diff 不会重放，动画值零跳变。（linewidth 恒
-         静态：WebGL 下不受支持，不再动画。） ---- */}
+         1Hz 重渲染经 R3F props diff 不会重放，动画值零跳变。 ---- */}
 
       {/* ---- 四根竖直光学导轨（承担点击选中 + 勾勒机架纵向轮廓）---- */}
       {PILLAR_POSITIONS.map((corner, cornerIndex): ReactNode => (
