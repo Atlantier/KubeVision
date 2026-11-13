@@ -506,6 +506,11 @@ function hexToRgb01(hex: string): readonly [number, number, number] {
  * 【几何】对每个角度步进生成一个四边形（两个三角形），
  * 内/外半径各一圈顶点。`fadeOutward` 为真时，顶点色按半径线性衰减到 0，
  * 在加色混合下形成「向外羽化消失」的辉光带——这正是雷达底盘的柔光边缘。
+ *
+ * 【brightness 参数】合并机架基座时，原本每层网格有独立的 material.opacity。
+ * 加色混合下其视觉贡献 = 顶点色 × opacity，因此把 opacity 直接乘进顶点色
+ * （brightness），再让合并后的单一材质 opacity=1，即可逐层保留原有亮度，
+ * 无需逐顶点 alpha 通道。
  */
 function pushAnnulus(
   soup: SoupBuffers,
@@ -516,8 +521,9 @@ function pushAnnulus(
   segments: number,
   colorHex: string,
   fadeOutward: boolean,
+  brightness = 1,
 ): void {
-  const rgb = hexToRgb01(colorHex);
+  const rgb: readonly [number, number, number] = hexToRgb01(colorHex);
   for (let i = 0; i < segments; i++) {
     const a0 = thetaStart + (thetaLength * i) / segments;
     const a1 = thetaStart + (thetaLength * (i + 1)) / segments;
@@ -539,7 +545,8 @@ function pushAnnulus(
       rInner * cos1, 0, rInner * sin1,
     );
     const pushColor = (scale: number): void => {
-      soup.colors.push(rgb[0] * scale, rgb[1] * scale, rgb[2] * scale);
+      const s = scale * brightness;
+      soup.colors.push(rgb[0] * s, rgb[1] * s, rgb[2] * s);
     };
     pushColor(innerScale);
     pushColor(outerScale);
@@ -774,6 +781,136 @@ const RADAR_ARC_GEOMETRY: THREE.BufferGeometry = (() => {
   }
   return soupToGeometry(soup);
 })();
+
+/**
+ * pushQuad —— 把一块平铺在 XZ 平面的矩形（两个三角形）压入三角汤。
+ *
+ * 用于把机架基座前方两侧的导流短轨并入静态基座几何：
+ * 原本它是两块独立 planeGeometry，合并后零额外 Draw Call。
+ *
+ * @param cx 中心 X，cz 中心 Z
+ * @param halfX X 向半宽，halfZ Z 向半宽
+ * @param brightness 亮度系数（原 material.opacity 烘焙）
+ */
+function pushQuad(
+  soup: SoupBuffers,
+  cx: number,
+  cz: number,
+  halfX: number,
+  halfZ: number,
+  colorHex: string,
+  brightness: number,
+): void {
+  const rgb = hexToRgb01(colorHex);
+  const x0 = cx - halfX;
+  const x1 = cx + halfX;
+  const z0 = cz - halfZ;
+  const z1 = cz + halfZ;
+  soup.positions.push(
+    x0, 0, z0,
+    x1, 0, z0,
+    x1, 0, z1,
+    x0, 0, z0,
+    x1, 0, z1,
+    x0, 0, z1,
+  );
+  const r = rgb[0] * brightness;
+  const g = rgb[1] * brightness;
+  const b = rgb[2] * brightness;
+  for (let k = 0; k < 6; k++) soup.colors.push(r, g, b);
+}
+
+/**
+ * buildPedestalGeometry —— 构建单台机架「静态基座」合并几何（构建期一次）。
+ *
+ * 【合并动机】每机架基座原为 4 括弧 + 主环 + 3 底盘 + 2 导流轨 = 10 个独立网格，
+ * 全部是半透明加色面片、材质参数完全一致，却各自占 1 次 Draw Call。
+ * 合并成 1 份顶点色三角汤后，单机架静态基座只占 1 次 Draw Call（原 10 次），
+ * 经反射地面二次渲染时的成本也同步下降。
+ *
+ * 【健康 / 故障两组】故障态在结构上只多两圈绯红能量环、主色切换为绯红；
+ * 因此按 health 预建两份几何，运行时按 rack.faulted 选几何即可，
+ * 无需在 1Hz 遥测更新时重建。
+ *
+ * 【亮度烘焙】每层原 opacity 乘进顶点色（见 pushAnnulus 的 brightness），
+ * 合并材质 opacity=1，加色混合下逐层亮度与原先逐网格 opacity 等价。
+ */
+function buildPedestalGeometry(faulted: boolean): THREE.BufferGeometry {
+  const soup = createSoup();
+  const ringColor = faulted ? COLOR_FAULT : COLOR_BASE_HEALTHY;
+  const ringOpacity = faulted ? OPACITY_BASE_FAULT : OPACITY_BASE_HEALTHY;
+
+  /* 第 1 层：4 段战术锁定括弧环（原 opacity = ringOpacity × 0.75） */
+  for (let i = 0; i < PEDESTAL_BRACKETS.length; i++) {
+    const arc = PEDESTAL_BRACKETS[i];
+    pushAnnulus(
+      soup,
+      PEDESTAL_BRACKET_RADIUS - PEDESTAL_BRACKET_THICKNESS,
+      PEDESTAL_BRACKET_RADIUS,
+      arc.thetaStart,
+      arc.thetaLength,
+      RING_SEGMENTS,
+      ringColor,
+      false,
+      ringOpacity * 0.75,
+    );
+  }
+
+  /* 第 2 层：高亮主发光环（原 opacity = ringOpacity） */
+  pushAnnulus(
+    soup,
+    PEDESTAL_MAIN_RADIUS - PEDESTAL_MAIN_THICKNESS,
+    PEDESTAL_MAIN_RADIUS,
+    0,
+    Math.PI * 2,
+    RING_SEGMENTS,
+    ringColor,
+    false,
+    ringOpacity,
+  );
+
+  /* 第 3 层：三层递减能量底盘（各自独立 opacity） */
+  for (let i = 0; i < PEDESTAL_DISK_RADII.length; i++) {
+    pushAnnulus(
+      soup,
+      PEDESTAL_DISK_RADII[i] - PEDESTAL_DISK_WIDTHS[i],
+      PEDESTAL_DISK_RADII[i],
+      0,
+      Math.PI * 2,
+      RING_SEGMENTS,
+      ringColor,
+      false,
+      PEDESTAL_DISK_OPACITIES[i],
+    );
+  }
+
+  /* 第 4 层：两侧导流短轨（原 opacity = ringOpacity × 0.6） */
+  const railBrightness = ringOpacity * 0.6;
+  for (let s = 0; s < 2; s++) {
+    const sideSign = s === 0 ? -1 : 1;
+    pushQuad(
+      soup,
+      sideSign * GUIDE_RAIL_OFFSET_X,
+      GUIDE_RAIL_OFFSET_Z,
+      GUIDE_RAIL_LENGTH / 2,
+      GUIDE_RAIL_WIDTH / 2,
+      ringColor,
+      railBrightness,
+    );
+  }
+
+  /* 故障态附加两圈绯红能量波纹（原 opacity 0.72 / 0.34） */
+  if (faulted) {
+    pushAnnulus(soup, 1.38, 1.5, 0, Math.PI * 2, RING_SEGMENTS, COLOR_FAULT, false, 0.72);
+    pushAnnulus(soup, 1.86, 1.92, 0, Math.PI * 2, RING_SEGMENTS, COLOR_FAULT, false, 0.34);
+  }
+
+  return soupToGeometry(soup);
+}
+
+/** 静态基座合并几何：健康态 / 故障态各一份（模块加载期一次性构建） */
+const PEDESTAL_GEOMETRY_HEALTHY: THREE.BufferGeometry = buildPedestalGeometry(false);
+const PEDESTAL_GEOMETRY_FAULT: THREE.BufferGeometry = buildPedestalGeometry(true);
 
 /* -------------------------------------------------------------------------- */
 /* 地面数据星城（1,400 颗粒子 + 极坐标电路连线）                                  */
@@ -1867,59 +2004,32 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
       })}
 
       {/*
-       * ═══ 每机架四层复合数码基座 ═══
+       * ═══ 每机架数码基座（已合并为 2 次 Draw Call）═══
        *
-       * 图五里最抓眼的细节之一：机架脚下不是一个圆圈，而是多圈层叠的
-       * 精密数码阵——断弧括弧、刻度齿、能量底盘、导流短轨各司其职。
-       * 下面按"由外向内"四层展开，故障机架整体切换绯红。
+       * 【合并前】每机架基座 = 4 括弧 + 主发光环 + 36 齿实例 + 3 能量底盘 +
+       * 2 导流短轨（+故障态 2 环）= 11 个网格，三机架合计 33 次 Draw Call，
+       * 经反射地面二次渲染时成本再翻倍。
+       *
+       * 【合并后】括弧/主环/底盘/导流轨/故障波纹这些**静态加色面片**材质参数
+       * 完全一致，全部烘焙进一份顶点色三角汤（健康/故障各一份，模块加载期构建），
+       * 单机架静态基座降为 1 次 Draw Call。唯一独立保留的是 36 齿 InstancedMesh
+       * ——它需要整体反向自转（旋转 mesh 对象，实例矩阵无需每帧重写），仍为 1 次。
+       * 合计 3 机架 × 2 = 6 次（原 33 次）。
        */}
       {racks.map((rack, index): React.ReactElement => {
         const ringColor = rack.faulted ? COLOR_FAULT : COLOR_BASE_HEALTHY;
         const ringOpacity = rack.faulted ? OPACITY_BASE_FAULT : OPACITY_BASE_HEALTHY;
         return (
           <group key={`base-${rack.key}`} position={[rack.x, 0, rack.z]}>
-            {/* ── 第 1 层：8 段断开的战术锁定括弧环（半径 2.45）── */}
-            {PEDESTAL_BRACKETS.map((arc, arcIndex): React.ReactElement => (
-              <mesh
-                key={`bracket-${arcIndex}`}
-                rotation={[-Math.PI / 2, 0, 0]}
-                raycast={(): void => undefined}
-              >
-                <ringGeometry
-                  args={[
-                    PEDESTAL_BRACKET_RADIUS - PEDESTAL_BRACKET_THICKNESS,
-                    PEDESTAL_BRACKET_RADIUS,
-                    RING_SEGMENTS,
-                    1,
-                    arc.thetaStart,
-                    arc.thetaLength,
-                  ]}
-                />
-                <meshBasicMaterial
-                  color={ringColor}
-                  transparent
-                  opacity={ringOpacity * 0.75}
-                  side={THREE.DoubleSide}
-                  toneMapped={false}
-                  depthWrite={false}
-                  blending={THREE.AdditiveBlending}
-                />
-              </mesh>
-            ))}
-
-            {/* ── 第 2 层：高亮主发光环（半径 2.18）── */}
-            <mesh rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
-              <ringGeometry
-                args={[
-                  PEDESTAL_MAIN_RADIUS - PEDESTAL_MAIN_THICKNESS,
-                  PEDESTAL_MAIN_RADIUS,
-                  RING_SEGMENTS,
-                ]}
-              />
+            {/* ── 合并静态基座：4 括弧 + 主环 + 3 底盘 + 2 导流轨 + 故障波纹（1 draw）── */}
+            <mesh
+              geometry={rack.faulted ? PEDESTAL_GEOMETRY_FAULT : PEDESTAL_GEOMETRY_HEALTHY}
+              raycast={(): void => undefined}
+            >
               <meshBasicMaterial
-                color={ringColor}
+                vertexColors
                 transparent
-                opacity={ringOpacity}
+                opacity={1}
                 side={THREE.DoubleSide}
                 toneMapped={false}
                 depthWrite={false}
@@ -1927,12 +2037,11 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
               />
             </mesh>
 
-            {/* ── 第 2b 层：36 枚径向刻度齿（单实例网格，反向自转）──
+            {/* ── 36 枚径向刻度齿（单实例网格，反向自转；1 draw）──
                  *
-                 * 【实例化理由】36 齿 × 3 机架 = 108 个独立 mesh，
-                 * 再被反射地面二次渲染 = 216 次 Draw Call。
-                 * 改为每机架 1 个 InstancedMesh（36 实例）后降为 3 次；
-                 * 反向自转直接旋转该 mesh 对象，实例矩阵无需每帧重写。
+                 * 【为何不并入合并基座】齿需要整体绕 Y 反向自转，
+                 * 并入静态三角汤会失去旋转能力；保留为独立 InstancedMesh，
+                 * 旋转 mesh 对象即可，实例矩阵无需每帧重写。
                  */}
             <instancedMesh
               ref={(node): void => {
@@ -1952,80 +2061,6 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
                 blending={THREE.AdditiveBlending}
               />
             </instancedMesh>
-
-            {/* ── 第 3 层：三层递减能量底盘（模拟径向渐变柔光）── */}
-            {PEDESTAL_DISK_RADII.map((radius, diskIndex): React.ReactElement => (
-              <mesh
-                key={`disk-${diskIndex}`}
-                rotation={[-Math.PI / 2, 0, 0]}
-                raycast={(): void => undefined}
-              >
-                <ringGeometry args={[radius - PEDESTAL_DISK_WIDTHS[diskIndex], radius, RING_SEGMENTS]} />
-                <meshBasicMaterial
-                  color={ringColor}
-                  transparent
-                  opacity={PEDESTAL_DISK_OPACITIES[diskIndex]}
-                  side={THREE.DoubleSide}
-                  toneMapped={false}
-                  depthWrite={false}
-                  blending={THREE.AdditiveBlending}
-                />
-              </mesh>
-            ))}
-
-            {/* ── 第 4 层：机架前方两侧对称伸出的精密导流短轨 ── */}
-            {[-1, 1].map((sideSign): React.ReactElement => (
-              <mesh
-                key={`guide-rail-${sideSign > 0 ? 'right' : 'left'}`}
-                rotation={[-Math.PI / 2, 0, 0]}
-                position={[sideSign * GUIDE_RAIL_OFFSET_X, 0, GUIDE_RAIL_OFFSET_Z]}
-                raycast={(): void => undefined}
-              >
-                <planeGeometry args={[GUIDE_RAIL_LENGTH, GUIDE_RAIL_WIDTH]} />
-                <meshBasicMaterial
-                  color={ringColor}
-                  transparent
-                  opacity={ringOpacity * 0.6}
-                  side={THREE.DoubleSide}
-                  toneMapped={false}
-                  depthWrite={false}
-                  blending={THREE.AdditiveBlending}
-                />
-              </mesh>
-            ))}
-
-            {/*
-             * ── 故障态第三环 + 外扩辉光环（三环绯红能量波纹）──
-             * 仅故障机架挂载：正常态下这两个 mesh 不存在，零 draw call。
-             */}
-            {rack.faulted ? (
-              <group position={[0, 0.002, 0]}>
-                <mesh rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
-                  <ringGeometry args={[1.38, 1.5, RING_SEGMENTS]} />
-                  <meshBasicMaterial
-                    color={COLOR_FAULT}
-                    transparent
-                    opacity={0.72}
-                    side={THREE.DoubleSide}
-                    toneMapped={false}
-                    depthWrite={false}
-                    blending={THREE.AdditiveBlending}
-                  />
-                </mesh>
-                <mesh rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
-                  <ringGeometry args={[1.86, 1.92, RING_SEGMENTS]} />
-                  <meshBasicMaterial
-                    color={COLOR_FAULT}
-                    transparent
-                    opacity={0.34}
-                    side={THREE.DoubleSide}
-                    toneMapped={false}
-                    depthWrite={false}
-                    blending={THREE.AdditiveBlending}
-                  />
-                </mesh>
-              </group>
-            ) : null}
           </group>
         );
       })}

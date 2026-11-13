@@ -1207,6 +1207,9 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   const tierBandMatsRef = useRef<Array<THREE.MeshBasicMaterial | null>>([]);
   tierBandMatsRef.current.length = TIER_DIVIDER_YS.length * 2;
 
+  /** 顶冠散热百叶窗实例网格（9 叶片合并为 1 draw，矩阵挂载时写入一次） */
+  const louverInstancesRef = useRef<THREE.InstancedMesh>(null);
+
   /** 最新 node 快照引用：useFrame 读取，避免把 node 塞进渲染循环依赖 */
   const nodeRef = useRef<WorkerRack3DProps['node']>(node);
 
@@ -1263,6 +1266,33 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       mesh.setMatrixAt(i, ghostTempObject.matrix);
     }
     mesh.count = SLOT_GHOSTS.length;
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [ghostTempObject]);
+
+  /**
+   * 顶冠散热百叶窗实例矩阵初始化（挂载时一次，静态常量）。
+   *
+   * 【合并动机】9 条叶片原为 9 个独立 boxGeometry mesh，三机架合计 27 次
+   * Draw Call。叶片尺寸完全一致、仅沿 Z 居中错位，因此用一块「带真实尺寸」
+   * 的 boxGeometry + 9 个纯平移实例即可，单机架降为 1 次（27→3）。
+   *
+   * 【为何不用 instanceColor】9 片同色，无需逐实例着色；
+   * 材质沿用 LOUVER_COLOR + 原 tone mapping，保证视觉与合并前逐像素一致。
+   */
+  useEffect((): void => {
+    const mesh = louverInstancesRef.current;
+    if (mesh === null) return;
+    const louverDepth = (CROWN_DEPTH - 0.5) / LOUVER_COUNT;
+    const louverY = CROWN_Y + CROWN_HEIGHT / 2 + 0.026;
+    for (let i = 0; i < LOUVER_COUNT; i++) {
+      const offsetZ = (i - (LOUVER_COUNT - 1) / 2) * louverDepth;
+      ghostTempObject.position.set(0, louverY, offsetZ);
+      ghostTempObject.rotation.set(0, 0, 0);
+      ghostTempObject.scale.set(1, 1, 1);
+      ghostTempObject.updateMatrix();
+      mesh.setMatrixAt(i, ghostTempObject.matrix);
+    }
+    mesh.count = LOUVER_COUNT;
     mesh.instanceMatrix.needsUpdate = true;
   }, [ghostTempObject]);
 
@@ -2078,7 +2108,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       </mesh>
 
       {/*
-       * ---- 顶冠激光蚀刻散热百叶窗（替代原来的"整块发光板"）----
+       * ---- 顶冠激光蚀刻散热百叶窗（实例化单网格）----
        *
        * 【解决什么】顶冠凹槽此前是一整块暗色平面，俯瞰时看起来像"贴了一块黑胶布"，
        * 既没有工业感也读不出"这是散热口"。
@@ -2088,32 +2118,27 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        * 这正是真实机柜散热格栅在光照下的样子。
        * 数量取 9：小于 7 会显得稀疏像栅栏，大于 11 在远视距会糊成一片灰。
        *
-       * 【为何不用纹理贴图】这 9 条叶片是**真实几何**，能真正接收环境反射
-       * 与阴影；贴图在俯瞰近距离下会被看穿是平的。9 个 box = 9 次 draw call，
-       * 对当前场景预算完全可接受。
+       * 【为何实例化】9 片 × 3 机架 = 27 个独立 mesh。9 片尺寸完全一致、
+       * 仅沿 Z 居中错位，合成为 1 个 InstancedMesh 后每机架仅 1 次 Draw Call
+       * （27→3）；矩阵在挂载 useEffect 中一次性写入，useFrame 零开销。
        */}
-      {Array.from({ length: LOUVER_COUNT }, (_, louverIndex): ReactNode => {
-        const louverWidth = CROWN_WIDTH - 0.5;
-        const louverDepth = (CROWN_DEPTH - 0.5) / LOUVER_COUNT;
-        /* 居中排布：让整组叶片对称占据凹槽宽度 */
-        const offsetZ = (louverIndex - (LOUVER_COUNT - 1) / 2) * louverDepth;
-        return (
-          <mesh
-            key={`crown-louver-${louverIndex}`}
-            position={[0, CROWN_Y + CROWN_HEIGHT / 2 + 0.026, offsetZ]}
-            raycast={noRaycast}
-          >
-            <boxGeometry args={[louverWidth, LOUVER_THICKNESS, louverDepth * 0.62]} />
-            <meshStandardMaterial
-            onBeforeCompile={enhanceArmorMaterial}
-              color={LOUVER_COLOR}
-              metalness={LOUVER_METALNESS}
-              roughness={LOUVER_ROUGHNESS}
-              envMapIntensity={LOUVER_ENV_INTENSITY}
-            />
-          </mesh>
-        );
-      })}
+      <instancedMesh
+        ref={louverInstancesRef}
+        args={[undefined, undefined, LOUVER_COUNT]}
+        raycast={noRaycast}
+        frustumCulled={false}
+      >
+        <boxGeometry
+          args={[CROWN_WIDTH - 0.5, LOUVER_THICKNESS, ((CROWN_DEPTH - 0.5) / LOUVER_COUNT) * 0.62]}
+        />
+        <meshStandardMaterial
+          onBeforeCompile={enhanceArmorMaterial}
+          color={LOUVER_COLOR}
+          metalness={LOUVER_METALNESS}
+          roughness={LOUVER_ROUGHNESS}
+          envMapIntensity={LOUVER_ENV_INTENSITY}
+        />
+      </instancedMesh>
 
       {/*
        * 说明：顶冠上下四周边框倒角已改为实例化渲染，
