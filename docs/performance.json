@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-11T05:03:26.775Z",
+  "generatedAt": "2026-11-13T11:25:08.516Z",
   "environment": {
     "os": "win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM",
     "node": "v24.16.0",
@@ -11,35 +11,51 @@
   "rendering": {
     "fps": {
       "count": 20,
-      "mean": 2.7,
-      "median": 3,
+      "mean": 2.05,
+      "median": 2,
       "p95": 5,
       "min": 1,
       "max": 5
     },
     "frameTimeMs": {
       "count": 20,
-      "mean": 519.85,
-      "median": 318.1,
-      "p95": 1634,
-      "min": 184.8,
-      "max": 1634
+      "mean": 658.11,
+      "median": 507,
+      "p95": 1621.8,
+      "min": 192.2,
+      "max": 1621.8
     },
     "drawCalls": {
       "count": 20,
-      "mean": 421.95,
-      "median": 423,
-      "p95": 423,
-      "min": 420,
-      "max": 423
+      "mean": 400.1,
+      "median": 401,
+      "p95": 401,
+      "min": 398,
+      "max": 401
+    },
+    "drawCallsMain": {
+      "count": 20,
+      "mean": 400.1,
+      "median": 401,
+      "p95": 401,
+      "min": 398,
+      "max": 401
+    },
+    "drawCallsReflection": {
+      "count": 20,
+      "mean": 0,
+      "median": 0,
+      "p95": 0,
+      "min": 0,
+      "max": 0
     },
     "triangles": {
       "count": 20,
-      "mean": 205994.4,
-      "median": 206028,
-      "p95": 206028,
-      "min": 205932,
-      "max": 206028
+      "mean": 225513.2,
+      "median": 225542,
+      "p95": 225542,
+      "min": 225446,
+      "max": 225542
     },
     "sampleCount": 20,
     "dprSettled": 1,
@@ -51,12 +67,12 @@
     }
   },
   "batching": {
-    "meshes": 322,
-    "instanced": 25,
-    "instancedTotal": 1026,
-    "points": 6,
-    "lines": 5,
-    "drawCalls": 420
+    "meshes": 255,
+    "instanced": 27,
+    "instancedTotal": 1017,
+    "points": 3,
+    "lines": 4,
+    "drawCalls": 398
   },
   "edgeInference": {
     "runtime": "builtin (fallback)",
@@ -64,23 +80,23 @@
     "model": "Xenova/all-MiniLM-L6-v2",
     "fallback": true,
     "latencyMs": {
-      "count": 23,
+      "count": 21,
       "mean": 0.09,
       "median": 0.1,
-      "p95": 0.2,
+      "p95": 0.1,
       "min": 0,
-      "max": 0.2
+      "max": 0.1
     },
-    "sampleCount": 23
+    "sampleCount": 21
   },
   "rag": {
     "latencyMs": {
       "count": 20,
-      "mean": 8.27,
-      "median": 8.32,
-      "p95": 9.97,
-      "min": 6.74,
-      "max": 9.97
+      "mean": 10.04,
+      "median": 9.72,
+      "p95": 14.37,
+      "min": 8.06,
+      "max": 14.37
     },
     "sampleCount": 20
   },
@@ -88,18 +104,18 @@
     "batchSize": 100,
     "latencyMs": {
       "count": 5,
-      "mean": 7.76,
-      "median": 7.98,
-      "p95": 8.49,
-      "min": 6.75,
-      "max": 8.49
+      "mean": 8.48,
+      "median": 8.49,
+      "p95": 9.2,
+      "min": 7.84,
+      "max": 9.2
     },
-    "throughputPerSec": 12880
+    "throughputPerSec": 11792
   },
   "bundle": {
     "routes": [
       "Route (app)                              Size     First Load JS",
-      "┌ ○ /                                    88.9 kB         176 kB",
+      "┌ ○ /                                    90.5 kB         178 kB",
       "├ ○ /_not-found                          873 B          88.4 kB",
       "├ ƒ /api/chat                            0 B                0 B",
       "├ ƒ /api/dev/corpus                      0 B                0 B",

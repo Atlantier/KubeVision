@@ -1,6 +1,6 @@
 # React 18 StrictMode 一致性审计
 
-> 由 `node scripts/strictmode-audit.mjs` 自动生成于 2026-11-12T10:03:57.390Z。
+> 由 `node scripts/strictmode-audit.mjs` 自动生成于 2026-11-13T11:21:13.383Z。
 > React StrictMode 在 dev 下会执行"挂载 → 卸载 → 再挂载"，本报告验证各资源的成对创建/释放。
 
 ## 首屏资源快照（双挂载之后）
@@ -18,7 +18,21 @@
 [
   {
     "phase": "auditor",
-    "timers": 1,
+    "timers": 2,
+    "intervals": 3,
+    "eventSources": 1,
+    "workers": 1
+  },
+  {
+    "phase": "copilot",
+    "timers": 0,
+    "intervals": 3,
+    "eventSources": 1,
+    "workers": 0
+  },
+  {
+    "phase": "auditor",
+    "timers": 2,
     "intervals": 3,
     "eventSources": 1,
     "workers": 1
@@ -39,21 +53,7 @@
   },
   {
     "phase": "copilot",
-    "timers": 0,
-    "intervals": 3,
-    "eventSources": 1,
-    "workers": 0
-  },
-  {
-    "phase": "auditor",
     "timers": 1,
-    "intervals": 3,
-    "eventSources": 1,
-    "workers": 1
-  },
-  {
-    "phase": "copilot",
-    "timers": 0,
     "intervals": 3,
     "eventSources": 1,
     "workers": 0
