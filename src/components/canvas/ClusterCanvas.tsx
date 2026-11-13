@@ -585,13 +585,15 @@ export default function ClusterCanvas() {
 
   /*
    * R30：质量档位 → 渲染开关（手动 ?quality= 或治理器自动）。
+   * 【R5 第2步·方案A】真反射（MeshReflectorMaterial 整场景再渲染）只在最高档 T3 开启；
+   *   T2/T1/T0 改用已有的 RackGroundReflection 假反射带（成本仅 3 draw，省掉整场景重渲染）。
    * 降档顺序（先反射 → 再阴影 → 再 Bloom → 最后后处理全关）：
-   *   T3：全开；T2：关 DoF；T1：再关阴影/反射、Bloom 降级；
+   *   T3：全开（含真反射）；T2：关真反射→假反射带、关 DoF；T1：再关阴影、Bloom 降级；
    *   T0：后处理全关。
    * 【R01】只改开关与参数，绝不改 DPR / RenderTarget 尺寸。
    */
   const qualityPost = postEnabled && qualityTier > 0;
-  const qualityReflector = reflectorEnabled && qualityTier >= 2;
+  const qualityReflector = reflectorEnabled && qualityTier >= 3;
   const qualitySoftShadows = envCaps.software ? 'basic' : qualityTier >= 2 ? 'soft' : false;
 
   /**
