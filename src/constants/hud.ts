@@ -80,11 +80,11 @@ export const HUD_LABEL_SPEC = {
 /* 铭牌距离吃雾驱动（R6-3，useFrame 热路径零分配 / 零 setState）               */
 /* ========================================================================== */
 
-/** 为什么是这几个值（R6-3）：近景 18 单位内机架/悬停全亮不吃雾；18→48 与场景雾近/远同向线性收敛，超过 48 隐退防远端重叠 */
-const HUD_FOG_NEAR_DISTANCE = 18;
-const HUD_FOG_FAR_DISTANCE = 48;
-const HUD_FOG_MID_OPACITY = 0.45;
-const HUD_FOG_MIN_SATURATE = 0.65;
+/** 为什么是这几个值（R6-3 / 拉远清晰度调优）：28 单位内（含全景机位及常规拉远）全亮全饱和不吃雾；28→64 随镜头超远推拉温和过渡，避免拉远后铭牌变暗发灰 */
+const HUD_FOG_NEAR_DISTANCE = 28;
+const HUD_FOG_FAR_DISTANCE = 64;
+const HUD_FOG_MID_OPACITY = 0.72;
+const HUD_FOG_MIN_SATURATE = 0.85;
 
 /** 最小相机位置向量接口（与 THREE.Vector3 结构兼容，避免常量模块重度耦合 three） */
 export interface WorldPointLike {
@@ -122,9 +122,9 @@ export function createHtmlFogStyleCache(): HtmlFogStyleCache {
  * 【核心数学与状态流转】（AGENTS.md 第 3 / 8 条）
  * - 距离计算纯标量 `Math.hypot(camPos.x - wx, ...)`，零 `new THREE.Vector3()`、零 `setState`；
  * - 吃雾区间分段：
- *   - `dist < 18`：`opacity = 1`，`saturate = 1`（取消 filter 层）；
- *   - `18 ≤ dist ≤ 48`：线性过渡 `opacity: 1 → 0.45`、`saturate: 1 → 0.65`，模拟远景进入深空大气；
- *   - `dist > 48`：`opacity = 0` 完全融入深空雾效。
+ *   - `dist < 28`：`opacity = 1`，`saturate = 1`（取消 filter 层）；
+ *   - `28 ≤ dist ≤ 64`：线性过渡 `opacity: 1 → 0.72`、`saturate: 1 → 0.85`，确保拉远仍清晰高对比；
+ *   - `dist > 64`：`opacity = 0` 完全融入深空雾效。
  * - 近/远透视缩放护栏（`scaleGuard` 可选）：按照 drei `objectScale` 同源公式
  *   `rawScale = distanceFactor / (2 * tan(fov/2) * dist)` 计算外层 wrapper 当前透视倍率，
  *   越出 `[minScale, maxScale]` 时于内层节点施加 `scale(clampedScale / rawScale)` 逆补偿，

@@ -68,11 +68,11 @@ import { mergeStaticBoxes } from '@/utils/mergeStaticGeometries';
 /* 模型几何常量（模块级，集中定义防漂移）                                          */
 /* ========================================================================== */
 
-/** 外层八面体半径（调度扫描包络） */
-const OCTA_RADIUS = 1.68;
+/** 外层八面体腰部半径（收窄腰围以塑造高挑修长晶柱轮廓） */
+const OCTA_RADIUS = 1.42;
 
-/** 外层纵向拉伸比：水晶略瘦高，比正球体更具「晶体」而非「球」的轮廓 */
-const OCTA_SCALE_Y = 1.22;
+/** 外层纵向拉伸比（1.78 : 1 身材比例）：总高 ≈ 5.06 单位，呈现修长挺拔的「水晶塔尖」而非宽胖棱锥 */
+const OCTA_SCALE_Y = 1.78;
 
 /** 八面体顶点数（6 个：±X / ±Y / ±Z 各一对） */
 const OCTA_VERTEX_COUNT = 6;
@@ -88,9 +88,8 @@ const OCTA_VERTEX_COUNT = 6;
  * 三轴互不共面、各自以不同角速度旋转，视觉上持续产生新的交点与扫掠面，
  * 这是"仪器在运转"而非"模型在翻滚"的关键。
  *
- * 【半径递进 1.15 → 1.32 → 1.48】刻意让三道环比内层晶核（1.05）大、
- * 又全部包在外层八面体棱线（OCTA_RADIUS ≈ 2.55）之内，
- * 因此它们既不与晶核穿插，也不越出水晶包络。
+ * 【半径递进 1.12 → 1.24 → 1.36】配合收窄后的 OCTA_RADIUS = 1.42 同步收紧，
+ * 让三道环紧密抱合修长晶身，不再横向撑胖视觉腰围。
  */
 const GYRO_RINGS: ReadonlyArray<{
   readonly key: string;
@@ -101,9 +100,9 @@ const GYRO_RINGS: ReadonlyArray<{
   readonly spin: number;
   readonly thickness: number;
 }> = [
-  { key: 'gyro-a', radius: 1.15, tilt: [Math.PI / 3, 0, 0], spin: 0.85, thickness: 0.012 },
-  { key: 'gyro-b', radius: 1.32, tilt: [-Math.PI / 4, 0, Math.PI / 5], spin: -1.24, thickness: 0.010 },
-  { key: 'gyro-c', radius: 1.48, tilt: [Math.PI / 2, Math.PI / 6, 0], spin: 0.62, thickness: 0.008 },
+  { key: 'gyro-a', radius: 1.12, tilt: [Math.PI / 3, 0, 0], spin: 0.85, thickness: 0.011 },
+  { key: 'gyro-b', radius: 1.24, tilt: [-Math.PI / 4, 0, Math.PI / 5], spin: -1.24, thickness: 0.010 },
+  { key: 'gyro-c', radius: 1.36, tilt: [Math.PI / 2, Math.PI / 6, 0], spin: 0.62, thickness: 0.008 },
 ];
 
 /* -------------------------------------------------------------------------- */
@@ -148,8 +147,8 @@ const AMBIENT_SPARK_COUNT = 36;
 /* 赤道环与斜交极轨细线环                                                        */
 /* -------------------------------------------------------------------------- */
 
-/** 赤道水平光环半径（略大于内层晶核 1.05、小于外层八面体 1.68 的腰部跨度） */
-const EQUATOR_RADIUS = 1.88;
+/** 赤道水平光环半径（紧贴修长晶体腰部 OCTA_RADIUS=1.42，不撑宽侧影） */
+const EQUATOR_RADIUS = 1.56;
 
 /** 赤道环线宽与自转角速度（rad/s，约 9 秒一圈，是全场最快的光环） */
 const EQUATOR_THICKNESS = 0.012;
@@ -174,9 +173,10 @@ const POLAR_RINGS: ReadonlyArray<{
   { key: 'polar-b', tilt: [Math.PI / 2 - 0.42, 0.2, -0.18], spin: -0.27 },
 ];
 
-/** 极轨细环的半径与线宽 */
-const POLAR_RING_RADIUS = 1.62;
+/** 极轨细环与双向正交万向节的半径与线宽 */
+const POLAR_RING_RADIUS = 1.40;
 const POLAR_RING_THICKNESS = 0.008;
+const GIMBAL_RADIUS = 1.48;
 
 /* -------------------------------------------------------------------------- */
 /* 集群健康度 → 色温联动                                                         */
@@ -214,14 +214,15 @@ const AMBIENT_SPARK_PHASES: readonly number[] = Array.from(
 /**
  * 等离子星核的顶点着色器。
  *
- * 【输出什么】把世界空间法线与"从表面指向相机的视线向量"传给片元。
- * `vViewPosition = -mvPosition.xyz` 是 three 的惯例：它由顶点指向相机，
- * 因此 `dot(normal, normalize(vViewPosition))` 即"视线与法线的夹角余弦"——
- * 面朝相机处 ≈ 1，掠射轮廓处 ≈ 0。这正是径向衰减的物理量纲。
+ * 【设计意图】（AGENTS.md 第 8 条）
+ * 把视空间法线 `vViewNormal`、视向量 `vViewPosition` 以及局部极坐标 `vLocalPos`
+ * 传递给片元着色器，供片元构造“外缘深海靛蓝 → 宝蓝过渡 → 电光青日冕 → 极小冰白星点”
+ * 四段式径向/纵向立体渐变与 3D 连续谐波能量流纹。
  */
 const PLASMA_VERTEX_SHADER = `
 varying vec3 vViewNormal;
 varying vec3 vViewPosition;
+varying vec3 vLocalPos;
 
 /* R67：零向量安全归一化，避免 normalize(0) 产生 NaN 传入片元 */
 vec3 safeNormalize(vec3 v, vec3 fallback) {
@@ -231,6 +232,7 @@ vec3 safeNormalize(vec3 v, vec3 fallback) {
 
 void main() {
   vViewNormal = safeNormalize(normalMatrix * normal, vec3(0.0, 0.0, 1.0));
+  vLocalPos = position;
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   vViewPosition = -mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
@@ -238,29 +240,29 @@ void main() {
 `;
 
 /**
- * 等离子星核的片元着色器 —— 无硬边径向衰减。
+ * 等离子星核的片元着色器 —— 四段式深海渐变 + 3D 连续能量流纹。
  *
- * 【核心数学】
- *   viewDot  = max(0, dot(N, V))   面心 1 → 轮廓 0
- *   core     = pow(viewDot, 3.2)    高次幂 → 只有正对相机的一小块是白炽
- *   corona   = pow(viewDot, 1.35)   低次幂 → 宽广的青色电晕
- *   alpha    = corona · uPulse · smoothstep(0, 0.02, viewDot)
- *
- * 【为何这样就消灭了死白硬边】球体的可见轮廓恰好是 `viewDot → 0` 的位置，
- * 而 alpha 在这里趋于 0，于是轮廓处**自然透明**，没有"圆片剪纸"的边。
- * 配合加色混合（AdditiveBlending），球体边缘与背景平滑叠加，肉眼看不出边界。
- *
- * 【颜色三级过渡】深海青 → 冰青 → 纯白，由 corona/core 两个权重连续插值，
- * 不存在任何硬分段，因此从任何机位看都是柔和的径向渐变。
+ * 【核心数学与状态流转】
+ * 1. 基于确定性 3D 谐波函数 `plasmaVeinField(p, uTime)` 计算连续发光流纹（零纹理采样、零分支奇点）；
+ * 2. 将 `viewDot = abs(dot(N, V))` 划分为四层立体色彩过渡带，彻底消灭旧版“一团死白”过曝球：
+ *    - `[0.00, 0.28]` 外缘深海靛蓝（`#09152b` → `#0c4a6e`）+ 纤细菲涅尔电光内环；
+ *    - `[0.28, 0.58]` 中层宝蓝/青金石流体带（`#0284c7` → `#06b6d4`）；
+ *    - `[0.58, 0.86]` 内圈电光青日冕层（与 `uToneColor` 集群健康度联动）；
+ *    - `[0.86, 1.00]` 极小奇点冰白核心（`pow(max(viewDot, 1e-4), 7.5)`，输出钳制 ≤1.35）。
+ * 3. `withNanGuard` + `clamp` 确保跨视角/掠射角零 NaN/Inf 污染。
  */
-const PLASMA_FRAGMENT_SHADER = `
+const PLASMA_FRAGMENT_SHADER = withNanGuard(`
 uniform float uPulse;
-uniform vec3 uCoreColor;
+uniform float uTime;
+uniform vec3 uToneColor;
+uniform vec3 uOuterColor;
+uniform vec3 uMidColor;
 uniform vec3 uCoronaColor;
-uniform vec3 uDeepColor;
+uniform vec3 uCoreColor;
 
 varying vec3 vViewNormal;
 varying vec3 vViewPosition;
+varying vec3 vLocalPos;
 
 /* R61：零向量安全归一化，避免 normalize(0) = 0 * inversesqrt(0) = NaN */
 vec3 safeNormalize(vec3 v, vec3 fallback) {
@@ -268,22 +270,48 @@ vec3 safeNormalize(vec3 v, vec3 fallback) {
   return lenSq > 1.0e-8 ? v * inversesqrt(lenSq) : fallback;
 }
 
+/* 确定性 3D 谐波能量流纹场：输出严格约束在 [0, 1] */
+float plasmaVeinField(vec3 p, float t) {
+  float w1 = sin(p.x * 7.2 + t * 1.35 + cos(p.y * 5.8 - t * 0.9));
+  float w2 = sin(p.y * 8.4 - t * 1.15 + cos(p.z * 6.5 + t * 1.05));
+  float w3 = sin((p.x + p.z) * 6.2 + p.y * 4.5 + t * 0.85);
+  float harmonic = w1 * 0.45 + w2 * 0.35 + w3 * 0.20;
+  float ridge = clamp(1.0 - abs(harmonic), 0.0, 1.0);
+  return ridge * ridge;
+}
+
 void main() {
   vec3 n = safeNormalize(vViewNormal, vec3(0.0, 0.0, 1.0));
   vec3 v = safeNormalize(vViewPosition, vec3(0.0, 0.0, 1.0));
-  /* 下界 1e-4：pow(viewDot, 2.2) 永远不会收到 0.0 底数 */
-  float viewDot = clamp(dot(n, v), 1.0e-4, 1.0);
+  float viewDot = clamp(abs(dot(n, v)), 1.0e-4, 1.0);
 
-  float core = pow(max(viewDot, 1.0e-4), 3.2);
-  float corona = pow(max(viewDot, 1.0e-4), 1.35);
+  vec3 flowCoord = safeNormalize(vLocalPos, vec3(0.0, 1.0, 0.0)) * 1.65;
+  float veins = plasmaVeinField(flowCoord, uTime);
+  float polarBias = clamp(abs(vLocalPos.y) * 2.2, 0.0, 1.0);
 
-  vec3 color = mix(uDeepColor, uCoronaColor, corona);
-  color = mix(color, uCoreColor, core);
+  float midWeight = smoothstep(0.24, 0.58, viewDot);
+  float coronaWeight = smoothstep(0.54, 0.86, viewDot);
+  float singularity = pow(max(viewDot, 1.0e-4), 7.5);
 
-  float alpha = corona * uPulse;
-  alpha *= smoothstep(0.0, 0.02, viewDot);
+  vec3 deepShell = mix(vec3(0.035, 0.082, 0.169), uOuterColor, 0.45 + 0.55 * polarBias);
+  vec3 midTone = mix(uMidColor, uToneColor, 0.35 + 0.28 * veins);
+  vec3 coronaTone = mix(uCoronaColor, uToneColor * 1.15 + vec3(0.10), 0.42);
 
-  gl_FragColor = vec4(clamp(color, 0.0, 8.0), clamp(alpha, 0.0, 0.88));
+  vec3 gradColor = mix(deepShell, midTone, midWeight);
+  gradColor = mix(gradColor, coronaTone, coronaWeight);
+  gradColor += uToneColor * veins * (0.28 * (1.0 - singularity));
+
+  float rimFactor = clamp(1.0 - viewDot, 0.0, 1.0);
+  float fresnelRim = rimFactor * rimFactor * rimFactor * smoothstep(0.02, 0.26, viewDot);
+  gradColor += uCoronaColor * fresnelRim * 0.55;
+
+  vec3 finalRgb = mix(gradColor, uCoreColor, singularity * 0.88);
+  finalRgb *= 0.88 + 0.18 * (uPulse - 1.0);
+
+  float edgeFade = smoothstep(0.0, 0.12, viewDot);
+  float alpha = (0.30 + 0.34 * midWeight + 0.20 * veins + 0.18 * singularity) * edgeFade;
+
+  gl_FragColor = vec4(clamp(finalRgb, 0.0, 1.35), clamp(alpha, 0.0, 0.80));
   #ifdef KV_DEBUG_NAN
     if (!(gl_FragColor.r == gl_FragColor.r)
         || !(gl_FragColor.g == gl_FragColor.g)
@@ -296,14 +324,16 @@ void main() {
     }
   #endif
 }
-`;
+`);
 
 /**
- * 外层八面体半透明菲涅尔晶壳顶点着色器（Part 1 · 替代 transmission={0.72}）。
+ * 外层八面体半透明菲涅尔晶壳顶点着色器（Part 1 + 跨赤道法线平滑）。
  */
 const CRYSTAL_SHELL_VERTEX_SHADER = `
 varying vec3 vViewNormal;
+varying vec3 vRadialNormal;
 varying vec3 vViewPosition;
+varying float vLocalY;
 
 /* 零向量安全归一化：八面体 sharp normal 或掠射视角防 normalize(0)=NaN */
 vec3 safeNormalize(vec3 v, vec3 fallback) {
@@ -313,6 +343,11 @@ vec3 safeNormalize(vec3 v, vec3 fallback) {
 
 void main() {
   vViewNormal = safeNormalize(normalMatrix * normal, vec3(0.0, 0.0, 1.0));
+  vRadialNormal = safeNormalize(
+    normalMatrix * safeNormalize(position, vec3(0.0, 1.0, 0.0)),
+    vec3(0.0, 0.0, 1.0)
+  );
+  vLocalY = position.y;
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   vViewPosition = -mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
@@ -322,11 +357,10 @@ void main() {
 /**
  * 外层八面体半透明菲涅尔晶壳片元着色器 —— 替代 meshPhysicalMaterial transmission（Part 1）。
  *
- * 【设计意图】（性能 + 光学双收益）
- * 原 meshPhysicalMaterial transmission={0.72} 会迫使 Three.js 为主相机与 T3 真反射虚拟相机
- * 各执行一次 _transmissionRenderTarget 全场景重绘（每相机 Pass 约 +64 Draw Call，双 Pass 约 +128）。
- * 本着色器以单次透明绘制计算视空间 DoubleSide Fresnel：中心低雾度通透露出内部星云与热核，
- * 掠射晶面轮廓聚集青蓝边缘高光，同时 100% 保留 T3 MeshReflectorMaterial 真实镜面反射。
+ * 【设计意图】（性能 + 光学 + 跨赤道连续性）
+ * 1. 单次透明绘制计算视空间 DoubleSide Fresnel，中心低雾度通透露出内部多层晶心与渐变星核；
+ * 2. 将平直八面体面法线 `vViewNormal` 与连续径向法线 `vRadialNormal` 按 `0.55 : 0.45` 融合，
+ *    叠加连续的纵向微光渐变 `verticalSheen`，既保留八面体切面棱角感，又消除 `y = 0` 赤道处的明暗断层。
  */
 const CRYSTAL_SHELL_FRAGMENT_SHADER = withNanGuard(`
 uniform vec3 uBaseColor;
@@ -336,7 +370,9 @@ uniform float uBaseAlpha;
 uniform float uEmphasis;
 
 varying vec3 vViewNormal;
+varying vec3 vRadialNormal;
 varying vec3 vViewPosition;
+varying float vLocalY;
 
 vec3 safeNormalize(vec3 v, vec3 fallback) {
   float lenSq = dot(v, v);
@@ -344,20 +380,24 @@ vec3 safeNormalize(vec3 v, vec3 fallback) {
 }
 
 void main() {
-  vec3 n = safeNormalize(vViewNormal, vec3(0.0, 0.0, 1.0));
+  vec3 flatN = safeNormalize(vViewNormal, vec3(0.0, 0.0, 1.0));
+  vec3 radialN = safeNormalize(vRadialNormal, vec3(0.0, 0.0, 1.0));
+  vec3 n = safeNormalize(mix(radialN, flatN, 0.55), flatN);
   vec3 v = safeNormalize(vViewPosition, vec3(0.0, 0.0, 1.0));
   /* DoubleSide 晶壳正反面均参与光学边缘高光，abs(dot) 保证正反连续 */
   float facing = clamp(abs(dot(n, v)), 0.0, 1.0);
   /* 为什么指数取 2.4（Part 1）：高于 2.0 使正面中心保持通透、边缘高光收敛为纤细玻璃折射带 */
   float fresnel = pow(max(1.0 - facing, 1.0e-4), 2.4);
   float edgeSheen = smoothstep(0.08, 0.92, fresnel);
+  float verticalSheen = 1.0 - smoothstep(0.0, 1.45, abs(vLocalY));
   float emphasisGain = clamp(uEmphasis, 0.0, 1.0);
 
   vec3 tint = mix(uBaseColor, uEmissiveColor, 0.42 + 0.36 * fresnel);
-  vec3 color = tint * (0.48 + 0.24 * emphasisGain) + uRimColor * edgeSheen * (0.95 + 0.40 * emphasisGain);
-  float alpha = uBaseAlpha + fresnel * 0.26 + emphasisGain * 0.07;
+  vec3 color = tint * (0.44 + 0.14 * verticalSheen + 0.24 * emphasisGain)
+    + uRimColor * edgeSheen * (0.95 + 0.40 * emphasisGain);
+  float alpha = uBaseAlpha + fresnel * 0.24 + verticalSheen * 0.04 + emphasisGain * 0.07;
 
-  gl_FragColor = vec4(clamp(color, 0.0, 2.4), clamp(alpha, 0.06, 0.56));
+  gl_FragColor = vec4(clamp(color, 0.0, 2.2), clamp(alpha, 0.05, 0.52));
   #ifdef KV_DEBUG_NAN
     if (!(gl_FragColor.r == gl_FragColor.r)
         || !(gl_FragColor.g == gl_FragColor.g)
@@ -390,8 +430,8 @@ const RING_INNER_RADIUS = 1.85;
 const RING_OUTER_RADIUS = 2.35;
 const RING_TICK_COUNT = 24;
 
-/** 圆环局部 Y 偏移：MASTER_POSITION.y(2.5) − 2.42 = 世界 y ≈ 0.08（贴地投影） */
-const RING_LOCAL_Y = -2.42;
+/** 圆环局部 Y 偏移：由 MASTER_POSITION[1] 动态派生，确保世界 y 恒贴地于 0.08 */
+const RING_LOCAL_Y = 0.08 - MASTER_POSITION[1];
 
 /** 圆环自转角速度（rad/s） */
 const RING_SPIN_RATE = 0.1;
@@ -507,10 +547,10 @@ const RING_TICKS_GEOMETRY: THREE.BufferGeometry = mergeStaticBoxes(
 /**
  * 铭牌的局部坐标（R67 / R6-1）。
  *
- * 晶核正下方居中：世界坐标约 [0, 0.54, 1.48]，屏幕投影约 (48.5%, 62.7%)，
- * 与中心 ±5% 区域保持充足留白，零文字覆盖晶核与屏心。
+ * 贴合修长晶体下尖端（-1.42 × 1.78 = -2.528）与地面刻度全息环（RING_LOCAL_Y = -2.77）
+ * 之间前方地面上方：世界坐标 [0, 0.27, 1.48]，完全不遮挡修长晶柱与地面星环。
  */
-const LABEL_POSITION: readonly [number, number, number] = [0, -1.96, 1.48];
+const LABEL_POSITION: readonly [number, number, number] = [0, -2.58, 1.48];
 /** Master 全息铭牌世界坐标常量（useFrame 吃雾计算零分配直读） */
 const MASTER_HUD_WORLD_POS: readonly [number, number, number] = [
   MASTER_POSITION[0] + LABEL_POSITION[0],
@@ -550,6 +590,9 @@ export default function MasterNode3D() {
   const coreRef = useRef<THREE.Mesh>(null);
   const coreMatRef = useRef<THREE.MeshStandardMaterial>(null);
   const coreEdgesRef = useRef<EdgesRef | null>(null);
+  const innerHeartRef = useRef<THREE.Mesh>(null);
+  const innerHeartMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const innerHeartEdgesRef = useRef<EdgesRef | null>(null);
   const selectionRingRef = useRef<THREE.Mesh>(null);
   const pulseRingRef = useRef<THREE.Mesh>(null);
   const pulseRingMatRef = useRef<THREE.MeshBasicMaterial>(null);
@@ -585,9 +628,12 @@ export default function MasterNode3D() {
   const plasmaUniforms = useMemo(
     (): Record<string, THREE.IUniform> => ({
       uPulse: { value: 1 },
-      uCoreColor: { value: new THREE.Color('#ffffff') },
-      uCoronaColor: { value: new THREE.Color('#67e8f9') },
-      uDeepColor: { value: new THREE.Color('#06b6d4') },
+      uTime: { value: 0 },
+      uToneColor: { value: TONE_HEALTHY.clone() },
+      uOuterColor: { value: new THREE.Color('#0c4a6e') },
+      uMidColor: { value: new THREE.Color('#0284c7') },
+      uCoronaColor: { value: new THREE.Color('#22d3ee') },
+      uCoreColor: { value: new THREE.Color('#f0f9ff') },
     }),
     [],
   );
@@ -637,8 +683,7 @@ export default function MasterNode3D() {
    *
    * 72 条短刻线写入一个 LineSegments 几何，两环共享同一份顶点缓冲：
    * 环 A / 环 B 各自放在自己的 group 里旋转，几何本身零每帧修改。
-   * 半径 1.76，刻度沿径向向外 0.055 / 0.042 —— 与规范中的
-   * torusGeometry(1.76, 0.008) 环体保持同一半径，视觉上像精密度盘。
+   * 半径与 GIMBAL_RADIUS (1.48) 同源，刻度沿径向向外 0.055，紧贴修长晶身。
    */
   const gimbalTickGeometry = useMemo((): THREE.BufferGeometry => {
     const vertices = new Float32Array(GIMBAL_TICK_COUNT * 2 * 3);
@@ -647,11 +692,11 @@ export default function MasterNode3D() {
       const cos = Math.cos(angle);
       const sin = Math.sin(angle);
       /* 每条刻线两个端点：环半径内侧 → 外侧 0.055 */
-      vertices[i * 6] = cos * 1.76;
-      vertices[i * 6 + 1] = sin * 1.76;
+      vertices[i * 6] = cos * GIMBAL_RADIUS;
+      vertices[i * 6 + 1] = sin * GIMBAL_RADIUS;
       vertices[i * 6 + 2] = 0;
-      vertices[i * 6 + 3] = cos * (1.76 + 0.055);
-      vertices[i * 6 + 4] = sin * (1.76 + 0.055);
+      vertices[i * 6 + 3] = cos * (GIMBAL_RADIUS + 0.055);
+      vertices[i * 6 + 4] = sin * (GIMBAL_RADIUS + 0.055);
       vertices[i * 6 + 5] = 0;
     }
     const geometry = new THREE.BufferGeometry();
@@ -968,6 +1013,9 @@ export default function MasterNode3D() {
         coreEdgesRef.current.material.opacity = isPressedNow ? 1.0 : 0.65 + 0.35 * emphasis;
         coreEdgesRef.current.material.linewidth = isPressedNow ? 1.0 : 1.0 + 0.4 * emphasis;
       }
+      if (innerHeartEdgesRef.current !== null) {
+        innerHeartEdgesRef.current.material.opacity = isPressedNow ? 1.0 : 0.86 + 0.14 * emphasis;
+      }
     },
     [isSelected, crystalUniforms],
   );
@@ -1079,6 +1127,12 @@ export default function MasterNode3D() {
     if (neuralMatRef.current !== null) {
       neuralMatRef.current.color.copy(healthColorCurrent);
     }
+    /* 等离子星核与切面内晶心同步集群健康色温（原地 copy，零分配） */
+    const plasmaTone = plasmaUniforms.uToneColor.value as THREE.Color;
+    plasmaTone.copy(healthColorCurrent);
+    if (innerHeartMatRef.current !== null) {
+      innerHeartMatRef.current.emissive.copy(healthColorCurrent);
+    }
 
     /* 星云整体随晶体缓慢自转（比外壳更慢，形成内外差速观感） */
     if (constellationRef.current !== null) {
@@ -1119,20 +1173,33 @@ export default function MasterNode3D() {
       coreEdgesRef.current.material.opacity = pressedRef.current ? 1.0 : 0.65 + 0.35 * emphasis;
       coreEdgesRef.current.material.linewidth = pressedRef.current ? 1.0 : 1.0 + 0.4 * emphasis;
     }
+    if (innerHeartEdgesRef.current !== null) {
+      innerHeartEdgesRef.current.material.opacity = pressedRef.current ? 1.0 : 0.86 + 0.14 * emphasis;
+    }
 
     if (outerRef.current !== null) {
       outerRef.current.rotation.y = t * OUTER_SPIN_RATE;
       outerRef.current.rotation.x = Math.sin(t * 0.4) * 0.18 * motionScale;
     }
-    /* 内层晶核：反向自转 + 余弦滚转（仪差机械感）+ 呼吸缩放 */
+    /* 内层晶核：反向自转 + 余弦滚转（仪差机械感）+ 纵向修长呼吸缩放 */
     if (coreRef.current !== null) {
       coreRef.current.rotation.y = t * INNER_SPIN_RATE;
       coreRef.current.rotation.z = Math.cos(t * 0.32) * 0.22 * motionScale;
       const breath = 1 + BREATH_AMPLITUDE * motionScale * Math.sin(t * BREATH_RATE);
-      /* R67：JSX 的基础缩放为 0.78，呼吸必须相对基础缩放，不能把它覆盖掉 */
-      coreRef.current.scale.setScalar(0.78 * breath);
+      /* 同步 JSX 纵向修长比例 [0.76, 0.76 * OCTA_SCALE_Y * 1.04, 0.76] 保持晶体身材比例 */
+      coreRef.current.scale.set(
+        0.76 * breath,
+        0.76 * OCTA_SCALE_Y * 1.04 * breath,
+        0.76 * breath,
+      );
     }
-    /* 等离子星核脉动（reduced-motion 时幅度 ×0.25） */
+    /* 内部切面晶心：正向较快自转 + 轻微滚转，透出锋利几何棱面 */
+    if (innerHeartRef.current !== null) {
+      innerHeartRef.current.rotation.y = t * 0.95;
+      innerHeartRef.current.rotation.z = Math.sin(t * 0.55) * 0.14 * motionScale;
+    }
+    /* 等离子星核时间与脉动（reduced-motion 时幅度 ×0.25） */
+    plasmaUniforms.uTime.value = t;
     plasmaUniforms.uPulse.value = 1 + 0.18 * motionScale * Math.sin(t * BREATH_RATE + Math.PI / 4);
 
     /* 底部全息圆环：缓慢自转（刻度扫过 = 控制面巡检隐喻） */
@@ -1242,8 +1309,13 @@ export default function MasterNode3D() {
       <group ref={floatGroupRef}>
         {/* ---- 选中态：外扩六边形锁定框 ---- */}
         {isSelected ? (
-          <mesh ref={selectionRingRef} rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
-            <ringGeometry args={[2.05, 2.12, 6]} />
+          <mesh
+            ref={selectionRingRef}
+            rotation={[-Math.PI / 2, 0, 0]}
+            renderOrder={16}
+            raycast={(): void => undefined}
+          >
+            <ringGeometry args={[1.76, 1.83, 6]} />
             <meshBasicMaterial
               color="#22d3ee"
               transparent
@@ -1257,7 +1329,12 @@ export default function MasterNode3D() {
         ) : null}
 
         {/* ---- 点击/选中脉冲波纹：useFrame 驱动 scale 与 opacity ---- */}
-        <mesh ref={pulseRingRef} rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
+        <mesh
+          ref={pulseRingRef}
+          rotation={[-Math.PI / 2, 0, 0]}
+          renderOrder={16}
+          raycast={(): void => undefined}
+        >
           <ringGeometry args={[1.0, 1.08, 64]} />
           <meshBasicMaterial
             ref={pulseRingMatRef}
@@ -1274,13 +1351,15 @@ export default function MasterNode3D() {
         {/* ---- 第 1 层：外层八面体半透明全息晶壳 + 发光棱线 ---- */}
         <mesh
           ref={outerRef}
+          scale={[1, OCTA_SCALE_Y, 1]}
+          renderOrder={15}
           onClick={handleMasterClick}
           onPointerDown={handleMasterPointerDown}
           onPointerUp={handleMasterPointerUp}
           onPointerOver={handleMasterPointerOver}
           onPointerOut={handleMasterPointerOut}
         >
-          <octahedronGeometry args={[1.45, 0]} />
+          <octahedronGeometry args={[OCTA_RADIUS, 0]} />
           <shaderMaterial
             ref={outerMatRef}
             defines={KV_DEBUG_NAN_DEFINES}
@@ -1292,46 +1371,66 @@ export default function MasterNode3D() {
             side={THREE.DoubleSide}
             toneMapped={false}
           />
-          <Edges ref={outerEdgesRef} scale={1.002} threshold={1} color="#67e8f9" transparent opacity={0.72} />
+          <Edges
+            ref={outerEdgesRef}
+            renderOrder={15}
+            scale={1.002}
+            threshold={1}
+            color="#67e8f9"
+            transparent
+            opacity={0.72}
+          />
         </mesh>
 
         {/* ---- 第 2 层：内层反向旋转八面体晶核 + 高亮棱线 ---- */}
-        <mesh ref={coreRef} scale={0.78}>
-          <octahedronGeometry args={[1.05, 0]} />
+        <mesh
+          ref={coreRef}
+          scale={[0.76, 0.76 * OCTA_SCALE_Y * 1.04, 0.76]}
+          renderOrder={14}
+        >
+          <octahedronGeometry args={[0.92, 0]} />
           <meshStandardMaterial
             ref={coreMatRef}
-            color="#22d3ee"
-            emissive="#06b6d4"
-            emissiveIntensity={1.2}
+            color="#0ea5e9"
+            emissive="#0284c7"
+            emissiveIntensity={0.85}
             wireframe={false}
             transparent
-            opacity={0.42}
+            opacity={0.34}
             roughness={0.2}
-            metalness={0.3}
+            metalness={0.35}
             depthWrite={false}
             toneMapped={false}
           />
-          <Edges ref={coreEdgesRef} scale={1.003} threshold={1} color="#a5f3fc" transparent opacity={0.65} />
+          <Edges
+            ref={coreEdgesRef}
+            renderOrder={14}
+            scale={1.003}
+            threshold={1}
+            color="#a5f3fc"
+            transparent
+            opacity={0.68}
+          />
         </mesh>
 
-        {/* ---- 第 3 层：80 面二十面体测地线高密线框内胆 ---- */}
-        <mesh ref={icosaCoreRef}>
-          <icosahedronGeometry args={[0.72, 1]} />
+        {/* ---- 第 3 层：80 面二十面体测地线高密线框内胆（同步纵向拉伸告别圆球感） ---- */}
+        <mesh ref={icosaCoreRef} scale={[0.84, 1.42, 0.84]} renderOrder={12}>
+          <icosahedronGeometry args={[0.68, 1]} />
           <meshBasicMaterial
             ref={icosaCoreMatRef}
             color="#67e8f9"
             wireframe
             transparent
-            opacity={0.32}
+            opacity={0.30}
             depthWrite={false}
             blending={THREE.AdditiveBlending}
             toneMapped={false}
           />
         </mesh>
 
-        {/* ---- 第 4 层：中心热核等离子体球 ---- */}
-        <mesh raycast={(): void => undefined}>
-          <sphereGeometry args={[0.42, 32, 32]} />
+        {/* ---- 第 4 层：中心渐变等离子星核（四段式深海蓝→电光青→极小冰白奇点） ---- */}
+        <mesh scale={[0.82, 1.32, 0.82]} renderOrder={11} raycast={(): void => undefined}>
+          <sphereGeometry args={[0.40, 32, 32]} />
           <shaderMaterial
             ref={plasmaMatRef}
             defines={KV_DEBUG_NAN_DEFINES}
@@ -1345,8 +1444,44 @@ export default function MasterNode3D() {
           />
         </mesh>
 
+        {/* ---- 第 4b 层：高折射切面内晶心（嵌于渐变星核内部，提供锐利多面体几何细节） ---- */}
+        <mesh
+          ref={innerHeartRef}
+          scale={[0.78, 1.55, 0.78]}
+          renderOrder={12}
+          raycast={(): void => undefined}
+        >
+          <octahedronGeometry args={[0.32, 0]} />
+          <meshStandardMaterial
+            ref={innerHeartMatRef}
+            color="#0c4a6e"
+            emissive="#0284c7"
+            emissiveIntensity={0.65}
+            roughness={0.15}
+            metalness={0.4}
+            transparent
+            opacity={0.76}
+            depthWrite={false}
+            toneMapped={false}
+          />
+          <Edges
+            ref={innerHeartEdgesRef}
+            renderOrder={12}
+            scale={1.01}
+            threshold={1}
+            color="#e0f2fe"
+            transparent
+            opacity={0.92}
+          />
+        </mesh>
+
         {/* ---- 第 5a 层：360 颗微缩星座点云 ---- */}
-        <points ref={constellationRef} geometry={constellationGeometry} raycast={(): void => undefined}>
+        <points
+          ref={constellationRef}
+          geometry={constellationGeometry}
+          renderOrder={13}
+          raycast={(): void => undefined}
+        >
           <pointsMaterial
             ref={constellationMatRef}
             color="#a5f3fc"
@@ -1361,7 +1496,12 @@ export default function MasterNode3D() {
         </points>
 
         {/* ---- 第 5b 层：28 条神经网络拓扑连线 ---- */}
-        <lineSegments ref={neuralRef} geometry={neuralGeometry} raycast={(): void => undefined}>
+        <lineSegments
+          ref={neuralRef}
+          geometry={neuralGeometry}
+          renderOrder={13}
+          raycast={(): void => undefined}
+        >
           <lineBasicMaterial
             ref={neuralMatRef}
             color="#22d3ee"
@@ -1381,9 +1521,10 @@ export default function MasterNode3D() {
               gyroRefs.current[idx] = el;
             }}
             rotation={[GYRO_RINGS[idx].tilt[0], GYRO_RINGS[idx].tilt[1], GYRO_RINGS[idx].tilt[2]]}
+            renderOrder={16}
             raycast={(): void => undefined}
           >
-            <torusGeometry args={[1.55 + idx * 0.14, 0.012, 16, 96]} />
+            <torusGeometry args={[GYRO_RINGS[idx].radius, GYRO_RINGS[idx].thickness, 16, 96]} />
             <meshBasicMaterial
               ref={(el): void => {
                 gyroMatRefs.current[idx] = el;
@@ -1400,7 +1541,12 @@ export default function MasterNode3D() {
 
         {/* ---- 第 7 层：双正交 72 刻度精密万向节环 ---- */}
         <group ref={gimbalRingARef} rotation={[Math.PI / 3, 0, 0]}>
-          <lineSegments ref={gimbalTicksARef} geometry={gimbalTickGeometry} raycast={(): void => undefined}>
+          <lineSegments
+            ref={gimbalTicksARef}
+            geometry={gimbalTickGeometry}
+            renderOrder={16}
+            raycast={(): void => undefined}
+          >
             <lineBasicMaterial
               ref={gimbalTicksAMatRef}
               color="#22d3ee"
@@ -1411,8 +1557,8 @@ export default function MasterNode3D() {
               toneMapped={false}
             />
           </lineSegments>
-          <mesh raycast={(): void => undefined}>
-            <torusGeometry args={[1.76, 0.008, 12, 96]} />
+          <mesh renderOrder={16} raycast={(): void => undefined}>
+            <torusGeometry args={[GIMBAL_RADIUS, 0.008, 12, 96]} />
             <meshBasicMaterial
               color="#67e8f9"
               transparent
@@ -1424,7 +1570,12 @@ export default function MasterNode3D() {
           </mesh>
         </group>
         <group ref={gimbalRingBRef} rotation={[-Math.PI / 3, Math.PI / 4, 0]}>
-          <lineSegments ref={gimbalTicksBRef} geometry={gimbalTickGeometry} raycast={(): void => undefined}>
+          <lineSegments
+            ref={gimbalTicksBRef}
+            geometry={gimbalTickGeometry}
+            renderOrder={16}
+            raycast={(): void => undefined}
+          >
             <lineBasicMaterial
               ref={gimbalTicksBMatRef}
               color="#67e8f9"
@@ -1435,8 +1586,8 @@ export default function MasterNode3D() {
               toneMapped={false}
             />
           </lineSegments>
-          <mesh raycast={(): void => undefined}>
-            <torusGeometry args={[1.76, 0.008, 12, 96]} />
+          <mesh renderOrder={16} raycast={(): void => undefined}>
+            <torusGeometry args={[GIMBAL_RADIUS, 0.008, 12, 96]} />
             <meshBasicMaterial
               color="#67e8f9"
               transparent
@@ -1452,6 +1603,7 @@ export default function MasterNode3D() {
         <instancedMesh
           ref={vertexAnchorRef}
           args={[undefined, undefined, OCTA_VERTEX_COUNT]}
+          renderOrder={16}
           raycast={(): void => undefined}
           frustumCulled={false}
         >
@@ -1470,6 +1622,7 @@ export default function MasterNode3D() {
         <instancedMesh
           ref={sparkRef}
           args={[undefined, undefined, AMBIENT_SPARK_COUNT]}
+          renderOrder={16}
           raycast={(): void => undefined}
           frustumCulled={false}
         >
@@ -1501,7 +1654,7 @@ export default function MasterNode3D() {
        * - DoubleSide：从任何机位（含俯视）都能看到筒壁，不会因背面剔除而消失；
        * - opacity 0.35：克制，作为结构连接而非视觉主角。
        */}
-      <mesh position={[0, BEAM_CENTER_Y, 0]} raycast={(): void => undefined}>
+      <mesh position={[0, BEAM_CENTER_Y, 0]} renderOrder={10} raycast={(): void => undefined}>
         <cylinderGeometry
           args={[BEAM_TOP_RADIUS, BEAM_BOTTOM_RADIUS, BEAM_HEIGHT, BEAM_RADIAL_SEGMENTS, 1, true]}
         />
@@ -1518,28 +1671,20 @@ export default function MasterNode3D() {
       </mesh>
 
       {/*
-       * ═══ 程序化假辉光（双层）═══
-       * 外层大面积青色柔光营造整体氛围，内层小面积冰青白核强化「白炽」感。
-       * 内层透明度压到 0.62：新版 shader 自带白炽核，
-       * 若仍用 0.95 会与实体内核叠加过曝成一片纯白。
-       */}
-      {/* 旧的 scale 5.4 / opacity 0.85 大面积柔光已收敛，见下方星核辉光 */}
-
-      {/*
-       * ═══ 程序化星核辉光（本轮收敛）═══
+       * ═══ 程序化星核氛围辉光（收敛衬底，不糊死渐变星核）═══
        *
-       * 旧配置 scale 5.4 / opacity 0.85 的大面积柔光，叠在八面体上再经 Bloom
-       * 放大，整颗晶体被糊成浅蓝棉花糖。现在只保留一枚紧凑锐利的星核辉光
-       * （2.15 / 0.62）：它的职责是给中心白炽点一层薄光晕，而非覆盖整颗晶体。
+       * 收敛至 scale 1.25 / opacity 0.18 / falloff 3.8：只提供柔和大气底晕，
+       * 位于 renderOrder=0（早于 11~16 晶核层绘制），彻底消除中心大白斑对
+       * 等离子渐变与切面内晶心的遮蔽。
        */}
-      <GlowHalo3D color={GLOW_CYAN} scale={2.15} opacity={0.62} falloff={2.6} pulse pulsePeriod={2.6} />
+      <GlowHalo3D color={GLOW_CYAN} scale={1.25} opacity={0.18} falloff={3.8} pulse pulsePeriod={2.6} />
 
       {/*
        * ═══ 第 2e 层：赤道光环 + 两道斜交极轨细环 ═══
        *
        * 【为何需要】上方是通透的暗晶外壳 + 内部星云，下方是地面刻度环，
        * 但晶体**腰部是空的**——缺少一圈把"上下"接起来的水平结构。
-       * 补上赤道环（1.88）后，晶体立刻有了"星体的赤道"。
+       * 补上赤道环（1.56）后，晶体立刻有了"星体的赤道"。
        *
        * 【三道环的层次】赤道环最亮最明确（opacity 0.5）；两道极轨 0.22，
        * 倾角 π/2±0.42、互不共面。三者叠加形成三维球壳骨架，
@@ -1547,7 +1692,12 @@ export default function MasterNode3D() {
        *
        * 【零分配】useFrame 只写各自的 rotation.z，不触碰几何或材质。
        */}
-      <mesh ref={equatorRingRef} rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
+      <mesh
+        ref={equatorRingRef}
+        rotation={[-Math.PI / 2, 0, 0]}
+        renderOrder={16}
+        raycast={(): void => undefined}
+      >
         <ringGeometry args={[EQUATOR_RADIUS, EQUATOR_RADIUS + EQUATOR_THICKNESS, 128]} />
         <meshBasicMaterial
           ref={equatorRingMatRef}
@@ -1569,6 +1719,7 @@ export default function MasterNode3D() {
             if (index === 0) polarRingRef.current = node;
           }}
           rotation={[polar.tilt[0], polar.tilt[1], polar.tilt[2]]}
+          renderOrder={16}
           raycast={(): void => undefined}
         >
           <ringGeometry args={[POLAR_RING_RADIUS, POLAR_RING_RADIUS + POLAR_RING_THICKNESS, 128]} />
@@ -1592,7 +1743,7 @@ export default function MasterNode3D() {
          若把 −90°X 放在 group 上，齿会被连带立起且朝向错乱，故严禁上提。 ---- */}
       <group ref={ringGroupRef} position={[0, RING_LOCAL_Y, 0]}>
         {/* 外轮廓环（自身 −90°X 平铺贴地） */}
-        <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
           <ringGeometry args={[RING_OUTER_RADIUS - 0.035, RING_OUTER_RADIUS, 96]} />
           <meshBasicMaterial
             ref={tickRingMatRef}
@@ -1604,7 +1755,7 @@ export default function MasterNode3D() {
           />
         </mesh>
         {/* 内轮廓环 */}
-        <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
           <ringGeometry args={[RING_INNER_RADIUS, RING_INNER_RADIUS + 0.03, 96]} />
           <meshBasicMaterial
             ref={innerRingMatRef}
@@ -1616,7 +1767,7 @@ export default function MasterNode3D() {
           />
         </mesh>
         {/* 24 根径向刻度齿（模块期已通过 mergeGeometries 合批为 1 次 Draw Call） */}
-        <mesh geometry={RING_TICKS_GEOMETRY}>
+        <mesh geometry={RING_TICKS_GEOMETRY} renderOrder={10}>
           <meshBasicMaterial
             ref={ringTicksMatRef}
             color={GLOW_CYAN}

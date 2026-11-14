@@ -14,6 +14,11 @@
  *
  * 【数学】alpha = smoothstep(13, 22, r)，r 为世界半径；
  * edge0 < edge1 满足 R01 的 smoothstep 规则。
+ *
+ * 【渲染层级契约】renderOrder = -2（低于所有前景半透明体 0 / 10~16，高于地面网格 -3）：
+ * 地面渐隐盘为 NormalBlending + depthWrite=false，若 renderOrder ≥ 前景晶体（如旧值 1 > 0），
+ * 远端地平线 r∈[13,22] 会在前景不写深度的透明晶体之后绘制，导致将 #020611 背景色盖在
+ * 晶体腰部形成“背景截断晶体”的遮挡错误。设为 -2 后只渐隐地面层，绝不遮挡前景模型。
  */
 
 import { useMemo } from 'react';
@@ -60,7 +65,7 @@ export default function GroundHorizonFade(): React.ReactElement {
       rotation={[-Math.PI / 2, 0, 0]}
       position={[0, 0.0015, 0]}
       raycast={(): void => undefined}
-      renderOrder={1}
+      renderOrder={-2}
     >
       <circleGeometry args={[FADE_OUTER_RADIUS, 128]} />
       <shaderMaterial

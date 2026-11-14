@@ -120,46 +120,21 @@ import { recordRuntimeError } from '@/utils/runtimeErrorBuffer';
 const VOID_COLOR = '#020611';
 
 /**
- * 雾效近端距离（15 单位内完全清晰）。
+ * 雾效近端距离（26 单位内完全清晰）。
  *
- * 【重要：本值经实测校准，与最初设想的 13.5 不同】
- *
- * three.js 的线性雾并不按欧氏距离工作，而是：
- *   fogFactor = smoothstep(fogNear, fogFar, vFogDepth)
- * 其中 vFogDepth = -mvPosition.z 是**视空间深度**（相机前方投影距离）。
- * smoothstep 在区间两端导数趋零、中段陡峭，因此同样的一对 (near, far)
- * 产生的雾量比线性插值大得多。
- *
- * 实测三座机架的视深（相机 [7.8,14,22] 看向 [0,2.5,0]）：
- *   worker-alpha 19.09 · worker-beta 28.68 · worker-gamma 33.61
- *
- * 若按最初设想的 (13.5, 36) 代入 smoothstep：
- *   15.5% / 75.1% / **96.8%** —— 远端机架几乎完全被雾吞掉，
- * 与"远端约 30% 大气雾化、近端保持极高锐度"的目标严重不符。
- *
- * 经穷举搜索校准，(15, 64) 给出：
- *   2.0% / 18.7% / **31.9%** —— 精确命中"远端约 30%"的设计意图，
- * 且三层梯度均匀，中间机架也有清晰的距离感。
- *
- * 【为何 fogFar 反而比原值 48 更大】smoothstep 的缓变区在区间中段；
- * 要让"最近机架几乎无雾"同时"最远机架只雾 30%"，必须把区间拉宽，
- * 使三座机架都落在 smoothstep 的**平缓上升段**而非陡峭段。
- * 窄区间（如 22~36）会把三座机架挤在陡峭段上，任何微小距离差
- * 都对应巨大的雾量差，反而是"要么全清要么全糊"的两极效果。
+ * 【拉远清晰度调优（R14 视觉微调）】
+ * 默认全景机位距中心约 27 单位，且用户可能继续推远至 MAX_ORBIT_DISTANCE = 36 俯瞰全簇。
+ * 原 (15, 64) 在相机拉远至 30~36 单位时就让三机架与中心晶体提前落入重雾区，
+ * 表现为“拉远就变暗发糊”。现推远至 **(26, 92)**：
+ * - 常规交互及全景拉远区间（15~36 单位）主体保持极高锐度与高对比度；
+ * - 极远端背景仍通过平滑区间逐步溶入深空冷蓝雾色 #020611，保留空间纵深。
  */
-const FOG_NEAR = 15;
+const FOG_NEAR = 26;
 
 /**
- * 雾效远端距离（64 单位处完全没入深空）。
- *
- * 【推导详见 FOG_NEAR 注释】与近端 15 共同构成 49 单位的缓变区间，
- * 使三座机架分别落在 2% / 19% / 32% 的位置。
- *
- * 这个值看起来比原 48 更远，但实际雾化更强——
- * 因为近端从 18 提到了 15，整体区间被"拉开"，smoothstep 的形状
- * 让近端更清晰、远端仍有足够雾量。
+ * 雾效远端距离（92 单位处完全没入深空）。
  */
-const FOG_FAR = 64;
+const FOG_FAR = 92;
 
 /** 初始相机机位（全景鸟瞰，与 OVERVIEW_CAMERA_POSITION 契约一致） */
 /**
@@ -373,17 +348,17 @@ const RENDER_TIER: RenderTier =
   RENDER_QUALITY_TIER === 'high' ? 'T3' : RENDER_QUALITY_TIER === 'balanced' ? 'T2' : 'T1';
 
 /**
- * DPR 上下限（R5 第7步：按屏密度分档，替代单一 1.75/0.85）。
+ * DPR 上下限（清晰度与超采样抗锯齿配置）。
  *
- * 【为何按屏密度分档】1x 屏上把 DPR 拉到 1.75 会做无意义的超采样（源像素本就
- * 1 个），只烧填充率不增清晰度；2x 屏上把下限压到 0.85 又会让 Retina 糊。
- * 因此：
- * - 1x 屏（devicePixelRatio ≤ 1.25）：[0.75, 1]，低端可降到底换流畅；
- * - 2x 屏（高分屏）：[1, 1.5]，下限 1 保清晰，上限 1.5 比 2.0 省约 44% 像素。
- * 与 PerformanceMonitor 降档联动：只会朝 floor 方向降，不回弹（避免 RT 反复重建）。
+ * 【为何将双屏下限统一提升至 1.5】
+ * R3F `<Canvas dpr={[min, max]}>` 内部按 `clamp(window.devicePixelRatio, min, max)` 求值；
+ * 原 1x 屏 floor=1 会导致 `1.0x / 1.25x` 桌面屏幕永远只跑原生 1.0~1.25 DPR，
+ * 拉远镜头时晶体细棱线、机架线框在屏幕空间变细，出现明显锯齿与发糊。
+ * 硬件 GPU 下将 1x/2x 屏区间均设为 `[1.5, 2]`（软件渲染仍走独立 1.0 锁定分支），
+ * 搭配 Composer MSAA 形成稳定的超采样锐利画面。
  */
-const DPR_BOUNDS_1X: { readonly floor: number; readonly max: number } = { floor: 0.75, max: 1 };
-const DPR_BOUNDS_2X: { readonly floor: number; readonly max: number } = { floor: 1, max: 1.5 };
+const DPR_BOUNDS_1X: { readonly floor: number; readonly max: number } = { floor: 1.5, max: 2 };
+const DPR_BOUNDS_2X: { readonly floor: number; readonly max: number } = { floor: 1.5, max: 2 };
 
 /**
  * resolveDprBounds —— 依据当前屏密度返回 DPR 区间（挂载期一次）。
@@ -498,9 +473,9 @@ interface TierEffects {
 }
 
 const TIER_EFFECT_MATRIX: Readonly<Record<0 | 1 | 2 | 3, TierEffects>> = {
-  3: { dof: true, fxaa: false, multisampling: 2, bloomLevels: 5, bloomIntensity: 0.48, vignette: true },
-  2: { dof: false, fxaa: true, multisampling: 0, bloomLevels: 5, bloomIntensity: 0.48, vignette: true },
-  1: { dof: false, fxaa: false, multisampling: 0, bloomLevels: 3, bloomIntensity: 0.34, vignette: true },
+  3: { dof: false, fxaa: false, multisampling: 4, bloomLevels: 4, bloomIntensity: 0.32, vignette: true },
+  2: { dof: false, fxaa: false, multisampling: 2, bloomLevels: 4, bloomIntensity: 0.32, vignette: true },
+  1: { dof: false, fxaa: true, multisampling: 0, bloomLevels: 3, bloomIntensity: 0.26, vignette: true },
   0: { dof: false, fxaa: false, multisampling: 0, bloomLevels: 0, bloomIntensity: 0, vignette: false },
 };
 
@@ -1147,13 +1122,7 @@ export default function ClusterCanvas() {
     telemetryTransientRef.glStats.renderReason = reason;
   }, [qualityPost, postEnabled, envCaps, effectiveTier, isViewportAutoLow]);
 
-  /**
-   * R5 第7步：effectiveTier ≤ 1 时把 DPR 锁到区间下限（只降不升）。
-   */
-  useEffect((): void => {
-    if (envCaps.software) return;
-    if (effectiveTier <= 1) setAdaptiveDpr(dprBounds.floor);
-  }, [effectiveTier, dprBounds.floor, envCaps.software]);
+  /* 遵循 useQualityGovernor「降档只改渲染开关与参数，绝不改 DPR」契约：不在 effectiveTier <= 1 时强制下调 DPR */
 
   /**
    * L11：渲染路径一致性对比钩子（仅开发构建暴露）。
@@ -1230,11 +1199,9 @@ export default function ClusterCanvas() {
     if (now - state.lastAt < DPR_ADJUST_COOLDOWN_MS) return;
 
     dprAdjustRef.current = { count: state.count + 1, lastAt: now };
-    setAdaptiveDpr((prev): number => {
-      const next = Math.max(dprBounds.floor, Math.round((prev - 0.25) * 100) / 100);
-      return next;
-    });
-  }, [dprBounds.floor]);
+    /* 遵循 useQualityGovernor「降档只改渲染开关与参数，绝不降 DPR」契约：只关闭装饰层而不降低 adaptiveDpr */
+    setDecorativeEnabled(false);
+  }, []);
 
   /**
    * 档位重挂载遮罩。
@@ -1377,10 +1344,10 @@ export default function ClusterCanvas() {
     <Bloom
       key="bloom"
       intensity={tierEffects.bloomIntensity}
-      luminanceThreshold={0.92}
-      luminanceSmoothing={0.28}
+      luminanceThreshold={0.96}
+      luminanceSmoothing={0.22}
       mipmapBlur
-      radius={0.45}
+      radius={0.28}
       levels={tierEffects.bloomLevels}
     />,
     <ExposureEffect key="exposure" ref={exposureEffectRef} />,
@@ -1394,7 +1361,7 @@ export default function ClusterCanvas() {
        会双重压暗四角跌破中心亮度的 75%；放宽到 0.3/0.12 后仅做轻量边角收敛，四角相对中心亮度 ≥ 75%。 */
     postEffectChildren.push(<Vignette key="vignette" eskil={false} offset={0.3} darkness={0.12} />);
   }
-  postEffectChildren.push(<Noise key="noise" opacity={0.03} />);
+  postEffectChildren.push(<Noise key="noise" opacity={0.012} />);
 
   return (
     /*
@@ -1429,12 +1396,10 @@ export default function ClusterCanvas() {
           <Canvas
             key={`canvas-${canvasRemountKey}`}
         /**
-         * 【自适应 DPR 契约】dpr 由状态驱动而非写死（R5 第7步按屏密度分档）：
-         * - 1x 屏 [0.75, 1]；2x 屏 [1, 1.5]；
-         * - 持续低帧率时被 PerformanceMonitor 下调至下限，牺牲清晰度换流畅。
-         * 降级单向保守：降下来后只有帧率稳定回升才会恢复，避免临界点横跳。
+         * 【自适应 DPR 契约】硬件 GPU 保持 [1.5, 2.0] 超采样渲染以杜绝拉远锯齿与发糊，
+         * 软件光栅化降级时锁定 1.0；降载由装饰层与效果档位承担，绝不在运镜期间降低分辨率。
          */
-        dpr={[dprBounds.floor, adaptiveDpr]}
+        dpr={envCaps.software ? 1 : [Math.min(dprBounds.floor, adaptiveDpr), adaptiveDpr]}
         /**
          * 【实时软阴影·固定不随档位切换（R5 第8步）】
          * `shadows` 在 Canvas 创建期定死：软渲染用 basic，真机固定 soft。
@@ -1730,8 +1695,8 @@ export default function ClusterCanvas() {
         />
         {/* 侧逆轮廓光：只勾勒背光侧金属棱角，不参与阴影计算（省一次阴影渲染） */}
         <directionalLight position={[-14, 12, -10]} intensity={0.45} color="#22d3ee" />
-        {/* 控制平面中心点光：R62 由 28 降到 6.5，distance 收到 22，避免整片地面被点亮 */}
-        <pointLight position={[0, 3.0, 0]} intensity={6.5} distance={22} decay={2} color="#22d3ee" />
+        {/* 控制平面中心点光：随 MASTER_POSITION[1] 同步抬升，distance 收到 22，避免整片地面被点亮 */}
+        <pointLight position={[0, MASTER_POSITION[1] + 0.5, 0]} intensity={6.5} distance={22} decay={2} color="#22d3ee" />
 
         {/*
          * ---- 地面接触阴影（Contact Shadows）----
@@ -1801,14 +1766,11 @@ export default function ClusterCanvas() {
         >
           {/* R25：地面圆盘半径 32 → 22；边缘由 GroundHorizonFade 在 r∈[13,22] 吞没 */}
           <circleGeometry args={[22, 96]} />
-          {/* R6-5：为什么是 color=#060d1a / blur=[256,256] / mixBlur=0.65：
-              - color #030712 → #060d1a：抬升黑曜石漫反射冷蓝底，彻底摆脱非加色地面近似纯黑；
-              - blur [360,120] → [256,256]：改为等向适中模糊，消除纵向拉丝并降低模糊散射带宽；
-              - mixBlur 0.9 → 0.65：保留机架与晶核的清晰倒影轮廓，避免整片地面发灰发蒙（T3 真反射必须保留）。 */}
+          {/* 清晰度调优：resolution=1024 + mixBlur=0.45 增强黑曜石地面倒影与晶体轮廓锐度 */}
           <MeshReflectorMaterial
             blur={[256, 256]}
-            resolution={512}
-            mixBlur={0.65}
+            resolution={1024}
+            mixBlur={0.45}
             mixStrength={0.42}
             roughness={0.72}
             depthScale={1.1}
@@ -1844,6 +1806,7 @@ export default function ClusterCanvas() {
        */}
       <Grid
         position={[0, 0.004, 0]}
+        renderOrder={-3}
         args={[26, 26]}
         cellSize={1.4}
         cellThickness={0.22}
