@@ -81,6 +81,15 @@ export const MOTION = {
   fast: 140,
   base: 200,
   slow: 320,
+  /** 遮罩淡入/淡出时长（秒）：140ms */
+  overlayFadeSec: 0.14,
+  /** 弹层入场时长（秒）：200ms */
+  panelEnterSec: 0.2,
+  /** 弹层退场时长（秒）：180ms（确保 <= 200ms 且不阻塞连续交互与键盘探针） */
+  panelExitSec: 0.18,
+  /** 统一标准缓动曲线 [0.22, 1, 0.36, 1] */
+  easeOut: [0.22, 1, 0.36, 1] as const,
+  /** 统一弹性阻尼曲线（全站所有 spring 动画共享） */
   spring: { stiffness: 420, damping: 34 },
 } as const;
 

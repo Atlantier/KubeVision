@@ -1564,7 +1564,7 @@ export default function PodInstancedMesh() {
 
               <span
                 ref={hoverSlotRef}
-                className="mt-0.5 block font-mono tracking-[0.16em] text-slate-500"
+                className="mt-0.5 block font-mono tracking-[0.16em] text-slate-400"
                 style={{ fontSize: HUD_LABEL_SPEC.POD_HOVER_LABEL.metaClampFontSize }}
               />
 

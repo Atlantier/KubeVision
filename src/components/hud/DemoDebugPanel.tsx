@@ -130,25 +130,25 @@ export default function DemoDebugPanel(): React.ReactElement | null {
       ) : null}
 
       {/* ---- effects 调用序列 ---- */}
-      <div className="mt-1.5 border-t border-white/[0.07] pt-1 text-[10px] uppercase tracking-[0.16em] text-slate-500">
+      <div className="mt-1.5 border-t border-white/[0.07] pt-1 text-[10px] uppercase tracking-[0.16em] text-slate-400">
         effects 调用序列（新→旧）
       </div>
       <div className="mt-0.5 space-y-[1px]">
         {recent.length === 0 ? (
-          <div className="text-slate-500">（尚无调用，先启动一套剧本）</div>
+          <div className="text-slate-400">（尚无调用，先启动一套剧本）</div>
         ) : (
           recent.map((entry, i): React.ReactNode => (
             <div
               key={`trace-${entry.atMs}-${i}`}
               className="flex items-baseline gap-1.5 truncate"
             >
-              <span className="w-9 shrink-0 text-right tabular-nums text-slate-500">
+              <span className="w-9 shrink-0 text-right tabular-nums text-slate-400">
                 {(entry.atMs / 1000).toFixed(1)}s
               </span>
               <span className={i === 0 ? 'shrink-0 text-cyan-200' : 'shrink-0 text-slate-400'}>
                 {entry.name}
               </span>
-              <span className="truncate text-slate-500">{entry.detail}</span>
+              <span className="truncate text-slate-400">{entry.detail}</span>
             </div>
           ))
         )}
@@ -175,7 +175,7 @@ function Row({
 }): React.ReactElement {
   return (
     <div className="flex items-baseline gap-1.5 truncate">
-      <span className="w-12 shrink-0 text-slate-500">{label}</span>
+      <span className="w-12 shrink-0 text-slate-400">{label}</span>
       <span
         className={cn(
           'truncate',

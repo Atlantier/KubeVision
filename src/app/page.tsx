@@ -21,13 +21,14 @@
  * 页面标题等元数据已由 src/app/layout.tsx（服务端根布局）统一承载。
  */
 
-import { useEffect, type ReactElement } from 'react';
+import { useEffect, useState, type ReactElement } from 'react';
 import dynamic from 'next/dynamic';
-import { AnimatePresence, motion } from 'framer-motion';
-import { Radar } from 'lucide-react';
+import { AnimatePresence, MotionConfig, motion } from 'framer-motion';
+import { Radar, X } from 'lucide-react';
 
 import ShellLayout from '@/components/layout/ShellLayout';
 import StartupStatusCapsule from '@/components/hud/StartupStatusCapsule';
+import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
 import { useTelemetryStream } from '@/hooks/useTelemetryStream';
 import { useEscapeDispatcher, useEscapeHint, useEscapeLayer } from '@/hooks/useEscapeStack';
@@ -167,7 +168,7 @@ function CanvasSkeleton() {
         <p className="font-mono text-[11px] tracking-[0.2em] text-cyan-400/80">
           正在初始化 WebGL 3D 拓扑引擎
         </p>
-        <p className="font-mono text-[11px] tracking-wider text-slate-500">
+        <p className="font-mono text-[11px] tracking-wider text-slate-400">
           加载 Three.js 场景图 · 空间布局矩阵 · 实例着色器
         </p>
         {/* 进度条：不确定态流光扫描（framer-motion 往复位移，不依赖自定义 keyframes） */}
@@ -254,6 +255,12 @@ export default function HomePage() {
 
   /* Q3：底部提示当前 Esc 会关闭哪一层（null 表示没有可关闭弹层） */
   const escapeHint = useEscapeHint();
+  /* R12 单一全局状态提示条手动关闭记录：同一提示可被用户关闭，层变化时自动恢复可见 */
+  const [dismissedHint, setDismissedHint] = useState<string | null>(null);
+
+  useEffect((): void => {
+    setDismissedHint(null);
+  }, [escapeHint]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -275,8 +282,10 @@ export default function HomePage() {
     return (): void => window.removeEventListener('keydown', onKeyDown);
   }, [setCommandOpen]);
 
+  const showGlobalStatus = escapeHint !== null && dismissedHint !== escapeHint;
+
   return (
-    <>
+    <MotionConfig reducedMotion="user">
       <ShellLayout
         viewport={<ClusterCanvas />}
         drawer={<CopilotDrawer />}
@@ -291,52 +300,51 @@ export default function HomePage() {
       <StartupStatusCapsule />
 
       {/*
-       * 【AnimatePresence 退场动画自愈（审查报告 §4.1）】
-       *
-       * 这两个组件内部都写了 exit={{ opacity: 0, scale: ... }} 的退场动画，
-       * 但此前父级直接 `{cond ? <X/> : null}` 条件渲染——**关闭时 React
-       * 立刻把 DOM 卸载，exit 动画 100% 失效**，弹窗与 HUD 都是"啪"地消失。
-       *
-       * AnimatePresence 的作用正是：在子节点被移除时先让 exit 动画播完
-       * 再真正卸载。这是 framer-motion 的核心机制，漏了它等于白写动画。
-       *
-       * 【initial={false}】首屏时不播放入场动画——HUD 默认关闭，
-       * 若初始挂载也走动画会造成没必要的首帧抖动。
-       */}
-      {/* 性能 HUD 已通过 ShellLayout 的 perfHud 插槽移入 3D 视口内部（R74），
-          既避免覆盖右侧 Copilot 内容，又保留 dynamic 懒加载。 */}
-
-      {/*
        * 顶层混沌演练模态框（z-50，全站最顶层，高于 PerfHUD z-40）。
-       * 同样用 AnimatePresence 包裹以启用其内部 exit 动画。
+       * 独立 AnimatePresence 包裹以启用其内部 exit 动画。
        */}
       <AnimatePresence initial={false}>
         {isChaosModalOpen ? <ChaosControlModal key="chaos-modal" /> : null}
+      </AnimatePresence>
 
       {/*
-       * Q3：Esc 行为可视化。
-       * 评委/用户不需要先记住"这个弹窗能不能按 Esc 关"——底部 chip 直接写明。
-       * pointer-events-none 保证它永远不挡交互；aria-live 让读屏也能感知变化。
+       * Q3 / R12：全站唯一全局状态/Esc 提示条（同时最多展示 1 条）。
+       * 不遮挡底部输入坞、顶部工具栏或 Modal，带 aria-live="polite" 与手动关闭钮。
        */}
-      {escapeHint !== null ? (
-        <div
-          className={cn(
-            'pointer-events-none fixed bottom-16 left-1/2 -translate-x-1/2 md:bottom-[6.75rem]',
-            Z_CLASS.HUD_OVERLAY,
-          )}
-        >
-          <div
-            className="kv-chip flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-slate-950/[0.85] px-2.5 py-1 font-mono text-[10px] tracking-wider text-cyan-300 shadow-[0_0_18px_rgba(34,211,238,0.18)]"
-            role="status"
-            aria-live="polite"
-            aria-label={`Esc 关闭：${escapeHint}`}
-            data-escape-hint={escapeHint}
+      <AnimatePresence initial={false}>
+        {showGlobalStatus ? (
+          <motion.div
+            key={`global-status-${escapeHint}`}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 6 }}
+            transition={{ duration: MOTION.overlayFadeSec, ease: MOTION.easeOut }}
+            className={cn(
+              'pointer-events-none fixed left-1/2 top-[3.75rem] -translate-x-1/2 md:bottom-[6.75rem] md:top-auto',
+              Z_CLASS.HUD_OVERLAY,
+            )}
           >
-            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1 text-[10px] text-slate-300">Esc</kbd>
-            <span>关闭：{escapeHint}</span>
-          </div>
-        </div>
-      ) : null}
+            <div
+              className="kv-chip flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-slate-950/[0.85] py-1 pl-2.5 pr-1.5 font-mono text-[10px] tracking-wider text-cyan-300 shadow-[0_0_18px_rgba(34,211,238,0.18)]"
+              role="status"
+              aria-live="polite"
+              aria-label={`Esc 关闭：${escapeHint}`}
+              data-escape-hint={escapeHint}
+              data-global-status-toast="true"
+            >
+              <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1 text-[10px] text-slate-300">Esc</kbd>
+              <span>关闭：{escapeHint}</span>
+              <button
+                type="button"
+                onClick={(): void => setDismissedHint(escapeHint)}
+                aria-label="关闭全局状态提示"
+                className="kv-touch-target pointer-events-auto ml-0.5 flex h-6 w-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-white/10 hover:text-slate-100"
+              >
+                <X className="h-3 w-3" aria-hidden />
+              </button>
+            </div>
+          </motion.div>
+        ) : null}
       </AnimatePresence>
 
       {/*
@@ -351,6 +359,6 @@ export default function HomePage() {
           <CommandPalette key="command-palette" onClose={(): void => setCommandOpen(false)} />
         ) : null}
       </AnimatePresence>
-    </>
+    </MotionConfig>
   );
 }

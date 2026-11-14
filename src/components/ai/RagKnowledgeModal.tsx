@@ -42,9 +42,16 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState } from 'react';
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
+import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
-import { useFocusReturn, useSheetSwipeClose } from '@/hooks/useModalSheetBehavior';
+import {
+  handleRovingTabKeyDown,
+  useFocusReturn,
+  useSheetSwipeClose,
+} from '@/hooks/useModalSheetBehavior';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { createPortal } from 'react-dom';
 import { AnimatePresence,
@@ -377,7 +384,7 @@ function ScoreBar({
           style={{ width: `${percent}%` }}
         />
       </div>
-      <span className="w-8 shrink-0 text-right font-mono text-[10px] tabular-nums text-slate-500">
+      <span className="w-8 shrink-0 text-right font-mono text-[10px] tabular-nums text-slate-400">
         {percent}%
       </span>
     </div>
@@ -533,7 +540,7 @@ function GlossaryPanel({
       <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-white/[0.07] bg-slate-900/50 p-2.5">
         <div className="relative min-w-[200px] flex-1">
           <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500"
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
             aria-hidden
           />
           <input
@@ -686,15 +693,32 @@ export default function RagKnowledgeModal({
     });
   }, [open]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
-  useFocusReturn(open, closeBtnRef);
+  const [mounted, setMounted] = useState<boolean>(false);
+  useEffect((): void => {
+    setMounted(true);
+  }, []);
+  useFocusReturn(open, searchInputRef, dialogRef);
   const swipe = useSheetSwipeClose(onClose);
 
   /*
    * 【C1】Esc 统一由页面级分级退出栈处理：本组件只注册一层，
    * 不再向 window 挂自己的 keydown（旧实现多个弹层会同时抢 Esc）。
+   * 弹窗打开时自动聚焦检索输入框，因此声明 consumeInEditable 以允许在搜索框内按 Esc 退出。
    */
-  useEscapeLayer(open ? { id: 'rag-knowledge', priority: 80, label: 'SRE 领域知识库', onEscape: onClose } : null);
+  useEscapeLayer(
+    open
+      ? {
+          id: 'rag-knowledge',
+          priority: 80,
+          label: 'SRE 领域知识库',
+          onEscape: onClose,
+          consumeInEditable: true,
+        }
+      : null,
+  );
 
   /** 当前选中的 Runbook（null 表示语料池为空或尚无选中项） */
   const selectedDoc = useMemo<RagRunbookDoc | null>(
@@ -853,44 +877,53 @@ export default function RagKnowledgeModal({
     [form],
   );
 
-  /* ---- 契约：关闭态直接返回 null（卸载整个遮罩，不留任何残留节点） ---- */
-  if (!open) return null;
+  /* ---- 客户端未挂载（SSR）直接返回 null；挂载后 Portal 内交由 AnimatePresence 控制退场 ---- */
+  if (!mounted || typeof document === 'undefined') return null;
 
   const isQueryEmpty = query.trim() === '';
   const hasResults = retrievalResults.length > 0;
+  const ragTabs = ['knowledge', 'glossary'] as const;
 
   return createPortal(
-    <AnimatePresence>
-      <motion.div
-        key="rag-knowledge-overlay"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={{ duration: 0.18, ease: 'easeOut' }}
-        className={cn(
-          'fixed inset-0 flex items-end justify-center p-0 kv-overlay md:items-center md:p-4',
-          Z_CLASS.MODAL,
-        )}
-        role="dialog"
-        aria-modal="true"
-        aria-label="SRE 领域知识库"
-      >
-        {/* ============ 遮罩点击关闭（独立按钮，位于面板之下，不与面板交互冲突） ============ */}
-        <button
-          type="button"
-          aria-label="点击遮罩关闭知识库弹窗"
-          onClick={(): void => onClose()}
-          className="absolute inset-0 cursor-default"
-        />
-
-        {/* ============ 主面板：深空毛玻璃（移动端 90dvh Bottom Sheet） ============ */}
+    <AnimatePresence initial={false}>
+      {open ? (
         <motion.div
-          initial={{ opacity: 0, scale: 0.96, y: 14 }}
-          animate={{ opacity: 1, scale: 1, y: swipe.dragOffsetY }}
-          exit={{ opacity: 0, scale: 0.96, y: 14 }}
-          transition={{ type: 'spring', stiffness: 320, damping: 30 }}
-          className="relative flex h-[90dvh] max-h-[90dvh] w-full max-w-6xl flex-col overflow-hidden rounded-t-2xl rounded-b-none kv-panel shadow-modal md:h-[80vh] md:rounded-xl"
+          ref={dialogRef}
+          key="rag-knowledge-overlay"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0, transition: { duration: MOTION.overlayFadeSec, ease: MOTION.easeOut } }}
+          transition={{ duration: MOTION.overlayFadeSec, ease: MOTION.easeOut }}
+          className={cn(
+            'fixed inset-0 flex items-end justify-center p-0 kv-overlay md:items-center md:p-4',
+            Z_CLASS.MODAL,
+          )}
+          role="dialog"
+          aria-modal="true"
+          aria-label="SRE 领域知识库"
+          tabIndex={-1}
         >
+          {/* ============ 遮罩点击关闭（独立按钮，位于面板之下，不与面板交互冲突） ============ */}
+          <button
+            type="button"
+            aria-label="点击遮罩关闭知识库弹窗"
+            onClick={(): void => onClose()}
+            className="absolute inset-0 cursor-default"
+          />
+
+          {/* ============ 主面板：深空毛玻璃（移动端 90dvh Bottom Sheet） ============ */}
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 14 }}
+            animate={{ opacity: 1, scale: 1, y: swipe.dragOffsetY }}
+            exit={{
+              opacity: 0,
+              scale: 0.96,
+              y: 12,
+              transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+            }}
+            transition={{ type: 'spring', ...MOTION.spring }}
+            className="relative flex h-[90dvh] max-h-[90dvh] w-full max-w-6xl flex-col overflow-hidden rounded-t-2xl rounded-b-none kv-panel shadow-modal md:h-[80vh] md:rounded-xl"
+          >
           {/* ---- 顶部主题流光细线 ---- */}
           <div
             className="h-px w-full shrink-0 bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent"
@@ -931,10 +964,16 @@ export default function RagKnowledgeModal({
               className="hidden shrink-0 items-center gap-1 rounded-md border border-white/[0.08] bg-slate-900/70 p-0.5 sm:flex"
             >
               <button
+                id="rag-desktop-tab-knowledge"
                 type="button"
                 role="tab"
                 aria-selected={activeTab === 'knowledge'}
+                aria-controls="rag-tabpanel-main"
+                tabIndex={activeTab === 'knowledge' ? 0 : -1}
                 onClick={(): void => setActiveTab('knowledge')}
+                onKeyDown={(e: ReactKeyboardEvent<HTMLElement>): void =>
+                  handleRovingTabKeyDown(e, ragTabs, activeTab, setActiveTab, 'rag-desktop-tab')
+                }
                 className={cn(
                   'flex items-center gap-1 rounded px-2.5 py-1 font-mono text-[10px] transition-colors',
                   activeTab === 'knowledge'
@@ -946,10 +985,16 @@ export default function RagKnowledgeModal({
                 <span>知识库</span>
               </button>
               <button
+                id="rag-desktop-tab-glossary"
                 type="button"
                 role="tab"
                 aria-selected={activeTab === 'glossary'}
+                aria-controls="rag-tabpanel-main"
+                tabIndex={activeTab === 'glossary' ? 0 : -1}
                 onClick={(): void => setActiveTab('glossary')}
+                onKeyDown={(e: ReactKeyboardEvent<HTMLElement>): void =>
+                  handleRovingTabKeyDown(e, ragTabs, activeTab, setActiveTab, 'rag-desktop-tab')
+                }
                 className={cn(
                   'flex items-center gap-1 rounded px-2.5 py-1 font-mono text-[10px] transition-colors',
                   activeTab === 'glossary'
@@ -979,7 +1024,7 @@ export default function RagKnowledgeModal({
               type="button"
               onClick={(): void => onClose()}
               aria-label="关闭知识库弹窗"
-              className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-md border border-white/[0.07] p-1.5 text-slate-400 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95 md:min-h-0 md:min-w-0"
+              className="kv-touch-target flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-md border border-white/[0.07] p-1.5 text-slate-400 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95 md:min-h-0 md:min-w-0"
             >
               <X className="h-4 w-4" aria-hidden />
             </button>
@@ -992,10 +1037,16 @@ export default function RagKnowledgeModal({
             className="flex shrink-0 items-center gap-1.5 border-b border-white/[0.07] bg-slate-900/50 px-4 py-1.5 sm:hidden"
           >
             <button
+              id="rag-mobile-tab-knowledge"
               type="button"
               role="tab"
               aria-selected={activeTab === 'knowledge'}
+              aria-controls="rag-tabpanel-main"
+              tabIndex={activeTab === 'knowledge' ? 0 : -1}
               onClick={(): void => setActiveTab('knowledge')}
+              onKeyDown={(e: ReactKeyboardEvent<HTMLElement>): void =>
+                handleRovingTabKeyDown(e, ragTabs, activeTab, setActiveTab, 'rag-mobile-tab')
+              }
               className={cn(
                 'flex flex-1 items-center justify-center gap-1 rounded border py-1 font-mono text-[10px] transition-colors',
                 activeTab === 'knowledge'
@@ -1007,10 +1058,16 @@ export default function RagKnowledgeModal({
               <span>知识库与沙盒</span>
             </button>
             <button
+              id="rag-mobile-tab-glossary"
               type="button"
               role="tab"
               aria-selected={activeTab === 'glossary'}
+              aria-controls="rag-tabpanel-main"
+              tabIndex={activeTab === 'glossary' ? 0 : -1}
               onClick={(): void => setActiveTab('glossary')}
+              onKeyDown={(e: ReactKeyboardEvent<HTMLElement>): void =>
+                handleRovingTabKeyDown(e, ragTabs, activeTab, setActiveTab, 'rag-mobile-tab')
+              }
               className={cn(
                 'flex flex-1 items-center justify-center gap-1 rounded border py-1 font-mono text-[10px] transition-colors',
                 activeTab === 'glossary'
@@ -1023,6 +1080,12 @@ export default function RagKnowledgeModal({
             </button>
           </div>
 
+          <div
+            id="rag-tabpanel-main"
+            role="tabpanel"
+            aria-labelledby={`rag-desktop-tab-${activeTab}`}
+            className="flex min-h-0 flex-1 flex-col"
+          >
           {activeTab === 'glossary' ? (
             <GlossaryPanel
               query={glossaryQuery}
@@ -1045,12 +1108,13 @@ export default function RagKnowledgeModal({
                 <span className="rounded border border-cyan-400/30 bg-cyan-400/10 px-1.5 py-px font-mono text-[10px] text-cyan-300">
                   {UI_COPY.ragSandboxPipeline}
                 </span>
-                <span className="ml-auto font-mono text-[10px] text-slate-500">
+                <span className="ml-auto font-mono text-[10px] text-slate-400">
                   前 {SANDBOX_TOP_K} 条
                 </span>
               </div>
 
               <input
+                ref={searchInputRef}
                 type="text"
                 value={query}
                 onChange={(event: React.ChangeEvent<HTMLInputElement>): void => {
@@ -1064,7 +1128,7 @@ export default function RagKnowledgeModal({
 
               <div className="mt-2.5">
                 {isQueryEmpty ? (
-                  <p className="rounded border border-dashed border-white/[0.07] px-3 py-4 text-center text-[11px] text-slate-500">
+                  <p className="rounded border border-dashed border-white/[0.07] px-3 py-4 text-center text-[11px] text-slate-400">
                     输入故障描述开始检索
                   </p>
                 ) : !hasResults ? (
@@ -1082,7 +1146,7 @@ export default function RagKnowledgeModal({
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
-                              <p className="truncate font-mono text-[10px] uppercase tracking-[0.1em] text-slate-500">
+                              <p className="truncate font-mono text-[10px] uppercase tracking-[0.1em] text-slate-400">
                                 {doc.id}
                               </p>
                               <p
@@ -1143,7 +1207,7 @@ export default function RagKnowledgeModal({
                               {breakdown.candidatePoolSize !== undefined &&
                               breakdown.corpusSize !== undefined ? (
                                 <span
-                                  className="ml-auto text-slate-500"
+                                  className="ml-auto text-slate-400"
                                   title="候选池归一化：进入 RRF 排序的候选数 / 总语料数及规模折减系数"
                                 >
                                   池 {breakdown.candidatePoolSize}/{breakdown.corpusSize}
@@ -1184,7 +1248,7 @@ export default function RagKnowledgeModal({
                   <span className="font-mono text-[10px] tracking-[0.14em] text-slate-400">
                     {UI_COPY.ragCorpusIndexTitle}
                   </span>
-                  <span className="font-mono text-[10px] tabular-nums text-slate-500">
+                  <span className="font-mono text-[10px] tabular-nums text-slate-400">
                     {corpus.length}
                   </span>
                 </div>
@@ -1207,7 +1271,7 @@ export default function RagKnowledgeModal({
                               : 'border-white/[0.07] bg-slate-950/50 hover:border-white/[0.07] hover:bg-slate-900/70',
                           )}
                         >
-                          <p className="truncate font-mono text-[10px] uppercase tracking-[0.1em] text-slate-500">
+                          <p className="truncate font-mono text-[10px] uppercase tracking-[0.1em] text-slate-400">
                             {doc.id}
                           </p>
                           <p
@@ -1236,7 +1300,7 @@ export default function RagKnowledgeModal({
                             onClick={(): void => handleRemoveCustom(doc.id)}
                             aria-label="删除该自定义 Runbook"
                             title="删除该自定义 Runbook"
-                            className="absolute right-1 top-1 rounded border border-transparent p-1 text-slate-500 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300"
+                            className="kv-touch-target absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded border border-transparent text-slate-400 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300"
                           >
                             <Trash2 className="h-3 w-3" aria-hidden />
                           </button>
@@ -1252,7 +1316,7 @@ export default function RagKnowledgeModal({
                 <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-3.5">
                   {selectedDoc === null ? (
                     <div className="flex flex-1 items-center justify-center px-4 text-center">
-                      <p className="text-[11px] leading-relaxed text-slate-500">
+                      <p className="text-[11px] leading-relaxed text-slate-400">
                         从左侧语料列表中选择一条 Runbook，查看其故障症状、底层根因机理与标准自愈
                         SOP。
                       </p>
@@ -1272,18 +1336,18 @@ export default function RagKnowledgeModal({
                       </div>
 
                       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                        <span className="font-mono text-[10px] text-slate-500">
+                        <span className="font-mono text-[10px] text-slate-400">
                           {selectedDoc.id}
                         </span>
                         <CategoryTag category={selectedDoc.category} />
                         {selectedDoc.customCreatedAt !== undefined ? (
-                          <span className="font-mono text-[10px] text-slate-500">
+                          <span className="font-mono text-[10px] text-slate-400">
                             写入于 {selectedDoc.customCreatedAt.slice(0, 19).replace('T', ' ')}
                           </span>
                         ) : null}
                         {selectedDoc.relatedChaos !== undefined &&
                         selectedDoc.relatedChaos.length > 0 ? (
-                          <span className="font-mono text-[10px] text-slate-500">
+                          <span className="font-mono text-[10px] text-slate-400">
                             关联演练 {selectedDoc.relatedChaos.join(' / ')}
                           </span>
                         ) : null}
@@ -1299,7 +1363,7 @@ export default function RagKnowledgeModal({
                       {/* 底层根因机理（等宽小字：这是“原理摘录”，与叙述性症状区分） */}
                       <DetailSection title="底层根因机理">
                         {selectedDoc.rootCauseMechanism.trim() === '' ? (
-                          <p className="text-[11px] text-slate-500">该条目尚未填写底层根因机理。</p>
+                          <p className="text-[11px] text-slate-400">该条目尚未填写底层根因机理。</p>
                         ) : (
                           <p className="whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-slate-400">
                             {selectedDoc.rootCauseMechanism}
@@ -1310,7 +1374,7 @@ export default function RagKnowledgeModal({
                       {/* 标准自愈 SOP（有序列表 + 序号圆点） */}
                       <DetailSection title="标准自愈 SOP">
                         {selectedDoc.remediationSteps.length === 0 ? (
-                          <p className="text-[11px] text-slate-500">该条目尚未提供处置步骤。</p>
+                          <p className="text-[11px] text-slate-400">该条目尚未提供处置步骤。</p>
                         ) : (
                           <ol className="space-y-1.5">
                             {selectedDoc.remediationSteps.map(
@@ -1332,7 +1396,7 @@ export default function RagKnowledgeModal({
                       {/* 特征词（前 12 个，小胶囊） */}
                       <DetailSection title="特征词">
                         {selectedDoc.featureVocabulary.length === 0 ? (
-                          <p className="text-[11px] text-slate-500">该条目未提供特征词。</p>
+                          <p className="text-[11px] text-slate-400">该条目未提供特征词。</p>
                         ) : (
                           <div className="flex flex-wrap gap-1">
                             {selectedDoc.featureVocabulary
@@ -1348,7 +1412,7 @@ export default function RagKnowledgeModal({
                           </div>
                         )}
                         {selectedDoc.featureVocabulary.length > MAX_VISIBLE_FEATURE_TERMS ? (
-                          <p className="mt-1 font-mono text-[10px] text-slate-500">
+                          <p className="mt-1 font-mono text-[10px] text-slate-400">
                             另有 {selectedDoc.featureVocabulary.length - MAX_VISIBLE_FEATURE_TERMS}{' '}
                             个特征词参与检索
                           </p>
@@ -1379,7 +1443,7 @@ export default function RagKnowledgeModal({
                   新增自定义 Runbook
                 </button>
 
-                <span className="min-w-0 truncate font-mono text-[10px] text-slate-500">
+                <span className="min-w-0 truncate font-mono text-[10px] text-slate-400">
                   {UI_COPY.ragLocalPersistHint}
                 </span>
 
@@ -1391,15 +1455,16 @@ export default function RagKnowledgeModal({
                 ) : null}
               </div>
 
-              {/* 表单展开/收起（高度动画由 AnimatePresence + motion 驱动） */}
+              {/* 表单展开/收起（禁止 height 动画，仅使用 scaleY + opacity 合成属性） */}
               <AnimatePresence initial={false}>
                 {isFormOpen ? (
                   <motion.div
                     key="rag-knowledge-form"
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.22, ease: 'easeOut' }}
+                    initial={{ opacity: 0, scaleY: 0.94, y: -4 }}
+                    animate={{ opacity: 1, scaleY: 1, y: 0 }}
+                    exit={{ opacity: 0, scaleY: 0.94, y: -4 }}
+                    transition={{ duration: MOTION.panelExitSec, ease: MOTION.easeOut }}
+                    style={{ transformOrigin: 'top center' }}
                     className="overflow-hidden"
                   >
                     <form
@@ -1408,7 +1473,7 @@ export default function RagKnowledgeModal({
                     >
                       <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                         <label className="block">
-                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">
                             标题
                           </span>
                           <input
@@ -1423,7 +1488,7 @@ export default function RagKnowledgeModal({
                         </label>
 
                         <label className="block">
-                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">
                             分类
                           </span>
                           <input
@@ -1438,7 +1503,7 @@ export default function RagKnowledgeModal({
                         </label>
 
                         <label className="block">
-                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">
                             故障症状
                           </span>
                           <textarea
@@ -1453,7 +1518,7 @@ export default function RagKnowledgeModal({
                         </label>
 
                         <label className="block">
-                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">
                             根因机理
                           </span>
                           <textarea
@@ -1468,7 +1533,7 @@ export default function RagKnowledgeModal({
                         </label>
 
                         <label className="block md:col-span-2">
-                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">
                             特征词（逗号分隔，前 3 个将成为检索标签）
                           </span>
                           <input
@@ -1483,7 +1548,7 @@ export default function RagKnowledgeModal({
                         </label>
 
                         <label className="block md:col-span-2">
-                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+                          <span className="mb-1 block font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">
                             自愈步骤（每行一条，按换行分割为有序 SOP）
                           </span>
                           <textarea
@@ -1531,11 +1596,11 @@ export default function RagKnowledgeModal({
                           onClick={(): void => {
                             setIsFormOpen(false);
                           }}
-                          className="rounded-md border border-transparent px-2 py-1.5 font-mono text-[10px] text-slate-500 transition-colors hover:text-slate-300"
+                          className="rounded-md border border-transparent px-2 py-1.5 font-mono text-[10px] text-slate-400 transition-colors hover:text-slate-200"
                         >
                           收起表单
                         </button>
-                        <span className="ml-auto font-mono text-[10px] text-slate-500">
+                        <span className="ml-auto font-mono text-[10px] text-slate-400">
                           {UI_COPY.ragFooterPersistHint}
                         </span>
                       </div>
@@ -1546,8 +1611,10 @@ export default function RagKnowledgeModal({
             </section>
             </div>
           )}
+          </div>
         </motion.div>
       </motion.div>
+      ) : null}
     </AnimatePresence>,
     document.body,
   );

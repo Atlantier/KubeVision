@@ -994,7 +994,7 @@ const CodeBlock = memo(function CodeBlock({
   return (
     <div className="my-1.5 min-w-0 max-w-full overflow-hidden rounded border border-white/[0.05] bg-slate-950/80">
       <div className="flex min-w-0 items-center justify-between gap-2 border-b border-white/[0.07] bg-slate-900/60 px-2 py-0.5">
-        <span className="min-w-0 truncate font-mono text-[10px] uppercase tracking-wider text-slate-500">
+        <span className="min-w-0 truncate font-mono text-[10px] uppercase tracking-wider text-slate-400">
           {(lang ?? '').length > 0 ? lang : 'code'}
         </span>
         <button
@@ -1004,7 +1004,7 @@ const CodeBlock = memo(function CodeBlock({
           title="复制命令"
           className={cn(
             'flex shrink-0 items-center gap-1 rounded px-1 py-0.5 font-mono text-[10px] transition-colors',
-            copied ? 'text-emerald-400' : 'text-slate-500 hover:bg-white/[0.06] hover:text-cyan-300',
+            copied ? 'text-emerald-400' : 'text-slate-400 hover:bg-white/[0.06] hover:text-cyan-300',
           )}
         >
           {copied ? (

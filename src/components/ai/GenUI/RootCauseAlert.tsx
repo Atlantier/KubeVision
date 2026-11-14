@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 
 import { UI_COPY } from '@/constants/copy';
+import { MOTION } from '@/constants/tokens';
 import { cn } from '@/utils/cn';
 import MarkdownLite, { InlineMarkdown } from '@/components/ai/MarkdownLite';
 import {
@@ -117,8 +118,8 @@ function RetrievalSignalBar({
       <div className="rounded border border-white/[0.07] bg-slate-950/40 p-1.5">
         {/* ---- 标题行：标题 + 融合终值 / 原始 RRF / 候选池缩放 ---- */}
         <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-          <Layers className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
-          <span className="min-w-0 flex-1 truncate font-mono text-[10px] uppercase tracking-wider text-slate-500">
+          <Layers className="h-2.5 w-2.5 shrink-0 text-slate-400" aria-hidden />
+          <span className="min-w-0 flex-1 truncate font-mono text-[10px] uppercase tracking-wider text-slate-400">
             三路检索信号贡献
           </span>
           <span
@@ -168,7 +169,7 @@ function RetrievalSignalBar({
             >
               <span className="flex items-center gap-1">
                 <span className={cn('h-1 w-1 shrink-0 rounded-full', signal.dotClass)} aria-hidden />
-                <span className="truncate font-mono text-[10px] tracking-tight text-slate-500">
+                <span className="truncate font-mono text-[10px] tracking-tight text-slate-400">
                   {signal.term}
                 </span>
                 <span
@@ -177,7 +178,7 @@ function RetrievalSignalBar({
                   {formatSharePercent(signal.share)}
                 </span>
               </span>
-              <span className="truncate font-mono text-[10px] tabular-nums text-slate-500">
+              <span className="truncate font-mono text-[10px] tabular-nums text-slate-400">
                 {formatScore(signal.score)}
               </span>
             </div>
@@ -186,7 +187,7 @@ function RetrievalSignalBar({
 
         {/* ---- 一行结论：主导信号 + 校准置信度 ---- */}
         {dominant !== undefined ? (
-          <p className="mt-1 truncate font-mono text-[10px] leading-relaxed text-slate-500">
+          <p className="mt-1 truncate font-mono text-[10px] leading-relaxed text-slate-400">
             主导证据 · <span className={dominant.textClass}>{dominant.term}</span>
             {' · '}校准置信度 {formatSharePercent(breakdown.calibratedScore)}
             {breakdown.topDocId !== null ? ` · ${breakdown.topDocId}` : ''}
@@ -204,7 +205,7 @@ function RetrievalSignalBar({
          */}
         {breakdown.rrfIsRankPerfect ? (
           <p
-            className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-500/80"
+            className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-400"
             title="RRF 归一化基准为「每条路由均排第 1 名」，1.000 表示排名完全一致，不代表三路得分都高"
           >
             RRF 1.000 = 三路排名完全一致（非得分满分）
@@ -310,8 +311,8 @@ function RootCauseAlertImpl({
       {/* ============ confidence进度条 ============ */}
       <div className="px-2.5 pb-2">
         <div className="flex items-center gap-1.5">
-          <Gauge className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
-          <span className="shrink-0 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+          <Gauge className="h-2.5 w-2.5 shrink-0 text-slate-400" aria-hidden />
+          <span className="shrink-0 font-mono text-[11px] uppercase tracking-wider text-slate-400">
             根因置信度
           </span>
           <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-800">
@@ -339,7 +340,7 @@ function RootCauseAlertImpl({
       {/* ============ 命中特征词胶囊 ============ */}
       {featureTerms.length > 0 ? (
         <div className="px-2.5 pb-2">
-          <p className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-400">
             <Tag className="h-2.5 w-2.5 shrink-0" aria-hidden />
             命中特征词 · {featureTerms.length}
           </p>
@@ -358,7 +359,7 @@ function RootCauseAlertImpl({
                     ? 'border-cyan-400/60 bg-cyan-400/[0.15] font-bold text-cyan-200'
                     : term.weight === 2
                       ? 'border-cyan-400/40 bg-cyan-400/[0.09] text-cyan-300'
-                      : 'border-white/[0.04] bg-slate-800/50 text-slate-400',
+                      : 'border-white/[0.04] bg-slate-800/50 text-slate-300',
                 )}
                 title={
                   term.source === 'engine'
@@ -379,7 +380,7 @@ function RootCauseAlertImpl({
        * 裸 `<p>{rootCauseSummary}</p>` 会把星号与反引号直接暴露。
        */}
       <div className="px-2.5 pb-2">
-        <p className="flex items-start gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+        <p className="flex items-start gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-400">
           <Target className="mt-[2px] h-2.5 w-2.5 shrink-0" aria-hidden />
           核心根因判定
         </p>
@@ -391,7 +392,7 @@ function RootCauseAlertImpl({
       {/* ============ 影响范围 ============ */}
       {impactScope.length > 0 ? (
         <div className="px-2.5 pb-2">
-          <p className="font-mono text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="font-mono text-[11px] uppercase tracking-wider text-slate-400">
             {UI_COPY.rootCauseImpactTitle}
           </p>
           {/* 单段文本 → InlineMarkdown，避免块级容器撑散卡片 */}
@@ -404,7 +405,7 @@ function RootCauseAlertImpl({
       {/* ============ 时间轴证据链 ============ */}
       {evidenceChain.length > 0 ? (
         <div className="border-t border-white/[0.07] px-2.5 py-2">
-          <p className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-400">
             <ListTree className="h-2.5 w-2.5" aria-hidden />
             可观测性证据链 · {evidenceChain.length}
           </p>
@@ -460,10 +461,16 @@ function RootCauseAlertImpl({
           <AnimatePresence initial={false}>
             {mechanismOpen ? (
               <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ type: 'spring', stiffness: 420, damping: 36 }}
+                initial={{ opacity: 0, scaleY: 0.94, y: -4 }}
+                animate={{ opacity: 1, scaleY: 1, y: 0 }}
+                exit={{
+                  opacity: 0,
+                  scaleY: 0.94,
+                  y: -4,
+                  transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+                }}
+                transition={{ type: 'spring', ...MOTION.spring }}
+                style={{ transformOrigin: 'top center' }}
                 className="overflow-hidden"
               >
                 <div className="space-y-1.5 px-2.5 pb-2">
@@ -487,10 +494,10 @@ function RootCauseAlertImpl({
 
                       {/* 内核机理 */}
                       <div className="mt-1">
-                        <p className="font-mono text-[10px] tracking-wider text-emerald-400/60">
+                        <p className="font-mono text-[10px] tracking-wider text-emerald-300/90">
                           {UI_COPY.rootCauseMechanismTitle}
                         </p>
-                        <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-400">
+                        <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-300">
                           {doc.rootCauseMechanism}
                         </p>
                       </div>
@@ -498,16 +505,16 @@ function RootCauseAlertImpl({
                       {/* 完整 SOP 步骤（此处不截断，因为是折叠区，用户主动展开即想看全） */}
                       {doc.remediationSteps.length > 0 ? (
                         <div className="mt-1">
-                          <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-400/60">
+                          <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-300/90">
                             标准处置 SOP · {doc.remediationSteps.length} 步
                           </p>
                           <ol className="mt-0.5 space-y-0.5">
                             {doc.remediationSteps.map((step, stepIndex): ReactNode => (
                               <li
                                 key={`sop-${doc.id}-${stepIndex}`}
-                                className="flex gap-1.5 font-mono text-[10px] leading-snug text-slate-400"
+                                className="flex gap-1.5 font-mono text-[10px] leading-snug text-slate-300"
                               >
-                                <span className="shrink-0 tabular-nums text-emerald-500/60">
+                                <span className="shrink-0 tabular-nums text-emerald-300/90">
                                   {stepIndex + 1}.
                                 </span>
                                 <span className="min-w-0 break-words">
@@ -521,7 +528,7 @@ function RootCauseAlertImpl({
 
                       {/* 分类与关联演练场景 */}
                       {doc.tags.length > 0 || doc.relatedChaos !== undefined ? (
-                        <p className="mt-1 font-mono text-[10px] tracking-wider text-slate-500">
+                        <p className="mt-1 font-mono text-[10px] tracking-wider text-slate-400">
                           分类 {doc.category}
                           {doc.relatedChaos !== undefined && doc.relatedChaos.length > 0
                             ? ` · 关联演练 ${doc.relatedChaos.join(' / ')}`
@@ -575,15 +582,21 @@ function RootCauseAlertImpl({
         <AnimatePresence initial={false}>
           {citationsOpen ? (
             <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 34 }}
+              initial={{ opacity: 0, scaleY: 0.94, y: -4 }}
+              animate={{ opacity: 1, scaleY: 1, y: 0 }}
+              exit={{
+                opacity: 0,
+                scaleY: 0.94,
+                y: -4,
+                transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+              }}
+              transition={{ type: 'spring', ...MOTION.spring }}
+              style={{ transformOrigin: 'top center' }}
               className="overflow-hidden"
             >
               <ul className="space-y-1 px-2.5 pb-2">
                 {ragReferences.length === 0 ? (
-                  <li className="font-mono text-[12px] text-slate-500">— 暂未匹配到排障手册 —</li>
+                  <li className="font-mono text-[12px] text-slate-400">— 暂未匹配到排障手册 —</li>
                 ) : (
                   ragReferences.map((doc) => {
                     /* similarityScore ∈ [0,1]，展示为百分比（如 0.964 → 96.4%） */
@@ -633,7 +646,7 @@ function RootCauseAlertImpl({
                             )}
                           </div>
                           <p className="mt-1 text-[10px] font-medium leading-snug text-slate-300">{doc.title}</p>
-                          <p className="mt-0.5 font-mono text-[10px] tracking-wider text-slate-500">
+                          <p className="mt-0.5 font-mono text-[10px] tracking-wider text-slate-400">
                             {doc.category} · {doc.tags.slice(0, 3).join(' / ')}
                           </p>
 
@@ -703,10 +716,16 @@ function RootCauseAlertImpl({
                         <AnimatePresence initial={false}>
                           {isExpanded ? (
                             <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: 'auto', opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={{ type: 'spring', stiffness: 420, damping: 36 }}
+                              initial={{ opacity: 0, scaleY: 0.94, y: -4 }}
+                              animate={{ opacity: 1, scaleY: 1, y: 0 }}
+                              exit={{
+                                opacity: 0,
+                                scaleY: 0.94,
+                                y: -4,
+                                transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+                              }}
+                              transition={{ type: 'spring', ...MOTION.spring }}
+                              style={{ transformOrigin: 'top center' }}
                               className="overflow-hidden"
                             >
                               <div className="space-y-1.5 border-t border-white/[0.07] px-1.5 py-2">
@@ -720,13 +739,13 @@ function RootCauseAlertImpl({
                                 </div>
                                 {doc.remediationSteps.length > 0 ? (
                                   <div>
-                                    <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-400/70">
+                                    <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-300">
                                       标准自愈步骤
                                     </p>
                                     <ol className="mt-0.5 space-y-0.5">
                                       {doc.remediationSteps.slice(0, 3).map((step, index): ReactNode => (
-                                        <li key={step} className="flex gap-1.5 font-mono text-[10px] leading-snug text-slate-400">
-                                          <span className="shrink-0 tabular-nums text-emerald-500/70">
+                                        <li key={step} className="flex gap-1.5 font-mono text-[10px] leading-snug text-slate-300">
+                                          <span className="shrink-0 tabular-nums text-emerald-300/90">
                                             {index + 1}.
                                           </span>
                                           <span className="min-w-0 break-words">{step}</span>
@@ -734,7 +753,7 @@ function RootCauseAlertImpl({
                                       ))}
                                     </ol>
                                     {doc.remediationSteps.length > 3 ? (
-                                      <p className="mt-1 font-mono text-[10px] text-slate-500">
+                                      <p className="mt-1 font-mono text-[10px] text-slate-400">
                                         另有 {doc.remediationSteps.length - 3} 步，见知识库完整手册
                                       </p>
                                     ) : null}

@@ -224,8 +224,8 @@ function AgentThoughtChainImpl({
         </span>
 
         {/* 摘要徽标：步数 + 总耗时 */}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums text-slate-500">
-          <span className="rounded-full border border-white/[0.07] bg-slate-800/70 px-1.5 py-0.5 text-slate-400">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums text-slate-400">
+          <span className="rounded-full border border-white/[0.07] bg-slate-800/70 px-1.5 py-0.5 text-slate-300">
             {ordered.sorted.length} 步
           </span>
           <span>{ordered.total} ms</span>
@@ -315,7 +315,7 @@ function AgentThoughtChainImpl({
                         />
                       ) : null}
 
-                      <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-500">
+                      <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-400">
                         {step.latencyMs} ms
                       </span>
                     </div>
@@ -333,7 +333,7 @@ function AgentThoughtChainImpl({
                      * 为青色代码胶囊，用户一眼就能定位"这条结论引自哪本手册"。
                      * whitespace-pre-wrap 保留在段落上，多行 detail 的换行不变。
                      */}
-                    <p className="mt-0.5 whitespace-pre-wrap break-words text-caption leading-relaxed text-slate-500">
+                    <p className="mt-0.5 whitespace-pre-wrap break-words text-caption leading-relaxed text-slate-300">
                       <InlineMarkdown text={step.detail} highlightRunbookIds />
                     </p>
 
@@ -384,7 +384,7 @@ function AgentThoughtChainImpl({
                           {ragBreakdown.signals.map((signal) => (
                             <span
                               key={`legend-${signal.key}`}
-                              className="flex items-center gap-0.5 font-mono text-[10px] tabular-nums text-slate-500"
+                              className="flex items-center gap-0.5 font-mono text-[10px] tabular-nums text-slate-400"
                               title={signal.description}
                             >
                               <span
@@ -396,7 +396,7 @@ function AgentThoughtChainImpl({
                             </span>
                           ))}
                           <span
-                            className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-slate-500"
+                            className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-slate-400"
                             title={
                               ragBreakdown.candidatePoolSize !== null &&
                               ragBreakdown.corpusSize !== null &&

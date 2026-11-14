@@ -231,39 +231,39 @@ function DataHealthBlock() {
     <div className="mt-1.5 rounded border border-white/[0.07] bg-slate-950/40 p-1.5" aria-label="数据健康">
       <div className="flex items-baseline gap-1">
         <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300/90">数据健康</span>
-        <span className="ml-auto font-mono text-[10px] text-slate-500">瞬态轨 · 零重渲染</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-400">瞬态轨 · 零重渲染</span>
       </div>
 
       <div className="mt-1 space-y-0.5">
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">QPS 偏差</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-400">QPS 偏差</span>
           <span ref={qpsRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0.0%</span>
-          <span className="ml-auto font-mono text-[10px] text-slate-500">±{(HEALTH_QPS_DEVIATION_WARN * 100).toFixed(0)}%</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-400">±{(HEALTH_QPS_DEVIATION_WARN * 100).toFixed(0)}%</span>
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">节点水位偏离</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-400">节点水位偏离</span>
           <span ref={driftRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0.0pp</span>
-          <span className="ml-auto font-mono text-[10px] text-slate-500">&le;{HEALTH_NODE_DRIFT_WARN}pp</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-400">&le;{HEALTH_NODE_DRIFT_WARN}pp</span>
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">快照间隔抖动</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-400">快照间隔抖动</span>
           <span ref={jitterRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0ms</span>
-          <span className="ml-auto font-mono text-[10px] text-slate-500">&le;{HEALTH_JITTER_WARN_MS}ms</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-400">&le;{HEALTH_JITTER_WARN_MS}ms</span>
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">SSE 重连</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-400">SSE 重连</span>
           <span ref={reconnectRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0</span>
-          <span className="ml-auto font-mono text-[10px] text-slate-500">次</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-400">次</span>
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">免疫改写</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-400">免疫改写</span>
           <span ref={immuneRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0</span>
-          <span className="ml-auto font-mono text-[10px] text-slate-500">条</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-400">条</span>
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">链路预算</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-400">链路预算</span>
           {traceSummary === null ? (
-            <span className="font-mono text-[10px] text-slate-500">等待首次请求</span>
+            <span className="font-mono text-[10px] text-slate-400">等待首次请求</span>
           ) : (
             <>
               <span
@@ -278,16 +278,16 @@ function DataHealthBlock() {
               >
                 {UI_COPY.traceTotalLabel} {traceSummary.totalMs.toFixed(0)}ms
               </span>
-              <span className="ml-auto font-mono text-[10px] text-slate-500">
+              <span className="ml-auto font-mono text-[10px] text-slate-400">
                 {traceSummary.engine === 'llm' ? 'LLM' : '容灾引擎'}
               </span>
             </>
           )}
         </div>
         <div className="flex items-baseline gap-1.5">
-          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-500">协议版本</span>
+          <span className="w-[5.5rem] shrink-0 font-mono text-[10px] text-slate-400">协议版本</span>
           <span ref={schemaRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">--</span>
-          <span className="ml-auto font-mono text-[10px] text-slate-500">期望 v{SUPPORTED_SCHEMA_VERSION}</span>
+          <span className="ml-auto font-mono text-[10px] text-slate-400">期望 v{SUPPORTED_SCHEMA_VERSION}</span>
         </div>
       </div>
 

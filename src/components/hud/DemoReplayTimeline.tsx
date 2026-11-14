@@ -194,7 +194,7 @@ function Field({
 }): React.ReactElement {
   return (
     <span className="flex items-baseline gap-1.5 truncate">
-      <span className="shrink-0 text-[10px] uppercase tracking-wider text-slate-500">{label}</span>
+      <span className="shrink-0 text-[10px] uppercase tracking-wider text-slate-400">{label}</span>
       <span
         className={cn(
           'truncate',

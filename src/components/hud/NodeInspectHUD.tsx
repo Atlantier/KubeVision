@@ -69,6 +69,7 @@ import {
 
 import { cn } from '@/utils/cn';
 import { UI_COPY } from '@/constants/copy';
+import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import {
@@ -792,7 +793,7 @@ function TopologyLegendPanel() {
         <span className="font-mono text-[10px] tracking-wider">读图说明</span>
         <ChevronDown
           className={cn(
-            'h-3 w-3 shrink-0 text-slate-500 transition-transform duration-200 ease-out',
+            'h-3 w-3 shrink-0 text-slate-400 transition-transform duration-200 ease-out',
             expanded && 'rotate-180 text-cyan-300',
           )}
           aria-hidden
@@ -825,7 +826,7 @@ function TopologyLegendPanel() {
                       <span className={cn('font-mono text-[10px] font-bold tracking-wide', TONE_TEXT_CLASS[item.tone])}>
                         {item.label}
                       </span>
-                      <span className="ml-1.5 text-[10px] leading-snug text-slate-500">{item.description}</span>
+                      <span className="ml-1.5 text-[10px] leading-snug text-slate-400">{item.description}</span>
                     </span>
                   </li>
                 ))}
@@ -836,8 +837,8 @@ function TopologyLegendPanel() {
 
               {/* 手势提示 */}
               <div className="mb-1.5 flex items-center gap-1.5">
-                <Move3d className="h-3 w-3 text-slate-500" aria-hidden />
-                <p className="font-mono text-[10px] tracking-wider text-slate-500">相机操作</p>
+                <Move3d className="h-3 w-3 text-slate-400" aria-hidden />
+                <p className="font-mono text-[10px] tracking-wider text-slate-400">相机操作</p>
               </div>
               <ul className="grid grid-cols-2 gap-x-2 gap-y-1">
                 {GESTURE_HINTS.map((hint) => (
@@ -851,9 +852,9 @@ function TopologyLegendPanel() {
                     ) : (
                       <MousePointerClick className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
                     )}
-                    <span className="truncate font-mono text-[10px] text-slate-500">
-                      {hint.label} <span className="text-slate-500">·</span>{' '}
-                      <span className="text-slate-400">{hint.effect}</span>
+                    <span className="truncate font-mono text-[10px] text-slate-400">
+                      {hint.label} <span className="text-slate-400">·</span>{' '}
+                      <span className="text-slate-300">{hint.effect}</span>
                     </span>
                   </li>
                 ))}
@@ -1172,7 +1173,7 @@ function MiniGauge({
   return (
     <div className="min-w-0">
       <div className="flex items-baseline justify-between gap-1">
-        <span className="flex min-w-0 items-center gap-0.5 font-mono text-[10px] tracking-wide text-slate-500">
+        <span className="flex min-w-0 items-center gap-0.5 font-mono text-[10px] tracking-wide text-slate-400">
           <span style={{ color: series.color }}>{icon}</span>
           <span className="truncate">{series.label}</span>
         </span>
@@ -1289,7 +1290,7 @@ function FilterStatusBanner() {
       initial={{ opacity: 0, y: -10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
-      transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+      transition={{ type: 'spring', ...MOTION.spring }}
       role="status"
       aria-live="polite"
       className={cn(
@@ -1497,7 +1498,7 @@ export default function NodeInspectHUD({ className }: NodeInspectHUDProps) {
             initial={{ opacity: 0, y: -8, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.97 }}
-            transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+            transition={{ type: 'spring', ...MOTION.spring }}
           >
             <EntityProbeCard
               view={view}

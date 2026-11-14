@@ -37,6 +37,7 @@ import {
   useRef,
   useState,
   type ErrorInfo,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   type ReactNode,
 } from 'react';
@@ -81,7 +82,9 @@ import GenUISkeleton from '@/components/ai/GenUI/GenUISkeleton';
 import MarkdownLite, { InlineMarkdown } from '@/components/ai/MarkdownLite';
 import PodMetricsCard from '@/components/ai/GenUI/PodMetricsCard';
 import RootCauseAlert from '@/components/ai/GenUI/RootCauseAlert';
+import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
+import { handleRovingTabKeyDown } from '@/hooks/useModalSheetBehavior';
 import { cn } from '@/utils/cn';
 import { isImeComposing } from '@/utils/keyboardTargets';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
@@ -513,8 +516,8 @@ function ContextPill({
    */
   if (resolved === null) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.06] bg-white/[0.02] px-2 py-0.5 font-mono text-[10px] tracking-wide text-slate-500">
-        <span className="h-1 w-1 shrink-0 rounded-full bg-slate-500" aria-hidden />
+      <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.06] bg-white/[0.02] px-2 py-0.5 font-mono text-[10px] tracking-wide text-slate-400">
+        <span className="h-1 w-1 shrink-0 rounded-full bg-slate-400" aria-hidden />
         全局集群视角
       </span>
     );
@@ -946,10 +949,16 @@ function ProactiveAnomalyBanner({
 
   return (
     <motion.div
-      initial={{ opacity: 0, height: 0 }}
-      animate={{ opacity: 1, height: 'auto' }}
-      exit={{ opacity: 0, height: 0 }}
-      transition={{ duration: 0.28, ease: 'easeOut' }}
+      initial={{ opacity: 0, scaleY: 0.94, y: -4 }}
+      animate={{ opacity: 1, scaleY: 1, y: 0 }}
+      exit={{
+        opacity: 0,
+        scaleY: 0.94,
+        y: -4,
+        transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+      }}
+      transition={{ type: 'spring', ...MOTION.spring }}
+      style={{ transformOrigin: 'top center' }}
       className="shrink-0 overflow-hidden"
       role="status"
       aria-live="polite"
@@ -977,7 +986,7 @@ function ProactiveAnomalyBanner({
               type="button"
               onClick={onDismiss}
               aria-label="关闭异常提示"
-              className="ml-auto rounded px-1 py-0.5 text-slate-500 transition-colors hover:text-slate-300"
+              className="kv-touch-target ml-auto rounded px-1.5 py-1 text-slate-400 transition-colors hover:text-slate-200"
             >
               <X className="h-3 w-3" aria-hidden />
             </button>
@@ -1199,7 +1208,7 @@ const MessageBubble = memo(function MessageBubble({
 
       {/* 引擎来源标注（诚实标注，仅在流结束后显示） */}
       {!message.isStreaming && message.engine !== undefined ? (
-        <p className="font-mono text-[10px] uppercase tracking-wider text-slate-500">
+        <p className="font-mono text-[10px] uppercase tracking-wider text-slate-400">
           推理引擎 · {message.engine === 'llm' ? '云端大模型' : '本地确定性容灾引擎'}
         </p>
       ) : null}
@@ -3300,16 +3309,23 @@ export default function CopilotDrawer() {
         {tabItems.map((tab) => {
           const active = activeRightTab === tab.key;
           const TabIcon = tab.icon;
+          const tabKeys = ['copilot', 'auditor'] as const;
           return (
             <button
               key={tab.key}
+              id={`copilot-drawer-tab-${tab.key}`}
               type="button"
               role="tab"
               aria-selected={active}
+              aria-controls={`copilot-drawer-panel-${tab.key}`}
+              tabIndex={active ? 0 : -1}
               onClick={(): void => setActiveRightTab(tab.key)}
+              onKeyDown={(e: ReactKeyboardEvent<HTMLElement>): void =>
+                handleRovingTabKeyDown(e, tabKeys, activeRightTab, setActiveRightTab, 'copilot-drawer-tab')
+              }
               className={cn(
                 'relative flex min-w-0 flex-1 items-center justify-center gap-1.5 px-2 transition-colors',
-                active ? 'text-cyan-300' : 'text-slate-500 hover:text-slate-300',
+                active ? 'text-cyan-300' : 'text-slate-400 hover:text-slate-200',
               )}
               title={tab.label}
             >
@@ -3323,7 +3339,7 @@ export default function CopilotDrawer() {
               {active ? (
                 <motion.span
                   layoutId="copilot-drawer-tab-underline"
-                  transition={{ type: 'spring', stiffness: 500, damping: 34 }}
+                  transition={{ type: 'spring', ...MOTION.spring }}
                   className="absolute inset-x-1 bottom-0 h-px bg-cyan-400/90"
                 />
               ) : null}
@@ -3334,11 +3350,21 @@ export default function CopilotDrawer() {
 
       {/* ============ 正文区：按 Tab 切换 ============ */}
       {activeRightTab === 'auditor' ? (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          id="copilot-drawer-panel-auditor"
+          role="tabpanel"
+          aria-labelledby="copilot-drawer-tab-auditor"
+          className="min-h-0 flex-1 overflow-y-auto"
+        >
           <LocalAuditorPanel />
         </div>
       ) : (
-        <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          id="copilot-drawer-panel-copilot"
+          role="tabpanel"
+          aria-labelledby="copilot-drawer-tab-copilot"
+          className="relative flex min-h-0 flex-1 flex-col"
+        >
           {/* ---- 主动异常嗅探横幅：3D 画布 → Copilot 的主动感知联动 ---- *
            * 【设计意图】把「AI 等用户提问」变为「AI 主动发现异常并请缨」。
            * 当 3D 画布侧遥测出现故障态时，Copilot 立刻在顶部亮出横幅，
@@ -3688,9 +3714,16 @@ export default function CopilotDrawer() {
               <AnimatePresence>
                 {selectedContextLabel !== null ? (
                   <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
+                    initial={{ opacity: 0, scaleY: 0.92, y: -4 }}
+                    animate={{ opacity: 1, scaleY: 1, y: 0 }}
+                    exit={{
+                      opacity: 0,
+                      scaleY: 0.92,
+                      y: -4,
+                      transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+                    }}
+                    transition={{ type: 'spring', ...MOTION.spring }}
+                    style={{ transformOrigin: 'top center' }}
                     className="mb-1.5 overflow-hidden"
                   >
                     {/*
@@ -3702,13 +3735,13 @@ export default function CopilotDrawer() {
                      */}
                     <div className="flex items-center gap-1.5 rounded-md border border-cyan-400/25 bg-cyan-400/[0.07] px-2 py-1">
                       <Crosshair className="h-2.5 w-2.5 shrink-0 text-cyan-300/90" aria-hidden />
-                      <span className="font-mono text-[10px] tracking-wider text-cyan-400/70">
+                      <span className="font-mono text-[10px] tracking-wider text-cyan-300">
                         上下文
                       </span>
                       <span className="min-w-0 flex-1 truncate font-mono text-[10px] font-semibold tracking-wide text-cyan-100">
                         {selectedContextLabel}
                       </span>
-                      <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-cyan-400/50">
+                      <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-cyan-300">
                         auto
                       </span>
                     </div>
@@ -3909,10 +3942,16 @@ export default function CopilotDrawer() {
               <AnimatePresence initial={false}>
                 {messages.length > 0 && isQuickPromptsOpen ? (
                   <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.15 }}
+                    initial={{ opacity: 0, scaleY: 0.92, y: -4 }}
+                    animate={{ opacity: 1, scaleY: 1, y: 0 }}
+                    exit={{
+                      opacity: 0,
+                      scaleY: 0.92,
+                      y: -4,
+                      transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+                    }}
+                    transition={{ duration: MOTION.panelExitSec, ease: MOTION.easeOut }}
+                    style={{ transformOrigin: 'top center' }}
                     className="overflow-hidden"
                   >
                     <div className="mb-1.5 flex flex-wrap items-center gap-1 border-b border-white/[0.05] pb-1.5">
@@ -3933,7 +3972,7 @@ export default function CopilotDrawer() {
                             )}
                           >
                             <Icon className="h-2.5 w-2.5 shrink-0" aria-hidden />
-                            <span className="text-slate-500">{prompt.code}</span>
+                            <span className="text-slate-400">{prompt.code}</span>
                             {prompt.short}
                           </button>
                         );
@@ -3994,7 +4033,7 @@ export default function CopilotDrawer() {
                   aria-expanded={speechHintExpanded}
                   aria-label={speechHintExpanded ? '收起语音能力说明' : '展开语音能力说明'}
                   title="查看语音能力说明"
-                  className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-cyan-300"
+                  className="kv-touch-target flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-cyan-300"
                 >
                   <Info className="h-3 w-3" aria-hidden />
                 </button>

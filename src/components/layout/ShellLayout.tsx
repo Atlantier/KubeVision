@@ -32,12 +32,14 @@
  * 外壳代码零改动。
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Bot, Layers, ShieldCheck } from 'lucide-react';
 
 import { AGENT_COPY } from '@/constants/copy';
+import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
+import { handleRovingTabKeyDown } from '@/hooks/useModalSheetBehavior';
 import { cn } from '@/utils/cn';
 import { isInteractiveTarget } from '@/utils/keyboardTargets';
 import { useClusterStore } from '@/store/useClusterStore';
@@ -80,6 +82,7 @@ export function RightDrawerSlot({ activeTab, onTabChange, children }: RightDrawe
     { key: 'copilot', label: AGENT_COPY.copilotTitle },
     { key: 'auditor', label: AGENT_COPY.auditorTitle, srAnchor: AGENT_COPY.auditorSrOnlyAnchor },
   ];
+  const tabKeys = ['copilot', 'auditor'] as const;
 
   return (
     <div className="kv-panel flex h-full min-h-0 flex-col overflow-hidden rounded-none border-y-0 border-r-0 lg:rounded-lg lg:border">
@@ -90,13 +93,19 @@ export function RightDrawerSlot({ activeTab, onTabChange, children }: RightDrawe
           return (
             <button
               key={tab.key}
+              id={`drawer-tab-${tab.key}`}
               type="button"
               role="tab"
               aria-selected={active}
+              aria-controls="drawer-tabpanel-main"
+              tabIndex={active ? 0 : -1}
               onClick={(): void => onTabChange(tab.key)}
+              onKeyDown={(e: ReactKeyboardEvent<HTMLElement>): void =>
+                handleRovingTabKeyDown(e, tabKeys, activeTab, onTabChange, 'drawer-tab')
+              }
               className={cn(
                 'relative flex items-center gap-1.5 px-3 font-mono text-[11px] tracking-wider transition-colors',
-                active ? 'text-cyan-300' : 'text-slate-500 hover:text-slate-300',
+                active ? 'text-cyan-300' : 'text-slate-400 hover:text-slate-200',
               )}
             >
               {tab.key === 'copilot' ? <Bot className="h-3.5 w-3.5" aria-hidden /> : <ShieldCheck className="h-3.5 w-3.5" aria-hidden />}
@@ -105,7 +114,7 @@ export function RightDrawerSlot({ activeTab, onTabChange, children }: RightDrawe
               {active ? (
                 <motion.span
                   layoutId="drawer-tab-underline"
-                  transition={{ type: 'spring', stiffness: 500, damping: 34 }}
+                  transition={{ type: 'spring', ...MOTION.spring }}
                   className="absolute inset-x-2 bottom-0 h-px bg-cyan-400 shadow-glow-cyan"
                 />
               ) : null}
@@ -115,7 +124,14 @@ export function RightDrawerSlot({ activeTab, onTabChange, children }: RightDrawe
       </div>
 
       {/* 页签正文（独立滚动） */}
-      <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+      <div
+        id="drawer-tabpanel-main"
+        role="tabpanel"
+        aria-labelledby={`drawer-tab-${activeTab}`}
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
+        {children}
+      </div>
     </div>
   );
 }
@@ -170,7 +186,7 @@ function MobileViewSwitcher({
               {active ? (
                 <motion.span
                   layoutId="mobile-view-thumb"
-                  transition={{ type: 'spring', stiffness: 480, damping: 32 }}
+                  transition={{ type: 'spring', ...MOTION.spring }}
                   className={cn(
                     'absolute inset-0 rounded-full',
                     item.key === 'topology' ? 'bg-cyan-400 shadow-glow-cyan' : 'bg-emerald-400 shadow-glow-emerald',

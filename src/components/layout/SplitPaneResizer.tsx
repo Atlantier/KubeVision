@@ -116,7 +116,7 @@ export interface SplitPaneResizerProps {
  * @returns 夹逼后的合法百分比
  */
 function clampPct(pct: number, containerWidth: number): number {
-  if (Number.isNaN(pct)) return RESIZE_CONFIG.defaultPct;
+  if (!Number.isFinite(pct)) return RESIZE_CONFIG.defaultPct;
 
   /* ---- 第一层：百分比夹逼 ---- */
   let next = Math.min(RESIZE_CONFIG.maxPct, Math.max(RESIZE_CONFIG.minPct, pct));
@@ -131,6 +131,24 @@ function clampPct(pct: number, containerWidth: number): number {
     }
   }
   return next;
+}
+
+/**
+ * sanitizeStoredWidthPct —— 清洗损坏或越界的 localStorage 宽度值。
+ *
+ * @param raw localStorage 原始字符串
+ * @returns 若合法返回夹逼后的百分比；损坏或越界则回退默认宽度 `defaultPct` 并标注需要自愈写回
+ */
+function sanitizeStoredWidthPct(raw: string): { readonly pct: number; readonly repaired: boolean } {
+  const trimmed = raw.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    return { pct: RESIZE_CONFIG.defaultPct, repaired: true };
+  }
+  const parsed = Number.parseFloat(trimmed);
+  if (!Number.isFinite(parsed) || parsed < RESIZE_CONFIG.minPct || parsed > RESIZE_CONFIG.maxPct) {
+    return { pct: RESIZE_CONFIG.defaultPct, repaired: true };
+  }
+  return { pct: parsed, repaired: false };
 }
 
 /* ========================================================================== */
@@ -153,6 +171,8 @@ export default function SplitPaneResizer({
 }: SplitPaneResizerProps): React.ReactElement {
   /** 当前是否处于拖拽中（驱动手柄高亮） */
   const [dragging, setDragging] = useState<boolean>(false);
+  /** 容器实时宽度（用于精确播报 aria-valuetext 与窄屏 resize minPx 自愈） */
+  const [containerWidthPx, setContainerWidthPx] = useState<number>(0);
 
   /**
    * 拖拽会话的清理函数引用。
@@ -162,6 +182,12 @@ export default function SplitPaneResizer({
    * 存进 ref 保证任何时候都能拿到最新的清理逻辑。
    */
   const cleanupRef = useRef<(() => void) | null>(null);
+
+  /** 当前百分比最新引用 */
+  const widthPctRef = useRef<number>(widthPct);
+  useEffect(() => {
+    widthPctRef.current = widthPct;
+  }, [widthPct]);
 
   /** 宽度回调的最新引用（避免在 window 监听器里产生过期闭包） */
   const onWidthChangeRef = useRef(onWidthChange);
@@ -175,10 +201,37 @@ export default function SplitPaneResizer({
     onDragStateChangeRef.current = onDragStateChange;
   }, [onDragStateChange]);
 
-  /* 组件卸载时确保清理（防御拖拽中被卸载导致 body 样式残留） */
+  /* 监听主容器尺寸变化（供 aria-valuetext 像素估算与窄屏 minPx 兜底） */
+  useEffect((): (() => void) | undefined => {
+    const container = containerRef.current;
+    if (container === null || typeof window === 'undefined') return undefined;
+
+    const syncWidth = (): void => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      setContainerWidthPx((prev): number => (Math.abs(prev - rect.width) < 1 ? prev : rect.width));
+      const clamped = clampPct(widthPctRef.current, rect.width);
+      if (Math.abs(clamped - widthPctRef.current) > 0.25) {
+        onWidthChangeRef.current(clamped);
+      }
+    };
+
+    syncWidth();
+    window.addEventListener('resize', syncWidth);
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(syncWidth) : null;
+    observer?.observe(container);
+
+    return (): void => {
+      window.removeEventListener('resize', syncWidth);
+      observer?.disconnect();
+    };
+  }, [containerRef]);
+
+  /* 组件卸载时确保清理（防御拖拽中被卸载导致 body 样式与指针捕获残留） */
   useEffect((): (() => void) => {
     return (): void => {
       cleanupRef.current?.();
+      cleanupRef.current = null;
     };
   }, []);
 
@@ -228,9 +281,12 @@ export default function SplitPaneResizer({
       event.preventDefault();
       event.stopPropagation();
 
+      const targetEl = event.currentTarget;
+      const pointerId = event.pointerId;
+
       /* 指针捕获：鼠标移出手柄后仍能收到事件 */
       try {
-        event.currentTarget.setPointerCapture(event.pointerId);
+        targetEl.setPointerCapture(pointerId);
       } catch {
         /* 合成事件/脚本派发无有效 pointerId 时忽略捕获异常 */
       }
@@ -261,11 +317,18 @@ export default function SplitPaneResizer({
       window.addEventListener('pointerup', onUp, { capture: true });
       window.addEventListener('pointercancel', onCancel, { capture: true });
 
-      /* 注册清理函数：供 endDrag / 组件卸载调用 */
+      /* 注册清理函数：供 endDrag / pointercancel / 组件卸载调用，并显式释放指针捕获 */
       cleanupRef.current = (): void => {
         window.removeEventListener('pointermove', onMove, { capture: true });
         window.removeEventListener('pointerup', onUp, { capture: true });
         window.removeEventListener('pointercancel', onCancel, { capture: true });
+        try {
+          if (targetEl.hasPointerCapture(pointerId)) {
+            targetEl.releasePointerCapture(pointerId);
+          }
+        } catch {
+          /* 忽略已断开节点的指针捕获释放异常 */
+        }
         document.body.style.cursor = prevCursor;
         document.body.style.userSelect = prevUserSelect;
       };
@@ -326,15 +389,24 @@ export default function SplitPaneResizer({
     [widthPct, containerRef],
   );
 
+  const roundedPct = Math.round(widthPct);
+  const resolvedPixelWidth =
+    containerWidthPx > 0 ? Math.round((widthPct / 100) * containerWidthPx) : 0;
+  const valueText =
+    containerWidthPx > 0
+      ? `AI 副驾宽度 ${roundedPct}%，${resolvedPixelWidth} 像素`
+      : `AI 副驾宽度 ${roundedPct}%`;
+
   return (
     <div
       /* ---- 语义与无障碍契约 ---- */
       role="separator"
       aria-orientation="vertical"
       aria-label="拖动调整 AI 副驾面板宽度（双击复位）"
-      aria-valuenow={Math.round(widthPct)}
+      aria-valuenow={roundedPct}
       aria-valuemin={RESIZE_CONFIG.minPct}
       aria-valuemax={RESIZE_CONFIG.maxPct}
+      aria-valuetext={valueText}
       tabIndex={0}
       /* ---- 交互 ---- */
       onPointerDown={handlePointerDown}
@@ -439,15 +511,16 @@ export default function SplitPaneResizer({
 export function useDrawerWidth(): readonly [number, (next: number) => void] {
   const [widthPct, setWidthPct] = useState<number>(RESIZE_CONFIG.defaultPct);
 
-  /* ---- 客户端挂载后读取记忆宽度 ---- */
+  /* ---- 客户端挂载后读取记忆宽度（损坏或越界值自动自愈为默认 34% 并写回） ---- */
   useEffect((): void => {
     try {
       const stored = window.localStorage.getItem(RESIZE_CONFIG.storageKey);
       if (stored === null) return;
-      const parsed = Number.parseFloat(stored);
-      if (Number.isNaN(parsed)) return;
-      /* 存储值可能来自旧版本（区间不同），读取时同样要夹逼 */
-      setWidthPct(clampPct(parsed, 0));
+      const { pct, repaired } = sanitizeStoredWidthPct(stored);
+      setWidthPct(pct);
+      if (repaired) {
+        window.localStorage.setItem(RESIZE_CONFIG.storageKey, String(pct));
+      }
     } catch {
       /* localStorage 可能被隐私模式禁用：静默退回默认值，不影响使用 */
     }

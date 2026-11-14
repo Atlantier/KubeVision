@@ -1040,9 +1040,9 @@ function ActionConfirmImpl({
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-emerald-300/70">
                 <span className="text-emerald-400">{UI_COPY.mcpReceiptTag}</span>
                 <span>{receipt.executionId}</span>
-                <span className="text-slate-500">·</span>
+                <span className="text-slate-400">·</span>
                 <span>{receipt.latencyMs}ms</span>
-                <span className="text-slate-500">·</span>
+                <span className="text-slate-400">·</span>
                 <span className={receipt.mode === 'real' ? 'text-emerald-400' : 'text-amber-300/80'}>
                   {receipt.mode === 'real' ? UI_COPY.mcpModeReal : UI_COPY.mcpModeSimulated}
                 </span>
@@ -1053,7 +1053,7 @@ function ActionConfirmImpl({
               </pre>
 
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                <p className="font-mono text-[10px] text-slate-500">audit digest: {receipt.auditDigest}</p>
+                <p className="font-mono text-[10px] text-slate-400">audit digest: {receipt.auditDigest}</p>
                 <button
                   type="button"
                   onClick={(): void => void handleVerifyReceipt()}
@@ -1154,12 +1154,12 @@ function MetricDelta({
 
   return (
     <span className="flex items-baseline gap-1 whitespace-nowrap">
-      <span className="text-slate-500">{label}</span>
-      <span className="text-slate-400">
+      <span className="text-slate-400">{label}</span>
+      <span className="text-slate-300">
         {before.toFixed(unit === '' ? 0 : 1)}
         {unit}
       </span>
-      <span className="text-slate-500">→</span>
+      <span className="text-slate-400">→</span>
       <span className={toneClass}>
         {after.toFixed(unit === '' ? 0 : 1)}
         {unit} {arrow}
@@ -1188,9 +1188,9 @@ function StatusDelta({ before, after }: { readonly before: string; readonly afte
 
   return (
     <span className="flex items-baseline gap-1 whitespace-nowrap">
-      <span className="text-slate-500">状态</span>
-      <span className="text-slate-400">{before}</span>
-      <span className="text-slate-500">→</span>
+      <span className="text-slate-400">状态</span>
+      <span className="text-slate-300">{before}</span>
+      <span className="text-slate-400">→</span>
       <span className={toneClass}>{after}</span>
     </span>
   );

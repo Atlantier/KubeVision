@@ -2563,7 +2563,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
               {statusBadgeLabel}
             </span>
             <span
-              className="hidden font-mono tabular-nums tracking-[0.06em] text-slate-500 md:inline"
+              className="hidden font-mono tabular-nums tracking-[0.06em] text-slate-400 md:inline"
               style={{ fontSize: HUD_LABEL_SPEC.RACK_LABEL.metaClampFontSize }}
             >
               {node.podIds.length} PODS
@@ -2578,7 +2578,7 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
             ].map((metric): React.ReactElement => (
               <div key={metric.label} className="flex items-center gap-1">
                 <span
-                  className="font-mono tracking-wider text-slate-500"
+                  className="font-mono tracking-wider text-slate-400"
                   style={{ fontSize: HUD_LABEL_SPEC.RACK_LABEL.metaClampFontSize }}
                 >
                   {metric.label}

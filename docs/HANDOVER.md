@@ -91,7 +91,7 @@
 | R9 副驾流式丝滑 | P1 | 消息增量渲染、MarkdownLite O(n²)、虚拟化、锚定、动作卡目标级隔离 | **已完成**：`probe:stream-perf`（`d3d11`）**16/16**（`rootCommits 538→152`、总 bubble 渲染 `1718→77`、历史重渲染 `1290→0`、`longtask 65→0`、`CLS 0.00071`、`N2c dist=0`、50+ 虚拟化 DOM `12`/滚顶 `min=11`/历史 `0`） |
 | R10 AI 可靠性与可信度 | P1 | 首 token 前装饰 sleep、回落两段结论、畸形载荷白屏、MCP 超时、RAG 置信度语义 | **已完成**：`run-chat-stream-tests` **19/19**、`probe-stream-determinism` **160/160**、`probe:r10` **12/12**（TTFT `p50 5605.66→685.39ms`、`p95 10596.70→840.23ms`）、`eval:rag` 49 用例三路 `R@1 94.4% / R@3 100.0% / 误拒率 0.0%`、`eval:ai-quality` 20/20（RAG 正确率 `80.0%` vs 裸模型 `78.3%`，引用率 `65.0%` vs `0.0%`） |
 | R11 全站汉化与术语治理 | 已完成（main + 进阶） | `src/constants/copy/*`（34 条术语 A–E + J1–J3）、全站文案与报告去泄漏替换、`check:copy`（C1–C8）与只读「术语表（34）」 | `check:copy` 139 文件 0 违规（allowlist 12/12）；`verify-demo` 22/22；`verify.mjs` 34/35（仅文档数字一致性留待 R14）；术语表 UI CDP 0 报错 |
-| R12 交互与动效治理 | P1 | 命令面板模糊/分组/listbox、焦点陷阱与归还、退场动画、MotionConfig、四态 | 命令面板语义齐全；焦点陷阱；四态 100% |
+| R12 交互与动效治理 | 已完成（main + 进阶） | `CommandPalette` 模糊匹配/分组/`combobox-listbox`、`useFocusReturn` 栈式焦点陷阱与 `<header inert>`、`AnimatePresence` 退场、WAI-ARIA Tabs/Menu、`SplitPaneResizer` 损坏存储自愈、`<MotionConfig reducedMotion="user">`、单全局 Toast、`check:contrast` WCAG AA/触控整改 | `check:contrast` 50 文件 0 违约；`check-style-contract` 229/229；`probe:r12` 19/19（`listeners=5, cls=0.0000`）；`probe:escape` 11/11；`probe:keyboard` 15/15；`probe:keyboard-path` 12/12；`verify-demo` 22/22；`verify.mjs --full` 35/36（仅 `R8-1` 留待 R14） |
 | R13 错误边界/a11y/长连接 | P1 | error.tsx/ErrorBoundary、慢空错三态、SSE 心跳、cancel 真关闭、多连接采样隔离 | 畸形不白屏；cancel 零回落；多连接不跳 0；a11y 全绿 |
 | R14 工程一致性/交付卫生 | P0·最后 | 文档数字=代码事实、安全头、release 卫生、verify:all 19 步、黄金演示彩排 | 文档同源；安全头齐全；19 步全跑；34/34；彩排偏差≤10s |
 
@@ -104,11 +104,11 @@
 - Node v24 / pnpm 11.8；Next.js 14.2.18（App Router）+ React 18.3.1 + three 0.169 + R3F 8.17.10 + drei 9.114.3。
 - 开发：`pnpm dev`（默认 3000）。起服务后先 `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000` 预热。
 - 质量门禁：
-  - `pnpm typecheck`、`pnpm lint`、`pnpm check:a11y`
+  - `pnpm typecheck`、`pnpm lint`、`pnpm check:a11y`、`pnpm check:contrast`
   - `pnpm benchmark` / `pnpm benchmark:consistency`（数据结论唯一来源）
   - `pnpm lint:glsl`、`pnpm strictmode:audit`、`pnpm check:layering`、`pnpm check:dead-exports`、`node scripts/check-style-contract.mjs --require-build`
   - `pnpm verify:all` / `node scripts/verify.mjs --full`（注：`文档数字一致性` 按计划留待 R14 对齐）
-  - `pnpm probe:camera`、`pnpm probe:r8`、`pnpm probe:keyboard`、`pnpm probe:escape`、`pnpm evidence:final`
+  - `pnpm probe:camera`、`pnpm probe:r8`、`pnpm probe:r12`、`pnpm probe:keyboard`、`pnpm probe:keyboard-path`、`pnpm probe:escape`、`pnpm evidence:final`
 - 质量档位：`?quality=high|balanced|low|off` 对应 tier 3/2/1/0；`?demo=1` 冻结 governor（软渲染下 FPS 低会自动降档，**探针必须带 `demo=1`**）。
 
 ---
@@ -144,11 +144,9 @@ git revert 9e106b4   # R5-1 修测量（最后退）
 
 ---
 
-## 8. 建议的下一步（推进 R11–R14）
+## 8. 建议的下一步（推进 R13–R14）
 
-1. **工作区归档提交**：
-   - R5 Part 1 + R6 + R7 + R8 + R9 + R10 均已完成验收，可按轮次拆分提交（**严禁提交** `docs/KubeVision_终极Prompt手册.md` 及 `.verify-artifacts/` / `tmp-*.mjs` 临时探针；如需独立回滚 `R9/R10`，工作区改动按模块提交或 `git checkout -- <file>`）。
-2. **已完成 R11（全站汉化与术语治理）**：
-   - 已收敛 `src/constants/copy/*`（34 条 TERMS 与 J1–J3 产品裁决）、`postMortemReport.ts` 去泄漏汉化、`check-copy`（C1–C8）门禁与只读「术语表（34）」，并已同步更新 `docs/rag-eval.*`、`README.md` 与技术白皮书 RAG 指标。
-3. **继续收尾 R12 → R13 → R14**：
-   - 依次完成交互与动效治理（R12）、错误边界/a11y/SSE 长连接（R13）以及终稿文档同源对齐（含 README / 白皮书 / PPT 文档数字一致性）与 `verify:all` 19 步黄金彩排（R14）。
+1. **R11–R12 已闭环归档**：
+   - R11（全站汉化与术语治理）与 R12（交互治理、焦点管理、动效减敏与对比度/触控热区收口）均已完成 main + 进阶并提交归档（**严禁提交** `docs/KubeVision_终极Prompt手册.md` 及 `.verify-artifacts/` / `tmp-*.mjs` 临时探针）。
+2. **继续推进 R13 → R14**：
+   - 先完成错误边界/a11y/SSE 长连接（R13），再完成终稿文档同源对齐（含 README / 白皮书 / PPT 文档数字一致性，解决 `R8-1`）与 `verify:all` 19 步黄金彩排（R14）。

@@ -21,7 +21,7 @@
  * 搜索在 useMemo 中做，输入变化才重算，条目上限 40 条避免长列表卡顿。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { motion } from 'framer-motion';
 import {
@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 
 import { AGENT_COPY, CHAOS_INJECT_LABELS } from '@/constants/copy';
+import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
 import { useFocusReturn } from '@/hooks/useModalSheetBehavior';
 import { cn } from '@/utils/cn';
@@ -98,6 +99,133 @@ const KIND_LABEL: Readonly<Record<CommandKind, string>> = {
   nav: '导航',
 };
 
+/** 分组渲染固定顺序 */
+const GROUP_ORDER: readonly CommandKind[] = ['pod', 'node', 'action', 'nav'];
+
+/** 会话级最近使用命令队列（最多保留 3 条） */
+let recentCommandIdsSession: string[] = [];
+
+function recordRecentCommandId(id: string): void {
+  recentCommandIdsSession = [id, ...recentCommandIdsSession.filter((item): boolean => item !== id)].slice(0, 3);
+}
+
+/** 单个字符串的子序列模糊匹配结果 */
+interface SubsequenceMatchResult {
+  readonly score: number;
+  readonly indices: readonly number[];
+}
+
+/** 排序后的命令匹配项（含高亮索引与最近标记） */
+interface RankedCommandItem {
+  readonly cmd: PaletteCommand;
+  readonly score: number;
+  readonly labelMatches: readonly number[];
+  readonly hintMatches: readonly number[];
+  readonly isRecent: boolean;
+}
+
+/** 分组条目结构 */
+interface CommandGroupSection {
+  readonly key: string;
+  readonly title: string;
+  readonly items: readonly { readonly ranked: RankedCommandItem; readonly flatIndex: number }[];
+}
+
+/**
+ * scoreSubsequenceMatch —— 子序列模糊匹配打分与字符索引提取。
+ *
+ * 【设计意图】让用户在只记得片段（如 `wbeta` 匹配 `worker-beta`、`oom` 匹配 `注入 OOM 风暴`）时，
+ * 也能一次命中并按语义精确度排序，同时返回命中下标数组用于渲染高亮片段。
+ * 【输入输出】输入目标文本 `text` 与小写检索串 `needle`；返回匹配分数与下标数组，未命中返回 null。
+ * 【数学/评分逻辑】连续子串命中获得基础高分（220）+ 前缀加权（80）；非连续子序列按顺序扫描，
+ * 词首边界（`-`/`_`/` `/`·` 后）加分 32、连续字符加分 26，并用间隔跨度做轻微惩罚，保证短精确词优先。
+ */
+function scoreSubsequenceMatch(text: string, needle: string): SubsequenceMatchResult | null {
+  if (needle.length === 0) return { score: 0, indices: [] };
+  const hay = text.toLowerCase();
+
+  const directIdx = hay.indexOf(needle);
+  if (directIdx !== -1) {
+    const indices: number[] = [];
+    for (let i = 0; i < needle.length; i += 1) {
+      indices.push(directIdx + i);
+    }
+    const prefixBonus = directIdx === 0 ? 80 : 0;
+    const prevChar = directIdx > 0 ? hay.charAt(directIdx - 1) : '';
+    const boundaryBonus = prevChar === '-' || prevChar === '_' || prevChar === ' ' || prevChar === '·' ? 40 : 0;
+    return {
+      score: 220 + prefixBonus + boundaryBonus - directIdx * 2,
+      indices,
+    };
+  }
+
+  const indices: number[] = [];
+  let searchPos = 0;
+  let score = 0;
+  let lastMatched = -2;
+
+  for (let i = 0; i < needle.length; i += 1) {
+    const ch = needle.charAt(i);
+    if (ch === ' ') continue;
+    const found = hay.indexOf(ch, searchPos);
+    if (found === -1) return null;
+
+    indices.push(found);
+    score += 18;
+    if (found === 0) {
+      score += 42;
+    } else {
+      const prevChar = hay.charAt(found - 1);
+      if (prevChar === '-' || prevChar === '_' || prevChar === ' ' || prevChar === '·') {
+        score += 32;
+      }
+    }
+    if (found === lastMatched + 1) {
+      score += 26;
+    } else if (lastMatched >= 0) {
+      score -= Math.min(12, found - lastMatched - 1);
+    }
+    lastMatched = found;
+    searchPos = found + 1;
+  }
+
+  if (indices.length === 0) return null;
+  return { score: Math.max(1, score), indices };
+}
+
+/**
+ * renderHighlightedText —— 将模糊命中的字符索引合并为连续 `<mark>` 高亮，保持原 `textContent` 不变。
+ */
+function renderHighlightedText(text: string, indices: readonly number[]): ReactNode {
+  if (indices.length === 0) return text;
+  const hitSet = new Set<number>(indices);
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    const isHit = hitSet.has(cursor);
+    let end = cursor + 1;
+    while (end < text.length && hitSet.has(end) === isHit) {
+      end += 1;
+    }
+    const slice = text.slice(cursor, end);
+    if (isHit) {
+      parts.push(
+        <mark
+          key={`m-${cursor}`}
+          className="rounded-[2px] bg-cyan-500/25 px-0.5 text-cyan-200"
+        >
+          {slice}
+        </mark>,
+      );
+    } else {
+      parts.push(<span key={`t-${cursor}`}>{slice}</span>);
+    }
+    cursor = end;
+  }
+  return parts;
+}
+
 /* ========================================================================== */
 /* 组件主体                                                                    */
 /* ========================================================================== */
@@ -108,10 +236,13 @@ const KIND_LABEL: Readonly<Record<CommandKind, string>> = {
 export default function CommandPalette({ onClose }: CommandPaletteProps): React.ReactElement {
   const [query, setQuery] = useState<string>('');
   const [activeIndex, setActiveIndex] = useState<number>(0);
+  const [recentVersion, setRecentVersion] = useState<number>(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  /* ---- Store 订阅（仅取构造命令所需的最小字段） ---- */
+  /* ---- Store 订阅（仅取构造命令所需的最小字段与开关态） ---- */
+  const isOpen = useClusterStore((s): boolean => s.isCommandPaletteOpen);
   const pods = useClusterStore((s) => s.snapshotSummary.pods);
   const nodes = useClusterStore((s) => s.snapshotSummary.nodes);
   const selectEntity = useClusterStore((s) => s.selectEntity);
@@ -121,14 +252,8 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
   const setConnectionMode = useClusterStore((s) => s.setConnectionMode);
   const appendTerminalLog = useClusterStore((s) => s.appendTerminalLog);
 
-  /** 打开即聚焦输入框（含一个微延迟：等 framer-motion 进场后聚焦才不被打断），关闭自动归还原焦点 */
-  useFocusReturn(true);
-  useEffect(() => {
-    const timer = window.setTimeout((): void => {
-      inputRef.current?.focus();
-    }, 60);
-    return (): void => window.clearTimeout(timer);
-  }, []);
+  /** 仅在打开态聚焦输入框 + 激活全容器 Tab 焦点陷阱；退场动画期立即解除栈占位并归还焦点 */
+  useFocusReturn(isOpen, inputRef, dialogRef);
 
   /**
    * 构造全部可用命令。
@@ -282,35 +407,132 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
   }, [pods, nodes, selectEntity, setActiveRightTab, setPerfHudOpen, setActiveChaos, setConnectionMode, appendTerminalLog, onClose]);
 
   /**
-   * 模糊过滤。
+   * 模糊过滤与分组聚合。
    *
-   * 【匹配策略】子串命中主标题 > 子串命中副标题 > 不匹配。
-   * 大小写不敏感；查询为空时保留全部（让用户先看到可选项）。
-   * 结果上限 40 条，避免输入单个字符时渲染上百条目。
+   * 【匹配策略】子序列模糊打分（主标题权重×2 + 副标题权重×1 + 最近执行加分）；
+   * 查询为空时按「最近使用（若有）」→ Pod → 节点 → 动作 → 导航分组保留前 40 条。
    */
-  const filtered = useMemo((): PaletteCommand[] => {
-    const q = query.trim().toLowerCase();
-    if (q.length === 0) return allCommands.slice(0, 40);
+  const { rankedItems, groupSections } = useMemo((): {
+    readonly rankedItems: readonly RankedCommandItem[];
+    readonly groupSections: readonly CommandGroupSection[];
+  } => {
+    void recentVersion;
+    const recentSet = new Set<string>(recentCommandIdsSession);
+    const trimmed = query.trim().toLowerCase();
 
-    const labelHits: PaletteCommand[] = [];
-    const hintHits: PaletteCommand[] = [];
-    for (const cmd of allCommands) {
-      if (cmd.label.toLowerCase().includes(q)) labelHits.push(cmd);
-      else if (cmd.hint.toLowerCase().includes(q)) hintHits.push(cmd);
+    let selected: RankedCommandItem[];
+    if (trimmed.length === 0) {
+      selected = allCommands.slice(0, 40).map((cmd): RankedCommandItem => ({
+        cmd,
+        score: recentSet.has(cmd.id) ? 10 : 0,
+        labelMatches: [],
+        hintMatches: [],
+        isRecent: recentSet.has(cmd.id),
+      }));
+    } else {
+      const scored: RankedCommandItem[] = [];
+      for (const cmd of allCommands) {
+        const labelHit = scoreSubsequenceMatch(cmd.label, trimmed);
+        const hintHit = cmd.hint.length > 0 ? scoreSubsequenceMatch(cmd.hint, trimmed) : null;
+        if (labelHit === null && hintHit === null) continue;
+        const totalScore =
+          (labelHit?.score ?? 0) * 2 +
+          (hintHit?.score ?? 0) +
+          (recentSet.has(cmd.id) ? 25 : 0);
+        scored.push({
+          cmd,
+          score: totalScore,
+          labelMatches: labelHit?.indices ?? [],
+          hintMatches: hintHit?.indices ?? [],
+          isRecent: recentSet.has(cmd.id),
+        });
+      }
+      scored.sort((a, b): number => b.score - a.score);
+      selected = scored.slice(0, 40);
     }
-    return [...labelHits, ...hintHits].slice(0, 40);
-  }, [allCommands, query]);
+
+    const sections: CommandGroupSection[] = [];
+    const flatRanked: RankedCommandItem[] = [];
+    const consumedIds = new Set<string>();
+
+    if (trimmed.length === 0 && recentCommandIdsSession.length > 0) {
+      const recentBucket: { ranked: RankedCommandItem; flatIndex: number }[] = [];
+      for (const recentId of recentCommandIdsSession) {
+        const found = selected.find((item): boolean => item.cmd.id === recentId);
+        if (found !== undefined) {
+          recentBucket.push({ ranked: found, flatIndex: flatRanked.length });
+          flatRanked.push(found);
+          consumedIds.add(found.cmd.id);
+        }
+      }
+      if (recentBucket.length > 0) {
+        sections.push({
+          key: 'recent',
+          title: '最近使用',
+          items: recentBucket,
+        });
+      }
+    }
+
+    /* 当存在输入查询时，按各组最高分降序排组，确保最优命中（如节点名直接命中）居于首行 */
+    const orderedKinds: readonly CommandKind[] =
+      trimmed.length > 0
+        ? [...GROUP_ORDER].sort((kindA, kindB): number => {
+            const maxA = selected.reduce(
+              (acc, item): number =>
+                item.cmd.kind === kindA && !consumedIds.has(item.cmd.id) ? Math.max(acc, item.score) : acc,
+              -1,
+            );
+            const maxB = selected.reduce(
+              (acc, item): number =>
+                item.cmd.kind === kindB && !consumedIds.has(item.cmd.id) ? Math.max(acc, item.score) : acc,
+              -1,
+            );
+            if (maxB !== maxA) return maxB - maxA;
+            return GROUP_ORDER.indexOf(kindA) - GROUP_ORDER.indexOf(kindB);
+          })
+        : GROUP_ORDER;
+
+    for (const kind of orderedKinds) {
+      const bucket: { ranked: RankedCommandItem; flatIndex: number }[] = [];
+      for (const item of selected) {
+        if (item.cmd.kind !== kind || consumedIds.has(item.cmd.id)) continue;
+        bucket.push({ ranked: item, flatIndex: flatRanked.length });
+        flatRanked.push(item);
+        consumedIds.add(item.cmd.id);
+      }
+      if (bucket.length > 0) {
+        sections.push({
+          key: kind,
+          title: KIND_LABEL[kind],
+          items: bucket,
+        });
+      }
+    }
+
+    return {
+      rankedItems: flatRanked,
+      groupSections: sections,
+    };
+  }, [allCommands, query, recentVersion]);
 
   /* 查询变化时重置高亮到首项（否则会停在一个不存在的索引上） */
   useEffect(() => {
     setActiveIndex(0);
   }, [query]);
 
+  /** 执行某条命令并记录至最近队列 */
+  const executeCommand = useCallback((cmd: PaletteCommand): void => {
+    recordRecentCommandId(cmd.id);
+    setRecentVersion((v): number => v + 1);
+    cmd.run();
+  }, []);
+
   /** 执行当前高亮项 */
   const runActive = useCallback((): void => {
-    const target = filtered[activeIndex];
-    if (target !== undefined) target.run();
-  }, [filtered, activeIndex]);
+    const target = rankedItems[activeIndex];
+    if (target !== undefined) executeCommand(target.cmd);
+  }, [rankedItems, activeIndex, executeCommand]);
 
   /**
    * 键盘处理。
@@ -323,13 +545,19 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
      优先级 100：从页面任意位置按 Esc 都先关它。
      【R3】consumeInEditable：面板打开时焦点恒在搜索框，Esc 的语义是关面板
      而非清空输入——声明后由分级栈统一消费，输入框上不再另挂 Esc 分支。 */
-  useEscapeLayer({
-    id: 'command-palette',
-    priority: 100,
-    label: '运维命令面板',
-    onEscape: onClose,
-    consumeInEditable: true,
-  });
+  /* 【C1】退场动画期仍可能短暂留在 DOM，仅在 isOpen 为真时注册 Esc 层与焦点陷阱，
+     避免关闭瞬间连按两次 Esc 仍被退场中的命令面板重复截获。 */
+  useEscapeLayer(
+    isOpen
+      ? {
+          id: 'command-palette',
+          priority: 100,
+          label: '运维命令面板',
+          onEscape: onClose,
+          consumeInEditable: true,
+        }
+      : null,
+  );
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>): void => {
@@ -341,12 +569,12 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
       if (isImeComposing(event.nativeEvent)) return;
       if (event.key === 'ArrowDown') {
         event.preventDefault();
-        setActiveIndex((prev): number => (prev + 1) % Math.max(1, filtered.length));
+        setActiveIndex((prev): number => (prev + 1) % Math.max(1, rankedItems.length));
         return;
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault();
-        setActiveIndex((prev): number => (prev - 1 + filtered.length) % Math.max(1, filtered.length));
+        setActiveIndex((prev): number => (prev - 1 + rankedItems.length) % Math.max(1, rankedItems.length));
         return;
       }
       if (event.key === 'Enter') {
@@ -356,30 +584,35 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
       }
       /* Esc 由 useEscapeStack 统一派发（本层 consumeInEditable），此处不再处理 */
     },
-    [filtered.length, runActive],
+    [rankedItems.length, runActive],
   );
 
-  /* 高亮项滚动进视野（键盘导航时不会跑到视口外） */
+  /* 高亮项滚动进视野（按真实 option DOM 定位，兼容分组标题节点） */
   useEffect(() => {
-    const list = listRef.current;
-    if (list === null) return;
-    const active = list.children[activeIndex] as HTMLElement | undefined;
-    active?.scrollIntoView({ block: 'nearest' });
-  }, [activeIndex]);
+    const activeItem = rankedItems[activeIndex];
+    if (activeItem === undefined || typeof document === 'undefined') return;
+    const activeEl = document.getElementById(`cmd-option-${activeItem.cmd.id}`);
+    activeEl?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex, rankedItems]);
+
+  const activeOptionId =
+    rankedItems[activeIndex] !== undefined ? `cmd-option-${rankedItems[activeIndex].cmd.id}` : undefined;
 
   return (
     <motion.div
+      ref={dialogRef}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.14 }}
+      transition={{ duration: MOTION.overlayFadeSec, ease: MOTION.easeOut }}
       className={cn(
-        'fixed inset-0 flex items-start justify-center bg-slate-950/70 px-2 pt-[10dvh] md:pt-[12vh]',
+        'fixed inset-0 flex items-start justify-center bg-slate-950/70 px-2 pt-[10dvh] kv-blur-panel md:pt-[12vh]',
         Z_CLASS.COMMAND_PALETTE,
       )}
       role="dialog"
       aria-modal="true"
       aria-label="运维命令面板"
+      tabIndex={-1}
       onClick={(event): void => {
         /* 点击遮罩关闭（点击面板本体不关闭） */
         if (event.target === event.currentTarget) onClose();
@@ -388,8 +621,13 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
       <motion.div
         initial={{ opacity: 0, y: -12, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: -12, scale: 0.98 }}
-        transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+        exit={{
+          opacity: 0,
+          y: -10,
+          scale: 0.98,
+          transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+        }}
+        transition={{ type: 'spring', ...MOTION.spring }}
         className="flex max-h-[82dvh] w-[min(640px,94vw)] flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-slate-900/95 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06),0_24px_64px_-12px_rgba(2,6,23,0.95)]"
       >
         {/* ---- 搜索输入行 ---- */}
@@ -398,73 +636,110 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
           <input
             ref={inputRef}
             type="text"
+            role="combobox"
+            aria-expanded="true"
+            aria-autocomplete="list"
+            aria-controls="command-palette-listbox"
+            aria-activedescendant={activeOptionId}
             value={query}
             onChange={(event): void => setQuery(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="搜索 Pod / 节点，或输入运维动作…"
+            placeholder="搜索 Pod / 节点，或输入运维动作（支持子序列如 wbeta / oom）…"
             aria-label="命令面板搜索"
-            className="min-w-0 flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-500"
+            className="min-w-0 flex-1 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-400"
           />
           <button
             type="button"
             onClick={onClose}
             aria-label="关闭命令面板"
-            className="flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded p-1 text-slate-400 transition-colors hover:text-rose-400 md:min-h-0 md:min-w-0"
+            className="kv-touch-target flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded p-1 text-slate-400 transition-colors hover:text-rose-400 md:min-h-0 md:min-w-0"
           >
             <X className="h-3.5 w-3.5" aria-hidden />
           </button>
         </div>
 
-        {/* ---- 结果列表 ---- */}
-        <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto py-1">
-          {filtered.length === 0 ? (
-            <p className="px-3 py-6 text-center font-mono text-[11px] text-slate-500">
+        {/* ---- 结果列表（WAI-ARIA Listbox + 分类分组） ---- */}
+        <div
+          ref={listRef}
+          id="command-palette-listbox"
+          role="listbox"
+          aria-label="命令结果列表"
+          className="min-h-0 flex-1 overflow-y-auto py-1"
+        >
+          {query.trim().length === 0 && recentCommandIdsSession.length === 0 ? (
+            <p className="border-b border-white/[0.05] px-3 py-1.5 font-mono text-[10px] text-slate-400">
+              推荐快捷键跳转：按 Pod / 节点 / 动作 / 导航分组检索，支持子序列模糊匹配
+            </p>
+          ) : null}
+          {rankedItems.length === 0 ? (
+            <p className="px-3 py-6 text-center font-mono text-[11px] text-slate-400">
               未找到匹配的命令
             </p>
           ) : (
-            filtered.map((cmd, index): React.ReactNode => {
-              const Icon = KIND_ICON[cmd.kind];
-              const active = index === activeIndex;
-              return (
-                <button
-                  key={cmd.id}
-                  type="button"
-                  onClick={cmd.run}
-                  onMouseEnter={(): void => setActiveIndex(index)}
-                  className={cn(
-                    'flex w-full items-center gap-2.5 px-3 py-1.5 text-left transition-colors',
-                    active ? 'bg-cyan-500/10' : 'hover:bg-slate-800/50',
-                  )}
-                >
-                  <Icon className={cn('h-3.5 w-3.5 shrink-0', KIND_COLOR[cmd.kind])} aria-hidden />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] text-slate-200">{cmd.label}</span>
-                    {cmd.hint.length > 0 ? (
-                      <span className="block truncate font-mono text-[10px] text-slate-500">{cmd.hint}</span>
-                    ) : null}
-                  </span>
-                  <span className="shrink-0 rounded border border-white/[0.07] bg-slate-800/60 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
-                    {KIND_LABEL[cmd.kind]}
-                  </span>
-                </button>
-              );
-            })
+            groupSections.map((section): ReactNode => (
+              <div key={section.key} role="group" aria-label={section.title}>
+                <div className="flex items-center justify-between px-3 pb-1 pt-2 font-mono text-[10px] uppercase tracking-wider text-slate-400">
+                  <span>{section.title}</span>
+                  <span>{section.items.length}</span>
+                </div>
+                {section.items.map(({ ranked, flatIndex }): ReactNode => {
+                  const { cmd, labelMatches, hintMatches } = ranked;
+                  const Icon = KIND_ICON[cmd.kind];
+                  const active = flatIndex === activeIndex;
+                  const optionId = `cmd-option-${cmd.id}`;
+                  return (
+                    <button
+                      key={cmd.id}
+                      id={optionId}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      onMouseDown={(event: ReactMouseEvent<HTMLButtonElement>): void => {
+                        /* 鼠标按压/悬停更新高亮或触发执行，但不抢走输入框焦点 */
+                        event.preventDefault();
+                      }}
+                      onClick={(): void => executeCommand(cmd)}
+                      onMouseEnter={(): void => setActiveIndex(flatIndex)}
+                      className={cn(
+                        'flex w-full items-center gap-2.5 px-3 py-1.5 text-left transition-colors',
+                        active ? 'bg-cyan-500/10' : 'hover:bg-slate-800/50',
+                      )}
+                    >
+                      <Icon className={cn('h-3.5 w-3.5 shrink-0', KIND_COLOR[cmd.kind])} aria-hidden />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[13px] text-slate-200">
+                          {renderHighlightedText(cmd.label, labelMatches)}
+                        </span>
+                        {cmd.hint.length > 0 ? (
+                          <span className="block truncate font-mono text-[10px] text-slate-400">
+                            {renderHighlightedText(cmd.hint, hintMatches)}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="shrink-0 rounded border border-white/[0.07] bg-slate-800/60 px-1 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-300">
+                        {KIND_LABEL[cmd.kind]}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))
           )}
         </div>
 
         {/* ---- 底部快捷键提示 ---- */}
-        <div className="flex items-center gap-3 border-t border-white/[0.07] px-3 py-1.5 font-mono text-[10px] text-slate-500">
+        <div className="flex items-center gap-3 border-t border-white/[0.07] px-3 py-1.5 font-mono text-[10px] text-slate-400">
           <span className="flex items-center gap-1">
-            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1">↑</kbd>
-            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1">↓</kbd>
+            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1 text-slate-300">↑</kbd>
+            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1 text-slate-300">↓</kbd>
             选择
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1">Enter</kbd>
+            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1 text-slate-300">Enter</kbd>
             执行
           </span>
           <span className="flex items-center gap-1">
-            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1">Esc</kbd>
+            <kbd className="rounded border border-white/[0.07] bg-slate-800 px-1 text-slate-300">Esc</kbd>
             关闭
           </span>
           <span className="ml-auto flex items-center gap-1">

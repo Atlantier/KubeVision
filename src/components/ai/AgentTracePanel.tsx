@@ -61,7 +61,7 @@ function AgentTracePanel(): ReactElement | null {
       className="min-w-0 max-w-full rounded-kv border border-white/[0.075] bg-slate-950/60 p-2"
     >
       <div className="flex min-w-0 items-center justify-between gap-2">
-        <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
+        <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-400">
           {UI_COPY.traceHeader}
         </span>
         <button
@@ -133,7 +133,7 @@ function AgentTracePanel(): ReactElement | null {
       </div>
 
       {/* R36 追问 3：诚实边界（固定行） */}
-      <p className="mt-1.5 border-t border-white/[0.06] pt-1 font-mono text-[10px] leading-relaxed text-slate-500">
+      <p className="mt-1.5 border-t border-white/[0.06] pt-1 font-mono text-[10px] leading-relaxed text-slate-400">
         引擎 B 为确定性容灾引擎（非 LLM），节拍为编排值。
       </p>
     </div>

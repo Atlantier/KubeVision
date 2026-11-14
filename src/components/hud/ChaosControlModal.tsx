@@ -42,6 +42,7 @@ import { motion } from 'framer-motion';
 import { AlertTriangle, Cpu, Network, ShieldCheck, Skull, X } from 'lucide-react';
 
 import { CHAOS_SCENARIO_LABELS, UI_COPY } from '@/constants/copy';
+import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
 import { useFocusReturn, useSheetSwipeClose } from '@/hooks/useModalSheetBehavior';
 import { cn } from '@/utils/cn';
@@ -157,12 +158,14 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
   );
   const appendTerminalLog = useClusterStore((s): ((line: string) => void) => s.appendTerminalLog);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const firstCardRef = useRef<HTMLButtonElement>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
   const handleClose = useCallback((): void => {
     setChaosModalOpen(false);
   }, [setChaosModalOpen]);
 
-  useFocusReturn(isChaosModalOpen, closeBtnRef);
+  useFocusReturn(isChaosModalOpen, firstCardRef, dialogRef);
   const swipe = useSheetSwipeClose(handleClose);
 
   /*
@@ -225,11 +228,17 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
   );
 
   return (
-    <div
+    <motion.div
+      ref={dialogRef}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0, transition: { duration: MOTION.overlayFadeSec, ease: MOTION.easeOut } }}
+      transition={{ duration: MOTION.overlayFadeSec, ease: MOTION.easeOut }}
       className={cn('fixed inset-0 flex items-end justify-center p-0 md:items-center md:p-4', Z_CLASS.MODAL, className)}
       role="dialog"
       aria-modal="true"
       aria-label="混沌工程故障演练控制台"
+      tabIndex={-1}
     >
       {/* ============ 半透明暗黑警示遮罩（点击关闭） ============ */}
       <button
@@ -243,8 +252,13 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
       <motion.div
         initial={{ opacity: 0, scale: 0.94, y: 16 }}
         animate={{ opacity: 1, scale: 1, y: swipe.dragOffsetY }}
-        exit={{ opacity: 0, scale: 0.94, y: 16 }}
-        transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+        exit={{
+          opacity: 0,
+          scale: 0.95,
+          y: 12,
+          transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+        }}
+        transition={{ type: 'spring', ...MOTION.spring }}
         className="relative flex max-h-[90dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl rounded-b-none border border-rose-500/40 kv-panel shadow-modal md:rounded-xl"
       >
         {/* ---- 顶部红黑斜纹警戒条 ---- */}
@@ -296,11 +310,12 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
 
           {/* ======== 四张场景卡片（双列网格） ======== */}
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-            {CHAOS_DRILL_CARDS.map((card) => {
+            {CHAOS_DRILL_CARDS.map((card, index) => {
               const Icon = DRILL_ICONS[card.scenario];
               return (
                 <button
                   key={card.scenario}
+                  ref={index === 0 ? firstCardRef : undefined}
                   type="button"
                   onClick={(): void => handleCardClick(card)}
                   aria-label={`${card.code} · ${card.codename} · ${card.title}`}
@@ -338,13 +353,13 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
                   </span>
 
                   {/* 详细说明 */}
-                  <span className="text-caption leading-relaxed text-slate-500 group-hover:text-slate-400">
+                  <span className="text-caption leading-relaxed text-slate-400 group-hover:text-slate-300">
                     {card.description}
                   </span>
 
                   {/* 受灾机架徽标（恢复卡不显示） */}
                   {card.targetRackIndex !== null ? (
-                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-white/[0.05] bg-slate-800/60 px-1.5 py-0.5 font-mono text-[11px] tracking-wider text-slate-400">
+                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-white/[0.05] bg-slate-800/60 px-1.5 py-0.5 font-mono text-[11px] tracking-wider text-slate-300">
                       {UI_COPY.chaosModalTargetRackPrefix}&nbsp;·&nbsp;rack-{card.targetRackIndex}
                     </span>
                   ) : (
@@ -358,7 +373,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
           </div>
 
           {/* ======== 底部提示 ======== */}
-          <p className="mt-3.5 flex items-center gap-1.5 font-mono text-[11px] tracking-wider text-slate-500">
+          <p className="mt-3.5 flex items-center gap-1.5 font-mono text-[11px] tracking-wider text-slate-400">
             <AlertTriangle className="h-2.5 w-2.5" aria-hidden />
             {UI_COPY.chaosModalFooterHint}
           </p>
@@ -367,6 +382,6 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
         {/* ---- 底部红黑斜纹警戒条 ---- */}
         <div className="h-2 w-full shrink-0" style={HAZARD_STRIPE_STYLE} aria-hidden />
       </motion.div>
-    </div>
+    </motion.div>
   );
 }

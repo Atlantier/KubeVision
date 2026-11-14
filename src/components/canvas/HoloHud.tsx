@@ -331,7 +331,7 @@ export function MiniBar({
   return (
     <span className="flex items-center gap-1">
       <span
-        className="font-mono uppercase tracking-[0.16em] text-slate-500"
+        className="font-mono uppercase tracking-[0.16em] text-slate-400"
         style={{ fontSize: HUD_LABEL_SPEC.POD_HOVER_LABEL.metaClampFontSize }}
       >
         {label}

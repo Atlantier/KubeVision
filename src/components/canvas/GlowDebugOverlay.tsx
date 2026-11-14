@@ -39,10 +39,10 @@ export default function GlowDebugOverlay(): React.ReactElement | null {
               {zone.current.toFixed(2)} / {zone.budget.toFixed(2)}
             </span>
           </div>
-          <div className="text-[10px] leading-tight text-slate-500">{zone.note}</div>
+          <div className="text-[10px] leading-tight text-slate-400">{zone.note}</div>
         </div>
       ))}
-      <div className="mt-2 text-[10px] text-slate-500">
+      <div className="mt-2 text-[10px] text-slate-400">
         运行时扫描结果见 console（[glowBudget]），开发期超预算会 warn。
       </div>
     </div>

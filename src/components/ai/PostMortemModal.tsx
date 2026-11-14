@@ -22,10 +22,12 @@
  * 而该分支在服务端渲染时不会走到（父级按需 dynamic 引入且初始 open=false）。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
+import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
-import { useFocusReturn, useSheetSwipeClose } from '@/hooks/useModalSheetBehavior';
+import { handleRovingTabKeyDown, useFocusReturn, useSheetSwipeClose } from '@/hooks/useModalSheetBehavior';
 import { createPortal } from 'react-dom';
 import { Check, Copy, Download, FileText, X } from 'lucide-react';
 
@@ -109,8 +111,14 @@ export default function PostMortemModal({
 
   /** 复制反馈定时器（卸载 / 重入时必须清理，避免对已卸载组件 setState） */
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previewTabRef = useRef<HTMLButtonElement>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
-  useFocusReturn(open, closeBtnRef);
+  const [mounted, setMounted] = useState<boolean>(false);
+  useEffect((): void => {
+    setMounted(true);
+  }, []);
+  useFocusReturn(open, previewTabRef, dialogRef);
   const swipe = useSheetSwipeClose(onClose);
 
   /**
@@ -219,38 +227,54 @@ export default function PostMortemModal({
     });
   }, [markdown, clearFeedbackTimer]);
 
-  /* ---- 契约：关闭态直接返回 null（不残留任何遮罩节点） ---- */
-  if (!open) return null;
+  /* ---- 客户端未挂载（SSR）返回 null；挂载后 Portal 内由 AnimatePresence 控制完整进退场 ---- */
+  if (!mounted || typeof document === 'undefined') return null;
 
   const charCount = markdown.length;
   const lineCount = markdown === '' ? 0 : markdown.split('\n').length;
   const isPreview = mode === 'preview';
+  const viewTabKeys = ['preview', 'source'] as const;
 
   return createPortal(
-    <div
-      className={cn(
-        'fixed inset-0 flex items-end justify-center p-0 kv-overlay md:items-center md:p-4',
-        Z_CLASS.MODAL,
-      )}
-      role="dialog"
-      aria-modal="true"
-      aria-label="SRE 故障复盘报告"
-    >
-      {/* ============ 遮罩点击关闭（独立按钮，位于面板之下，不与面板交互冲突） ============ */}
-      <button
-        type="button"
-        aria-label="点击遮罩关闭复盘报告弹窗"
-        onClick={onClose}
-        className="absolute inset-0 cursor-default"
-      />
+    <AnimatePresence initial={false}>
+      {open ? (
+        <motion.div
+          ref={dialogRef}
+          key="postmortem-overlay"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0, transition: { duration: MOTION.overlayFadeSec, ease: MOTION.easeOut } }}
+          transition={{ duration: MOTION.overlayFadeSec, ease: MOTION.easeOut }}
+          className={cn(
+            'fixed inset-0 flex items-end justify-center p-0 kv-overlay md:items-center md:p-4',
+            Z_CLASS.MODAL,
+          )}
+          role="dialog"
+          aria-modal="true"
+          aria-label="SRE 故障复盘报告"
+          tabIndex={-1}
+        >
+          {/* ============ 遮罩点击关闭（独立按钮，位于面板之下，不与面板交互冲突） ============ */}
+          <button
+            type="button"
+            aria-label="点击遮罩关闭复盘报告弹窗"
+            onClick={onClose}
+            className="absolute inset-0 cursor-default"
+          />
 
-      {/* ============ 主面板：深空毛玻璃（移动端 90dvh Bottom Sheet） ============ */}
-      <div
-        className="relative flex h-[90dvh] max-h-[90dvh] w-full max-w-4xl flex-col overflow-hidden rounded-t-2xl rounded-b-none kv-panel shadow-modal md:h-[80vh] md:rounded-xl"
-        style={
-          swipe.dragOffsetY > 0 ? { transform: `translateY(${swipe.dragOffsetY}px)` } : undefined
-        }
-      >
+          {/* ============ 主面板：深空毛玻璃（移动端 90dvh Bottom Sheet） ============ */}
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 14 }}
+            animate={{ opacity: 1, scale: 1, y: swipe.dragOffsetY }}
+            exit={{
+              opacity: 0,
+              scale: 0.96,
+              y: 12,
+              transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+            }}
+            transition={{ type: 'spring', ...MOTION.spring }}
+            className="relative flex h-[90dvh] max-h-[90dvh] w-full max-w-4xl flex-col overflow-hidden rounded-t-2xl rounded-b-none kv-panel shadow-modal md:h-[80vh] md:rounded-xl"
+          >
         {/* ---- 顶部主题流光细线 ---- */}
         <div
           className="h-px w-full shrink-0 bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent"
@@ -297,7 +321,7 @@ export default function PostMortemModal({
             type="button"
             onClick={onClose}
             aria-label="关闭复盘报告弹窗"
-            className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-md border border-white/[0.07] p-1.5 text-slate-400 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95 md:min-h-0 md:min-w-0"
+            className="kv-touch-target flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-md border border-white/[0.07] p-1.5 text-slate-400 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95 md:min-h-0 md:min-w-0"
           >
             <X className="h-3.5 w-3.5" aria-hidden />
           </button>
@@ -309,20 +333,27 @@ export default function PostMortemModal({
           aria-label="报告视图切换"
           className="flex shrink-0 items-center gap-1 border-b border-white/[0.07] bg-slate-900/50 px-3 py-1.5 sm:px-4"
         >
-          {VIEW_TABS.map((tab): React.ReactElement => {
+          {VIEW_TABS.map((tab, idx): React.ReactElement => {
             const isActive = tab.key === mode;
             return (
               <button
                 key={tab.key}
+                id={`postmortem-tab-${tab.key}`}
+                ref={idx === 0 ? previewTabRef : undefined}
                 type="button"
                 role="tab"
                 aria-selected={isActive}
+                aria-controls="postmortem-tabpanel"
+                tabIndex={isActive ? 0 : -1}
                 onClick={(): void => setMode(tab.key)}
+                onKeyDown={(e: ReactKeyboardEvent<HTMLElement>): void =>
+                  handleRovingTabKeyDown(e, viewTabKeys, mode, setMode, 'postmortem-tab')
+                }
                 className={cn(
                   'rounded px-2.5 py-1 font-mono text-[10px] tracking-wider transition-colors',
                   isActive
                     ? 'border border-cyan-400/50 bg-cyan-400/[0.15] text-cyan-300'
-                    : 'border border-transparent text-slate-500 hover:bg-white/[0.05] hover:text-slate-300',
+                    : 'border border-transparent text-slate-400 hover:bg-white/[0.05] hover:text-slate-200',
                 )}
               >
                 {tab.label}
@@ -330,16 +361,21 @@ export default function PostMortemModal({
             );
           })}
 
-          <span className="ml-auto hidden font-mono text-[10px] text-slate-500 sm:inline">
+          <span className="ml-auto hidden font-mono text-[10px] text-slate-400 sm:inline">
             {lineCount} 行
           </span>
         </div>
 
         {/* ==================== 内容区 ==================== */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <div
+          id="postmortem-tabpanel"
+          role="tabpanel"
+          aria-labelledby={`postmortem-tab-${mode}`}
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
+        >
           {isPreview ? (
             markdown.trim() === '' ? (
-              <p className="rounded border border-dashed border-white/[0.07] px-3 py-6 text-center text-[11px] text-slate-500">
+              <p className="rounded border border-dashed border-white/[0.07] px-3 py-6 text-center text-[11px] text-slate-400">
                 报告内容为空：请先在 Copilot 中完成至少一轮排障对话。
               </p>
             ) : (
@@ -349,7 +385,7 @@ export default function PostMortemModal({
               />
             )
           ) : (
-            <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-slate-400">
+            <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-slate-300">
               {markdown}
             </pre>
           )}
@@ -397,17 +433,19 @@ export default function PostMortemModal({
             </span>
           ) : (
             <span
-              className="ml-auto hidden min-w-0 items-center gap-1 font-mono text-[10px] text-slate-500 sm:flex"
+              className="ml-auto hidden min-w-0 items-center gap-1 font-mono text-[10px] text-slate-400 sm:flex"
               title={filename ?? '下载时按当前时刻生成文件名'}
             >
               <span className="truncate">{filename ?? 'kubevision-postmortem-*.md'}</span>
-              <span className="shrink-0 text-slate-500">·</span>
+              <span className="shrink-0 text-slate-400">·</span>
               <span className="shrink-0">端侧生成，原始凭证未离开浏览器</span>
             </span>
           )}
         </footer>
-      </div>
-    </div>,
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>,
     document.body,
   );
 }

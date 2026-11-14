@@ -29,8 +29,17 @@
  * 【响应式】中翼横向滚动适配小屏；左右两翼在窄屏收敛为图标 + 关键数值。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { MOTION } from '@/constants/tokens';
 import {
   Boxes,
   Gauge,
@@ -318,7 +327,7 @@ export function StatusFilterPill({ filter, label, count, active, onSelect }: Sta
           ? 'text-slate-100'
           : // ---- 零计数：低对比但仍可点（点了会看到"无匹配"说明） ----
             isZero
-            ? 'text-slate-500 hover:text-slate-400'
+            ? 'text-slate-400 hover:text-slate-200'
             : // ---- 有数据未选中：常规次级文字，异常态带强调色 ----
               cn('text-slate-400 hover:text-slate-200', alertClass),
       )}
@@ -333,7 +342,7 @@ export function StatusFilterPill({ filter, label, count, active, onSelect }: Sta
         className={cn(
           'rounded px-1 py-px text-[10px] tabular-nums transition-colors',
           count === 0
-            ? 'bg-white/[0.03] text-slate-500'
+            ? 'bg-white/[0.03] text-slate-400'
             : active
               ? 'bg-white/[0.08] text-slate-200'
               : alertBadgeClass ?? 'bg-white/[0.04] text-emerald-300/90',
@@ -382,7 +391,7 @@ function StatusFilterTrack({
             {active ? (
               <motion.span
                 layoutId={FILTER_SLIDER_LAYOUT_ID}
-                transition={{ type: 'spring', stiffness: 480, damping: 36 }}
+                transition={{ type: 'spring', ...MOTION.spring }}
                 aria-hidden
                 className="absolute inset-0 rounded-md bg-white/[0.09] shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]"
               />
@@ -420,7 +429,7 @@ export function ChaosBanner({ scenario, onTerminate }: ChaosBannerProps) {
       initial={{ opacity: 0, scale: 0.92 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.92 }}
-      transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+      transition={{ type: 'spring', ...MOTION.spring }}
       role="alert"
       className="flex shrink-0 items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1"
     >
@@ -430,7 +439,7 @@ export function ChaosBanner({ scenario, onTerminate }: ChaosBannerProps) {
         type="button"
         aria-label="一键终止混沌演练"
         onClick={onTerminate}
-        className="rounded p-0.5 text-rose-400/70 transition-colors hover:bg-rose-500/20 hover:text-rose-200"
+        className="kv-touch-target flex h-6 w-6 items-center justify-center rounded text-rose-300 transition-colors hover:bg-rose-500/20 hover:text-rose-200"
       >
         <X className="h-3 w-3" aria-hidden />
       </button>
@@ -656,7 +665,7 @@ export function ModeToggle({ mode, onChange, disabled = false }: ModeToggleProps
               {active ? (
                 <motion.span
                   layoutId="topbar-mode-toggle-thumb"
-                  transition={{ type: 'spring', stiffness: 500, damping: 34 }}
+                  transition={{ type: 'spring', ...MOTION.spring }}
                   aria-hidden
                   className="absolute inset-0 -z-10 rounded-md border border-white/[0.1] bg-white/[0.08]"
                 />
@@ -706,7 +715,7 @@ export function ModeToggle({ mode, onChange, disabled = false }: ModeToggleProps
 /* 剧本路演：顶栏启动按钮 + 导演字幕条                                            */
 /* ========================================================================== */
 
-/** 单条剧本菜单项（按钮下拉里的一行） */
+/** 单条剧本菜单项（按钮下拉里的一行，具备 WAI-ARIA menuitem 语义） */
 function DemoScriptMenuItem({
   label,
   title,
@@ -719,6 +728,7 @@ function DemoScriptMenuItem({
   return (
     <button
       type="button"
+      role="menuitem"
       onClick={onSelect}
       className={cn(
         'flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
@@ -731,7 +741,7 @@ function DemoScriptMenuItem({
         <span className="block truncate font-mono text-[11px] tracking-tight text-slate-200">
           {label}
         </span>
-        <span className="mt-0.5 block font-mono text-[10px] tabular-nums text-slate-500">
+        <span className="mt-0.5 block font-mono text-[10px] tabular-nums text-slate-400">
           4 阶段全链路 · 实时 AI 诊断与自愈闭环
         </span>
       </span>
@@ -913,10 +923,10 @@ function DemoDirectorBar({
                 aria-pressed={demo.pacing === kind}
                 title={PACING_HINT[kind]}
                 className={cn(
-                  'h-4 px-1 font-mono text-[10px] leading-none transition-colors',
+                  'kv-touch-target min-h-[24px] min-w-[24px] rounded px-1.5 font-mono text-[10px] leading-none transition-colors',
                   demo.pacing === kind
                     ? 'bg-cyan-400/20 text-cyan-200'
-                    : 'text-slate-500 hover:text-slate-300',
+                    : 'text-slate-400 hover:text-slate-200',
                 )}
               >
                 {PACING_LABEL[kind]}
@@ -924,7 +934,7 @@ function DemoDirectorBar({
             ))}
           </span>
 
-          <span className="font-mono text-[10px] tabular-nums text-slate-500" aria-live="off">
+          <span className="font-mono text-[10px] tabular-nums text-slate-400" aria-live="off">
             阶段 {stageCurrent}/{stageTotal} · T+{elapsedClock}
           </span>
 
@@ -952,7 +962,7 @@ function DemoDirectorBar({
               onClick={onClearPreflight}
               aria-label="关闭自检失败提示"
               title="关闭"
-              className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
+              className="kv-touch-target flex h-6 w-6 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
             >
               <X className="h-2.5 w-2.5" aria-hidden />
             </button>
@@ -963,7 +973,7 @@ function DemoDirectorBar({
                 onClick={onReplay}
                 aria-label="重播上一套剧本路演"
                 title="重播"
-                className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200"
+                className="kv-touch-target flex h-6 w-6 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200"
               >
                 <RotateCcw className="h-2.5 w-2.5" aria-hidden />
               </button>
@@ -972,7 +982,7 @@ function DemoDirectorBar({
                 onClick={onDismiss}
                 aria-label="收起剧本路演字幕条（保留当前稳态画面）"
                 title="关闭并保留画面"
-                className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
+                className="kv-touch-target flex h-6 w-6 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
               >
                 <X className="h-2.5 w-2.5" aria-hidden />
               </button>
@@ -985,7 +995,7 @@ function DemoDirectorBar({
                   onClick={onFinish}
                   aria-label="完成讲解版路演，进入稳态收尾"
                   title="完成"
-                  className="flex h-5 items-center justify-center rounded border border-cyan-400/30 bg-cyan-400/10 px-1.5 font-mono text-[10px] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:text-cyan-100"
+                  className="kv-touch-target flex h-6 items-center justify-center rounded border border-cyan-400/30 bg-cyan-400/10 px-2 font-mono text-[10px] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:text-cyan-100"
                 >
                   完成
                 </button>
@@ -995,7 +1005,7 @@ function DemoDirectorBar({
                 onClick={onTogglePause}
                 aria-label={isPaused ? '继续剧本路演' : '暂停剧本路演'}
                 title={isPaused ? '继续' : '暂停'}
-                className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200"
+                className="kv-touch-target flex h-6 w-6 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200"
               >
                 {isPaused ? (
                   <Play className="h-2.5 w-2.5" aria-hidden />
@@ -1009,7 +1019,7 @@ function DemoDirectorBar({
                 onClick={onStop}
                 aria-label="停止剧本路演并复位集群"
                 title="停止并复位"
-                className="flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
+                className="kv-touch-target flex h-6 w-6 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-rose-400/50 hover:text-rose-300"
               >
                 <Square className="h-2.5 w-2.5" aria-hidden />
               </button>
@@ -1023,8 +1033,8 @@ function DemoDirectorBar({
           <span className="text-cyan-300">下一步</span>
           <span className="truncate" aria-live="polite">{hintPrimary}</span>
         </div>
-        <div className="truncate text-slate-500">{hintStage}</div>
-        <div className="truncate text-slate-500">{hintKey}</div>
+        <div className="truncate text-slate-400">{hintStage}</div>
+        <div className="truncate text-slate-400">{hintKey}</div>
       </div>
     </motion.div>
   );
@@ -1377,6 +1387,15 @@ export default function TopBar() {
   const isDemoActive = demo.status !== 'idle' || demo.preflightError !== null;
 
   /** Esc 分层栈：关闭展开中的顶栏菜单并归还按钮焦点 */
+  useEffect((): (() => void) | undefined => {
+    if (!isDemoMenuOpen || isDemoActive) return undefined;
+    const raf = window.requestAnimationFrame((): void => {
+      const firstItem = demoMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]');
+      firstItem?.focus({ preventScroll: true });
+    });
+    return (): void => window.cancelAnimationFrame(raf);
+  }, [isDemoMenuOpen, isDemoActive]);
+
   useEscapeLayer(
     isDemoMenuOpen && !isDemoActive
       ? {
@@ -1510,6 +1529,7 @@ export default function TopBar() {
             onClick={handleToggleDemoMenu}
             aria-haspopup={isDemoActive ? undefined : 'menu'}
             aria-expanded={isDemoActive ? undefined : isDemoMenuOpen}
+            aria-controls={isDemoActive ? undefined : 'topbar-demo-menu'}
             aria-label={
               isDemoActive
                 ? '停止剧本路演并复位集群'
@@ -1538,30 +1558,67 @@ export default function TopBar() {
             )}
           </button>
 
-          {/* 剧本选择菜单：只在 idle 且展开时出现 */}
-          {!isDemoActive && isDemoMenuOpen ? (
-            <div
-              ref={demoMenuRef}
-              role="menu"
-              aria-label="选择路演剧本"
-              className={cn(
-                'absolute right-0 top-full mt-1.5 max-h-[calc(100dvh-4rem)] w-[min(15rem,calc(100vw-1rem))] overflow-y-auto rounded-lg border border-cyan-400/25 bg-slate-950/[0.92] p-1 shadow-[0_16px_40px_rgba(2,6,23,0.85)]',
-                Z_CLASS.MODAL,
-              )}
-            >
-              <p className="px-2 pb-1 pt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400">
-                自动路演剧本
-              </p>
-              {DEMO_SCRIPTS.map((script): ReactNode => (
-                <DemoScriptMenuItem
-                  key={script.id}
-                  label={script.label}
-                  title={script.title}
-                  onSelect={(): void => handleStartDemo(script.id)}
-                />
-              ))}
-            </div>
-          ) : null}
+          {/* 剧本选择菜单：只在 idle 且展开时出现，AnimatePresence 统一退场 */}
+          <AnimatePresence initial={false}>
+            {!isDemoActive && isDemoMenuOpen ? (
+              <motion.div
+                ref={demoMenuRef}
+                id="topbar-demo-menu"
+                key="topbar-demo-menu"
+                role="menu"
+                aria-label="选择路演剧本"
+                initial={{ opacity: 0, scale: 0.96, y: -4 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{
+                  opacity: 0,
+                  scale: 0.96,
+                  y: -4,
+                  transition: { duration: MOTION.overlayFadeSec, ease: MOTION.easeOut },
+                }}
+                transition={{ type: 'spring', ...MOTION.spring }}
+                style={{ transformOrigin: 'top right' }}
+                onKeyDown={(event: ReactKeyboardEvent<HTMLDivElement>): void => {
+                  const items = Array.from(
+                    event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+                  );
+                  if (items.length === 0) return;
+                  const currentIdx = items.findIndex((el): boolean => el === document.activeElement);
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    const nextIdx = currentIdx < 0 ? 0 : (currentIdx + 1) % items.length;
+                    items[nextIdx]?.focus({ preventScroll: true });
+                  } else if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    const nextIdx =
+                      currentIdx <= 0 ? items.length - 1 : (currentIdx - 1 + items.length) % items.length;
+                    items[nextIdx]?.focus({ preventScroll: true });
+                  } else if (event.key === 'Home') {
+                    event.preventDefault();
+                    items[0]?.focus({ preventScroll: true });
+                  } else if (event.key === 'End') {
+                    event.preventDefault();
+                    items[items.length - 1]?.focus({ preventScroll: true });
+                  }
+                }}
+                className={cn(
+                  'absolute right-0 top-full mt-1.5 max-h-[calc(100dvh-4rem)] w-[min(15rem,calc(100vw-1rem))] overflow-y-auto rounded-lg border border-cyan-400/25 bg-slate-950/[0.92] p-1 shadow-[0_16px_40px_rgba(2,6,23,0.85)]',
+                  Z_CLASS.MODAL,
+                )}
+              >
+                <p className="px-2 pb-1 pt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400">
+                  自动路演剧本
+                </p>
+                {DEMO_SCRIPTS.map((script): ReactNode => (
+                  <DemoScriptMenuItem
+                    key={script.id}
+                    label={script.label}
+                    title={script.title}
+                    onSelect={(): void => handleStartDemo(script.id)}
+                  />
+                ))}
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
         </div>
 
         <ModeToggle mode={connectionMode} onChange={setMode} />
@@ -1580,8 +1637,8 @@ export default function TopBar() {
             ref={moreBtnRef}
             type="button"
             onClick={handleToggleMoreMenu}
-            aria-haspopup="dialog"
             aria-expanded={isMoreMenuOpen}
+            aria-controls="topbar-more-menu"
             aria-label="打开状态过滤与工具菜单"
             title="视图过滤、演示模式与性能 HUD（Shift+P）"
             className={cn(
@@ -1602,16 +1659,29 @@ export default function TopBar() {
             ) : null}
           </button>
 
-          {isMoreMenuOpen ? (
-            <div
-              ref={moreMenuRef}
-              role="dialog"
-              aria-label="状态过滤与系统工具"
-              className={cn(
-                'kv-panel absolute right-0 top-full mt-1.5 max-h-[calc(100dvh-4rem)] w-[min(24rem,calc(100vw-1rem))] overflow-y-auto border border-white/[0.12] p-3',
-                Z_CLASS.MODAL,
-              )}
-            >
+          <AnimatePresence initial={false}>
+            {isMoreMenuOpen ? (
+              <motion.div
+                ref={moreMenuRef}
+                id="topbar-more-menu"
+                key="topbar-more-menu"
+                role="region"
+                aria-label="状态过滤与系统工具"
+                initial={{ opacity: 0, scale: 0.96, y: -4 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{
+                  opacity: 0,
+                  scale: 0.96,
+                  y: -4,
+                  transition: { duration: MOTION.overlayFadeSec, ease: MOTION.easeOut },
+                }}
+                transition={{ type: 'spring', ...MOTION.spring }}
+                style={{ transformOrigin: 'top right' }}
+                className={cn(
+                  'kv-panel absolute right-0 top-full mt-1.5 max-h-[calc(100dvh-4rem)] w-[min(24rem,calc(100vw-1rem))] overflow-y-auto border border-white/[0.12] p-3',
+                  Z_CLASS.MODAL,
+                )}
+              >
               {/* QPS 与过滤汇总条 */}
               <div className="mb-2.5 flex items-center justify-between border-b border-white/[0.07] pb-2 font-mono text-[10px]">
                 <span className="flex items-center gap-1.5 text-slate-300">
@@ -1692,8 +1762,9 @@ export default function TopBar() {
                   </kbd>
                 </button>
               </div>
-            </div>
-          ) : null}
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
         </div>
       </div>
     </header>

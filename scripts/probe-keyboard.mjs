@@ -277,7 +277,12 @@ if (helpOpened === true) {
   await pressEscape();
   is('K4.3 第一次 Esc 只关混沌，帮助保留', [await chaosOpen(), await helpOpen()], [false, true]);
   await pressEscape();
-  is('K4.4 第二次 Esc 才关帮助', await helpOpen(), false);
+  let helpClosed = false;
+  for (let i = 0; i < 30; i += 1) {
+    if ((await helpOpen()) === false) { helpClosed = true; break; }
+    await sleep(100);
+  }
+  is('K4.4 第二次 Esc 才关帮助', helpClosed, true);
 } else {
   bad('K4.2 帮助浮层已打开', null, '? 快捷键未打开帮助');
   await pressEscape();

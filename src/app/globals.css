@@ -307,13 +307,63 @@
  * 带 overflow-hidden 的容器把 outline  inward 偏移 2px，避免被裁掉。
  * ========================================================================== */
 *:focus-visible {
-  outline: 2px solid rgba(34, 211, 238, 0.6);
+  outline: 2px solid rgba(34, 211, 238, 0.78);
   outline-offset: 2px;
 }
 
 .overflow-hidden:focus-visible,
 .kv-panel:focus-visible {
   outline-offset: -2px;
+}
+
+/* ==========================================================================
+ * 全站交互四态与触控热区治理（R12）
+ * - Hover 只变底色/边框，禁止 hover 整体位移或放大；
+ * - Active 按压在 100ms 内轻缩 <= 0.985，干脆利落；
+ * - Disabled / aria-disabled 降低对比度但不回弹；
+ * - .kv-touch-target 通过 ::after 透明伪元素扩大移动端热区 >= 44px（零视觉膨胀）。
+ * ========================================================================== */
+@layer base {
+  button:not(:disabled):not([data-no-press-scale]),
+  [role='button']:not([aria-disabled='true']),
+  [role='option'],
+  [role='menuitem'],
+  [role='tab'] {
+    transition:
+      background-color var(--kv-motion-fast) var(--kv-ease),
+      border-color var(--kv-motion-fast) var(--kv-ease),
+      color var(--kv-motion-fast) var(--kv-ease),
+      opacity var(--kv-motion-fast) var(--kv-ease),
+      transform 90ms var(--kv-ease);
+  }
+
+  button:not(:disabled):not([class*='translate-']):not([data-no-press-scale]):active,
+  [role='button']:not([aria-disabled='true']):not([class*='translate-']):active,
+  [role='option']:active,
+  [role='menuitem']:active,
+  [role='tab']:active {
+    transform: scale(0.985);
+  }
+
+  button:disabled,
+  [aria-disabled='true'] {
+    transform: none;
+  }
+}
+
+.kv-touch-target {
+  position: relative;
+}
+
+@media (pointer: coarse), (max-width: 767px) {
+  .kv-touch-target::after {
+    content: '';
+    position: absolute;
+    inset: -8px;
+    min-width: 44px;
+    min-height: 44px;
+    pointer-events: auto;
+  }
 }
 
 /* ==========================================================================
@@ -341,6 +391,13 @@
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
     scroll-behavior: auto !important;
+  }
+  button:not(:disabled):active,
+  [role='button']:not([aria-disabled='true']):active,
+  [role='option']:active,
+  [role='menuitem']:active,
+  [role='tab']:active {
+    transform: none !important;
   }
 }
 

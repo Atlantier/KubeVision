@@ -176,11 +176,11 @@ function PodMetricsCardImpl({
           >
             {podName}
           </button>
-          <p className="mt-0.5 flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="mt-0.5 flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-400">
             <span className="truncate">{namespace}</span>
-            <span className="text-slate-500">·</span>
+            <span className="text-slate-400">·</span>
             <RefreshCw className="h-2.5 w-2.5 shrink-0" aria-hidden />
-            <span className={cn('tabular-nums', safeRestarts > 0 ? 'text-amber-400' : 'text-slate-500')}>
+            <span className={cn('tabular-nums', safeRestarts > 0 ? 'text-amber-400' : 'text-slate-400')}>
               {safeRestarts} 次重启
             </span>
           </p>
@@ -203,7 +203,7 @@ function PodMetricsCardImpl({
         {/* CPU 轨 */}
         <div className="flex items-center gap-1.5">
           <Cpu className="h-2.5 w-2.5 shrink-0" style={{ color: CPU_COLOR }} aria-hidden />
-          <span className="w-8 shrink-0 font-mono text-[11px] uppercase tracking-wider text-slate-500">CPU</span>
+          <span className="w-8 shrink-0 font-mono text-[11px] uppercase tracking-wider text-slate-400">CPU</span>
           <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-800">
             <div
               className="h-full rounded-full transition-[width] duration-500 ease-out"
@@ -229,7 +229,7 @@ function PodMetricsCardImpl({
         {/* MEM 轨 */}
         <div className="flex items-center gap-1.5">
           <MemoryStick className="h-2.5 w-2.5 shrink-0" style={{ color: MEM_COLOR }} aria-hidden />
-          <span className="w-8 shrink-0 font-mono text-[11px] uppercase tracking-wider text-slate-500">MEM</span>
+          <span className="w-8 shrink-0 font-mono text-[11px] uppercase tracking-wider text-slate-400">MEM</span>
           <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-800">
             <div
               className="h-full rounded-full transition-[width] duration-500 ease-out"
@@ -327,7 +327,7 @@ function PodMetricsCardImpl({
 
       {/* ============ 底部：数据周期提示 + 聚焦按钮 ============ */}
       <div className="mt-1.5 flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+        <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-400">
           <Activity className="h-2.5 w-2.5" aria-hidden />
           近 6 轮采样趋势
         </span>

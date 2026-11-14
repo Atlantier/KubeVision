@@ -84,7 +84,7 @@ function GenUISkeletonImpl({ toolName, mcpUri, className }: GenUISkeletonProps) 
       </div>
 
       {/* ============ 底部提示 ============ */}
-      <p className="relative mt-2 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+      <p className="relative mt-2 font-mono text-[11px] uppercase tracking-wider text-slate-400">
         正在调用 MCP 工具 · 等待结果…
       </p>
     </div>

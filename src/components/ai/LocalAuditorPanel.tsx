@@ -239,7 +239,7 @@ function HighlightedLog({ text, mode }: { readonly text: string; readonly mode: 
       {segments.map((seg, i) => {
         if (seg.kind === 'plain') {
           return (
-            <span key={i} className="text-slate-500">
+            <span key={i} className="text-slate-300">
               {seg.text}
             </span>
           );
@@ -368,7 +368,7 @@ function LabelDistributionBar({
           );
         })}
       </div>
-      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400">
         {labels.map((label): React.ReactElement | null => {
           const count = counts[label];
           if (count === 0) return null;
@@ -376,8 +376,8 @@ function LabelDistributionBar({
           return (
             <span key={label} className="flex items-center gap-1">
               <span className={cn('h-1 w-1 rounded-full', LABEL_META[label].dot)} aria-hidden />
-              <span className="text-slate-400">{LABEL_META[label].text}</span>
-              <span className="tabular-nums text-slate-500">{percent}%</span>
+              <span className="text-slate-300">{LABEL_META[label].text}</span>
+              <span className="tabular-nums text-slate-400">{percent}%</span>
             </span>
           );
         })}
@@ -468,7 +468,7 @@ function SensitiveLogProbe({
         <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300">
           自定义敏感日志现场测试
         </span>
-        <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-500">
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-400">
           全程零出域
         </span>
       </div>
@@ -569,10 +569,10 @@ function AuditCard({
       </div>
 
       {/* ---- 命名空间 + 脱敏计数 ---- */}
-      <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+      <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-slate-400">
         <span className="truncate">{record.namespace}</span>
         <span>·</span>
-        <span className={record.maskedCount > 0 ? 'text-amber-500' : ''}>
+        <span className={record.maskedCount > 0 ? 'text-amber-400' : ''}>
           {record.maskedCount} masked
         </span>
       </div>
@@ -602,7 +602,7 @@ function AuditCard({
           {showRaw ? '原始日志（含敏感凭证）' : '脱敏后日志（零信任安全）'}
         </button>
         {record.maskedCount > 0 ? (
-          <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-500">
+          <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-400">
             点击切换对比
           </span>
         ) : null}
@@ -1170,7 +1170,7 @@ export default function LocalAuditorPanel() {
         </div>
 
         {/* 模型名 + 状态 */}
-        <div className="mt-1 flex items-center gap-1 font-mono text-[10px] tracking-wider text-slate-500">
+        <div className="mt-1 flex items-center gap-1 font-mono text-[10px] tracking-wider text-slate-400">
           <span className="min-w-0 flex-1 truncate" title={classifier.modelName}>
             {classifier.modelName}
           </span>
@@ -1181,7 +1181,7 @@ export default function LocalAuditorPanel() {
                 ? 'text-cyan-400'
                 : classifier.isReady
                   ? 'text-emerald-400'
-                  : 'text-slate-500',
+                  : 'text-slate-400',
             )}
           >
             {classifier.statusLabel}
@@ -1206,7 +1206,7 @@ export default function LocalAuditorPanel() {
               aria-label="端侧模型权重加载进度"
             />
           </div>
-          <span className="shrink-0 font-mono text-[10px] tabular-nums text-slate-500">
+          <span className="shrink-0 font-mono text-[10px] tabular-nums text-slate-400">
             {classifier.progress}%{classifier.isReady ? ' Ready' : ''}
           </span>
         </div>
@@ -1214,13 +1214,13 @@ export default function LocalAuditorPanel() {
         {/* 累计脱敏凭证数 + 平均推理延迟 */}
         <div className="mt-1 grid grid-cols-2 gap-1">
           <div className="rounded border border-white/[0.06] bg-white/[0.03] px-1 py-0.5">
-            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-500">累计脱敏项</p>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-400">累计脱敏项</p>
             <p className="font-mono text-[10px] font-bold tabular-nums text-amber-300">
               {totalMaskedSecrets}
             </p>
           </div>
           <div className="rounded border border-white/[0.06] bg-white/[0.03] px-1 py-0.5">
-            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-500">平均推理耗时</p>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-400">平均推理耗时</p>
             <p className="font-mono text-[10px] font-bold tabular-nums text-cyan-300">
               {avgLatency !== null ? `${avgLatency.toFixed(2)}ms` : '--'}
             </p>
@@ -1235,7 +1235,7 @@ export default function LocalAuditorPanel() {
           </p>
         ) : null}
         {!classifier.isFallback ? (
-          <p className="mt-1 font-mono text-[10px] text-slate-500">
+          <p className="mt-1 font-mono text-[10px] text-slate-400">
             当前运行时：{runtimeBadgeLabel}
             {runtimeKind === 'builtin' ? '（模型未加载，规则引擎兜底）' : '（端侧模型参与推理）'}
           </p>
@@ -1299,7 +1299,7 @@ export default function LocalAuditorPanel() {
             'flex shrink-0 items-center gap-0.5 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
             autoStream
               ? 'border-rose-500/60 bg-rose-500/[0.15] text-rose-300'
-              : 'border-white/[0.07] bg-white/[0.02] text-slate-500 hover:text-slate-300',
+              : 'border-white/[0.07] bg-white/[0.02] text-slate-400 hover:text-slate-200',
           )}
         >
           {autoStream ? (
@@ -1400,7 +1400,7 @@ export default function LocalAuditorPanel() {
           </div>
 
           {/* 三项硬指标：耗时 / 置信度 / 脱敏数 */}
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400">
             <span className="tabular-nums text-cyan-400/90">
               推理耗时 {probeResult.result.inferenceLatencyMs.toFixed(2)}ms
             </span>
@@ -1419,7 +1419,7 @@ export default function LocalAuditorPanel() {
           {/* 脱敏前后对照 */}
           <div className="mt-1 space-y-1">
             <div>
-              <p className="font-mono text-[10px] uppercase tracking-wider text-rose-400/70">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-rose-300">
                 原始（含敏感信息 · 仅存于本机）
               </p>
               <div className="mt-0.5 max-h-16 overflow-y-auto rounded border border-rose-500/30 bg-rose-950/20 p-1">
@@ -1427,7 +1427,7 @@ export default function LocalAuditorPanel() {
               </div>
             </div>
             <div>
-              <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-400/70">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-300">
                 脱敏后（可安全外发 · 端侧模型输入）
               </p>
               <div className="mt-0.5 max-h-16 overflow-y-auto rounded border border-emerald-500/25 bg-slate-950/60 p-1">
@@ -1443,8 +1443,8 @@ export default function LocalAuditorPanel() {
         {records.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-1.5 px-4 text-center">
             <ShieldCheck className="h-6 w-6 text-slate-500" aria-hidden />
-            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-500">等待抓取日志</p>
-            <p className="text-[11px] leading-relaxed text-slate-500">
+            <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-400">等待抓取日志</p>
+            <p className="text-[11px] leading-relaxed text-slate-400">
               点击上方按钮抓取集群日志，端侧将完成脱敏与语义分类，
               <br />
               原始敏感信息永不离开本机。

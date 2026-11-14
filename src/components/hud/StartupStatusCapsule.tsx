@@ -134,7 +134,7 @@ export default function StartupStatusCapsule(): React.ReactElement | null {
             className={allReady ? 'h-1.5 w-1.5 rounded-full bg-emerald-400' : 'h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300'}
           />
           <span>{allReady ? '系统就绪' : '系统启动中'}</span>
-          <span className="tabular-nums text-slate-500">
+          <span className="tabular-nums text-slate-400">
             {readyCount}/{items.length}
           </span>
           <span aria-hidden className="text-slate-400">
@@ -150,7 +150,7 @@ export default function StartupStatusCapsule(): React.ReactElement | null {
                   {item.ready ? 'OK' : '··'}
                 </span>
                 <span className="w-20 shrink-0 text-slate-400">{item.label}</span>
-                <span className={item.ready ? 'text-slate-500' : 'text-amber-300/90'}>{item.detail}</span>
+                <span className={item.ready ? 'text-slate-400' : 'text-amber-300/90'}>{item.detail}</span>
               </li>
             ))}
             <li className="flex items-center gap-2 font-mono text-[10px] text-slate-400">

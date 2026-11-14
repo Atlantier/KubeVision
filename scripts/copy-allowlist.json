@@ -10,7 +10,7 @@
     },
     {
       "file": "src/components/layout/ShellLayout.tsx",
-      "line": 441,
+      "line": 457,
       "pattern": "AI Copilot 抽屉",
       "rule": "C1",
       "reason": "DOM aria-label 定位选择器（demoDirector.ts 与 scripts/verify-demo.mjs 查询 [aria-label=\"AI Copilot 抽屉\"]）"
@@ -24,7 +24,7 @@
     },
     {
       "file": "src/components/ai/CopilotDrawer.tsx",
-      "line": 3284,
+      "line": 3293,
       "pattern": "AI Copilot 抽屉",
       "rule": "C1",
       "reason": "DOM aria-label 定位选择器（demoDirector.ts 与 scripts/verify-demo.mjs 查询 [aria-label=\"AI Copilot 抽屉\"]）"

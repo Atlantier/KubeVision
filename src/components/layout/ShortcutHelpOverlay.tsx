@@ -16,7 +16,9 @@
  */
 
 import { useRef } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 
+import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { useFocusReturn, useSheetSwipeClose } from '@/hooks/useModalSheetBehavior';
@@ -40,9 +42,10 @@ const SHORTCUTS: ReadonlyArray<{ keys: string; label: string; aria: string }> = 
 
 /** ShortcutHelpOverlay 组件 */
 export default function ShortcutHelpOverlay({ open, onClose }: ShortcutHelpOverlayProps): React.ReactElement | null {
+  const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
-  useFocusReturn(open, closeRef);
+  useFocusReturn(open, closeRef, dialogRef);
   const swipe = useSheetSwipeClose(onClose);
 
   /*
@@ -52,61 +55,77 @@ export default function ShortcutHelpOverlay({ open, onClose }: ShortcutHelpOverl
    */
   useEscapeLayer(open ? { id: 'shortcut-help', priority: 60, label: '快捷键帮助', onEscape: onClose } : null);
 
-  if (!open) return null;
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="快捷键帮助"
-      className={cn(
-        'kv-overlay fixed inset-0 flex items-end justify-center p-0 md:items-center md:p-4',
-        Z_CLASS.MODAL,
-      )}
-      onClick={onClose}
-    >
-      <div
-        className="kv-panel max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-t-2xl rounded-b-none p-4 kv-safe-bottom md:rounded-xl"
-        style={
-          swipe.dragOffsetY > 0 ? { transform: `translateY(${swipe.dragOffsetY}px)` } : undefined
-        }
-        onClick={(event): void => event.stopPropagation()}
-      >
-        <div
-          className="mb-2 flex cursor-grab touch-none justify-center py-1 md:hidden"
-          onPointerDown={swipe.handlePointerDown}
-          onPointerMove={swipe.handlePointerMove}
-          onPointerUp={swipe.handlePointerUp}
-          onPointerCancel={swipe.handlePointerCancel}
-          aria-hidden
+    <AnimatePresence initial={false}>
+      {open ? (
+        <motion.div
+          ref={dialogRef}
+          key="shortcut-help-overlay"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0, transition: { duration: MOTION.overlayFadeSec, ease: MOTION.easeOut } }}
+          transition={{ duration: MOTION.overlayFadeSec, ease: MOTION.easeOut }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="快捷键帮助"
+          tabIndex={-1}
+          className={cn(
+            'kv-overlay fixed inset-0 flex items-end justify-center p-0 md:items-center md:p-4',
+            Z_CLASS.MODAL,
+          )}
+          onClick={onClose}
         >
-          <span className="h-1 w-10 rounded-full bg-white/25" />
-        </div>
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-[14px] font-semibold text-slate-100">快捷键</h2>
-          <button
-            ref={closeRef}
-            type="button"
-            onClick={onClose}
-            aria-label="关闭快捷键帮助"
-            className="flex min-h-[40px] min-w-[44px] items-center justify-center rounded-kv border border-white/[0.075] px-2 py-1 font-mono text-[10px] text-slate-300 hover:text-slate-100 md:min-h-0 md:min-w-0"
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 12 }}
+            animate={{ opacity: 1, scale: 1, y: swipe.dragOffsetY }}
+            exit={{
+              opacity: 0,
+              scale: 0.96,
+              y: 12,
+              transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
+            }}
+            transition={{ type: 'spring', ...MOTION.spring }}
+            className="kv-panel max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-t-2xl rounded-b-none p-4 kv-safe-bottom md:rounded-xl"
+            onClick={(event): void => event.stopPropagation()}
           >
-            ESC
-          </button>
-        </div>
-        <ul className="space-y-1.5">
-          {SHORTCUTS.map((item): React.ReactElement => (
-            <li key={item.keys} className="flex items-center justify-between gap-3">
-              <span className="text-[12px] text-slate-300">{item.label}</span>
-              <kbd
-                aria-keyshortcuts={item.aria}
-                className="rounded-kv border border-white/[0.075] bg-slate-900/60 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200"
+            <div
+              className="mb-2 flex cursor-grab touch-none justify-center py-1 md:hidden"
+              onPointerDown={swipe.handlePointerDown}
+              onPointerMove={swipe.handlePointerMove}
+              onPointerUp={swipe.handlePointerUp}
+              onPointerCancel={swipe.handlePointerCancel}
+              aria-hidden
+            >
+              <span className="h-1 w-10 rounded-full bg-white/25" />
+            </div>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-[14px] font-semibold text-slate-100">快捷键</h2>
+              <button
+                ref={closeRef}
+                type="button"
+                onClick={onClose}
+                aria-label="关闭快捷键帮助"
+                className="kv-touch-target flex min-h-[40px] min-w-[44px] items-center justify-center rounded-kv border border-white/[0.075] px-2 py-1 font-mono text-[10px] text-slate-300 hover:text-slate-100 md:min-h-0 md:min-w-0"
               >
-                {item.keys}
-              </kbd>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </div>
+                ESC
+              </button>
+            </div>
+            <ul className="space-y-1.5">
+              {SHORTCUTS.map((item): React.ReactElement => (
+                <li key={item.keys} className="flex items-center justify-between gap-3">
+                  <span className="text-[12px] text-slate-300">{item.label}</span>
+                  <kbd
+                    aria-keyshortcuts={item.aria}
+                    className="rounded-kv border border-white/[0.075] bg-slate-900/60 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200"
+                  >
+                    {item.keys}
+                  </kbd>
+                </li>
+              ))}
+            </ul>
+          </motion.div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
   );
 }
