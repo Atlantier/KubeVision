@@ -33,7 +33,6 @@ import * as THREE from 'three';
 import { useClusterStore } from '@/store/useClusterStore';
 import { POD_BOX_SIZE, POD_SEAT_OFFSET_Y, getPodWorldTransform } from '@/utils/spatialLayout';
 import type { PodEntity } from '@/types/cluster';
-import type { SelectedEntityType } from '@/types/store';
 
 /* ========================================================================== */
 /* 常量                                                                       */
@@ -144,9 +143,12 @@ const CORNER_TICKS: readonly CornerTick[] = (() => {
  * 【渲染条件】仅当 selectedEntityType === 'pod' 且能在快照中找到该 Pod 时渲染。
  */
 export default function SelectionBeacon3D(): React.ReactElement | null {
-  const selectedEntityId = useClusterStore((s): string | null => s.selectedEntityId);
-  const selectedEntityType = useClusterStore((s): SelectedEntityType | null => s.selectedEntityType);
-  const pods = useClusterStore((s): readonly PodEntity[] => s.snapshotSummary.pods);
+  const selectedPodSlotKey = useClusterStore((s): string | null => {
+    if (s.selectedEntityType !== 'pod' || s.selectedEntityId === null) return null;
+    const pod = s.snapshotSummary.pods.find((p): boolean => p.id === s.selectedEntityId);
+    if (pod === undefined) return null;
+    return `${pod.rackIndex}|${pod.slotIndex}`;
+  });
 
   /**
    * 【定位目标 Pod 并解算其槽位世界坐标】
@@ -156,15 +158,16 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
    * （POD_SEAT_OFFSET_Y = 可视盒高/2 − 契约盒高/2，当前为 −0.18）。
    * 若漏掉它，选中框会悬在方块正上方约 0.18 世界单位处，肉眼可见地错位。
    *
-   * 依赖只放 selectedEntityId / selectedEntityType / pods 三者，
-   * 避免遥测高频字段（cpu/mem）变化触发重算。
+   * 仅订阅选中 Pod 槽位的字符串签名，未选中 Pod 时恒返回 null，
+   * 彻底消除 1Hz 遥测流引发的无意义重渲染。
    */
   const anchor = useMemo((): { position: [number, number, number]; rotationY: number } | null => {
-    if (selectedEntityType !== 'pod' || selectedEntityId === null) return null;
-    const pod = pods.find((p): boolean => p.id === selectedEntityId);
-    if (pod === undefined) return null;
-
-    const transform = getPodWorldTransform(pod.rackIndex, pod.slotIndex);
+    if (selectedPodSlotKey === null) return null;
+    const [rackStr, slotStr] = selectedPodSlotKey.split('|');
+    const transform = getPodWorldTransform(
+      Number(rackStr) as PodEntity['rackIndex'],
+      Number(slotStr),
+    );
     return {
       position: [
         transform.position[0],
@@ -173,12 +176,11 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
       ],
       rotationY: transform.rotationY,
     };
-  }, [selectedEntityType, selectedEntityId, pods]);
+  }, [selectedPodSlotKey]);
 
   /* ---- 预分配动画对象引用 ---- */
   const groupRef = useRef<THREE.Group>(null);
   const ringRef = useRef<THREE.Mesh>(null);
-  const boxRef = useRef<THREE.LineSegments>(null);
 
   /**
    * 【几何体预分配 + 卸载释放】
@@ -269,7 +271,7 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
        * 三角形数个位数。不透明度压到 0.55 且用 lineBasicMaterial（不吃光照），
        * 保证它只是一层薄薄的天蓝轮廓，绝不盖住 Pod 的刀片纹理。
        */}
-      <lineSegments ref={boxRef} geometry={edgesGeometry} raycast={(): void => undefined}>
+      <lineSegments geometry={edgesGeometry} raycast={(): void => undefined}>
         <lineBasicMaterial color={BEACON_COLOR} transparent opacity={BOX_OPACITY} toneMapped={false} />
       </lineSegments>
 

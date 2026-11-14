@@ -30,6 +30,5 @@
 ## 说明与风险
 
 - 仓库因此增加约 86 MB；如不接受，可改用 Git LFS 或改为构建期下载脚本。
-- Worker 以 `dtype: 'q8'` 建管道，本地提供的是 fp32 ONNX；transformers.js 会在加载时量化。
-  该路径**未在真实浏览器中验证**（headless 环境不触发端侧模型），若本地加载失败会自动回退 CDN。
+- Worker 优先以 `dtype: 'fp32'` 直接加载随包 `onnx/model.onnx`（避免 `dtype: 'q8'` 拼接 `_quantized` 导致本地 404）；仅当本地静态资源缺失时回退 CDN 拉取 `q8` 量化版。
 - 本目录仅放推理权重，不包含训练数据；Apache-2.0 允许商用与再分发，但需保留本声明。

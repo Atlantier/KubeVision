@@ -16,11 +16,37 @@ const DEFAULT_MAX_SSE_CONNECTIONS = Math.max(
   Number.parseInt(process.env.KV_MAX_SSE_CONNECTIONS ?? '24', 10) || 24,
 );
 
-/** 默认单条 SSE 连接最大存活窗口（30 分钟，到期提示客户端平滑重连） */
+/** 单条 SSE 默认兜底存活时长：Vercel Serverless 自动设为 50 秒（抢在 60s 网关限制前平滑轮转），本地默认 30 分钟 */
+const DEFAULT_SSE_LIFETIME_FALLBACK_MS =
+  process.env.VERCEL === '1' ? 50_000 : 30 * 60 * 1000;
+
+/** 默认单条 SSE 连接最大存活窗口（支持 KV_MAX_SSE_LIFETIME_MS 覆盖，到期提示客户端平滑重连） */
 export const DEFAULT_MAX_SSE_LIFETIME_MS = Math.max(
   5_000,
-  Number.parseInt(process.env.KV_MAX_SSE_LIFETIME_MS ?? String(30 * 60 * 1000), 10) || 30 * 60 * 1000,
+  Number.parseInt(
+    process.env.KV_MAX_SSE_LIFETIME_MS ?? String(DEFAULT_SSE_LIFETIME_FALLBACK_MS),
+    10,
+  ) || DEFAULT_SSE_LIFETIME_FALLBACK_MS,
 );
+
+/**
+ * isConfiguredLlmApiKey —— 判断 OPENAI_API_KEY 是否为真实可用凭证。
+ *
+ * 【设计意图】过滤 `.env.example` 中的常见示例占位符（如 `your-api-key-here`），
+ * 防止未填真实密钥时 `/api/health` 误报 `llmConfigured: true` 以及 `/api/chat`
+ * 徒耗一次外部 401 往返才降级。
+ *
+ * @param apiKey 环境变量读取到的原始密钥值
+ * @returns 为非空且非示例占位符时返回 true
+ */
+export function isConfiguredLlmApiKey(apiKey: string | undefined): apiKey is string {
+  if (typeof apiKey !== 'string') return false;
+  const trimmed = apiKey.trim();
+  if (trimmed.length === 0) return false;
+  return !/^(your-[a-z0-9-]*key-here|sk-your-[a-z0-9-]*key-here|replace-with-your-key)$/i.test(
+    trimmed,
+  );
+}
 
 /** 默认 SSE 注释心跳帧发送周期（15 秒，防 Nginx / 负载均衡器空闲断流） */
 export const DEFAULT_SSE_HEARTBEAT_MS = 15_000;

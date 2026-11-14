@@ -127,9 +127,6 @@ const CONSTELLATION_COUNT = 360;
  */
 const CONSTELLATION_RADIUS = OCTA_RADIUS * 0.9;
 
-/** 星云粒子的三种粒径档位（大 / 中 / 微），按序号循环 */
-const CONSTELLATION_SIZES: readonly number[] = [1.0, 0.62, 0.38];
-
 /** 内部神经晶格连线的节点对数（28 对 + 6 个外顶点连线） */
 const NEURAL_PAIR_COUNT = 28;
 
@@ -585,10 +582,8 @@ export default function MasterNode3D() {
   /* ---- 动画通道 ref（useFrame 内原地突变） ---- */
   const floatGroupRef = useRef<THREE.Group>(null);
   const outerRef = useRef<THREE.Mesh>(null);
-  const outerMatRef = useRef<THREE.ShaderMaterial>(null);
   const outerEdgesRef = useRef<EdgesRef | null>(null);
   const coreRef = useRef<THREE.Mesh>(null);
-  const coreMatRef = useRef<THREE.MeshStandardMaterial>(null);
   const coreEdgesRef = useRef<EdgesRef | null>(null);
   const innerHeartRef = useRef<THREE.Mesh>(null);
   const innerHeartMatRef = useRef<THREE.MeshStandardMaterial>(null);
@@ -652,17 +647,10 @@ export default function MasterNode3D() {
    * "高密测地线结构"，又保持了通透性。
    */
   const icosaCoreRef = useRef<THREE.Mesh>(null);
-  const icosaCoreMatRef = useRef<THREE.MeshBasicMaterial>(null);
-  const plasmaMatRef = useRef<THREE.ShaderMaterial>(null);
   const constellationMatRef = useRef<THREE.PointsMaterial>(null);
   const neuralMatRef = useRef<THREE.LineBasicMaterial>(null);
-  const gyroMatRefs = useRef<Array<THREE.MeshBasicMaterial | null>>([]);
-  const gimbalTicksAMatRef = useRef<THREE.LineBasicMaterial>(null);
-  const gimbalTicksBMatRef = useRef<THREE.LineBasicMaterial>(null);
-  const vertexAnchorMatRef = useRef<THREE.MeshBasicMaterial>(null);
   const beamMatRef = useRef<THREE.MeshBasicMaterial>(null);
   const equatorRingRef = useRef<THREE.Mesh>(null);
-  const polarRingRef = useRef<THREE.Mesh | null>(null);
   const tickRingMatRef = useRef<THREE.MeshBasicMaterial>(null);
 
   /** 双向正交刻度星轨环 A（绕 X 轴倾斜）ref */
@@ -672,11 +660,6 @@ export default function MasterNode3D() {
 
   /** 八面体顶点电光锚点实例网格 ref（呼吸辉光由材质 emissive 驱动） */
   const vertexAnchorRef = useRef<THREE.InstancedMesh>(null);
-
-  /** 星轨环 A 的刻度线几何 ref（LineSegments，36 条短刻线 → 1 次 draw call） */
-  const gimbalTicksARef = useRef<THREE.LineSegments>(null);
-  /** 星轨环 B 的刻度线几何 ref */
-  const gimbalTicksBRef = useRef<THREE.LineSegments>(null);
 
   /**
    * 双正交万向节刻度线几何（R67）。
@@ -703,17 +686,6 @@ export default function MasterNode3D() {
     geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
     return geometry;
   }, []);
-
-  /**
-   * 最新总 QPS 的 ref 镜像。
-   *
-   * 【为何需要 ref 而非直接用订阅值】useFrame 的回调闭包在首次渲染后
-   * 就固定了（R3F 不会每帧重建回调）。若直接读订阅的 totalQps 变量，
-   * 拿到的是**首次渲染时的值**，永远不更新——这是 R3F 里非常经典的
-   * stale closure 陷阱。用 ref 镜像后，useEffect 每 1Hz 刷新，
-   * useFrame 帧内读到的永远是最新值，且不触发重渲染。
-   */
-  const totalQpsRef = useRef<number>(0);
 
   /** 星云星座粒子 Points ref */
   const constellationRef = useRef<THREE.Points>(null);
@@ -760,28 +732,6 @@ export default function MasterNode3D() {
   }, [sparkMatrices]);
 
   /* ---------------------------------------------------------------------- */
-  /* 星云星座粒子群 / 神经晶格 / 垂直光柱 —— 数据与 uniforms                    */
-  /* ---------------------------------------------------------------------- */
-
-  /**
-   * 星云星座粒子的 uniforms。
-   *
-   * uTime：驱动悬浮与闪烁（useFrame 原地写）；
-   * uScale：点尺寸整体缩放（DPR/相机距离的兜底调节）；
-   * uOpacity：整片星云的透明度。
-   */
-  const constellationUniforms = useMemo(
-    (): Record<string, THREE.IUniform> => ({
-      uTime: { value: 0 },
-      uScale: { value: 1 },
-      uOpacity: { value: 0.92 },
-      /** 健康度色温（useFrame 内与 TONE_* 三态 lerp，初始为健康青蓝） */
-      uColor: { value: new THREE.Color('#38bdf8') },
-    }),
-    [],
-  );
-
-  /* ---------------------------------------------------------------------- */
   /* 集群健康度联动：三态色温                                                      */
   /* ---------------------------------------------------------------------- */
 
@@ -794,14 +744,6 @@ export default function MasterNode3D() {
   const clusterHealthScore = useClusterStore(
     (s): number => s.snapshotSummary.clusterHealthScore,
   );
-
-  /**
-   * 集群总 QPS（驱动镜头光晕亮度）。
-   *
-   * 【订阅粒度】只取 totalQps 一个标量，快照整体变化但 QPS 未变时
-   * 不会触发重渲染——这是项目一贯的细粒度订阅纪律。
-   */
-  const totalQps = useClusterStore((s): number => s.snapshotSummary.totalQps);
 
   /** 三态目标色（普通值，渲染期按分档一次性选定；useFrame 只读不选） */
   const healthTargetColor = useMemo((): THREE.Color => {
@@ -818,19 +760,6 @@ export default function MasterNode3D() {
    * 用**单一持久色**统一插值，再广播给三处，颜色永远一致。
    */
   const healthColorCurrent = useMemo((): THREE.Color => TONE_HEALTHY.clone(), []);
-
-
-
-  /**
-   * QPS → ref 镜像（供 useFrame 读取，避免 stale closure）。
-   *
-   * 【依赖 totalQps 而非 clusterHealthScore】QPS 变化比健康分频繁得多
-   * （健康分只在跨阈值时才变），而光晕亮度需要跟随瞬时负载起伏，
-   * 所以必须单独订阅。
-   */
-  useEffect((): void => {
-    totalQpsRef.current = totalQps;
-  }, [totalQps]);
 
   /** 赤道环 ref（水平光环，最快自转） */
   const polarRingRefs = useRef<Array<THREE.Mesh | null>>([]);
@@ -855,8 +784,6 @@ export default function MasterNode3D() {
    */
   const constellationGeometry = useMemo((): THREE.BufferGeometry => {
     const positions = new Float32Array(CONSTELLATION_COUNT * 3);
-    const sizes = new Float32Array(CONSTELLATION_COUNT);
-    const phases = new Float32Array(CONSTELLATION_COUNT);
 
     let seed = 20240816;
     const nextRandom = (): number => {
@@ -892,14 +819,10 @@ export default function MasterNode3D() {
       positions[i * 3] = x;
       positions[i * 3 + 1] = y;
       positions[i * 3 + 2] = z;
-      sizes[i] = CONSTELLATION_SIZES[i % CONSTELLATION_SIZES.length];
-      phases[i] = nextRandom() * Math.PI * 2;
     }
 
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
-    geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
     return geometry;
   }, []);
 
@@ -949,6 +872,15 @@ export default function MasterNode3D() {
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
     return geometry;
   }, [constellationGeometry]);
+
+  /* 组件卸载时显式释放三份程序化 BufferGeometry，杜绝 WebGL 显存泄漏 */
+  useEffect((): (() => void) => {
+    return (): void => {
+      gimbalTickGeometry.dispose();
+      constellationGeometry.dispose();
+      neuralGeometry.dispose();
+    };
+  }, [gimbalTickGeometry, constellationGeometry, neuralGeometry]);
 
   /**
    * 八面体 6 顶点星芒锚点的实例矩阵（模块级常量推导，挂载时写一次）。
@@ -1087,9 +1019,6 @@ export default function MasterNode3D() {
    */
   useFrame((state, delta): void => {
     const t = state.clock.getElapsedTime();
-
-    /** 星云粒子与光柱的时间/脉动驱动（原地写 uniform，零分配） */
-    constellationUniforms.uTime.value = t;
 
     /* ---- 赤道环 / 斜交极轨环自转（三种角速度，形成球壳经纬差速） ---- */
     if (equatorRingRef.current !== null) {
@@ -1361,7 +1290,6 @@ export default function MasterNode3D() {
         >
           <octahedronGeometry args={[OCTA_RADIUS, 0]} />
           <shaderMaterial
-            ref={outerMatRef}
             defines={KV_DEBUG_NAN_DEFINES}
             uniforms={crystalUniforms}
             vertexShader={CRYSTAL_SHELL_VERTEX_SHADER}
@@ -1390,7 +1318,6 @@ export default function MasterNode3D() {
         >
           <octahedronGeometry args={[0.92, 0]} />
           <meshStandardMaterial
-            ref={coreMatRef}
             color="#0ea5e9"
             emissive="#0284c7"
             emissiveIntensity={0.85}
@@ -1417,7 +1344,6 @@ export default function MasterNode3D() {
         <mesh ref={icosaCoreRef} scale={[0.84, 1.42, 0.84]} renderOrder={12}>
           <icosahedronGeometry args={[0.68, 1]} />
           <meshBasicMaterial
-            ref={icosaCoreMatRef}
             color="#67e8f9"
             wireframe
             transparent
@@ -1432,7 +1358,6 @@ export default function MasterNode3D() {
         <mesh scale={[0.82, 1.32, 0.82]} renderOrder={11} raycast={(): void => undefined}>
           <sphereGeometry args={[0.40, 32, 32]} />
           <shaderMaterial
-            ref={plasmaMatRef}
             defines={KV_DEBUG_NAN_DEFINES}
             uniforms={plasmaUniforms}
             vertexShader={PLASMA_VERTEX_SHADER}
@@ -1526,9 +1451,6 @@ export default function MasterNode3D() {
           >
             <torusGeometry args={[GYRO_RINGS[idx].radius, GYRO_RINGS[idx].thickness, 16, 96]} />
             <meshBasicMaterial
-              ref={(el): void => {
-                gyroMatRefs.current[idx] = el;
-              }}
               color="#22d3ee"
               transparent
               opacity={0.48}
@@ -1542,13 +1464,11 @@ export default function MasterNode3D() {
         {/* ---- 第 7 层：双正交 72 刻度精密万向节环 ---- */}
         <group ref={gimbalRingARef} rotation={[Math.PI / 3, 0, 0]}>
           <lineSegments
-            ref={gimbalTicksARef}
             geometry={gimbalTickGeometry}
             renderOrder={16}
             raycast={(): void => undefined}
           >
             <lineBasicMaterial
-              ref={gimbalTicksAMatRef}
               color="#22d3ee"
               transparent
               opacity={0.42}
@@ -1571,13 +1491,11 @@ export default function MasterNode3D() {
         </group>
         <group ref={gimbalRingBRef} rotation={[-Math.PI / 3, Math.PI / 4, 0]}>
           <lineSegments
-            ref={gimbalTicksBRef}
             geometry={gimbalTickGeometry}
             renderOrder={16}
             raycast={(): void => undefined}
           >
             <lineBasicMaterial
-              ref={gimbalTicksBMatRef}
               color="#67e8f9"
               transparent
               opacity={0.42}
@@ -1609,7 +1527,6 @@ export default function MasterNode3D() {
         >
           <octahedronGeometry args={[1, 0]} />
           <meshBasicMaterial
-            ref={vertexAnchorMatRef}
             color="#ffffff"
             transparent
             opacity={0.85}
@@ -1716,7 +1633,6 @@ export default function MasterNode3D() {
           key={polar.key}
           ref={(node): void => {
             polarRingRefs.current[index] = node;
-            if (index === 0) polarRingRef.current = node;
           }}
           rotation={[polar.tilt[0], polar.tilt[1], polar.tilt[2]]}
           renderOrder={16}

@@ -22,11 +22,45 @@
 
 import { useEffect, useRef } from 'react';
 
-/** 触发阈值（RMS 能量，0~1；正常室内说话约 0.05~0.2） */
-const VOICE_RMS_THRESHOLD = 0.05;
+/** 触发阈值（RMS 能量，0~1；提高至 0.18 配合回声消除，过滤扬声器外放回声与环境底噪） */
+const VOICE_RMS_THRESHOLD = 0.18;
 
-/** 连续超过阈值的帧数（约 50ms @60fps），抑制瞬时噪声 */
-const CONSECUTIVE_FRAMES = 3;
+/** 连续超过阈值的帧数（约 165ms @60fps），抑制瞬时噪声与短促回声脉冲 */
+const CONSECUTIVE_FRAMES = 10;
+
+/** 播报启动后前 650ms 预热期，忽略扬声器刚发声时的瞬间声学峰值 */
+const WARMUP_MS = 650;
+
+/**
+ * hasMicrophonePermissionGranted —— 非阻塞检测麦克风是否已获得用户授权。
+ *
+ * 【为何必要】仅点击 TTS 朗读按钮时绝不应主动触发浏览器麦克风权限弹窗；
+ * 只有当用户此前已允许麦克风权限时，才静默启用说话打断监听。
+ */
+async function hasMicrophonePermissionGranted(): Promise<boolean> {
+  if (typeof navigator === 'undefined') return false;
+  if (typeof navigator.permissions?.query === 'function') {
+    try {
+      const status = await navigator.permissions.query({
+        name: 'microphone' as PermissionName,
+      });
+      return status.state === 'granted';
+    } catch {
+      /* 部分浏览器不支持 permissions.query('microphone')，回退设备标签检测 */
+    }
+  }
+  if (typeof navigator.mediaDevices?.enumerateDevices === 'function') {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      return devices.some(
+        (device): boolean => device.kind === 'audioinput' && device.label.trim().length > 0,
+      );
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 /**
  * useVoiceActivity —— 在 enabled 期间监听麦克风能量，检测到开口时回调一次。
@@ -69,11 +103,21 @@ export function useVoiceActivity(enabled: boolean, onVoice: () => void): void {
 
     const start = async (): Promise<void> => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const granted = await hasMicrophonePermissionGranted();
+        if (!granted || disposed) return;
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
         if (disposed) {
           for (const track of stream.getTracks()) track.stop();
           return;
         }
+        const startedAt = performance.now();
         context = new AudioContext();
         const analyser = context.createAnalyser();
         analyser.fftSize = 1024;
@@ -83,6 +127,11 @@ export function useVoiceActivity(enabled: boolean, onVoice: () => void): void {
 
         const tick = (): void => {
           if (disposed || triggered) return;
+          if (performance.now() - startedAt < WARMUP_MS) {
+            overFrames = 0;
+            rafId = window.requestAnimationFrame(tick);
+            return;
+          }
           analyser.getFloatTimeDomainData(buffer);
           let sum = 0;
           for (let i = 0; i < buffer.length; i += 1) sum += buffer[i] * buffer[i];

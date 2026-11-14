@@ -12,7 +12,7 @@ import packageJson from '../../../../package.json';
 import { DEGRADATION_MATRIX } from '@/constants/degradationMatrix';
 import type { DegradationTierId, HealthApiResponse } from '@/types/health';
 import { getHostSamplerSubscriberCount } from '@/utils/liveTelemetry';
-import { getTelemetryHealthMetrics } from '@/utils/telemetryMetrics';
+import { getTelemetryHealthMetrics, isConfiguredLlmApiKey } from '@/utils/telemetryMetrics';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -25,7 +25,7 @@ const PROCESS_STARTED_AT_MS = Date.now();
  */
 export function GET(): Response {
   const apiKey = process.env.OPENAI_API_KEY;
-  const llmConfigured = typeof apiKey === 'string' && apiKey.trim().length > 0;
+  const llmConfigured = isConfiguredLlmApiKey(apiKey);
   const configuredModel =
     typeof process.env.AI_MODEL_NAME === 'string' && process.env.AI_MODEL_NAME.trim().length > 0
       ? process.env.AI_MODEL_NAME.trim()

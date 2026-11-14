@@ -22,8 +22,8 @@ import { REDUCED_MOTION_AMPLITUDE, isReducedMotion } from '@/constants/motion';
 import { getRackTransform } from '@/utils/spatialLayout';
 import { MASTER_POSITION } from '@/utils/spatialLayout';
 
-/** 赤道环半径：弧线起点 = 晶核中心 + 水平方向 × 该半径（与 CrystalOptics 晶体赤道一致） */
-export const CRYSTAL_EQUATOR_RADIUS = 1.05;
+/** 赤道环半径：弧线起点 = 晶核中心 + 水平方向 × 该半径（与 MasterNode3D 晶体赤道环 EQUATOR_RADIUS = 1.56 严格一致） */
+export const CRYSTAL_EQUATOR_RADIUS = 1.56;
 
 /** 汇聚节奏：1.5s 一轮，前 0.15s 为高亮窗口（10% duty） */
 const CONVERGE_PERIOD = 1.5;

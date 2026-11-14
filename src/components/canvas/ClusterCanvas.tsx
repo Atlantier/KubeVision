@@ -812,6 +812,24 @@ const handleSceneProfilerRender: ProfilerOnRenderCallback = (): void => {
   incrementSceneCommitCount();
 };
 
+/**
+ * WorkerRackList —— 计算节点机架渲染列表（1Hz 遥测订阅下沉隔离）。
+ *
+ * 【设计意图】WorkerRack3D 的全息铭牌需实时反映 1Hz 节点的 CPU/MEM 与 Pod 数量；
+ * 将 `snapshotSummary.nodes` 的订阅从 ClusterCanvas 根组件下沉到此轻量子树后，
+ * 稳态遥测推送不再触发 MasterNode3D、PodInstancedMesh、地板与后处理管线的整体重渲染。
+ */
+function WorkerRackList(): ReactNode {
+  const nodes = useClusterStore((s): readonly WorkerNodeEntity[] => s.snapshotSummary.nodes);
+  return (
+    <>
+      {nodes.map((node): ReactNode => (
+        <WorkerRack3D key={node.id} node={node} />
+      ))}
+    </>
+  );
+}
+
 export default function ClusterCanvas() {
   /* ---- Store 细粒度订阅（工具条受控状态四元组） ---- */
   const [reducedMotion, setReducedMotion] = useState<boolean>(() => isReducedMotion());
@@ -1050,9 +1068,6 @@ export default function ClusterCanvas() {
   /** R27：T3 景深 Effect 实例（T2/T1/T0 不挂载、不分配） */
   const dofEffectRef = useRef<DepthOfFieldEffect | null>(null);
 
-  /** R5 第6步：渲染器引用（供档位切换时同步 toneMapping，不依赖 onCreated 一次性设置） */
-  const glRef = useRef<THREE.WebGLRenderer | null>(null);
-
   /* R29 F + R8 小屏降载：质量档位（非持久化）+ 自动治理（2Hz 采样、带迟滞与冷却） */
   const qualityTier = useQualityStore((state): number => state.tier);
   const qualityAuto = useQualityStore((state): boolean => state.auto);
@@ -1286,9 +1301,7 @@ export default function ClusterCanvas() {
     );
   }, [appendTerminalLog, setCapturedViewport, triggerQuickPrompt]);
 
-  /* ---- 机架模型数据源：低频轨订阅节点实体数组（快照整体替换才重渲染；
-     WorkerRack3D 是纯展示层，数据获取职责收敛在本父级，保持单向数据流） ---- */
-  const nodes = useClusterStore((s): readonly WorkerNodeEntity[] => s.snapshotSummary.nodes);
+  /* ---- 节点 1Hz 订阅下沉至 WorkerRackList，隔离主画布与非机架子树的无意义重渲染 ---- */
 
   /**
    * 卸载清理：移除 WebGL 上下文监听与所有探针定时器。
@@ -1457,7 +1470,6 @@ export default function ClusterCanvas() {
            */
           /* R5 第6步：toneMapping 抽到 syncRendererToneMapping，创建期与档位切换共用。
            * 创建期先做一次（避免兜底路径首帧用错 tone mapping）；运行期由 useEffect 跟随档位。 */
-          glRef.current = state.gl;
           syncRendererToneMapping(state.gl, qualityPost);
           /*
            * ---- R5 测量契约：先修测量再优化 ----
@@ -1878,11 +1890,8 @@ export default function ClusterCanvas() {
           {/* ---- MASTER 控制平面全息模型（锚定 [0,2.5,0]，可点击选中 → 鸟瞰复位） ---- */}
           <MasterNode3D />
 
-          {/* ---- 三台 Worker 机架程序化模型（磨砂装甲/托盘隔板/霓虹导光柱/全息铭牌；
-             位姿由 getRackTransform(node.rackIndex) 解算，与 Pod 槽位坐标同源） ---- */}
-          {nodes.map((node): ReactNode => (
-            <WorkerRack3D key={node.id} node={node} />
-          ))}
+          {/* ---- 三台 Worker 机架程序化模型（订阅隔离至 WorkerRackList，防止 1Hz 遥测重渲染整棵 Canvas） ---- */}
+          <WorkerRackList />
 
           {/* ---- Pod 容器实例渲染器（单 Draw Call InstancedMesh ×48 容量；
              每帧从瞬态池读取状态/CPU 负载驱动四态动画，落座隔板插槽零穿模） ---- */}

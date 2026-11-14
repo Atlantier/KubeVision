@@ -344,10 +344,10 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
     source: '尚未加载语音列表',
   });
   const [isSupported, setIsSupported] = useState<boolean>(false);
-  /** C4：播放速度（懒初始化读 localStorage，SSR 期回退默认值） */
-  const [rate, setRateState] = useState<number>(() => readStoredRate(SPEECH_RATE));
-  /** C4：指定音色 URI（null = 自动优选） */
-  const [voiceUri, setVoiceUriState] = useState<string | null>(() => readStoredVoiceUri());
+  /** C4：播放速度（初始使用静态默认常量防止 SSR 水合不匹配，挂载后在 useEffect 中同步 localStorage） */
+  const [rate, setRateState] = useState<number>(SPEECH_RATE);
+  /** C4：指定音色 URI（null = 自动优选；挂载后在 useEffect 中同步 localStorage） */
+  const [voiceUri, setVoiceUriState] = useState<string | null>(null);
   /** 系统可用音色（供 UI 下拉） */
   const [voices, setVoices] = useState<
     readonly { readonly uri: string; readonly name: string; readonly lang: string }[]
@@ -372,6 +372,9 @@ export function useSpeechSynthesis(): UseSpeechSynthesisResult {
 
   useEffect(() => {
     mountedRef.current = true;
+    /* 客户端挂载后再从 localStorage 同步用户语音偏好，避免 SSR 首帧 Hydration Mismatch */
+    setRateState(readStoredRate(SPEECH_RATE));
+    setVoiceUriState(readStoredVoiceUri());
 
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       setIsSupported(false);

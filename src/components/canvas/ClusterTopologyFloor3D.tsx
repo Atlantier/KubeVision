@@ -1193,29 +1193,41 @@ const TRACE_GEOMETRY: THREE.BufferGeometry = (() => {
  * 不订阅高频遥测，因此只在快照状态位变化时重渲染（低频）。
  */
 export default function ClusterTopologyFloor3D(): React.ReactElement {
-  const nodes = useClusterStore((s): readonly WorkerNodeEntity[] => s.snapshotSummary.nodes);
-  const pods = useClusterStore((s): readonly PodEntity[] => s.snapshotSummary.pods);
+  /*
+   * 仅订阅“机架 ID / 槽位索引 / 故障布尔”拼接的轻量签名字符串：
+   * 稳态下即使 1Hz 遥测快照整体替换（CPU/MEM 数值微小波动），签名保持完全相等，
+   * 从而实现地板与星环组件 0 次/秒 React 重渲染。
+   */
+  const rackFaultSignature = useClusterStore((s): string => {
+    const { nodes, pods } = s.snapshotSummary;
+    return nodes
+      .map((node): string => `${node.id}|${node.rackIndex}|${isRackFaulted(node, pods) ? '1' : '0'}`)
+      .join(';');
+  });
 
   /**
    * 每个机架的落脚点（位置 / 朝向 / 故障态）。
    *
-   * 仅在节点或 Pod 状态位变化时重算（低频），不在 useFrame 热路径上。
+   * 仅在节点拓扑或故障状态位翻转时重算（低频），不在 useFrame 热路径上。
    */
   const racks = useMemo((): readonly RackFooting[] => {
-    return nodes.map((node): RackFooting => {
-      const transform = getRackTransform(node.rackIndex);
+    if (rackFaultSignature.length === 0) return [];
+    return rackFaultSignature.split(';').map((entry): RackFooting => {
+      const [id, rackIdxStr, faultFlag] = entry.split('|');
+      const rackIndex = Number(rackIdxStr) as WorkerNodeEntity['rackIndex'];
+      const transform = getRackTransform(rackIndex);
       const x = transform.position[0];
       const z = transform.position[2];
       return {
-        key: node.id,
+        key: id,
         x,
         z,
         /* 极角：由实际坐标反解，天然与 getRackTransform 同源且符号安全 */
         angle: Math.atan2(x, z),
-        faulted: isRackFaulted(node, pods),
+        faulted: faultFlag === '1',
       };
     });
-  }, [nodes, pods]);
+  }, [rackFaultSignature]);
 
   /* ---- 动画通道 ref（useFrame 内原地写入，零分配） ---- */
   const orbitPulseRef = useRef<THREE.Group>(null);

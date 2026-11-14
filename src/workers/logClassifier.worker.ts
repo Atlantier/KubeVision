@@ -449,33 +449,50 @@ async function initModelWithTimeout(
        只在真正需要模型时才加载。 */
     const transformers = await import('@huggingface/transformers');
 
-    /* ---- 环境配置：禁用本地模型、指向国内镜像 ---- */
+    /* ---- 环境配置：优先随包本地模型，缺失时回退镜像 CDN ---- */
     /*
      * R49：权重随包（public/models/），优先本地路径；本地缺失时仍回退 CDN。
      * localModelPath 只影响解析根；allowRemoteModels 保持默认 true 作为兜底。
+     *
+     * 【为什么优先 dtype: 'fp32'】
+     * @huggingface/transformers v3 对 dtype: 'q8' 会请求 model_quantized.onnx，
+     * 而 public/models/Xenova/all-MiniLM-L6-v2/onnx/ 随包放置的是无后缀的 model.onnx（fp32）。
+     * 旧实现直接传 dtype: 'q8' 会导致同源 404 并被迫走外网下载；改为优先 fp32 命中本地，
+     * 仅在本地缺失/失败时再回退 q8 从镜像拉取量化版。
      */
     transformers.env.allowLocalModels = true;
     transformers.env.localModelPath = '/models/';
     transformers.env.remoteHost = MODEL_REMOTE_HOST;
 
+    const handleProgress = (info: { status?: string; progress?: number; file?: string }): void => {
+      if (info.status === 'progress' && typeof info.progress === 'number') {
+        /* 下载阶段映射到 0~90% */
+        const pct = Math.max(0, Math.min(90, Math.round(info.progress)));
+        post({
+          type: 'progress',
+          progress: pct,
+          runtime,
+          runtimeLabel: label,
+          modelName: MODEL_ID,
+        });
+      }
+    };
+
     /* ---- 建管道（WebGPU 或 WASM） ---- */
-    const pipe = await transformers.pipeline('feature-extraction', MODEL_ID, {
-      device: runtime,
-      dtype: 'q8',
-      progress_callback: (info: { status?: string; progress?: number; file?: string }): void => {
-        if (info.status === 'progress' && typeof info.progress === 'number') {
-          /* 下载阶段映射到 0~90% */
-          const pct = Math.max(0, Math.min(90, Math.round(info.progress)));
-          post({
-            type: 'progress',
-            progress: pct,
-            runtime,
-            runtimeLabel: label,
-            modelName: MODEL_ID,
-          });
-        }
-      },
-    });
+    let pipe: unknown;
+    try {
+      pipe = await transformers.pipeline('feature-extraction', MODEL_ID, {
+        device: runtime,
+        dtype: 'fp32',
+        progress_callback: handleProgress,
+      });
+    } catch {
+      pipe = await transformers.pipeline('feature-extraction', MODEL_ID, {
+        device: runtime,
+        dtype: 'q8',
+        progress_callback: handleProgress,
+      });
+    }
 
     return pipe as unknown as FeatureExtractor;
   })();

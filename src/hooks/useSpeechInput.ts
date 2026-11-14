@@ -235,6 +235,8 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
   const [errorKind, setErrorKind] = useState<'permission' | 'unsupported' | 'network' | null>(null);
   /** Q1：最近一次 stop 产出的最终文本（供调用方自动发送） */
   const [finalText, setFinalText] = useState<string | null>(null);
+  /** 与 finalText 同步的瞬时引用，保证 React 18 并发渲染下 consumeFinalText 的原子消费 */
+  const finalTextRef = useRef<string | null>(null);
   /** C3：上一次向 React 发布频谱的时间戳（限制 ≤8Hz，避免整树 60FPS 重渲染） */
   const lastPublishAtRef = useRef<number>(0);
   /** Q2：CSS 变量 --kv-mic-level 的节流写入时间（零重渲染驱动图标电平） */
@@ -401,7 +403,8 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
        */
       if (now - lastCssVarAtRef.current >= 125 && typeof document !== 'undefined') {
         lastCssVarAtRef.current = now;
-        const level = Math.min(1, Math.max(0, voiceEnergy / 255));
+        /* computeBands 已完成 /255 归一化（voiceEnergy ∈ [0, 1]），此处施加适度视觉增益 */
+        const level = Math.min(1, Math.max(0, voiceEnergy * 2.2));
         document.documentElement.style.setProperty('--kv-mic-level', level.toFixed(3));
       }
       if (voiceEnergy > VOICE_ENERGY_THRESHOLD) {
@@ -594,6 +597,8 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
     /* 重置全部状态 */
     transcriptRef.current = '';
     interimRef.current = '';
+    finalTextRef.current = null;
+    setFinalText(null);
     activeFramesRef.current = 0;
     startedAtRef.current = Date.now();
     lastVoiceAtRef.current = Date.now();
@@ -672,6 +677,7 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
     /* ---- 云端模式：用识别到的文本 ---- */
     const cloudText = `${transcriptRef.current}${interimRef.current}`.trim();
     if (!acousticModeRef.current && cloudText.length > 0) {
+      finalTextRef.current = cloudText;
       setFinalText(cloudText);
       return cloudText;
     }
@@ -691,7 +697,11 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
       ctx.selectedName,
       ctx.chaos,
     );
+    if (inferred.trim().length === 0) {
+      return '';
+    }
     const inferredText = `[声学推断] ${inferred}`;
+    finalTextRef.current = inferredText;
     setFinalText(inferredText);
     return inferredText;
   }, [getContext, releaseAudio]);
@@ -736,14 +746,16 @@ export function useSpeechInput(options: UseSpeechInputOptions): SpeechInputContr
   /**
    * consumeFinalText —— 取走并清空最终文本（Q1 自动发送的一次性消费）。
    *
+   * 【设计】读写通过 finalTextRef 同步完成，避免在 setState 更新函数内部
+   * 产生外部变量副作用，确保 React 18 并发/严格模式下消费行为幂等且无丢失。
+   *
    * @returns 上一次 stop 的文本；无则 null
    */
   const consumeFinalText = useCallback((): string | null => {
-    let taken: string | null = null;
-    setFinalText((prev): string | null => {
-      taken = prev;
-      return null;
-    });
+    const taken = finalTextRef.current;
+    if (taken === null) return null;
+    finalTextRef.current = null;
+    setFinalText(null);
     return taken;
   }, []);
 

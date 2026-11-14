@@ -3164,14 +3164,18 @@ export default function CopilotDrawer() {
       void speechInput.stop();
       return;
     }
+    /* 用户主动点击麦克风开始说话时，若当前正在 TTS 播报则立即打断后再拾音 */
+    if (speakingMessageId !== null) {
+      stopSpeaking();
+    }
     void speechInput.start();
-  }, [speechInput]);
+  }, [speakingMessageId, speechInput, stopSpeaking]);
 
   /**
    * Q1：播报中用户开口 → 立即打断 TTS 并进入拾音。
    *
    * 打断检测走独立的能量 VAD（useVoiceActivity），不依赖语音识别，
-   * 因此在断网/隐私模式下也可用；检测失败时静默降级为手动停止。
+   * 因此在断网/隐私模式下也可用；检测失败或未授权限时静默降级为手动停止。
    */
   useVoiceActivity(speakingMessageId !== null && ttsEnabled, (): void => {
     stopSpeaking();
@@ -3188,12 +3192,11 @@ export default function CopilotDrawer() {
    * - 确认类短句（确认/执行/同意/confirm/yes）→ 派发语音确认事件，
    *   由动作卡决定是否执行（高危仍需显式二次确认）。
    */
-  const voiceSentRef = useRef<string | null>(null);
+  const { finalText: speechFinalText, consumeFinalText } = speechInput;
   useEffect((): void => {
-    const text = speechInput.consumeFinalText();
+    if (speechFinalText === null) return;
+    const text = consumeFinalText();
     if (text === null || text.trim().length === 0) return;
-    if (voiceSentRef.current === text) return;
-    voiceSentRef.current = text;
 
     if (text.startsWith('[声学推断]')) {
       setInputValue((prev): string => (prev.length > 0 ? `${prev} ${text}` : text));
@@ -3204,7 +3207,7 @@ export default function CopilotDrawer() {
       return;
     }
     sendMessageRef.current?.(text);
-  }, [speechInput]);
+  }, [consumeFinalText, speechFinalText]);
 
 
   /* ========================================================================== */

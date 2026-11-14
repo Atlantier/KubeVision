@@ -842,11 +842,9 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
       };
     }
 
-    /* 连接建立：收到 open 后确认 SSE 通道生效 */
+    /* 连接建立：收到 open 时暂不清空 errorCountRef（待 onmessage 收到真实遥测帧再清零，避免服务端 HTTP 200 下发 budget-exceeded 立即关流造成重连死循环） */
     eventSource.onopen = (): void => {
       if (disposed) return;
-      errorCountRef.current = 0;
-      setConsecutiveErrors(0);
       setTransportBothRef.current('sse');
       /*
        * 【R4 · seq 跨连接复位】每条新连接（含 EventSource 自动重连）
@@ -856,6 +854,19 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
       lastSeqRef.current = -1;
       truncationReportedRef.current = false;
     };
+
+    /* 服务端并发连接预算耗尽：立即优雅切换本地合成推演，不再无效重连 */
+    eventSource.addEventListener('budget-exceeded', (): void => {
+      if (disposed) return;
+      startFallback();
+    });
+
+    /* 服务端到达最大单连接存活周期（如 Vercel 50s 窗口）：清零错误计数并允许 EventSource 平滑续连 */
+    eventSource.addEventListener('lifetime-expired', (): void => {
+      if (disposed) return;
+      errorCountRef.current = 0;
+      setConsecutiveErrors(0);
+    });
 
     /* 收到数据帧：正常投递管线 */
     eventSource.onmessage = (event: MessageEvent<string>): void => {

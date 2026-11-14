@@ -41,7 +41,7 @@ import { CHAOS_SCENARIO_LABELS, UI_COPY } from '@/constants/copy';
 import { streamText, tool, type CoreMessage } from 'ai';
 import { createTrace, elapsedMs, endSpan, startSpan, type AgentTrace, type EndedSpan } from '@/utils/agentTrace';
 import { annotateUngrounded, clampConfidence } from '@/utils/grounding';
-import { logStructuredEvent } from '@/utils/telemetryMetrics';
+import { isConfiguredLlmApiKey, logStructuredEvent } from '@/utils/telemetryMetrics';
 import { z } from 'zod';
 
 import {
@@ -1492,6 +1492,8 @@ async function streamWithLLM(params: {
   readonly systemPrompt: string;
   readonly hasImage: boolean;
   readonly viewportImage: string | undefined;
+  /** R46：端侧像素空间分布统计（当配置为纯文本大模型时降级注入文本摘要，避免 image_url 触发 400） */
+  readonly pixelFeatures?: PixelFeatures;
   /**
    * 本次请求实际检索到的 Runbook。
    * 用于在 tool-result 时注入 ragReferences——模型自己不知道检索命中项，
@@ -1533,7 +1535,7 @@ async function streamWithLLM(params: {
   /** R43：AI SDK usage 回调（tokens 由上游按 env 单价换算成本） */
   readonly onUsage?: (usage: { promptTokens?: number; completionTokens?: number }) => void;
 }): Promise<'ok' | 'aborted' | 'llm-failed' | 'schema-guard'> {
-  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, intent, allowedTools, onFirstToolCall, emit, signal, ledger, trace, onUsage } = params;
+  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, pixelFeatures, runbooks, knownEntities, clusterContext, intent, allowedTools, onFirstToolCall, emit, signal, ledger, trace, onUsage } = params;
 
   if (signal.aborted) return 'aborted';
 
@@ -1599,41 +1601,81 @@ async function streamWithLLM(params: {
      */
     let messagesForModel: CoreMessage[] = coreMessages;
     if (hasImage && viewportImage !== undefined) {
+      const isVisionModel = /4v|vl|vision|gpt-4o|claude-3|gemini|pixtral|omni/i.test(modelName);
       const lastIndex = coreMessages.length - 1;
       const lastMessage = lastIndex >= 0 ? coreMessages[lastIndex] : undefined;
 
-      if (lastMessage !== undefined && lastMessage.role === 'user') {
-        /* 取出原提问文本（string 或已有的 parts 数组都兼容） */
-        const originalText =
-          typeof lastMessage.content === 'string'
-            ? lastMessage.content
-            : lastMessage.content
-                .map((part): string => (part.type === 'text' ? part.text : ''))
-                .join(' ')
-                .trim();
+      if (isVisionModel) {
+        if (lastMessage !== undefined && lastMessage.role === 'user') {
+          /* 取出原提问文本（string 或已有的 parts 数组都兼容） */
+          const originalText =
+            typeof lastMessage.content === 'string'
+              ? lastMessage.content
+              : lastMessage.content
+                  .map((part): string => (part.type === 'text' ? part.text : ''))
+                  .join(' ')
+                  .trim();
 
-        messagesForModel = [
-          ...coreMessages.slice(0, lastIndex),
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: originalText },
-              { type: 'image', image: viewportImage },
-            ],
-          },
-        ];
+          messagesForModel = [
+            ...coreMessages.slice(0, lastIndex),
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: originalText },
+                { type: 'image', image: viewportImage },
+              ],
+            },
+          ];
+        } else {
+          /* 无可用载体（空历史或末条非 user）→ 才追加一条独立的多模态消息 */
+          messagesForModel = [
+            ...coreMessages,
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '这是当前 3D 集群拓扑视口快照，请结合空间异常特征分析。' },
+                { type: 'image', image: viewportImage },
+              ],
+            },
+          ];
+        }
       } else {
-        /* 无可用载体（空历史或末条非 user）→ 才追加一条独立的多模态消息 */
-        messagesForModel = [
-          ...coreMessages,
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: '这是当前 3D 集群拓扑视口快照，请结合空间异常特征分析。' },
-              { type: 'image', image: viewportImage },
-            ],
-          },
-        ];
+        /*
+         * 【纯文本模型多模态兼容】
+         * 默认模型（如 glm-4-flash / deepseek-chat）不支持 OpenAI image_url 消息块，
+         * 直接下发会报 HTTP 400 导致整轮被迫降级。此处保留 Engine A 主链路，
+         * 把前端采集到的 3D 视口像素聚类特征以结构化文本注入用户消息供推理。
+         */
+        const observationText =
+          pixelFeatures !== undefined
+            ? renderPixelObservation(pixelFeatures).trim()
+            : `【3D WebGL 视口快照摘要】当前共检测到 ${clusterContext.faultyPods.length} 个异常 Pod，集群总入口流量 ${clusterContext.totalQps} QPS（当前模型 ${modelName} 为纯文本通道，已自动采用结构化空间像素摘要分析）。`;
+
+        if (lastMessage !== undefined && lastMessage.role === 'user') {
+          const originalText =
+            typeof lastMessage.content === 'string'
+              ? lastMessage.content
+              : lastMessage.content
+                  .map((part): string => (part.type === 'text' ? part.text : ''))
+                  .join(' ')
+                  .trim();
+
+          messagesForModel = [
+            ...coreMessages.slice(0, lastIndex),
+            {
+              role: 'user',
+              content: `${originalText}\n\n${observationText}`,
+            },
+          ];
+        } else {
+          messagesForModel = [
+            ...coreMessages,
+            {
+              role: 'user',
+              content: `请结合以下 3D 集群拓扑视口快照空间像素摘要进行分析：\n\n${observationText}`,
+            },
+          ];
+        }
       }
     }
 
@@ -3259,7 +3301,7 @@ export async function POST(request: Request): Promise<Response> {
   const apiKey = process.env.OPENAI_API_KEY;
   const baseURL = process.env.OPENAI_BASE_URL;
   const modelName = process.env.AI_MODEL_NAME ?? 'glm-4-flash';
-  const useLLM = typeof apiKey === 'string' && apiKey.trim().length > 0;
+  const useLLM = isConfiguredLlmApiKey(apiKey);
 
   /* ---- 构造 NDJSON 流 ---- */
   const encoder = new TextEncoder();
@@ -3705,6 +3747,7 @@ export async function POST(request: Request): Promise<Response> {
             systemPrompt,
             hasImage,
             viewportImage,
+            pixelFeatures: body.pixelFeatures,
             runbooks,
             knownEntities,
             clusterContext,
