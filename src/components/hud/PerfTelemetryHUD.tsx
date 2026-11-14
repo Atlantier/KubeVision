@@ -26,7 +26,21 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Activity, Cpu, Gauge, Layers, Radio, Triangle, X } from 'lucide-react';
+import {
+  Activity,
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Cpu,
+  Gauge,
+  Layers,
+  Radio,
+  Trash2,
+  Triangle,
+  X,
+} from 'lucide-react';
 
 import { Z_CLASS } from '@/constants/zIndex';
 import { UI_COPY } from '@/constants/copy';
@@ -35,6 +49,13 @@ import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
 import { useClusterStore } from '@/store/useClusterStore';
 import { useQualityStore } from '@/store/useQualityStore';
+import type { RuntimeErrorEntry } from '@/types/health';
+import {
+  clearRuntimeErrors,
+  formatRuntimeErrorsSummary,
+  getRecentRuntimeErrors,
+  subscribeRuntimeErrors,
+} from '@/utils/runtimeErrorBuffer';
 import {
   HEALTH_JITTER_WARN_MS,
   HEALTH_NODE_DRIFT_WARN,
@@ -423,6 +444,158 @@ export interface PerfTelemetryHUDProps {
 }
 
 /**
+ * RuntimeErrorsBlock —— 前端运行时异常折叠诊断区（R13 进阶 #5）。
+ *
+ * 订阅纯内存环形缓冲区，仅展示最近 5 条脱敏异常并提供一键「复制摘要」与「清空」，
+ * 绝不把任何错误上报至第三方网络服务。
+ */
+function RuntimeErrorsBlock() {
+  const [entries, setEntries] = useState<readonly RuntimeErrorEntry[]>(() =>
+    getRecentRuntimeErrors(5),
+  );
+  const [expanded, setExpanded] = useState<boolean>(false);
+  const [copied, setCopied] = useState<boolean>(false);
+
+  useEffect(() => {
+    setEntries(getRecentRuntimeErrors(5));
+    return subscribeRuntimeErrors(() => {
+      setEntries(getRecentRuntimeErrors(5));
+    });
+  }, []);
+
+  const handleCopySummary = async (): Promise<void> => {
+    const summary = formatRuntimeErrorsSummary(5);
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(summary);
+      } else if (typeof document !== 'undefined') {
+        const textarea = document.createElement('textarea');
+        textarea.value = summary;
+        textarea.setAttribute('readonly', 'true');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div
+      className="mt-1.5 border-t border-white/[0.07] pt-1.5"
+      data-testid="perf-hud-runtime-errors"
+    >
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        aria-expanded={expanded}
+        aria-label="最近异常诊断"
+        className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left font-mono text-[10px] text-slate-300 transition-colors hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400"
+      >
+        {expanded ? (
+          <ChevronDown className="h-3 w-3 shrink-0 text-slate-400" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0 text-slate-400" aria-hidden="true" />
+        )}
+        <AlertTriangle
+          className={cn(
+            'h-3 w-3 shrink-0',
+            entries.length > 0 ? 'text-rose-400' : 'text-slate-400',
+          )}
+          aria-hidden="true"
+        />
+        <span>最近 5 个异常</span>
+        <span
+          className={cn(
+            'ml-auto rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums',
+            entries.length > 0
+              ? 'bg-rose-500/20 text-rose-300'
+              : 'bg-slate-800/80 text-slate-400',
+          )}
+        >
+          {entries.length}
+        </span>
+      </button>
+
+      {expanded ? (
+        <div className="mt-1 rounded border border-white/[0.07] bg-slate-950/60 p-1.5">
+          <div className="mb-1.5 flex items-center justify-between gap-1">
+            <span className="font-mono text-[10px] text-slate-400">
+              仅本地内存留存（上限 20 条）
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  void handleCopySummary();
+                }}
+                aria-label="复制异常摘要"
+                className="inline-flex items-center gap-1 rounded border border-cyan-400/40 bg-cyan-500/20 px-1.5 py-0.5 font-mono text-[10px] text-cyan-200 transition-colors hover:bg-cyan-500/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400"
+              >
+                {copied ? (
+                  <>
+                    <Check className="h-2.5 w-2.5 text-emerald-300" aria-hidden="true" />
+                    <span>已复制</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-2.5 w-2.5" aria-hidden="true" />
+                    <span>复制摘要</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => clearRuntimeErrors()}
+                disabled={entries.length === 0}
+                aria-label="清空异常缓冲区"
+                className="inline-flex items-center gap-0.5 rounded border border-white/[0.12] bg-slate-800/80 px-1.5 py-0.5 font-mono text-[10px] text-slate-300 transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400"
+              >
+                <Trash2 className="h-2.5 w-2.5" aria-hidden="true" />
+                <span>清空</span>
+              </button>
+            </div>
+          </div>
+
+          {entries.length === 0 ? (
+            <p className="py-1 text-center font-mono text-[10px] text-slate-400">
+              当前会话暂无运行时异常记录
+            </p>
+          ) : (
+            <ul className="max-h-36 space-y-1 overflow-y-auto pr-0.5" aria-label="异常列表">
+              {entries.map((item) => (
+                <li
+                  key={item.id}
+                  className="rounded border border-white/[0.06] bg-slate-900/70 px-1.5 py-1 font-mono text-[10px]"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-rose-300">[{item.kind}]</span>
+                    <span className="truncate text-cyan-300">{item.traceId}</span>
+                    {item.count > 1 ? (
+                      <span className="rounded bg-amber-500/20 px-1 text-amber-300">
+                        ×{item.count}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="mt-0.5 break-words text-slate-200">{item.message}</p>
+                  <p className="mt-0.5 truncate text-slate-400">{item.source}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * PerfTelemetryHUD —— 开发者性能遥测浮层。
  */
 export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
@@ -623,6 +796,9 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
           ? `${sample.nodeCount} 节点 / ${sample.podCount} Pod / ${sample.alertCount} 告警`
           : '--'}
       </div>
+
+      {/* ============ 最近 5 个异常诊断（R13 进阶 #5） ============ */}
+      <RuntimeErrorsBlock />
 
       {/* ============ 数据来源说明 ============ */}
       <p className="mt-1 font-mono text-[10px] leading-relaxed text-slate-400">

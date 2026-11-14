@@ -29,6 +29,7 @@
     "shot": "node scripts/shot.mjs",
     "probe:blackout": "node scripts/probe-blackout.mjs",
     "probe:r13": "node scripts/probe-r13.mjs",
+    "probe:r13-robustness": "node scripts/probe-r13-robustness.mjs",
     "probe:camera": "node scripts/probe-camera.mjs",
     "verify:telemetry": "node scripts/verify-telemetry.mjs",
     "verify:parity": "node scripts/verify-mode-parity.mjs",

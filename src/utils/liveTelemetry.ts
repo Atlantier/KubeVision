@@ -34,6 +34,7 @@ import { readFileSync } from 'node:fs';
 
 import { TELEMETRY_SCHEMA_VERSION } from '@/types/cluster';
 import { computeHealthScore } from '@/utils/clusterHealth';
+import { logStructuredEvent, recordLiveCollectionResult } from '@/utils/telemetryMetrics';
 import type {
   AlertEvent,
   AlertLevel,
@@ -208,6 +209,13 @@ function sampleCpu(): { readonly perCore: readonly number[]; readonly overall: n
   });
 
   const previous = previousCoreTimes;
+  if (previous !== null && previous.length === current.length) {
+    const anyProgress = current.some((now, idx): boolean => now.total - previous[idx].total > 0);
+    if (!anyProgress && latestHostSample !== null && latestHostSample.perCore.length === current.length) {
+      return { perCore: latestHostSample.perCore, overall: latestHostSample.overall };
+    }
+  }
+
   const perCore = current.map((now, index): number => {
     const prev = previous !== null && previous.length === current.length ? previous[index] : null;
     if (prev === null) {
@@ -216,7 +224,7 @@ function sampleCpu(): { readonly perCore: readonly number[]; readonly overall: n
     }
     const dTotal = now.total - prev.total;
     const dIdle = now.idle - prev.idle;
-    if (dTotal <= 0) return 0;
+    if (dTotal <= 0) return latestHostSample?.perCore[index] ?? 0;
     return round1(clamp((1 - dIdle / dTotal) * 100, 0, 100));
   });
 
@@ -329,6 +337,9 @@ let hostSamplerSubscribers = 0;
 /** 采样节拍：与 SSE 推流间隔一致（1Hz） */
 const HOST_SAMPLE_INTERVAL_MS = 1000;
 
+/** 最小复用时间窗：1 秒内重复调用直接复用缓存样本，保护 CPU/网卡差分基准不归零 */
+const MIN_SAMPLE_WINDOW_MS = 850;
+
 /**
  * sampleHostOnce —— 执行一次真实宿主机采样（**唯一**写入差分基准的函数）。
  *
@@ -337,6 +348,11 @@ const HOST_SAMPLE_INTERVAL_MS = 1000;
  * 首帧无差分基准时退化为"自开机平均"，仍是真实读数。
  */
 function sampleHostOnce(): HostSample {
+  const nowMs = Date.now();
+  if (latestHostSample !== null && nowMs - latestHostSample.sampledAtMs < MIN_SAMPLE_WINDOW_MS) {
+    return latestHostSample;
+  }
+
   const cpu = sampleCpu();
   const coreCount = cpu.perCore.length > 0 ? cpu.perCore.length : os.cpus().length;
   const totalMemBytes = os.totalmem();
@@ -433,13 +449,23 @@ export function releaseHostSampler(): void {
 
 /**
  * readHostSample —— 读取最近一次广播采样。
- * 采样器未启动时（单元测试直调 / 极端竞态）兜底同步采一次——
- * 仍经 sampleHostOnce 这唯一写者，绝不另开差分基准。
+ * 采样器未启动或距上次采样不足 1s 时优先复用缓存，绝不轻易重置差分基准。
  */
 function readHostSample(): HostSample {
-  if (latestHostSample !== null) return latestHostSample;
+  if (latestHostSample !== null) {
+    if (hostSamplerTimer !== null || Date.now() - latestHostSample.sampledAtMs < MIN_SAMPLE_WINDOW_MS) {
+      return latestHostSample;
+    }
+  }
   latestHostSample = sampleHostOnce();
   return latestHostSample;
+}
+
+/**
+ * getHostSamplerSubscriberCount —— 返回当前宿主机单一采样器活跃订阅数（供 `/api/health` 观测）。
+ */
+export function getHostSamplerSubscriberCount(): number {
+  return hostSamplerSubscribers;
 }
 
 /**
@@ -761,7 +787,14 @@ function parseK8sPods(payload: unknown): K8sPodInfo[] {
   return result;
 }
 
-/** 带超时的真实 HTTP 请求（K8s API 可能很慢，必须有超时护栏） */
+/** K8s API 连续超时/失败背压阈值：达到后进入冷却并仅打单条结构化告警 */
+const K8S_BACKPRESSURE_LIMIT = 3;
+const K8S_BACKPRESSURE_COOLDOWN_MS = 5000;
+let k8sConsecutiveFailures = 0;
+let k8sBackpressureWarned = false;
+let k8sCooldownUntilMs = 0;
+
+/** 带超时与背压保护的真实 HTTP 请求（K8s API 可能很慢，必须有超时护栏） */
 async function fetchJson(url: string, token: string): Promise<unknown | null> {
   try {
     const response = await fetch(url, {
@@ -905,10 +938,17 @@ function buildK8sSnapshot(
 export async function collectLiveTelemetrySnapshot(
   prev: TelemetrySnapshot,
 ): Promise<LiveTelemetryResult> {
+  const startedAtMs = Date.now();
   const server = process.env.K8S_API_SERVER;
   const token = process.env.K8S_BEARER_TOKEN;
 
-  if (typeof server === 'string' && server.trim().length > 0 && typeof token === 'string' && token.trim().length > 0) {
+  if (
+    typeof server === 'string' &&
+    server.trim().length > 0 &&
+    typeof token === 'string' &&
+    token.trim().length > 0 &&
+    Date.now() >= k8sCooldownUntilMs
+  ) {
     const base = server.replace(/\/+$/, '');
     const [nodesPayload, podsPayload] = await Promise.all([
       fetchJson(`${base}/api/v1/nodes`, token),
@@ -916,6 +956,8 @@ export async function collectLiveTelemetrySnapshot(
     ]);
 
     if (nodesPayload !== null && podsPayload !== null) {
+      k8sConsecutiveFailures = 0;
+      k8sBackpressureWarned = false;
       const k8sNodes = parseK8sNodes(nodesPayload);
       const k8sPods = parseK8sPods(podsPayload);
       if (k8sNodes.length > 0) {
@@ -943,16 +985,6 @@ export async function collectLiveTelemetrySnapshot(
           }
         }
 
-        /*
-         * ---- 内存百分比的折算基准 ----
-         *
-         * metrics-server 给的是**绝对字节**（working set），而 PodEntity.memoryUsage
-         * 的契约是 0~100 的百分比。既然拿不到 Pod 的 memory limit，
-         * 就用「同节点均分内存预算」作为分母：
-         *   预算 = 节点内存容量 ÷ 该节点 Pod 数
-         * 这个分母完全由真实数据决定（节点容量来自 API，Pod 数来自列表），
-         * 不随观测值漂移，也不会因为节点规格不同而失真。
-         */
         const podsPerNode = new Map<string, number>();
         for (const pod of k8sPods) {
           podsPerNode.set(pod.nodeName, (podsPerNode.get(pod.nodeName) ?? 0) + 1);
@@ -965,15 +997,6 @@ export async function collectLiveTelemetrySnapshot(
         const enrichedPods: K8sPodInfo[] = k8sPods.map((pod): K8sPodInfo => {
           const usage = usageByPod.get(pod.name);
           if (usage === undefined) return pod;
-
-          /*
-           * ---- 自愈：live + K8s 模式下 Pod 内存恒为 0 ----
-           *
-           * 旧实现把解析出来的 mem 直接丢弃（memUsage 写死为 null），
-           * 于是所有 Pod 的内存曲线是一条 0 平线——指标面板看起来「没数据」，
-           * 而实际上 metrics-server 明明返回了值。
-           * 现在按上面的均分预算折算成百分比并 clamp 到契约区间。
-           */
           const capacity = memCapacityByNode.get(pod.nodeName) ?? 0;
           const podCount = Math.max(1, podsPerNode.get(pod.nodeName) ?? 1);
           const budget = capacity > 0 ? capacity / podCount : 0;
@@ -981,16 +1004,37 @@ export async function collectLiveTelemetrySnapshot(
 
           return {
             ...pod,
-            /* cpu 为核数，换算成单核百分比后再 clamp（多核 Pod 可能 >100%） */
             cpuUsage: clamp(usage.cpu, 0, 100),
             memUsage: memPercent,
           };
         });
 
-        return buildK8sSnapshot(prev, k8sNodes, enrichedPods);
+        const k8sResult = buildK8sSnapshot(prev, k8sNodes, enrichedPods);
+        recordLiveCollectionResult(Date.now() - startedAtMs, true);
+        return k8sResult;
+      }
+    } else {
+      k8sConsecutiveFailures += 1;
+      k8sCooldownUntilMs = Date.now() + K8S_BACKPRESSURE_COOLDOWN_MS;
+      if (k8sConsecutiveFailures >= K8S_BACKPRESSURE_LIMIT && !k8sBackpressureWarned) {
+        k8sBackpressureWarned = true;
+        logStructuredEvent({
+          event: 'error',
+          route: '/api/telemetry',
+          traceId: 'live-k8s-collector',
+          durationMs: Date.now() - startedAtMs,
+          timestamp: new Date().toISOString(),
+          attrs: {
+            reason: 'k8s-api-timeout-or-unreachable',
+            consecutiveFailures: k8sConsecutiveFailures,
+            cooldownMs: K8S_BACKPRESSURE_COOLDOWN_MS,
+          },
+        });
       }
     }
   }
 
-  return buildHostSnapshot(prev);
+  const hostResult = buildHostSnapshot(prev);
+  recordLiveCollectionResult(Date.now() - startedAtMs, true);
+  return hostResult;
 }

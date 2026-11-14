@@ -21,12 +21,14 @@
  */
 
 import {
+  Component,
   Profiler,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
+  type ErrorInfo,
   type ProfilerOnRenderCallback,
   type ReactNode,
 } from 'react';
@@ -97,7 +99,10 @@ import { getDemoDirectorSnapshot } from '@/utils/demoDirector';
 import SelectionBeacon3D from '@/components/canvas/SelectionBeacon3D';
 import ViewportToolbar from '@/components/canvas/ViewportToolbar';
 import WorkerRack3D from '@/components/canvas/WorkerRack3D';
+import ClusterTopology2DFallback from '@/components/canvas/ClusterTopology2DFallback';
 import NodeInspectHUD from '@/components/hud/NodeInspectHUD';
+import type { TopologyViewMode } from '@/types/health';
+import { recordRuntimeError } from '@/utils/runtimeErrorBuffer';
 
 /* ========================================================================== */
 /* 场景常量（深空赛博氛围参数，集中定义）                                          */
@@ -758,6 +763,76 @@ function CameraDebugBridge(): null {
   return null;
 }
 
+interface TopologyDebugBridge {
+  readonly getMode: () => TopologyViewMode;
+  readonly setMode: (mode: TopologyViewMode, reason?: string | null) => void;
+  readonly triggerCanvasError: (message?: string) => void;
+}
+
+declare global {
+  interface Window {
+    __KUBEVISION_TOPOLOGY__?: TopologyDebugBridge;
+  }
+}
+
+interface CanvasErrorBoundaryProps {
+  readonly resetKey: number;
+  readonly onCrash: (error: Error) => void;
+  readonly children: ReactNode;
+}
+
+interface CanvasErrorBoundaryState {
+  readonly hasError: boolean;
+}
+
+/**
+ * 3D WebGL 画布隔离异常边界（R13 Main #1/#2）。
+ *
+ * 捕获 `<Canvas>` 内部任何 Three.js / Postprocessing / Shader 渲染抛错，
+ * 将异常脱敏记入前端环形缓冲区并通知外层降级为第 5 层 2D 集群拓扑，确保页面零白屏。
+ */
+class CanvasErrorBoundary extends Component<CanvasErrorBoundaryProps, CanvasErrorBoundaryState> {
+  public constructor(props: CanvasErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  public static getDerivedStateFromError(): CanvasErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  public componentDidUpdate(prevProps: CanvasErrorBoundaryProps): void {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  public componentDidCatch(error: Error, info: ErrorInfo): void {
+    const firstFrame =
+      info.componentStack
+        ?.split('\n')
+        .map((line) => line.trim())
+        .find((line) => line.length > 0) ?? 'ClusterCanvas';
+    recordRuntimeError({
+      kind: 'boundary',
+      message: error.message || '3D WebGL 渲染树异常',
+      source: `CanvasErrorBoundary(${firstFrame})`,
+    });
+    this.props.onCrash(error);
+  }
+
+  public render(): ReactNode {
+    if (this.state.hasError) {
+      return null;
+    }
+    return this.props.children;
+  }
+}
+
+function ForcedCanvasCrash({ message }: { readonly message: string }): ReactNode {
+  throw new Error(message);
+}
+
 const handleSceneProfilerRender: ProfilerOnRenderCallback = (): void => {
   incrementSceneCommitCount();
 };
@@ -855,6 +930,86 @@ export default function ClusterCanvas() {
 
   /** 上下文丢失后 15s 仍未恢复 */
   const [contextRestoreFailed, setContextRestoreFailed] = useState<boolean>(false);
+
+  /** 第 5 层降级：运行时拓扑视图模式（'3d' 主视图 vs '2d' SVG 降级视图） */
+  const [topologyMode, setTopologyMode] = useState<TopologyViewMode>('3d');
+  const [topologyFallbackReason, setTopologyFallbackReason] = useState<string | null>(null);
+  const [forcedCanvasErrorMsg, setForcedCanvasErrorMsg] = useState<string | null>(null);
+  const [canvasBoundaryResetKey, setCanvasBoundaryResetKey] = useState<number>(0);
+
+  const topologyModeRef = useRef<TopologyViewMode>('3d');
+  topologyModeRef.current = topologyMode;
+
+  useEffect((): void => {
+    if (typeof window === 'undefined') return;
+    if (typeof window.WebGLRenderingContext === 'undefined') {
+      setTopologyMode('2d');
+      setTopologyFallbackReason('当前浏览器不支持 WebGL 渲染上下文，已自动启用 2D SVG 拓扑降级视图。');
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('topology') === '2d') {
+      setTopologyMode('2d');
+      setTopologyFallbackReason('已通过视图参数（?topology=2d）启用 2D 集群拓扑降级视图。');
+    }
+    if (params.get('forceCanvasError') === '1') {
+      setForcedCanvasErrorMsg('演练注入：WebGL 3D 画布渲染树异常');
+    }
+  }, []);
+
+  const handleCanvasBoundaryCrash = useCallback(
+    (error: Error): void => {
+      setForcedCanvasErrorMsg(null);
+      setTopologyMode('2d');
+      setTopologyFallbackReason(
+        `3D 渲染画布异常已由隔离边界拦截（${error.message || 'WebGL 异常'}），已自动降级为 2D 拓扑视图。`,
+      );
+      appendTerminalLog(`[TIER-5] 3D Canvas boundary caught error -> fallback to 2D topology`);
+    },
+    [appendTerminalLog],
+  );
+
+  const handleReturnTo3D = useCallback((): void => {
+    setForcedCanvasErrorMsg(null);
+    setContextRestoreFailed(false);
+    setTopologyFallbackReason(null);
+    setTopologyMode('3d');
+    setCanvasBoundaryResetKey((prev) => prev + 1);
+    setCanvasRemountKey((prev) => prev + 1);
+  }, []);
+
+  const handleToggle2DMode = useCallback((): void => {
+    if (topologyMode === '2d') {
+      handleReturnTo3D();
+      return;
+    }
+    setTopologyMode('2d');
+    setTopologyFallbackReason('已手动切换至 2D SVG 集群拓扑视图（Zero-WebGL 兼容模式）。');
+  }, [topologyMode, handleReturnTo3D]);
+
+  useEffect((): (() => void) => {
+    if (typeof window === 'undefined') {
+      return () => {};
+    }
+    window.__KUBEVISION_TOPOLOGY__ = {
+      getMode: () => topologyModeRef.current,
+      setMode: (mode: TopologyViewMode, reason?: string | null) => {
+        if (mode === '3d') {
+          handleReturnTo3D();
+          return;
+        }
+        setTopologyMode('2d');
+        setTopologyFallbackReason(reason ?? '已通过诊断指令切换至 2D 拓扑降级视图。');
+      },
+      triggerCanvasError: (message = '演练注入：WebGL 画布隔离边界异常') => {
+        setTopologyMode('3d');
+        setForcedCanvasErrorMsg(message);
+      },
+    };
+    return () => {
+      delete window.__KUBEVISION_TOPOLOGY__;
+    };
+  }, [handleReturnTo3D]);
 
   /** 上下文恢复计数：自增作为 Canvas 的 key 触发重挂载 */
   const [canvasRemountKey, setCanvasRemountKey] = useState<number>(0);
@@ -1259,8 +1414,20 @@ export default function ClusterCanvas() {
       ref={containerRef}
       style={{ background: VOID_FALLBACK_COLOR }}
     >
-      <Canvas
-        key={`canvas-${canvasRemountKey}`}
+      {topologyMode === '2d' ? (
+        <ClusterTopology2DFallback
+          fallbackReason={topologyFallbackReason}
+          canReturnTo3D={!contextLost || !contextRestoreFailed}
+          onReturnTo3D={handleReturnTo3D}
+        />
+      ) : (
+        <CanvasErrorBoundary
+          resetKey={canvasBoundaryResetKey}
+          onCrash={handleCanvasBoundaryCrash}
+        >
+          {forcedCanvasErrorMsg ? <ForcedCanvasCrash message={forcedCanvasErrorMsg} /> : null}
+          <Canvas
+            key={`canvas-${canvasRemountKey}`}
         /**
          * 【自适应 DPR 契约】dpr 由状态驱动而非写死（R5 第7步按屏密度分档）：
          * - 1x 屏 [0.75, 1]；2x 屏 [1, 1.5]；
@@ -1372,6 +1539,10 @@ export default function ClusterCanvas() {
             }
             contextLostTimerRef.current = setTimeout((): void => {
               setContextRestoreFailed(true);
+              setTopologyMode('2d');
+              setTopologyFallbackReason(
+                'WebGL 图形上下文丢失且 15 秒内未能自动恢复，已自动降级为 2D SVG 集群拓扑视图。',
+              );
             }, CONTEXT_RESTORE_TIMEOUT_MS);
           };
           const onContextRestored = (): void => {
@@ -1836,9 +2007,11 @@ export default function ClusterCanvas() {
           </EffectComposer>
         ) : null}
       </Canvas>
+        </CanvasErrorBoundary>
+      )}
 
       {/* R29 D：?glowDebug=1 时的发光预算调试浮层（开发/答辩用） */}
-      <GlowDebugOverlay />
+      {topologyMode === '3d' ? <GlowDebugOverlay /> : null}
 
       {/*
        * ---- 上下文丢失提示条 ----
@@ -1864,13 +2037,14 @@ export default function ClusterCanvas() {
         />
       ) : null}
 
-      {contextLost ? (
+      {contextLost && topologyMode === '3d' ? (
         <div
           className="pointer-events-none absolute inset-x-0 top-3 z-[5] flex justify-center"
           role="status"
           aria-live="polite"
         >
-          <div className="flex items-center gap-2 rounded px-3 py-1.5 font-mono text-[11px] tracking-tight"
+          <div
+            className="pointer-events-auto flex items-center gap-2 rounded px-3 py-1.5 font-mono text-[11px] tracking-tight"
             style={{
               background: contextRestoreFailed ? 'rgba(76,5,25,0.86)' : 'rgba(69,26,3,0.86)',
               border: `1px solid ${contextRestoreFailed ? 'rgba(244,63,94,0.5)' : 'rgba(251,191,36,0.45)'}`,
@@ -1882,9 +2056,18 @@ export default function ClusterCanvas() {
               style={{ background: contextRestoreFailed ? '#f43f5e' : '#fbbf24' }}
               aria-hidden
             />
-            {contextRestoreFailed
-              ? '图形上下文已丢失且未能自动恢复，请刷新页面（2D 面板仍可用）'
-              : '图形上下文已丢失，正在恢复…'}
+            <span>
+              {contextRestoreFailed
+                ? '图形上下文已丢失且未能自动恢复，已切换 2D 兜底'
+                : '图形上下文已丢失，正在恢复…（静态快照冻结保留中）'}
+            </span>
+            <button
+              type="button"
+              onClick={handleToggle2DMode}
+              className="ml-1 rounded border border-amber-300/40 bg-amber-500/20 px-2 py-0.5 text-[10px] text-amber-100 transition-colors hover:bg-amber-500/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400"
+            >
+              立即切至 2D 拓扑
+            </button>
           </div>
         </div>
       ) : null}
@@ -1940,6 +2123,8 @@ export default function ClusterCanvas() {
         onTopDown={handleTopDown}
         onTogglePatrol={handleTogglePatrol}
         onCaptureDiagnose={handleCaptureDiagnose}
+        is2DMode={topologyMode === '2d'}
+        onToggle2DMode={handleToggle2DMode}
       />
     </div>
   );

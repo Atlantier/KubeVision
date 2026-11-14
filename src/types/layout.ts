@@ -268,5 +268,9 @@ export interface ViewportToolbarProps {
   readonly onTogglePatrol: () => void;
   /** 点击「多模态快照诊断」：截帧 + 唤醒 Copilot */
   readonly onCaptureDiagnose: () => void;
+  /** 当前是否处于第 5 层 2D 集群拓扑降级视图 */
+  readonly is2DMode?: boolean;
+  /** 点击切换 2D/3D 拓扑视图（R13 Main #2） */
+  readonly onToggle2DMode?: () => void;
 }
 

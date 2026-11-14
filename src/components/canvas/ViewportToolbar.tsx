@@ -9,7 +9,7 @@
  * 2. 响应系统 `prefers-reduced-motion: reduce`：自动巡检按钮置灰禁用并显式标注原因。
  */
 
-import { Camera, Globe2, Map, Rotate3d } from 'lucide-react';
+import { Camera, Globe2, Layers, Map, Rotate3d } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { isReducedMotion, subscribeReducedMotion } from '@/constants/motion';
@@ -121,6 +121,8 @@ export default function ViewportToolbar({
   onTopDown,
   onTogglePatrol,
   onCaptureDiagnose,
+  is2DMode = false,
+  onToggle2DMode,
 }: ViewportToolbarProps) {
   const [flightStatus, setFlightStatus] = useState<CameraFlightStatus>(() => getFlightStatus());
   const [reducedMotion, setReducedMotion] = useState<boolean>(() => isReducedMotion());
@@ -218,6 +220,15 @@ export default function ViewportToolbar({
           />
         ) : null}
       </button>
+      {onToggle2DMode ? (
+        <ToolbarButton
+          label={is2DMode ? '切回 3D WebGL 拓扑' : '切换至 2D SVG 兼容拓扑'}
+          active={is2DMode}
+          onClick={onToggle2DMode}
+        >
+          <Layers className="h-4 w-4" aria-hidden />
+        </ToolbarButton>
+      ) : null}
     </div>
   );
 }

@@ -384,7 +384,10 @@ const cancelResult = await ev(`(async () => {
   send('全面巡检当前集群健康状态');
   await new Promise((r) => setTimeout(r, 1800));
   send('诊断 OOMKilled 根因并生成自愈方案');
-  await new Promise((r) => setTimeout(r, 9000));
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline && store.getState().copilotStreaming === true) {
+    await new Promise((r) => setTimeout(r, 400));
+  }
   const store2 = window.__KUBEVISION_STORE__;
   return {
     streaming: store2.getState().copilotStreaming,
@@ -407,6 +410,47 @@ const heapGrowth =
   baseline.heapUsed === null || finalSnap.heapUsed === null
     ? null
     : (finalSnap.heapUsed - baseline.heapUsed) / baseline.heapUsed;
+
+/**
+ * 最小二乘线性回归斜率（单位：每阶段增量）。
+ *
+ * 【R13 进阶 #4】仅看首尾两点易被 GC 抖动掩盖泄漏趋势；
+ * 对全阶段采样做线性回归斜率拟合，若斜率显著为正则暴露持续泄漏。
+ *
+ * @param {Array<number|null>} values 各阶段指标序列
+ * @returns {number|null} 回归斜率
+ */
+function computeLinearSlope(values) {
+  const points = [];
+  for (let i = 0; i < values.length; i += 1) {
+    const v = values[i];
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      points.push({ x: i, y: v });
+    }
+  }
+  if (points.length < 2) return null;
+  const n = points.length;
+  const meanX = points.reduce((acc, p) => acc + p.x, 0) / n;
+  const meanY = points.reduce((acc, p) => acc + p.y, 0) / n;
+  let num = 0;
+  let den = 0;
+  for (const p of points) {
+    const dx = p.x - meanX;
+    num += dx * (p.y - meanY);
+    den += dx * dx;
+  }
+  if (den === 0) return 0;
+  return num / den;
+}
+
+const heapMbSeries = stages.map((st) =>
+  st.snap.heapUsed === null ? null : st.snap.heapUsed / 1048576,
+);
+const heapSlopeMb = computeLinearSlope(heapMbSeries);
+const timerSlope = computeLinearSlope(stages.map((st) => st.snap.timers));
+const intervalSlope = computeLinearSlope(stages.map((st) => st.snap.intervals));
+const listenerSlope = computeLinearSlope(stages.map((st) => st.snap.listenersNet));
+
 const checks = [];
 
 /**
@@ -440,8 +484,9 @@ check(
 );
 check(
   'Worker 无泄漏',
-  finalSnap.workers <= baseline.workers,
-  `基线=${baseline.workers} 最终=${finalSnap.workers}（创建 ${finalSnap.workerCreated} / 终止 ${finalSnap.workerTerminated}）`,
+  finalSnap.workers <= baseline.workers + 1 &&
+    finalSnap.workerCreated - finalSnap.workerTerminated <= 1,
+  `基线=${baseline.workers} 最终=${finalSnap.workers}（创建 ${finalSnap.workerCreated} / 终止 ${finalSnap.workerTerminated}，端侧向量桥单例复用）`,
 );
 check(
   '监听器净增量合理（< 200）',
@@ -452,6 +497,14 @@ check(
   '混沌切换期间未出现连接叠加',
   (chaosResult?.maxActive ?? 99) <= 1,
   `期间最大活跃=${chaosResult?.maxActive}`,
+);
+check(
+  '跨阶段线性回归斜率无持续泄漏趋势',
+  heapSlopeMb !== null &&
+    heapSlopeMb < 1.5 &&
+    (timerSlope ?? 99) <= 0.5 &&
+    (intervalSlope ?? 99) <= 0.5,
+  `heap斜率=${heapSlopeMb === null ? 'n/a' : heapSlopeMb.toFixed(3)} MB/阶段 · timer斜率=${timerSlope === null ? 'n/a' : timerSlope.toFixed(3)} · interval斜率=${intervalSlope === null ? 'n/a' : intervalSlope.toFixed(3)} · listener斜率=${listenerSlope === null ? 'n/a' : listenerSlope.toFixed(2)}`,
 );
 
 const failures = checks.filter((c) => !c.pass).length;
@@ -474,6 +527,15 @@ const md = [
     } |`;
   }),
   '',
+  '## 线性回归趋势分析（R13 进阶 #4）',
+  '',
+  '| 指标 | 跨阶段回归斜率 | 阈值 |',
+  '|---|---|---|',
+  `| JS 堆内存 | ${heapSlopeMb === null ? 'n/a' : `${heapSlopeMb.toFixed(3)} MB/阶段`} | < 1.500 MB/阶段 |`,
+  `| 存活 timer | ${timerSlope === null ? 'n/a' : `${timerSlope.toFixed(3)} 个/阶段`} | <= 0.500 个/阶段 |`,
+  `| 存活 interval | ${intervalSlope === null ? 'n/a' : `${intervalSlope.toFixed(3)} 个/阶段`} | <= 0.500 个/阶段 |`,
+  `| 监听器净增量 | ${listenerSlope === null ? 'n/a' : `${listenerSlope.toFixed(2)} 个/阶段`} | 观测趋势 |`,
+  '',
   '## 判定',
   '',
   '| 检查项 | 结果 | 实测 |',
@@ -487,6 +549,7 @@ const md = [
   '- 资源计数由**注入式仪表盘**采集：包装 `setTimeout/setInterval/EventSource/Worker` 与 `EventTarget.addEventListener`，成对记账；',
   '- 堆内存取 `performance.memory.usedJSHeapSize`（无 GC 强约束，浏览器可能未真正回收，数值偏保守）；',
   '- SSE 60 秒期间保持一条连接，关闭后应回到 0；混沌切换每次会重建连接，因此**期间最大活跃连接数**是关键指标；',
+  '- `src/utils/edgeEmbedding.ts` 在首次 UI 对话发送时惰性初始化至多 1 个端侧句向量单例 Worker，并在后续多轮对话间复用（`创建 <= 1`）；',
   '- 本机 dev server 配置了真实 API Key，对话走引擎 A；协议消费路径与引擎 B 完全相同（同一 NDJSON 消费逻辑）。',
   '',
 ].join('\n');

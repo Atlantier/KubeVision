@@ -41,6 +41,7 @@ import { CHAOS_SCENARIO_LABELS, UI_COPY } from '@/constants/copy';
 import { streamText, tool, type CoreMessage } from 'ai';
 import { createTrace, elapsedMs, endSpan, startSpan, type AgentTrace, type EndedSpan } from '@/utils/agentTrace';
 import { annotateUngrounded, clampConfidence } from '@/utils/grounding';
+import { logStructuredEvent } from '@/utils/telemetryMetrics';
 import { z } from 'zod';
 
 import {
@@ -1530,8 +1531,10 @@ async function streamWithLLM(params: {
   readonly trace: AgentTrace;
   /** R43：AI SDK usage 回调（tokens 由上游按 env 单价换算成本） */
   readonly onUsage?: (usage: { promptTokens?: number; completionTokens?: number }) => void;
-}): Promise<'ok' | 'llm-failed' | 'schema-guard'> {
+}): Promise<'ok' | 'aborted' | 'llm-failed' | 'schema-guard'> {
   const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, intent, allowedTools, onFirstToolCall, emit, signal, ledger, trace, onUsage } = params;
+
+  if (signal.aborted) return 'aborted';
 
   const pendingToolResultTimers = new Set<ReturnType<typeof setTimeout>>();
   const pendingToolResolvers = new Set<() => void>();
@@ -1726,7 +1729,10 @@ async function streamWithLLM(params: {
 
     /* ---- 遍历 fullStream 逐帧转发 ---- */
     for await (const part of result.fullStream) {
-      if (signal.aborted) return 'ok';
+      if (signal.aborted) {
+        clearPendingToolTimers();
+        return 'aborted';
+      }
 
       if (part.type === 'text-delta') {
         if (!firstTokenEnded) {
@@ -1880,6 +1886,11 @@ async function streamWithLLM(params: {
       }
     }
 
+    if (signal.aborted) {
+      clearPendingToolTimers();
+      return 'aborted';
+    }
+
     if (allowedTools.length > 0 && emittedToolNames.size === 0 && schemaGuardRejectedCount > 0) {
       clearPendingToolTimers();
       return 'schema-guard';
@@ -1887,6 +1898,10 @@ async function streamWithLLM(params: {
 
     textGuard.flush();
     await Promise.all(pendingToolResultPromises);
+    if (signal.aborted) {
+      clearPendingToolTimers();
+      return 'aborted';
+    }
 
     /*
      * ---- 服务端补全（模型漏调工具时的兜底）----
@@ -1905,6 +1920,10 @@ async function streamWithLLM(params: {
     } catch {
       /* usage 不可用时保持缺省：不填 0 冒充 */
     }
+    if (signal.aborted) {
+      clearPendingToolTimers();
+      return 'aborted';
+    }
 
     emitMissingCards({
       ctx: clusterContext,
@@ -1915,11 +1934,27 @@ async function streamWithLLM(params: {
       ledger,
     });
 
-    return 'ok';
+    return signal.aborted ? 'aborted' : 'ok';
   } catch (error) {
     clearPendingToolTimers();
-    /* 任何异常（401 / 404 / 网络 / 模型不支持工具调用）→ 交回调用方回落 */
-    console.error('[kubevision][chat] engine A failed, falling back to simulator:', error);
+    if (
+      signal.aborted ||
+      (error instanceof Error && (error.name === 'AbortError' || error.message === 'aborted'))
+    ) {
+      return 'aborted';
+    }
+    /* 非取消场景的异常（401 / 404 / 网络 / 模型不支持工具调用）→ 记录结构化错误并返回回落信号 */
+    logStructuredEvent({
+      event: 'error',
+      route: '/api/chat',
+      traceId: trace.traceId,
+      durationMs: elapsedMs(trace),
+      timestamp: new Date().toISOString(),
+      attrs: {
+        reason: 'engine-a-failed',
+        errorType: error instanceof Error ? error.name : 'unknown',
+      },
+    });
     return 'llm-failed';
   } finally {
     clearPendingToolTimers();
@@ -2744,6 +2779,7 @@ async function streamWithSimulator(params: {
   const target: ClusterFaultSnapshot | null = resolved.pod;
 
   /* ---- 3a. 指标卡（指标类意图均允许） ---- */
+  if (signal.aborted) return;
   if (allowed.includes('renderPodMetrics') && target !== null) {
     onFirstToolCall('renderPodMetrics');
     const toolCallId = `sim-metrics-${Date.now()}`;
@@ -2755,6 +2791,7 @@ async function streamWithSimulator(params: {
     });
     recordToolStart(ledger, toolCallId, 'renderPodMetrics');
     await sleep(TOOL_RESULT_DELAY_MS_B, signal);
+    if (signal.aborted) return;
     emit({
       type: 'tool-result',
       toolCallId,
@@ -2763,6 +2800,7 @@ async function streamWithSimulator(params: {
     });
     recordToolResult(ledger, toolCallId, true);
     await sleep(120, signal);
+    if (signal.aborted) return;
   }
 
   /* ---- 3b. 根因卡（仅故障诊断意图） ---- */
@@ -2777,6 +2815,7 @@ async function streamWithSimulator(params: {
     });
     recordToolStart(ledger, rcCallId, 'renderRootCauseAnalysis');
     await sleep(TOOL_RESULT_DELAY_MS_B, signal);
+    if (signal.aborted) return;
     emit({
       type: 'tool-result',
       toolCallId: rcCallId,
@@ -2785,6 +2824,7 @@ async function streamWithSimulator(params: {
     });
     recordToolResult(ledger, rcCallId, true);
     await sleep(120, signal);
+    if (signal.aborted) return;
   }
 
   /* ---- 3c. 动作卡（仅故障诊断意图；动作类型由故障形态决定） ----
@@ -2807,6 +2847,7 @@ async function streamWithSimulator(params: {
       });
       recordToolStart(ledger, actionToolCallId, 'proposeRemediationAction');
       await sleep(TOOL_RESULT_DELAY_MS_B, signal);
+      if (signal.aborted) return;
       emit({
         type: 'tool-result',
         toolCallId: actionToolCallId,
@@ -3237,6 +3278,9 @@ export async function POST(request: Request): Promise<Response> {
   const engineAtResponseTime: 'llm' | 'simulator' = useLLM ? 'llm' : 'simulator';
   let isClosed = false;
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  /* R13：统一由 streamAbortController 汇聚 request.signal abort / reader.cancel() / safeClose() */
+  const streamAbortController = new AbortController();
+  const effectiveSignal = streamAbortController.signal;
   /* R10-A：托管推理节拍定时器，确保 await/abort/cancel/finally 全路径清零不泄漏 */
   const reasoningTimers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -3247,9 +3291,18 @@ export async function POST(request: Request): Promise<Response> {
     reasoningTimers.clear();
   };
 
+  let onRequestAbortHandler: (() => void) | null = null;
+
   const safeClose = (): void => {
     if (isClosed) return;
     isClosed = true;
+    if (!streamAbortController.signal.aborted) {
+      streamAbortController.abort();
+    }
+    if (onRequestAbortHandler !== null) {
+      request.signal.removeEventListener('abort', onRequestAbortHandler);
+      onRequestAbortHandler = null;
+    }
     clearReasoningTimers();
     if (controllerRef !== null) {
       try {
@@ -3264,6 +3317,31 @@ export async function POST(request: Request): Promise<Response> {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller): Promise<void> {
       controllerRef = controller;
+      onRequestAbortHandler = (): void => {
+        logStructuredEvent({
+          event: 'abort',
+          route: '/api/chat',
+          traceId: trace.traceId,
+          durationMs: elapsedMs(trace),
+          timestamp: new Date().toISOString(),
+          attrs: { reason: 'request-signal-abort' },
+        });
+        safeClose();
+      };
+      request.signal.addEventListener('abort', onRequestAbortHandler, { once: true });
+      if (request.signal.aborted) {
+        onRequestAbortHandler();
+        return;
+      }
+
+      logStructuredEvent({
+        event: 'connect',
+        route: '/api/chat',
+        traceId: trace.traceId,
+        durationMs: elapsedMs(trace),
+        timestamp: new Date().toISOString(),
+        attrs: { intent, enginePlanned: engineAtResponseTime, hasImage },
+      });
 
       /** 第一个 token 到达时刻（TTFT 只计正文 token） */
       let firstEventAt: number | null = null;
@@ -3279,10 +3357,11 @@ export async function POST(request: Request): Promise<Response> {
       };
       /* R43：实际引擎（响应头代表意图，流内事件与 trace-summary 代表事实） */
       let actualEngine: 'llm' | 'simulator' = engineAtResponseTime;
+      let emittedCount = 0;
 
-      /** 单帧写入（带状态锁与异常兜底） */
+      /** 单帧写入（带三重早退锁与异常兜底） */
       const emit = (event: ChatStreamEvent): void => {
-        if (isClosed) return;
+        if (isClosed || effectiveSignal.aborted || controllerRef === null) return;
         /* 开发期产侧协议断言用的事件累积（生产构建 SEVERE_ASSERT 为 false，不产生开销） */
         if (SEVERE_ASSERT) emittedForAssert.push(event);
         const triggersFirstText = !firstTextEmitted && event.type === 'text';
@@ -3294,30 +3373,20 @@ export async function POST(request: Request): Promise<Response> {
         }
         try {
           controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          emittedCount += 1;
         } catch {
-          isClosed = true;
+          safeClose();
+          return;
         }
-        if (triggersFirstText && onFirstTextEmit !== null) {
+        if (triggersFirstText && onFirstTextEmit !== null && !isClosed && !effectiveSignal.aborted) {
           const cb = onFirstTextEmit;
           onFirstTextEmit = null;
           cb();
         }
       };
 
-      /*
-       * requestId 必须在 try 之外声明：catch 分支的 error 事件也要带上它，
-       * 否则"用户看到的报错"与"服务端日志"无法对号（A9 的硬性要求）。
-       * 也必须在 pendingSpanEvents 之前声明：reset 要用它，且 reset 必须是**整条流的第一帧**。
-       */
       const requestId = `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-      /*
-       * R2 · 轮换复位：reset 必须是整条流的第一帧，声明"从这里开始是全新一轮"。
-       * 【为什么排在 pendingSpanEvents 之前】那三段 span 属于本轮诊断，若 reset 晚于它们，
-       * 客户端按"复位到干净起点"语义处理时就会与本轮 span 冲突（只能退化成不动 trace）。
-       * 排在最前，reset 与后续所有帧的顺序语义就完全一致：先复位，再进本轮事实。
-       * 这也是本轮唯一新增的事件类型，既有事件结构与语义一律不变（不重构协议）。
-       */
       emit({ type: 'reset', requestId, reason: 'new-round' });
 
       /* R43：intent / rag / prompt 三段已在流创建前完成，emit 就绪后补发（在 reset 之后） */
@@ -3325,11 +3394,7 @@ export async function POST(request: Request): Promise<Response> {
         emit({ type: 'span', ...spanEvent });
       }
 
-      const signal = request.signal;
-      const onSignalAbort = (): void => {
-        clearReasoningTimers();
-      };
-      signal.addEventListener('abort', onSignalAbort, { once: true });
+      const signal = effectiveSignal;
 
       try {
         /**
@@ -3654,8 +3719,23 @@ export async function POST(request: Request): Promise<Response> {
           const engineResult = await llmPromise;
           clearReasoningTimers();
 
+          /* R13：取消路径严格早退 —— 绝不修补遗留卡片，绝不切换 simulator fallback，绝不伪造完成帧 */
+          if (isClosed || signal.aborted || engineResult === 'aborted') {
+            primaryScheduler.discardPending();
+            safeClose();
+            return;
+          }
+
           if (engineResult !== 'ok') {
             primaryScheduler.discardPending();
+            logStructuredEvent({
+              event: 'fallback',
+              route: '/api/chat',
+              traceId: trace.traceId,
+              durationMs: elapsedMs(trace),
+              timestamp: new Date().toISOString(),
+              attrs: { reason: engineResult },
+            });
             const isSchemaGuard = engineResult === 'schema-guard';
             repairPendingToolCalls(
               ledger,
@@ -3710,6 +3790,11 @@ export async function POST(request: Request): Promise<Response> {
 
             await fallbackPromise;
             clearReasoningTimers();
+            if (isClosed || signal.aborted) {
+              fallbackScheduler.discardPending();
+              safeClose();
+              return;
+            }
             fallbackScheduler.flushAllRemaining();
           } else {
             primaryScheduler.flushAllRemaining();
@@ -3719,6 +3804,14 @@ export async function POST(request: Request): Promise<Response> {
         } else {
           /* 未配置 Key → 直接走引擎 B（同样并发点火，首字耗时 ~28ms） */
           actualEngine = 'simulator';
+          logStructuredEvent({
+            event: 'fallback',
+            route: '/api/chat',
+            traceId: trace.traceId,
+            durationMs: elapsedMs(trace),
+            timestamp: new Date().toISOString(),
+            attrs: { reason: 'no-api-key' },
+          });
           emit({
             type: 'span',
             ...endSpan(startSpan(trace, 'fallback'), {
@@ -3750,7 +3843,17 @@ export async function POST(request: Request): Promise<Response> {
 
           await simPromise;
           clearReasoningTimers();
+          if (isClosed || signal.aborted) {
+            simScheduler.discardPending();
+            safeClose();
+            return;
+          }
           simScheduler.flushAllRemaining();
+        }
+
+        if (isClosed || signal.aborted) {
+          safeClose();
+          return;
         }
 
         /* ---- R35：先发 span + trace-summary，再发 done（顺序保证 verify 可断言） ---- */
@@ -3789,36 +3892,48 @@ export async function POST(request: Request): Promise<Response> {
 
         /* ---- A8：流末必有 done（前端不再靠 socket 关闭判断结束） ---- */
         emit({ type: 'done', requestId, engine: actualEngine });
+        logStructuredEvent({
+          event: 'frame',
+          route: '/api/chat',
+          traceId: trace.traceId,
+          durationMs: elapsedMs(trace),
+          timestamp: new Date().toISOString(),
+          attrs: { engine: actualEngine, eventsCount: emittedCount },
+        });
         assertStreamProtocol(emittedForAssert, requestId);
 
         safeClose();
       } catch (error) {
-        /* 客户端取消属正常终止，不记录为错误 */
-        const aborted = signal.aborted || (error instanceof Error && error.message === 'aborted');
+        /* R13：客户端取消属正常终止 —— 立即静默关闭，绝不补推错误/fallback/done 帧 */
+        const aborted =
+          isClosed ||
+          signal.aborted ||
+          request.signal.aborted ||
+          (error instanceof Error && (error.name === 'AbortError' || error.message === 'aborted'));
+        if (aborted) {
+          safeClose();
+          return;
+        }
         const message = error instanceof Error ? error.message : 'unknown error';
 
-        /*
-         * 【A9 自愈：结构化错误事件】
-         * 旧实现只往正文里追加一行 [ENGINE-ERROR] 文本，前端无法据此选择
-         * 文案与重试动作，也拿不到 requestId 对日志。现在推一条 error 事件，
-         * 分类 + requestId + 是否可重试；同时保留正文提示（兼容旧客户端）。
-         */
-        const category: 'network' | 'model' | 'tool_args' | 'server' | 'abort' = aborted
-          ? 'abort'
-          : /401|403|quota|rate.?limit|model/i.test(message)
-            ? 'model'
-            : /fetch|network|ECONN|ENOTFOUND|timeout/i.test(message)
-              ? 'network'
-              : 'server';
+        const category: 'network' | 'model' | 'tool_args' | 'server' = /401|403|quota|rate.?limit|model/i.test(message)
+          ? 'model'
+          : /fetch|network|ECONN|ENOTFOUND|timeout/i.test(message)
+            ? 'network'
+            : 'server';
 
-        if (!aborted) {
-          console.error('[kubevision][chat] stream failed:', error);
-          emit({
-            type: 'text',
-            content: `\n\n> [ ENGINE-ERROR ] 推理中断：${message}\n\n`,
-          });
-        }
-        /* R43：错误分支也必须有 trace-summary（前端据此展示 traceId 与耗时） */
+        logStructuredEvent({
+          event: 'error',
+          route: '/api/chat',
+          traceId: trace.traceId,
+          durationMs: elapsedMs(trace),
+          timestamp: new Date().toISOString(),
+          attrs: { category, message },
+        });
+        emit({
+          type: 'text',
+          content: `\n\n> [ ENGINE-ERROR ] 推理中断：${message}\n\n`,
+        });
         const usage = usageHolder.value;
         emit({
           type: 'trace-summary',
@@ -3838,22 +3953,27 @@ export async function POST(request: Request): Promise<Response> {
           message,
           requestId,
           traceId: trace.traceId,
-          retryable: category !== 'abort',
+          retryable: true,
         });
-        emit({ type: 'done', requestId, engine: 'simulator' });
+        emit({ type: 'done', requestId, engine: actualEngine });
         assertStreamProtocol(emittedForAssert, requestId);
         safeClose();
       } finally {
         clearReasoningTimers();
-        signal.removeEventListener('abort', onSignalAbort);
+        safeClose();
       }
     },
 
     cancel(): void {
-      /* 客户端 reader.cancel()：标记关闭并立即回收尚未触发的推理定时器 */
-      isClosed = true;
-      controllerRef = null;
-      clearReasoningTimers();
+      logStructuredEvent({
+        event: 'abort',
+        route: '/api/chat',
+        traceId: trace.traceId,
+        durationMs: elapsedMs(trace),
+        timestamp: new Date().toISOString(),
+        attrs: { reason: 'reader-cancel' },
+      });
+      safeClose();
     },
   });
 

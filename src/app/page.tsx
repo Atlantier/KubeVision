@@ -33,6 +33,7 @@ import { Z_CLASS } from '@/constants/zIndex';
 import { useTelemetryStream } from '@/hooks/useTelemetryStream';
 import { useEscapeDispatcher, useEscapeHint, useEscapeLayer } from '@/hooks/useEscapeStack';
 import { rehydratePersistedClusterState, useClusterStore } from '@/store/useClusterStore';
+import { installGlobalRuntimeErrorListeners } from '@/utils/runtimeErrorBuffer';
 import { dispatchViewPreset } from '@/utils/viewPresetBus';
 import { cn } from '@/utils/cn';
 
@@ -194,6 +195,11 @@ export default function HomePage() {
    * 幂等守卫保证 StrictMode 双挂载 / 多组件重复调用只真正补水一次 */
   useEffect(() => {
     rehydratePersistedClusterState();
+  }, []);
+
+  /* 注册客户端全局未捕获异常与 Promise 拒绝监听（纯内存环形缓冲区，零第三方外发） */
+  useEffect(() => {
+    return installGlobalRuntimeErrorListeners();
   }, []);
 
   /* 遥测流激活：SSE 订阅 + 自愈免疫合并 + 双轨分发 + 本地降级兜底。

@@ -25,7 +25,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /* ========================================================================== */
@@ -57,6 +57,9 @@ const STRESS = process.argv.includes('--stress');
  *   bash:        KV_VERIFY_INJECT_FAILURE=1 node scripts/verify-demo.mjs
  */
 const INJECT_FAILURE = process.env.KV_VERIFY_INJECT_FAILURE === '1';
+
+/** 异常堆栈取证链路自检开关（R13 Main #1：注入多帧未捕获异常并验证 page-error.md 落盘） */
+const INJECT_THROW_TEST = process.argv.includes('--inject-throw-test');
 
 /** 是否跳过"连跑两遍"（第二遍耗时约 40s）；--stress 模式默认跳过以控制总时长 */
 const SKIP_REPEAT =
@@ -92,6 +95,7 @@ const SCRIPT_LABEL_PREFIX = 'OOM 全链路自愈';
 
 let passCount = 0;
 let failCount = 0;
+let currentDemoPhase = 'init';
 /** 失败项的实际值明细（退出时整块打印） */
 const failureDetails = [];
 
@@ -108,6 +112,7 @@ function bad(name, actual, detail = '') {
 }
 
 function section(title) {
+  currentDemoPhase = title;
   console.log(`\n${'='.repeat(78)}\n${title}\n${'='.repeat(78)}`);
 }
 
@@ -265,6 +270,7 @@ async function connectCdp(wsUrl) {
   const pending = new Map();
   const consoleErrors = [];
   const pageErrors = [];
+  const pageErrorDetails = [];
   /*
    * 【全量 console 缓冲】失败归档时只留 error 是不够的：很多卡顿是
    * warn（如 React 警告、资源 404）先出现。这里保留全部类型，
@@ -293,7 +299,32 @@ async function connectCdp(wsUrl) {
       consoleErrors.push(text);
     }
     if (msg.method === 'Runtime.exceptionThrown') {
-      pageErrors.push(String(msg.params?.exceptionDetails?.text ?? '').slice(0, 200));
+      const details = msg.params?.exceptionDetails ?? {};
+      const description = String(
+        details.exception?.description ?? details.text ?? 'Unknown Runtime Exception',
+      ).slice(0, 4000);
+      const frames = Array.isArray(details.stackTrace?.callFrames)
+        ? details.stackTrace.callFrames.map(
+            (f) =>
+              `${f.functionName || '(anonymous)'} (${f.url || details.url || 'inline'}:${Number(f.lineNumber ?? 0) + 1}:${Number(f.columnNumber ?? 0) + 1})`,
+          )
+        : [];
+      const topLoc = details.url
+        ? `${details.url}:${Number(details.lineNumber ?? 0) + 1}:${Number(details.columnNumber ?? 0) + 1}`
+        : '(unknown location)';
+      const capturedAt = new Date().toISOString();
+      pageErrorDetails.push({
+        capturedAt,
+        phase: currentDemoPhase,
+        text: String(details.text ?? ''),
+        topLoc,
+        description,
+        frames,
+      });
+      if (pageErrorDetails.length > 50) pageErrorDetails.shift();
+      pageErrors.push(
+        `[${capturedAt}] (${currentDemoPhase}) ${description.slice(0, 1500)}${frames.length > 0 ? `\n  CallFrames:\n  - ${frames.slice(0, 12).join('\n  - ')}` : ''}`,
+      );
     }
     if (typeof msg.method === 'string' && eventHandler !== null) {
       /* 事件钩子用于 Fetch 拦截等需要主动应答的场景；异常不得中断消息循环 */
@@ -325,6 +356,7 @@ async function connectCdp(wsUrl) {
     close: () => ws.close(),
     consoleErrors,
     pageErrors,
+    pageErrorDetails,
     consoleAll,
     /**
      * 注册事件钩子（用于 Fetch.requestPaused 等需要应答的 CDP 事件）。
@@ -523,6 +555,39 @@ async function saveFailureArtifacts(cdp) {
       ...(cdp.pageErrors.length === 0 ? ['(none)'] : cdp.pageErrors),
     ];
     writeFileSync(join(dir, 'console.log'), consoleLines.join(String.fromCharCode(10)), 'utf8');
+
+    /* ---- 2.5 结构化异常堆栈报告（R13 Main #1） ---- */
+    const errorMdLines = [
+      '# 页面未捕获异常堆栈取证（page-error）',
+      '',
+      `- 归档时间：${new Date().toISOString()}`,
+      `- 触发阶段：${currentDemoPhase}`,
+      `- 捕获条数：${cdp.pageErrorDetails.length}`,
+      '',
+      ...(cdp.pageErrorDetails.length === 0
+        ? ['> 本次失败归档期间未检测到 `Runtime.exceptionThrown` 事件。']
+        : cdp.pageErrorDetails.flatMap((item, idx) => [
+            `## 异常 #${idx + 1}`,
+            '',
+            `- **时间**：\`${item.capturedAt}\``,
+            `- **所属阶段**：\`${item.phase}\``,
+            `- **顶层位置**：\`${item.topLoc}\``,
+            '',
+            '### 完整堆栈 / 错误文本',
+            '',
+            '```text',
+            item.description,
+            '```',
+            '',
+            '### 展开调用栈（url:line:column）',
+            '',
+            ...(item.frames.length === 0
+              ? ['- (无结构化 callFrames)']
+              : item.frames.map((frame, fIdx) => `${fIdx + 1}. \`${frame}\``)),
+            '',
+          ])),
+    ];
+    writeFileSync(join(dir, 'page-error.md'), errorMdLines.join('\n'), 'utf8');
 
     /* ---- 3. 最后一帧截图 ---- */
     try {
@@ -1034,7 +1099,7 @@ async function main() {
     if (ready === true) break;
     await sleep(400);
   }
-  await sleep(10000);
+  await sleep(INJECT_THROW_TEST ? 1500 : 10000);
 
   const hasStore = await evaluate(cdp, 'typeof window.__KUBEVISION_STORE__ !== "undefined"');
   if (hasStore !== true) {
@@ -1043,6 +1108,60 @@ async function main() {
         '\n        该项目把调试钩子设计为 dev-only，请使用 `pnpm dev` 启动服务后重跑。',
     );
     cleanup();
+    process.exit(1);
+  }
+
+  /* ---- R13 Main #1：--inject-throw-test 异常堆栈落盘自检模式 ---- */
+  if (INJECT_THROW_TEST) {
+    section('R13 Main #1 · Runtime.exceptionThrown 堆栈取证自检');
+    await evaluate(
+      cdp,
+      `(() => {
+        setTimeout(() => {
+          function r13InnerCrash() {
+            throw new Error('R13_INJECTED_STACK_TEST: multi-frame unhandled throw ' + 'Z'.repeat(320));
+          }
+          function r13OuterCaller() {
+            r13InnerCrash();
+          }
+          r13OuterCaller();
+        }, 25);
+        return true;
+      })()`,
+    );
+
+    for (let i = 0; i < 30; i += 1) {
+      if (cdp.pageErrorDetails.length > 0) break;
+      await sleep(150);
+    }
+
+    bad('R13_INJECTED_THROW_PROBE', { purpose: 'verify page-error.md artifact generation' });
+    const testDir = await saveFailureArtifacts(cdp);
+    let testPassed = false;
+    let verifyDetail = 'no artifact dir created';
+
+    if (testDir && existsSync(join(testDir, 'page-error.md'))) {
+      const mdContent = readFileSync(join(testDir, 'page-error.md'), 'utf8');
+      const hasMarker = mdContent.includes('R13_INJECTED_STACK_TEST');
+      const hasFrames = /r13InnerCrash/.test(mdContent) && /r13OuterCaller/.test(mdContent);
+      const hasCoords = /:\d+:\d+/.test(mdContent);
+      const longEnough = mdContent.length >= 400;
+      testPassed = hasMarker && hasFrames && hasCoords && longEnough;
+      verifyDetail = `len=${mdContent.length}, hasMarker=${hasMarker}, hasFrames=${hasFrames}, hasCoords=${hasCoords}`;
+    }
+
+    if (testDir && existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+
+    cdp.close();
+    cleanup();
+
+    if (testPassed) {
+      console.log(`  ✓ page-error.md 生成与完整多帧堆栈保留自检通过（${verifyDetail}，已清理临时目录）`);
+      process.exit(0);
+    }
+    console.error(`  ✗ page-error.md 堆栈取证自检失败（${verifyDetail}）`);
     process.exit(1);
   }
 

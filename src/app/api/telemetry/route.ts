@@ -5,45 +5,12 @@
  * 每 1000ms 推一帧 `data: {snapshot JSON}\n\n`，客户端（SSE 解析器）
  * 用 ReadableStreamDefaultReader 增量解析帧并写入双轨状态。
  *
- * 【为何强制 dynamic + nodejs runtime】
- * - `dynamic = 'force-dynamic'`：SSE 是无限长响应，绝不能被 Next.js 的
- *   静态优化/缓存预渲染捕获（否则构建期就会挂住或产出静态空流）；
- * - `runtime = 'nodejs'`：需要 Node 的 ReadableStream + setInterval 长驻能力，
- *   Edge runtime 有执行时长限制且不支持长时间的定时推送。
- *
- * 【防缓冲响应头（每一项都不可省）】
- * - `Content-Type: text/event-stream; charset=utf-8`
- *     SSE 的 MIME 契约；显式声明 charset 避免非 ASCII 实体名（如中文告警）乱码。
- * - `Cache-Control: no-cache, no-transform`
- *     no-cache 禁止中间层缓存帧；**no-transform 尤其关键**——它会阻止
- *     代理/压缩中间件对响应做 gzip 或缓冲改写（压缩会攒满缓冲区才输出，
- *     直接摧毁实时性）。
- * - `Connection: keep-alive`
- *     保持长连接语义（HTTP/1.1 下属显式提示，部分代理据此不主动断开）。
- * - `X-Accel-Buffering: no`
- *     nginx 专用指令：关闭 proxy_buffering。这是 SSE 在反代后"一帧不推"
- *     的最常见元凶，缺了它线上环境会表现为「连上了但永远没数据」。
- *
- * 【连接生命周期与状态锁（本端点的核心安全机制）】
- * `isClosed` 被**提升到 ReadableStream 构造器外层作用域**，使其同时被
- * `start` 内部的 interval 回调与 `cancel` 方法共享（这是关键设计：
- * 若把它放在 start 内部，cancel 就够不到它，只能依赖 abort 兜底，
- * 而部分客户端在 reader.cancel() 时并不保证触发 request.signal abort，
- * 定时器会成为游离句柄持续演进，造成 CPU/内存泄漏）。
- *
- * 清理路径共三条，全部汇聚到幂等的 `safeClose()`：
- * 1. `request.signal` 的 abort（浏览器关闭标签页 / 网络中断）；
- * 2. `ReadableStream.cancel()`（消费端 reader.cancel()，与 abort 互为补充）；
- * 3. interval 回调内的写入异常 / enqueue 抛 ERR_INVALID_STATE。
- * 每次 tick 先查 isClosed 再写入，因此**绝不可能向已关闭的流写入数据**
- * （否则 Node 进程会因未捕获的 ERR_INVALID_STATE 崩溃）。
- *
- * 【mode=demo|live 的语义】
- * - demo：由合成引擎 stepTelemetrySimulation 演进（本轮实现，含 chaos）；
- * - live：**真实遥测**。每秒调用 collectLiveTelemetrySnapshot 采集真实数据：
- *   配置了 K8S_API_SERVER/BEARER_TOKEN 时走真实 K8s API（nodes/pods/metrics），
- *   否则走 Node.js 宿主机真实硬件桥接（逐核 CPU delta / 物理内存 / 进程 RSS /
- *   Linux 网卡增量）。两条链路都**不含 Math.random()**，绝不用随机数冒充实时。
+ * 【R13 生产健壮性加固】
+ * 1. 每 15 秒推送 `: heartbeat <ts>\n\n` 保活注释帧（支持 `?heartbeatMs=` 验证），防止反代空闲断流；
+ * 2. 连接预算守卫（默认并发上限 24，单连接最大存活 30 分钟），超限或期满发送中文提示后优雅关闭；
+ * 3. `request.signal` 仅在入口注册一次 `abort` 监听，并在 `safeClose()` 中显式 `removeEventListener` 与清理全部定时器；
+ * 4. live 模式单次/两次瞬时采集失败（未达阈值 3）仍保持推帧（携带单调时间戳的上一稳定帧），消除断流空窗；
+ * 5. 输出统一单行 JSON 结构化事件日志（connect / frame / fallback / abort / heartbeat / error / budget-limit）。
  */
 
 import type { ChaosScenario, TelemetrySnapshot } from '@/types/cluster';
@@ -58,6 +25,19 @@ import {
   collectLiveTelemetrySnapshot,
   releaseHostSampler,
 } from '@/utils/liveTelemetry';
+import {
+  DEFAULT_MAX_SSE_LIFETIME_MS,
+  DEFAULT_SSE_HEARTBEAT_MS,
+  createTraceId,
+  logStructuredEvent,
+  recordDegradedToDemo,
+  recordLiveCollectionResult,
+  recordSseFrame,
+  recordSseHeartbeat,
+  recordSseLifetimeClose,
+  releaseSseSlot,
+  tryAcquireSseSlot,
+} from '@/utils/telemetryMetrics';
 
 /* ---- Next.js Route Segment 配置（必须位于模块顶层且为字面量导出） ---- */
 export const dynamic = 'force-dynamic';
@@ -66,14 +46,7 @@ export const runtime = 'nodejs';
 /** 推流间隔（毫秒）：与引擎 TICK_INTERVAL_MS 严格一致，避免快照时间戳与墙钟漂移 */
 const STREAM_INTERVAL_MS = TICK_INTERVAL_MS;
 
-/**
- * live 采集连续失败阈值。
- *
- * 【为什么是 3】单次失败多为瞬时抖动（metrics-server 慢查询、API 限流），
- * 保留上一帧继续展示即可；连续 3 次（≈3 秒）说明数据源已不可用，
- * 此时继续推旧帧会让画面"看起来活着但其实是死的"——必须降级到合成数据源
- * 并留下审计行，让运维知道真实数据链路断了。
- */
+/** live 采集连续失败阈值：连续 3 次不可用再退化合成源，未达阈值前维持上一稳定帧输出 */
 const LIVE_FAILURE_LIMIT = 3;
 
 /** 合法的混沌场景全集（用于把不可信的查询参数收敛到类型域内） */
@@ -86,13 +59,6 @@ const VALID_CHAOS: readonly ChaosScenario[] = [
 
 /**
  * parseChaos —— 把查询参数解析为受信的 ChaosScenario。
- *
- * 【安全契约】查询参数来自不可信输入，绝不能直接 cast 成 ChaosScenario
- * （否则非法值会流入引擎分支导致状态机行为不可预期）。
- * 此处做白名单校验，任何非法/缺失值一律回落 'NONE'（稳态）。
- *
- * @param raw URL 查询参数 chaos 的原始值
- * @returns 白名单内的合法场景，或 'NONE'
  */
 function parseChaos(raw: string | null): ChaosScenario {
   if (raw === null) return 'NONE';
@@ -103,52 +69,97 @@ function parseChaos(raw: string | null): ChaosScenario {
 }
 
 /**
+ * parseClampedIntParam —— 读取并夹逼正向整型查询参数（仅收紧、不越界）。
+ */
+function parseClampedIntParam(raw: string | null, fallback: number, min: number, max: number): number {
+  if (raw === null) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+/**
  * GET —— SSE 推流入口。
- *
- * @param request 标准 Request；其 signal 用于感知客户端断开
- * @returns 永不结束的 text/event-stream 响应
  */
 export function GET(request: Request): Response {
   const url = new URL(request.url);
   const mode = url.searchParams.get('mode') === 'live' ? 'live' : 'demo';
   const chaos = parseChaos(url.searchParams.get('chaos'));
+  const traceId = createTraceId('sse');
+  const connectedAtMs = Date.now();
 
-  /**
-   * since —— 客户端上一次收到的快照时间戳（epoch 毫秒），用于**重连续接**。
-   *
-   * 【解决的问题：切换 chaos 导致时钟倒退】
-   * SSE 每次重建连接都从 INITIAL_CLUSTER_SNAPSHOT 起步，而该种子快照的
-   * timestamp 是编译期固定常量。若客户端已推进到 T+12s，重连后服务端从
-   * T+0s 重新开始，快照时间戳就会**倒退 12 秒**——实测在 chaos 切换瞬间
-   * 观察到 −12000ms 的跳变。后果：
-   * 1. 依赖时间戳排序的下游（告警时序、日志、趋势图）会出现乱序；
-   * 2. 本地降级引擎以时间戳为演进时钟，倒退会导致重复 tick。
-   *
-   * 因此服务端接受 since 参数，把种子快照的 timestamp 抬升到
-   * max(种子时间戳, since)，保证时钟单调不回退。
-   */
+  const requestedMaxConn = url.searchParams.get('maxConn');
+  const customMaxConn =
+    requestedMaxConn !== null ? Number.parseInt(requestedMaxConn, 10) : undefined;
+  const heartbeatMs = parseClampedIntParam(
+    url.searchParams.get('heartbeatMs'),
+    DEFAULT_SSE_HEARTBEAT_MS,
+    200,
+    60_000,
+  );
+  const maxLifetimeMs = parseClampedIntParam(
+    url.searchParams.get('maxLifeMs'),
+    DEFAULT_MAX_SSE_LIFETIME_MS,
+    250,
+    DEFAULT_MAX_SSE_LIFETIME_MS,
+  );
+
+  const encoder = new TextEncoder();
+
+  /* ---- 连接预算闸门：超限时发送明确中文提示后优雅关闭，拒绝无声截断或 500 ---- */
+  const budget = tryAcquireSseSlot(
+    traceId,
+    customMaxConn !== undefined && Number.isFinite(customMaxConn) ? customMaxConn : undefined,
+  );
+
+  if (!budget.acquired) {
+    logStructuredEvent({
+      event: 'budget-limit',
+      route: '/api/telemetry',
+      traceId,
+      durationMs: 0,
+      timestamp: new Date().toISOString(),
+      attrs: {
+        activeConnections: budget.activeConnections,
+        maxConnections: budget.maxConnections,
+      },
+    });
+
+    const notice = `当前遥测 SSE 并发连接已达上限（${budget.activeConnections}/${budget.maxConnections}），本连接已优雅关闭并建议切换本地合成推演兜底。`;
+    const budgetStream = new ReadableStream<Uint8Array>({
+      start(controller): void {
+        try {
+          controller.enqueue(encoder.encode(`: ${notice}\n\n`));
+          controller.enqueue(
+            encoder.encode(
+              `event: budget-exceeded\ndata: ${JSON.stringify({
+                code: 'SSE_BUDGET_EXCEEDED',
+                notice,
+                activeConnections: budget.activeConnections,
+                maxConnections: budget.maxConnections,
+              })}\n\n`,
+            ),
+          );
+          controller.close();
+        } catch {
+          /* ignore */
+        }
+      },
+    });
+
+    return new Response(budgetStream, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      },
+    });
+  }
+
   const sinceRaw = url.searchParams.get('since');
   const since = sinceRaw === null ? Number.NaN : Number.parseInt(sinceRaw, 10);
-
-  /*
-   * ===== C · 时间戳契约 =====
-   *
-   * 【SSR 与运行时的分工】
-   * - SEED_TIMESTAMP_MS 仍是 INITIAL_CLUSTER_SNAPSHOT 的编译期常量，
-   *   用于 SSR 首屏渲染与 Store 初始态——那部分必须保持确定性，不能依赖 Date.now()；
-   * - 一旦 SSE 连接建立，时间轴就切到**真实墙钟**：首帧时间戳取 Date.now()。
-   *
-   * 【为什么必须切换】种子时间戳是固定的历史时刻（2026-11-05T08:00Z）。
-   * 若整条流都从它开始累加，运行越久与真实时间偏差越大（可达数天），
-   * 下游任何"按时间戳算新鲜度"的逻辑都会失真。
-   *
-   * 【since 严格单调】重连时客户端会把最后已知时间戳带上来；
-   * 起点取 max(Date.now(), since + 1 tick, 种子时间戳)，三条约束同时满足：
-   *   1. 不早于真实墙钟（除非墙钟回拨，此时以客户端进度为准）；
-   *   2. 严格大于 since（避免"首帧时间戳 ≤ 客户端已知进度"被判为旧帧丢弃）；
-   *   3. 不早于种子时间戳（SSR 首帧 → 首条 SSE 帧之间不出现倒退）。
-   * 因此 live/demo 互切时的时间跳变被限制在"1 tick + 握手时延"量级。
-   */
   const sinceFloor = Number.isFinite(since) ? since + TICK_INTERVAL_MS : 0;
   const connectionOriginTs = Math.max(
     Date.now(),
@@ -156,103 +167,141 @@ export function GET(request: Request): Response {
     INITIAL_CLUSTER_SNAPSHOT.timestamp,
   );
 
-  /* 每个连接独立的演进状态：多客户端互不干扰 */
   let snapshot: TelemetrySnapshot = {
     ...INITIAL_CLUSTER_SNAPSHOT,
     timestamp: connectionOriginTs,
   };
 
-  /** 文本编码器：SSE 必须以 UTF-8 字节流写入（含中文告警消息） */
-  const encoder = new TextEncoder();
-
-  /* ====================================================================== */
-  /* 共享连接状态（提升到外层作用域，使 start 与 cancel 都能访问）             */
-  /* ====================================================================== */
-
-  /** 连接状态锁：true 表示流已关闭（abort / 消费端 cancel / 写入异常） */
   let isClosed = false;
-
-  /** 定时器句柄（环境无关类型：Node 与浏览器均可由 clearInterval 清理） */
   let timer: ReturnType<typeof setInterval> | null = null;
-
-  /** controller 引用：供 cancel 路径关闭流（start 时注入） */
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let lifetimeTimer: ReturnType<typeof setTimeout> | null = null;
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
-
-  /**
-   * R4：本连接是否订阅了宿主机单一采样器。
-   * live 分支订阅、safeClose 与 live→demo 降级两条路径退订（幂等守卫）。
-   */
   let liveSamplerAcquired = false;
+
   const releaseLiveSampler = (): void => {
     if (!liveSamplerAcquired) return;
     liveSamplerAcquired = false;
     releaseHostSampler();
   };
 
+  const onAbort = (): void => {
+    logStructuredEvent({
+      event: 'abort',
+      route: '/api/telemetry',
+      traceId,
+      durationMs: Date.now() - connectedAtMs,
+      timestamp: new Date().toISOString(),
+      attrs: { reason: 'request-signal-abort', mode },
+    });
+    safeClose();
+  };
+
   /**
-   * safeClose —— 幂等的连接清理函数（三条清理路径的唯一汇聚点）。
-   *
-   * 【三重安全】
-   * 1. isClosed 守卫：重复调用直接返回，杜绝重复 clearInterval；
-   * 2. clearInterval 前置：先停定时器再关 controller，防止关闭瞬间
-   *    仍有 tick 在队列中尝试 enqueue；
-   * 3. controller.close() 包 try/catch：流可能已因客户端断开而处于
-   *    closed/errored 态，此时 close() 会抛错，属预期竞态，静默吞掉。
+   * safeClose —— 幂等的连接清理汇聚点（清理全部定时器、退订采样器、解绑 abort 监听并归还连接槽位）。
    */
-  const safeClose = (): void => {
+  function safeClose(): void {
     if (isClosed) return;
     isClosed = true;
+
+    request.signal.removeEventListener('abort', onAbort);
     releaseLiveSampler();
+    releaseSseSlot(traceId);
+
     if (timer !== null) {
       clearInterval(timer);
       timer = null;
+    }
+    if (heartbeatTimer !== null) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (lifetimeTimer !== null) {
+      clearTimeout(lifetimeTimer);
+      lifetimeTimer = null;
     }
     if (controllerRef !== null) {
       try {
         controllerRef.close();
       } catch {
-        /* 流已被取消/已关闭：无需处理，属正常竞态 */
+        /* 流已被消费端取消或提前结束，属预期竞态 */
       }
       controllerRef = null;
     }
-  };
+  }
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller): void {
       controllerRef = controller;
+      request.signal.addEventListener('abort', onAbort, { once: true });
 
-      /**
-       * safeEnqueue —— 带状态锁与异常兜底的帧写入。
-       *
-       * @param chunk 待写入的完整 SSE 帧文本（含结尾 \n\n 分帧符）
-       * @returns 写入成功 true；流已关闭或写入异常 false
-       */
       const safeEnqueue = (chunk: string): boolean => {
         if (isClosed) return false;
         try {
           controller.enqueue(encoder.encode(chunk));
           return true;
         } catch {
-          /* controller 已关闭（客户端抢跑断开）：转入安全清理并回报失败 */
           safeClose();
           return false;
         }
       };
 
-      /* ---- 1. 立即推送注释帧：冲刷响应头，让客户端立刻进入 CONNECTED ---- */
-      /* SSE 注释行以 ':' 开头，浏览器 EventSource 与自研解析器都必须忽略；
-         它的真实作用是「立刻产生第一次 flush」，避免反代/浏览器攒缓冲导致
-         客户端长时间处于"连接中"状态。 */
-      safeEnqueue(`: kubevision telemetry stream established (mode=${mode}, chaos=${chaos})\n\n`);
+      logStructuredEvent({
+        event: 'connect',
+        route: '/api/telemetry',
+        traceId,
+        durationMs: 0,
+        timestamp: new Date().toISOString(),
+        attrs: {
+          mode,
+          chaos,
+          activeConnections: budget.activeConnections,
+          maxConnections: budget.maxConnections,
+        },
+      });
 
-      /**
-       * startDemoTicker —— 合成数据源定时器（demo 模式与 live 降级共用）。
-       *
-       * 【为什么要抽出来】live 采集连续失败时必须能切到合成源；
-       * 若把这段逻辑内联在 demo 分支里，降级路径就得复制一份定时器代码，
-       * 两份实现迟早漂移（状态机、帧格式、异常处理任一处不同都会让
-       * "降级后画面风格突变"）。共用同一个入口是唯一可靠的做法。
-       */
+      /* 1. 立即发送首行注释帧与连接 traceId，防止反代缓冲阻塞连接就绪 */
+      safeEnqueue(`: kubevision telemetry stream established (mode=${mode}, chaos=${chaos}, traceId=${traceId})\n\n`);
+
+      /* 2. 15s SSE 心跳注释帧（定时保活，防负载均衡静默掐断长连接） */
+      heartbeatTimer = setInterval((): void => {
+        if (isClosed) return;
+        const ok = safeEnqueue(`: heartbeat ${Date.now()} traceId=${traceId}\n\n`);
+        if (ok) {
+          recordSseHeartbeat();
+          logStructuredEvent({
+            event: 'heartbeat',
+            route: '/api/telemetry',
+            traceId,
+            durationMs: Date.now() - connectedAtMs,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }, heartbeatMs);
+
+      /* 3. 单连接最大存活时长守卫：到期优雅提示并回收句柄 */
+      lifetimeTimer = setTimeout((): void => {
+        if (isClosed) return;
+        const notice = '遥测 SSE 连接已达最大存活窗口，即将平滑重连。';
+        safeEnqueue(`: ${notice}\n\n`);
+        safeEnqueue(
+          `event: lifetime-expired\ndata: ${JSON.stringify({
+            code: 'SSE_LIFETIME_EXPIRED',
+            notice,
+          })}\n\n`,
+        );
+        recordSseLifetimeClose();
+        logStructuredEvent({
+          event: 'abort',
+          route: '/api/telemetry',
+          traceId,
+          durationMs: Date.now() - connectedAtMs,
+          timestamp: new Date().toISOString(),
+          attrs: { reason: 'max-lifetime-expired' },
+        });
+        safeClose();
+      }, maxLifetimeMs);
+
       const startDemoTicker = (): void => {
         if (isClosed || timer !== null) return;
         timer = setInterval((): void => {
@@ -264,151 +313,133 @@ export function GET(request: Request): Response {
             return;
           }
           try {
-            /* 推进状态机（纯函数：上一帧 + 混沌场景 → 新帧） */
             snapshot = stepTelemetrySimulation(snapshot, chaos);
             const frame = `data: ${JSON.stringify(snapshot)}\n\n`;
-            if (!safeEnqueue(frame) && timer !== null) {
-              clearInterval(timer);
-              timer = null;
+            if (safeEnqueue(frame)) {
+              recordSseFrame();
+              logStructuredEvent({
+                event: 'frame',
+                route: '/api/telemetry',
+                traceId,
+                durationMs: Date.now() - connectedAtMs,
+                timestamp: new Date().toISOString(),
+                attrs: { mode: 'demo', seq: snapshot.seq },
+              });
             }
-          } catch {
-            /* 演进或序列化异常：终止推流，避免向客户端发送损坏帧后继续空转 */
+          } catch (error) {
+            logStructuredEvent({
+              event: 'error',
+              route: '/api/telemetry',
+              traceId,
+              durationMs: Date.now() - connectedAtMs,
+              timestamp: new Date().toISOString(),
+              attrs: {
+                reason: error instanceof Error ? error.message : 'demo-step-failed',
+              },
+            });
             safeClose();
           }
         }, STREAM_INTERVAL_MS);
       };
 
-      /* ---- 2. live 模式：真实遥测（宿主机硬件桥接 / 真实 K8s API） ---- */
+      /* ---- live 模式分支 ---- */
       if (mode === 'live') {
-        /**
-         * 【为什么这里曾经是"空壳"】旧实现推一行 "connector is not wired"
-         * 注释就 return 挂起——用户切到「实时」后 3D 场景彻底静止，
-         * 从观感上看与死机无异。把"没有连接器"如实说明本身是对的，
-         * 但**停住画面**不是一个可接受的实现。
-         *
-         * 【现在】每秒调用 collectLiveTelemetrySnapshot 采集**真实**数据：
-         * - 配了 K8S_API_SERVER/BEARER_TOKEN → 真实集群 nodes/pods(/metrics)；
-         * - 没配 → 本机真实 CPU 逐核 delta、物理内存、进程 RSS、网卡增量。
-         * 无论走哪一层，帧里都不含 Math.random()。
-         *
-         * 【首帧立即推送】先采一次再进定时器，避免等待 1 秒的空白期——
-         * 客户端切到 live 的瞬间就能看到真实水面。
-         */
         let liveEnabled = true;
-
-        /**
-         * ---- D1 · 在飞互斥 ----
-         *
-         * 采集是异步的（K8s API 往返可能超过 1 秒），而推流定时器固定 1 秒。
-         * 若不加互斥，上一帧未完成时又发起下一帧，会造成：
-         *   1. 请求堆积（每帧一个 in-flight fetch，堆积后内存与连接数飙升）；
-         *   2. 帧乱序（后发的请求先返回，时间戳回落）。
-         * 这里用简单的布尔锁：上一帧未完成就跳过本 tick，
-         * 宁可在慢采集时降低帧率，也不让画面出现时间倒退。
-         */
         let liveInFlight = false;
-
-        /** 连续采集失败次数（成功一次即清零） */
         let liveFailures = 0;
-
-        /**
-         * liveRaw —— 最近一帧**未经混沌叠加**的真实快照。
-         *
-         * 【为什么必须单独保留】采集器会把上一帧作为演进基准（延续宿主机增量）。
-         * 若把叠加后的快照喂回去，叠加系数（如 QPS ×0.82）会每帧再乘一次自身，
-         * 形成与合成引擎同源的"复利漂移"——只不过这次发生在 live 链路上。
-         * 因此采集始终从 liveRaw（纯真实数据）续接，叠加只作用于输出。
-         */
         let liveRaw: TelemetrySnapshot = snapshot;
 
         const pushLiveFrame = async (): Promise<void> => {
           if (isClosed || !liveEnabled) return;
-          /* 在飞互斥：上一帧未完成则跳过本 tick */
           if (liveInFlight) return;
           liveInFlight = true;
+          const tickStartMs = Date.now();
           try {
             const collected = await collectLiveTelemetrySnapshot(liveRaw);
             if (isClosed) return;
 
-            /* 采集成功：更新原始基准、清零失败计数 */
             liveRaw = collected.snapshot;
             liveFailures = 0;
 
-            /**
-             * ---- 关键自愈：live 模式下的故障演练叠加 ----
-             *
-             * 【原缺陷】此分支此前直接推送 `collected.snapshot`，
-             * 完全忽略上面解析出来的 chaos 参数。于是用户在「实时」模式点
-             * 「故障演练」时，服务端仍只推真实数据：3D 场景毫无变化、
-             * 指标纹丝不动、告警不出现，观感等同于按钮失效。
-             *
-             * 【现在】在真实快照之上叠加混沌效果：
-             * - 保留真实底盘（真实集群/宿主机的 pod/node 数据不被伪造）；
-             * - 只对混沌目标机架施加故障特征（OOM 内存漂白、CPU 飙升、网络分区）；
-             * - 告警与健康分用与 demo 模式完全相同的规则重算。
-             *
-             * 这样两种模式下"故障长什么样"是一致的，而 live 模式仍然
-             * 是**真实数据驱动**的——叠加层只改故障语义，不改数据来源。
-             */
             const overlaid =
               chaos === 'NONE' ? liveRaw : applyLiveChaosOverlay(liveRaw, chaos);
 
-            /*
-             * ---- C/D2 · 帧时间戳按「完成时刻」单调递增 ----
-             *
-             * live 帧的 timestamp 不用采集开始时刻，而用**采集完成时刻**：
-             * 采集耗时不固定（200ms~2s），用开始时刻会让帧序与实际到达顺序错位。
-             * 再与「上一帧 + 1 tick」取 max，保证严格单调（即便墙钟回拨）。
-             */
             const frameTs = Math.max(Date.now(), snapshot.timestamp + TICK_INTERVAL_MS);
             snapshot = { ...overlaid, timestamp: frameTs };
 
             const frame = `data: ${JSON.stringify(snapshot)}\n\n`;
-            if (!safeEnqueue(frame) && timer !== null) {
-              clearInterval(timer);
-              timer = null;
+            if (safeEnqueue(frame)) {
+              recordSseFrame();
+              logStructuredEvent({
+                event: 'frame',
+                route: '/api/telemetry',
+                traceId,
+                durationMs: Date.now() - tickStartMs,
+                timestamp: new Date().toISOString(),
+                attrs: { mode: 'live', source: collected.source, seq: snapshot.seq },
+              });
             }
-          } catch {
-            /*
-             * ---- D3 · 失败保留上一帧并计数，连续 3 次降级 ----
-             *
-             * 单次失败：不更新 snapshot（继续推上一帧），画面保持稳定；
-             * 连续 3 次：数据源已不可用，降级到合成引擎并写审计行。
-             * 【为什么不能无限推旧帧】旧帧画面"看起来活着"，但指标是死的，
-             * 比明确降级更危险——运维会误以为实时链路正常。
-             */
+          } catch (error) {
             liveFailures += 1;
+            const errMsg = error instanceof Error ? error.message : 'live-collect-error';
+            recordLiveCollectionResult(Date.now() - tickStartMs, false);
+
             if (liveFailures >= LIVE_FAILURE_LIMIT) {
               liveEnabled = false;
-              /* 已切合成源：退订宿主机采样器（末个订阅者离开即停 ticker） */
               releaseLiveSampler();
-              console.warn(
-                `[AUDIT][telemetry] live 采集连续 ${liveFailures} 次失败 → 已降级为合成数据源`,
-              );
+              recordDegradedToDemo();
+              logStructuredEvent({
+                event: 'fallback',
+                route: '/api/telemetry',
+                traceId,
+                durationMs: Date.now() - tickStartMs,
+                timestamp: new Date().toISOString(),
+                attrs: {
+                  reason: 'live-consecutive-failures',
+                  failures: liveFailures,
+                  error: errMsg,
+                },
+              });
               if (timer !== null) {
                 clearInterval(timer);
                 timer = null;
               }
               startDemoTicker();
+            } else {
+              /*
+               * 【R13 保活续传】未达连续失败降级阈值前，仍推送一帧携带最新有效底盘与
+               * 严格单调时间戳的延续帧，彻底消除代理空闲断流或前端时间轴停滞空窗。
+               */
+              const carryBase = chaos === 'NONE' ? liveRaw : applyLiveChaosOverlay(liveRaw, chaos);
+              const frameTs = Math.max(Date.now(), snapshot.timestamp + TICK_INTERVAL_MS);
+              snapshot = { ...carryBase, timestamp: frameTs, seq: snapshot.seq + 1 };
+              if (safeEnqueue(`data: ${JSON.stringify(snapshot)}\n\n`)) {
+                recordSseFrame();
+              }
+              logStructuredEvent({
+                event: 'error',
+                route: '/api/telemetry',
+                traceId,
+                durationMs: Date.now() - tickStartMs,
+                timestamp: new Date().toISOString(),
+                attrs: {
+                  reason: 'live-transient-failure-keepalive',
+                  failures: liveFailures,
+                  error: errMsg,
+                },
+              });
             }
           } finally {
             liveInFlight = false;
           }
         };
 
-        /*
-         * 首帧：同步等待一次采集（采集内部有 4s 超时护栏，不会无限挂）。
-         * 采完再启动定时器，保证后续帧间隔严格 = STREAM_INTERVAL_MS。
-         *
-         * 【R4 · 单一采样器 + 广播】先订阅宿主机采样器：差分基准
-         * （上一秒 CPU 累计时间 / 网卡字节）只由模块级 ticker 写入，
-         * 本连接与所有其他连接读同一份缓存——双标签页数值一致且非 0。
-         * 退订在 safeClose / 降级两条路径（releaseLiveSampler 幂等）。
-         */
         liveSamplerAcquired = true;
         acquireHostSampler();
-        /* 极端竞态：订阅前连接已关闭 → 立即退订，不留游离 ticker */
-        if (isClosed) releaseLiveSampler();
+        if (isClosed) {
+          releaseLiveSampler();
+          return;
+        }
         void pushLiveFrame().then((): void => {
           if (isClosed || !liveEnabled) return;
           timer = setInterval((): void => {
@@ -423,40 +454,31 @@ export function GET(request: Request): Response {
             void pushLiveFrame();
           }, STREAM_INTERVAL_MS);
         });
-
-        request.signal.addEventListener('abort', safeClose, { once: true });
         return;
       }
 
-      /* ---- 3. demo 模式：每 1000ms 演进一帧并推送（与 live 降级共用同一入口） ---- */
+      /* ---- demo 模式分支 ---- */
       startDemoTicker();
-
-      /* ---- 4. 客户端断开监听（关闭标签页 / 网络中断） ---- */
-      request.signal.addEventListener('abort', safeClose, { once: true });
     },
 
-    /**
-     * cancel —— 消费端主动取消（reader.cancel()）。
-     *
-     * 【为何必须实现】cancel 与 request.signal 的 abort 是两条独立路径，
-     * 部分客户端（Node 侧 fetch().body.cancel()）只触发 cancel 而不触发
-     * abort。若此处不清定时器，它将成为游离句柄持续演进，造成 CPU/内存泄漏。
-     * 因 isClosed 与 timer 已提升到外层作用域，此处可直接完成清理。
-     */
     cancel(): void {
+      logStructuredEvent({
+        event: 'abort',
+        route: '/api/telemetry',
+        traceId,
+        durationMs: Date.now() - connectedAtMs,
+        timestamp: new Date().toISOString(),
+        attrs: { reason: 'reader-cancel', mode },
+      });
       safeClose();
     },
   });
 
   return new Response(stream, {
     headers: {
-      /* SSE MIME 契约（显式 charset 保证中文实体名不乱码） */
       'Content-Type': 'text/event-stream; charset=utf-8',
-      /* no-cache 禁缓存；no-transform 禁止中间层压缩/改写（保实时性） */
       'Cache-Control': 'no-cache, no-transform',
-      /* 长连接语义 */
       Connection: 'keep-alive',
-      /* nginx 专用：关闭 proxy_buffering，否则反代后"连上但无数据" */
       'X-Accel-Buffering': 'no',
     },
   });
