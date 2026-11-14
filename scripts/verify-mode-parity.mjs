@@ -33,6 +33,9 @@ const ts = require('typescript');
 
 const ROOT = process.cwd();
 const OUT_DIR = join(ROOT, 'tmp-parity');
+process.on('exit', () => {
+  try { rmSync(OUT_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 /* ========================================================================== */
 /* 1. 转译引擎（与 sim-drift 同款单文件转译）                                    */

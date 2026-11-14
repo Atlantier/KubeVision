@@ -23,6 +23,9 @@ const ts = require('typescript');
 const ROOT = process.cwd();
 const OUT_DIR = join(ROOT, 'tmp-chat-stream-test');
 const OUT_UTILS = join(OUT_DIR, 'utils');
+process.on('exit', () => {
+  try { rmSync(OUT_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 console.log('KubeVision AI — 流式消费内核单测');
 console.log(`  输出 : ${OUT_DIR}`);

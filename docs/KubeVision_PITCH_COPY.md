@@ -1,19 +1,19 @@
 # KubeVision AI · 路演 PPT 文案（10–12 页）
 
-> 每页正文 ≤40 字；数字与 `docs/performance.json`（2026-11-11 采集）、`docs/verify-summary.json`、`docs/rag-eval.json` 一致。
+> 每页正文 ≤40 字；数字与 `docs/performance.json`（2026-11-14 采集）、`docs/verify-summary.json`、`docs/rag-eval.json` 一致。
 > 讲稿备注供主讲临场使用，不印在页面上。源文件：`docs/pitch/index.html`；PDF：`docs/KubeVision_PITCH.pdf`。
 
 | 页 | 标题 | 页面正文（≤40 字） | 讲稿备注（口述，≤40 秒/页） |
 |---|---|---|---|
 | 1 | KubeVision AI | 云原生三维空间态势感知与智能自愈副驾 | 一句话价值：一块屏幕看清集群，一句话完成告警到复盘。 |
-| 2 | 为什么是 KubeVision | 问题：三维现场被压成日志 / 方案：3D+双擎+RAG+端侧 / 证据：34/34·423·8.27ms·R@1 69.4% / 边界：无真集群·无真机 FPS / 价值：离线零出域可审计 | 这页是整场的"电梯稿"：先讲问题，再给方案，数字只念三个（验收、draw calls、检索），边界主动说，最后落到离线与审计价值。 |
+| 2 | 为什么是 KubeVision | 问题：三维现场被压成日志 / 方案：3D+双擎+RAG+端侧 / 证据：36/36·235·8.39ms·R@1 94.4% / 边界：无真集群·无真机 FPS / 价值：离线零出域可审计 | 这页是整场的"电梯稿"：先讲问题，再给方案，数字只念三个（验收、draw calls、检索），边界主动说，最后落到离线与审计价值。 |
 | 3 | 三个痛点 | 告警看不懂空间 / 排障查不到出处 / 高危操作难审计 | 分别对应 3D 空间索引、RAG 出处、HITL 回执与复盘。 |
 | 4 | 端云双擎架构 | 端侧脱敏推理 · 云端 LLM/仿真双擎 · MCP 执行 | 左端右云：日志不出域；无 Key 自动走引擎 B。 |
 | 5 | 三大技术亮点 | 双擎容灾 / ReAct 四阶段 / 混合 RAG 三路 | 讲清每项解决什么、证据在哪；不堆术语。 |
 | 6 | 空间-语义双向绑定 | 点 Pod 即飞控 · 点卡片即反查 | 左图近景、右图故障注入后锁定；空间与数据同一对象。 |
 | 7 | 端侧零出域 | 原始凭证不出浏览器，只发脱敏摘要 | 展示脱敏前后对照；无 WebGPU 时降级且如实标注。 |
-| 8 | 工程与数据 | 423 draw calls · 8.27ms 检索 · 34/34 验收 | 强调环境：SwiftShader 软渲染，FPS 不作性能证据。 |
-| 9 | 证据页 1 | 验收 34/34 · 路演 4 阶段 · HITL 回执 | 出示 verify 截图、路演关键帧、动作卡回执。 |
+| 8 | 工程与数据 | 235 draw calls · 8.39ms 检索 · 36/36 验收 | 强调环境：SwiftShader 软渲染，FPS 不作性能证据。 |
+| 9 | 证据页 1 | 验收 36/36 · 路演 4 阶段 · HITL 回执 | 出示 verify 截图、路演关键帧、动作卡回执。 |
 | 10 | 证据页 2 | 三路检索 90/76/73 · 性能 HUD 实拍 | 出示 RAG 命中与 HUD；说明三路占比是真实检索输出。 |
 | 11 | 商业与落地 | 私有化 + 订阅 · 90 天 PoC 三项指标 | 数字均为假设/估算；指标：MTTR、定位耗时、审计覆盖率。 |
 | 12 | 团队与引用 | 团队信息待填 · MiniLM Apache-2.0 · 联系邮箱待填 | 提交前替换占位；第三方许可证见 THIRD_PARTY_NOTICES。 |
@@ -37,11 +37,11 @@
 
 | 指标 | 值 | 来源 |
 |---|---|---|
-| Draw Calls 中位 | 423（20 次采样 420~423） | performance.json |
-| Triangles 中位 | 206,028 | performance.json |
-| RAG 均值 / P95 | 8.27ms / 9.97ms | performance.json |
-| 脱敏吞吐 | 12,880 条/秒（100 条/批） | performance.json |
-| 首屏 First Load | 176 kB（路由 88.9 kB） | performance.json |
-| 自动化验收 | 34/34 | verify-summary.json |
-| RAG 评测（49 例） | R@1 两路 66.7% / 三路 69.4%；负例拒答 87.5%；误拒 0% | docs/rag-eval.json |
-| 环境 | SwiftShader 软渲染；FPS 2.7 **不作为性能证据** | performance.json |
+| Draw Calls 中位 | 235（20 次采样 235~238） | performance.json |
+| Triangles 中位 | 206,626 | performance.json |
+| RAG 均值 / P95 | 8.39ms / 12.05ms | performance.json |
+| 脱敏吞吐 | 11,264 条/秒（100 条/批） | performance.json |
+| 首屏 First Load | 194 kB（路由 107 kB） | performance.json |
+| 自动化验收 | 36/36 | verify-summary.json |
+| RAG 评测（49 例） | R@1 两路 88.9% / 三路 94.4%；负例拒答 100%；误拒 0% | docs/rag-eval.json |
+| 环境 | SwiftShader 软渲染；FPS 中位 5（均值 4.75） **不作为性能证据** | performance.json |

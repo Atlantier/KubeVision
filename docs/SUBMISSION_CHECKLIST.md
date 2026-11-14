@@ -11,24 +11,24 @@
 | 1 | README 重构（赛事/团队/唯一 3 分钟/路演/局限/死链） | **已补（R55）** | `README.md` | 队长 | T-7 |
 | 2 | 赛事全称/赛道/官网/团队信息表 | **已补**（团队信息占位待填） | README §1 | 队长 | **T-3** |
 | 3 | 技术白皮书升级（R02–R18、12 处口径、数字对齐） | **已补（R55）** | `docs/COMPETITION_TECHNICAL_WHITEPAPER.md` | 文档 | T-3 |
-| 4 | 白皮书 PDF（生成时间晚于最后代码提交、≤10MB） | **已生成：1.75MB / 26 页 / 2026-11-11 13:16** | `docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf` | 文档 | T-1 |
-| 5 | 路演 PPT（12 页，PDF ≤10MB） | **已生成：3.80MB / 2026-11-11 13:16** | `docs/KubeVision_PITCH.pdf` | 队长 | T-3 |
+| 4 | 白皮书 PDF（生成时间晚于最后代码提交、≤10MB） | **已生成：由 `docs:pdf` 刷新** | `docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf` | 文档 | T-1 |
+| 5 | 路演 PPT（12 页，PDF ≤10MB） | **已生成：由 `docs:ppt` 刷新** | `docs/KubeVision_PITCH.pdf` | 队长 | T-3 |
 | 6 | 3 分钟视频（1080p30、≤3:00） | **仍缺：待录制** | `recording/KubeVision_3min_FINAL_1080p30.mp4` | 主讲/录制 | **T-2** |
 | 7 | 60s 无旁白版 | **仍缺：待剪辑** | `recording/KubeVision_60s_silent_1080p30.mp4` | 录制 | T-2 |
-| 8 | 源码包（排除 node_modules/.next/.git/大文件，含命名规则） | **仍缺：待打包命名** | `docs/SUBMISSION_PACKAGE.md` | 队长 | **T-1** |
-| 9 | 启动说明（Node≥18.17、pnpm、无 Key 可跑） | **已补** | `启动说明.md` | 文档 | T-7 |
-| 10 | Dockerfile/.dockerignore/部署步骤（SSE 注意） | **已补（未 docker build）** | `Dockerfile`、`.dockerignore`、`docs/DEPLOYMENT.md` | 工程 | T-3 |
-| 11 | 证据链（`docs/evidence/` + 索引） | **已补** | `docs/EVIDENCE.md` | 测试 | T-2 |
-| 12 | 合规（LICENSE/NOTICES/模型/语料来源） | **已补；LICENSE 决策待确认** | `LICENSE`、`THIRD_PARTY_NOTICES.md` | 队长 | **T-3** |
+| 8 | 源码包（排除 node_modules/.next/.git/大文件，含命名规则） | **R14 离线包已重打（无 `.env.local`）** | `release/` · `docs/SUBMISSION_PACKAGE.md` | 队长 | **T-1** |
+| 9 | 启动说明（Node≥18.17、pnpm、无 Key 可跑） | **已同步 R14** | `启动说明.md` | 文档 | T-7 |
+| 10 | Dockerfile/.dockerignore/部署步骤（SSE 注意） | **已静态修正（无 Docker daemon 未实测）** | `Dockerfile`、`.dockerignore`、`docs/DEPLOYMENT.md` | 工程 | T-3 |
+| 11 | 证据链（`docs/evidence/` + 索引） | **已同步 R14（36/36 + 对抗演练）** | `docs/EVIDENCE.md` | 测试 | T-2 |
+| 12 | 合规（LICENSE/NOTICES/模型/语料来源） | **已补；LICENSE 决策待人工确认** | `LICENSE`、`THIRD_PARTY_NOTICES.md` | 队长 | **T-3** |
 | 13 | 商业价值页（客户/竞品/模式/单位经济/PoC） | **已补（数字均标假设）** | `docs/BUSINESS_CASE.md` | 产品 | T-3 |
-| 14 | 文档数字一致性脚本 + verify + CI 门禁 + 交叉矛盾核对 | **已补**：`verify --quick` 7/7；CI 见 `.github/workflows/verify.yml` | `scripts/check-docs-consistency.mjs`、`.github/workflows/verify.yml` | 测试 | T-3 |
-| 15 | 现场预案（双机/录屏执行单/彩排/兜底） | **已有** | `docs/summit/RECORDING_KIT.md`、`R55-RECORDING-RUNSHEET.md`、`DUAL_MACHINE_CHECKLIST.md`、`JUDGE_REHEARSAL.md`、`DEMO_DIRECTOR_PLAYBOOK.md` | 队长 | T-2 |
+| 14 | 文档数字一致性脚本 + 血缘校验 + CI 门禁 | **已闭环（0 漂移）：含 `check-metrics-lineage`** | `scripts/check-docs-consistency.mjs`、`scripts/check-metrics-lineage.mjs`、`.github/workflows/verify.yml` | 测试 | T-3 |
+| 15 | 现场预案（双机/录屏执行单/彩排/兜底 + R14 终审报告） | **已完成** | `docs/summit/R14-FINAL-RELEASE-REPORT.md`、`JUDGE_REHEARSAL.md`、`DEMO_DIRECTOR_PLAYBOOK.md` | 队长 | T-2 |
 
 ## 2. 提交前 24 小时检查表
 
 | 时间 | 检查 | 通过标准 | 失败处理 |
 |---|---|---|---|
-| T-24h | 全量回归 | `node scripts/verify.mjs` 34/34；`node scripts/verify-demo.mjs` 通过 | 修复或降级演示链路 |
+| T-24h | 全量回归 | `node scripts/verify.mjs` 36/36；`node scripts/verify-demo.mjs` 通过 | 修复或降级演示链路 |
 | T-24h | 文档一致性 | `node scripts/check-docs-consistency.mjs` 通过 | 重跑 benchmark + sync-docs-metrics |
 | T-23h | PDF 重新生成 | 白皮书/PPT PDF 的生成时间晚于最后一次代码提交；各 ≤10MB | 重新生成，不手改 PDF |
 | T-22h | 视频母版 | 3:00 内、1080p30、无通知/无画圈；60s 版就绪 | 重录指定段 |

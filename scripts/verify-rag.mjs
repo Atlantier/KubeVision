@@ -23,6 +23,9 @@ const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const OUT = join(ROOT, 'tmp-rag-verify');
+process.on('exit', () => {
+  try { rmSync(OUT, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 let pass = 0;
 let fail = 0;
@@ -42,12 +45,23 @@ const is = (name, actual, expected) => {
 if (existsSync(OUT)) rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 {
+  const embSource = readFileSync(join(ROOT, 'src/utils/runbookEmbeddings.ts'), 'utf8');
+  const embResult = ts.transpileModule(embSource, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+    fileName: 'runbookEmbeddings.ts',
+  });
+  writeFileSync(join(OUT, 'runbookEmbeddings.cjs'), embResult.outputText, 'utf8');
+
   const source = readFileSync(join(ROOT, 'src/utils/sreRagEngine.ts'), 'utf8');
   const result = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
     fileName: 'sreRagEngine.ts',
   });
-  writeFileSync(join(OUT, 'sreRagEngine.cjs'), result.outputText, 'utf8');
+  const rewritten = result.outputText.replace(
+    /require\((['"])@\/utils\/runbookEmbeddings\1\)/g,
+    'require("./runbookEmbeddings.cjs")',
+  );
+  writeFileSync(join(OUT, 'sreRagEngine.cjs'), rewritten, 'utf8');
 }
 const { calibrateConfidence, computeCorpusFingerprint, retrieveSreRunbooks } = require(
   join(OUT, 'sreRagEngine.cjs'),

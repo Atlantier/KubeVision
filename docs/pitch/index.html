@@ -60,11 +60,11 @@
   <div class="why-list">
     <div class="why"><b>问题</b><span>三维现场被压成一行日志，定位靠猜、根因无出处</span></div>
     <div class="why"><b>方案</b><span>3D 空间索引 + 双擎 Agent + 混合 RAG + 端侧脱敏</span></div>
-    <div class="why"><b>证据</b><span>34/34 · draw calls 423 · 检索 8.27ms · R@1 69.4%</span></div>
+    <div class="why"><b>证据</b><span>36/36 · draw calls 235 · 检索 8.39ms · R@1 94.4%</span></div>
     <div class="why"><b>边界</b><span>无真实集群 · FPS 未真机 · 商业数字为假设</span></div>
     <div class="why"><b>价值</b><span>离线零出域、可审计可复盘的 SRE 副驾</span></div>
   </div>
-  <div class="foot">证据来源：docs/performance.json · docs/verify-summary.json · docs/rag-eval.json（2026-11-11 同批数据）</div>
+  <div class="foot">证据来源：docs/performance.json · docs/verify-summary.json · docs/rag-eval.json（2026-11-14 同批数据）</div>
   <div class="pageno">02 / 12</div>
 </section>
 
@@ -129,7 +129,7 @@
       <div class="cap">端侧审计：脱敏前后对照 + 敏感类型计数（真实截图）</div>
     </div>
     <div style="flex:.75;padding-top:16px">
-      <p class="sub" style="font-size:20px">6 类 PII 正则<br/>100 条批量 6.44ms<br/>≈12,880 条/秒</p>
+      <p class="sub" style="font-size:20px">6 类 PII 正则<br/>100 条批量 8.88ms<br/>≈11,264 条/秒</p>
       <p class="muted" style="margin-top:18px">无 WebGPU 时降级 builtin<br/>页面如实标注当前引擎</p>
     </div>
   </div>
@@ -140,22 +140,22 @@
   <div class="kicker">工程与数据</div>
   <h2>硬件无关指标优先</h2>
   <div class="grid3">
-    <div class="card"><div class="num">423</div><div class="lbl">draw calls（中位）</div></div>
-    <div class="card"><div class="num">8.27ms</div><div class="lbl">RAG 平均检索延迟</div></div>
-    <div class="card"><div class="num">34/34</div><div class="lbl">自动化验收</div></div>
+    <div class="card"><div class="num">235</div><div class="lbl">draw calls（中位）</div></div>
+    <div class="card"><div class="num">8.39ms</div><div class="lbl">RAG 平均检索延迟</div></div>
+    <div class="card"><div class="num">36/36</div><div class="lbl">自动化验收</div></div>
   </div>
   <p class="muted" style="margin-top:22px">环境：win32 · Ryzen 9 7845HX · SwiftShader（软渲染）· Node 24 — FPS 不作为性能证据</p>
-  <div class="foot">三角面 206,028（中位）· 322 Mesh / 25 InstancedMesh / 1,026 实例</div>
+  <div class="foot">三角面 206,626（中位）· 154 Mesh / 27 InstancedMesh / 1,017 实例</div>
   <div class="pageno">08 / 12</div>
 </section>
 
 <section class="page">
   <div class="kicker">证据页 1 · 验收与路演</div>
-  <h2>34/34 验收 · 4 阶段路演 · HITL 回执</h2>
+  <h2>36/36 验收 · 4 阶段路演 · HITL 回执</h2>
   <div class="row">
     <div style="flex:1">
-      <div class="shot" style="height:340px"><img src="../evidence/verify-2026-11-11T04-50-52-880Z.png" alt="verify 34/34 终端截图" /></div>
-      <div class="cap">verify 34/34（2026-11-11）</div>
+      <div class="shot" style="height:340px"><img src="../evidence/verify-2026-11-14T11-19-35-295Z.png" alt="verify 36/36 截图证据" /></div>
+      <div class="cap">verify 36/36（2026-11-14 · 最新见 verify-summary.json）</div>
     </div>
     <div style="flex:1">
       <div class="shot" style="height:340px"><img src="../evidence/roadshow-phase4-2026-11-11.png" alt="路演阶段 4" /></div>

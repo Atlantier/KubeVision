@@ -29,6 +29,9 @@ const ts = require('typescript');
 
 const ROOT = process.cwd();
 const OUT_DIR = join(ROOT, 'tmp-sim');
+process.on('exit', () => {
+  try { rmSync(OUT_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 const TICKS = Number(readArg('--ticks') ?? '300');
 const JSON_ONLY = process.argv.includes('--json');
 

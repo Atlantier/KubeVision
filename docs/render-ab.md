@@ -18,8 +18,8 @@
 | Composer | 5 | 200 ms | 398 | 188576 |
 | 兜底 | 5 | 192.3 ms | 398 | 188576 |
 
-> Shift+P 性能 HUD 实测：4 FPS / 1 draw calls / tier=T3。
-> 注：SwiftShader 为软件光栅化，FPS 数值不代表真机性能，仅用于两条路径的相对对照。
+> Shift+P 性能 HUD 实测：4 FPS / 1 draw calls（按需渲染静置帧，仅 HUD 合成 pass；稳态连续渲染帧见上表 398 draws）/ tier=T3。
+> 注：SwiftShader 为软件光栅化，FPS 数值不代表真机性能，不作为性能证据，仅用于两条路径的相对对照。
 
 ## 截图
 

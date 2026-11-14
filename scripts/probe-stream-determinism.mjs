@@ -42,6 +42,9 @@ const ts = require('typescript');
 const ROOT = process.cwd();
 const FIXTURE = join(ROOT, 'docs/summit/artifacts/r17-stream-fixture.jsonl');
 const OUT_DIR = join(ROOT, 'tmp-stream-determinism');
+process.on('exit', () => {
+  try { rmSync(OUT_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 const OUT_JSON = join(ROOT, 'docs/summit/artifacts/r2b-stream-determinism.json');
 const RUNS = (() => {
   const i = process.argv.indexOf('--runs');

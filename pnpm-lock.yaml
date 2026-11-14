@@ -27,13 +27,13 @@ importers:
         specifier: 3.4.33
         version: 3.4.33(react@18.3.1)(sswr@2.2.0(svelte@5.57.3(@typescript-eslint/types@8.72.1)))(svelte@5.57.3(@typescript-eslint/types@8.72.1))(vue@3.5.44(typescript@5.6.3))(zod@3.25.76)
       clsx:
-        specifier: ^2.1.1
+        specifier: 2.1.1
         version: 2.1.1
       framer-motion:
-        specifier: ^11.11.17
+        specifier: 11.18.2
         version: 11.18.2(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       lucide-react:
-        specifier: ^0.454.0
+        specifier: 0.454.0
         version: 0.454.0(react@18.3.1)
       next:
         specifier: 14.2.18
@@ -48,20 +48,20 @@ importers:
         specifier: 18.3.1
         version: 18.3.1(react@18.3.1)
       tailwind-merge:
-        specifier: ^2.5.4
+        specifier: 2.6.1
         version: 2.6.1
       three:
-        specifier: ~0.169.0
+        specifier: 0.169.0
         version: 0.169.0
       zod:
-        specifier: ^3.23.8
+        specifier: 3.25.76
         version: 3.25.76
       zustand:
-        specifier: ^4.5.5
+        specifier: 4.5.7
         version: 4.5.7(@types/react@18.3.12)(react@18.3.1)
     devDependencies:
       '@types/node':
-        specifier: ^20.17.0
+        specifier: 20.19.43
         version: 20.19.43
       '@types/react':
         specifier: 18.3.12
@@ -70,28 +70,28 @@ importers:
         specifier: 18.3.1
         version: 18.3.1
       '@types/three':
-        specifier: ~0.169.0
+        specifier: 0.169.0
         version: 0.169.0
       autoprefixer:
-        specifier: ^10.4.20
+        specifier: 10.6.2
         version: 10.6.2(postcss@8.5.32)
       eslint:
-        specifier: ^8.57.0
+        specifier: 8.57.1
         version: 8.57.1
       eslint-config-next:
         specifier: 14.2.18
         version: 14.2.18(eslint@8.57.1)(typescript@5.6.3)
       postcss:
-        specifier: ^8.4.49
+        specifier: 8.5.32
         version: 8.5.32
       prettier:
-        specifier: ^3.3.3
+        specifier: 3.9.10
         version: 3.9.10
       tailwindcss:
         specifier: 3.4.17
         version: 3.4.17
       typescript:
-        specifier: ~5.6.3
+        specifier: 5.6.3
         version: 5.6.3
 
 packages:
@@ -3901,7 +3901,7 @@ snapshots:
       eslint: 8.57.1
       eslint-import-resolver-node: 0.3.10
       eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.72.1(eslint@8.57.1)(typescript@5.6.3))(eslint@8.57.1))(eslint@8.57.1)
-      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.72.1(eslint@8.57.1)(typescript@5.6.3))(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.72.1(eslint@8.57.1)(typescript@5.6.3))(eslint@8.57.1))(eslint@8.57.1))(eslint@8.57.1)
+      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.72.1(eslint@8.57.1)(typescript@5.6.3))(eslint-import-resolver-typescript@3.10.1)(eslint@8.57.1)
       eslint-plugin-jsx-a11y: 6.10.2(eslint@8.57.1)
       eslint-plugin-react: 7.37.5(eslint@8.57.1)
       eslint-plugin-react-hooks: 5.0.0-canary-7118f5dd7-20230705(eslint@8.57.1)
@@ -3931,7 +3931,7 @@ snapshots:
       tinyglobby: 0.2.17
       unrs-resolver: 1.13.0
     optionalDependencies:
-      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.72.1(eslint@8.57.1)(typescript@5.6.3))(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.72.1(eslint@8.57.1)(typescript@5.6.3))(eslint@8.57.1))(eslint@8.57.1))(eslint@8.57.1)
+      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.72.1(eslint@8.57.1)(typescript@5.6.3))(eslint-import-resolver-typescript@3.10.1)(eslint@8.57.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -3946,7 +3946,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.72.1(eslint@8.57.1)(typescript@5.6.3))(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.72.1(eslint@8.57.1)(typescript@5.6.3))(eslint@8.57.1))(eslint@8.57.1))(eslint@8.57.1):
+  eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.72.1(eslint@8.57.1)(typescript@5.6.3))(eslint-import-resolver-typescript@3.10.1)(eslint@8.57.1):
     dependencies:
       '@rtsao/scc': 1.1.0
       array-includes: 3.2.0

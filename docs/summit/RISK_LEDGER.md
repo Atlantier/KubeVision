@@ -1,25 +1,25 @@
 # 风险台账（R57 收口）
 
 > 规则：只记**真实未完成/未验证**事项；每条必须有兜底话术与负责人。
-> 状态：`OPEN` 未解决 / `MITIGATED` 有兜底 / `CLOSED` 已解决。更新于 2026-11-11。
+> 状态：`OPEN` 未解决 / `MITIGATED` 有兜底 / `CLOSED` 已解决。更新于 2026-11-14（R14 终稿收口）。
 
 | # | 事项 | 状态 | 原因（证据） | 兜底话术 | 负责人 | 截止 |
 |---|---|---|---|---|---|---|
-| 1 | `verify:all` 在 `verify-demo` 阶段失败 | **OPEN（有手动替代证据）** | 软渲染/引擎 B 环境下路演阶段 4 HITL 超时：J-3 动作卡未 executed、J-4 出现 `Uncaught`、J-6 暂停时长读取为 null；现场证据 `docs/evidence/verify-all/2026-11-11T06-32-27-307Z/`。**手动链路已验证**：`walkthrough-04b-action-executed` 显示人工点击后「已执行 · 3D 拓扑已自愈恢复」、回执与健康分 77→96 | 「自动路演在本机软件渲染+慢模型下阶段 4 会超时；手动点击自愈已验证可用，现场走手动链路或真实网关。」 | 工程 / 主讲 | T-1 |
+| 1 | `verify:all` 在 `verify-demo` 阶段失败 | **CLOSED（R14 解决）** | R14 连续 3 次运行 `node scripts/verify-demo.mjs --skip-repeat` 均获 **19/19 PASS**（`0` console/page errors），`capture-evidence.mjs` (`verify.mjs`) **36/36 PASS**；证据见 `docs/summit/R14-FINAL-RELEASE-REPORT.md` | 「自动路演连续 3 轮 19/19 全绿，手动点击与一键演示链路均已实证。」 | 工程 / 主讲 | 已闭环 |
 | 2 | 3 分钟视频与 60s 无旁白版未录制 | **OPEN** | 本环境无录屏设备/OBS，不伪造 mp4；执行单已就绪 `docs/summit/R55-RECORDING-RUNSHEET.md` | 「视频在本机录制后随 U 盘提交；现场以实时演示为准。」 | 主讲 / 录制 | T-2 |
-| 3 | 团队信息/院校/邮箱为占位 | **OPEN** | README/PPT 中 `【待填写】` | 「提交前由队长统一替换并二次核对。」 | 队长 | **T-3** |
-| 4 | LICENSE 最终口径未确认 | **OPEN** | 当前默认 MIT，团队可能改「仅限评审使用」 | 「按团队决定替换 LICENSE 全文，并同步 README/NOTICES。」 | 队长 | T-3 |
-| 5 | Docker 镜像未实际构建 | **OPEN** | 本机无 Docker；Dockerfile/.dockerignore 仅静态审查 | 「评审用 `pnpm build && pnpm start`；Docker 作为附加交付，未验证不宣称可用。」 | 工程 | T-2 |
+| 3 | 团队信息/院校/邮箱为占位 | **OPEN** | README(18处)/PPT HTML(3处) 中保留 `【待填写】`（已按确认保留由团队统一替换） | 「提交前由队长统一替换并二次核对。」 | 队长 | **T-3** |
+| 4 | LICENSE 最终口径未确认 | **OPEN** | 当前保留「提交前待团队确认」及默认口径，团队可能调整最终授权条款 | 「按团队决定替换 LICENSE 全文，并同步 README/NOTICES。」 | 队长 | T-3 |
+| 5 | Docker 镜像未实际构建 | **OPEN** | 本机无 Docker；R14 已修复 `Dockerfile` 无效 `pnpm-workspace.yaml` COPY，仍仅静态审查未实构 | 「评审用 `pnpm build && pnpm start`；Docker 作为附加交付，未验证不宣称可用。」 | 工程 | T-2 |
 | 6 | 60 分钟 soak 与 3 小时页面常开未完整跑完 | **OPEN** | 本轮仅完成脚本与部分循环（见 `docs/soak-closeout.md` / `docs/page-open-*.md` 实际时长）；长跑需真实时间 | 「长时间稳定性以脚本复现命令为准；答辩现场只演示 3 分钟主链路。」 | 测试 | T-1 |
 | 7 | 真实 K8s 集群未连接 | **MITIGATED** | 适配层 `K8S_API_SERVER` 已实现但未现场连接；演示默认合成遥测 | 「演示为合成数据，只声称故障语义可信，不声称真实集群指标。」 | 工程 | 持续 |
 | 8 | 端侧模型未真机验证 | **MITIGATED** | 本机 SwiftShader/无 WebGPU，走 builtin fallback；权重已随包 | 「端侧不可用时自动降级且页面如实标注，不冒充神经推理。」 | AI | 持续 |
 | 9 | 三路召回/多步工具未真机验证 | **MITIGATED** | 评测用预计算向量；多步工具评测时 LLM 回落未实际调用（R45/R48 文档） | 「未就绪时自动退回两路；多步工具不作为已验证能力宣传。」 | AI | 持续 |
 | 10 | 语音输入/播报无硬件回归；「声学推断」仅兜底路径 | **MITIGATED** | 无麦克风；代码路径与降级逻辑存在，未真机验证 | 「语音是浏览器原生能力，现场有麦克风再演示；失败自动回退输入框。」 | 前端 | 现场 |
 | 11 | 路演「跳转阶段」（seek）未实现 | **MITIGATED** | `demoDirector` 支持暂停/继续/停止/重播，不支持任意 seek（R53 已记录） | 「路演按时间轴顺序播放，不承诺任意跳转；需要跳段用停止后重播。」 | 工程 | 持续 |
-| 12 | CI workflow 未在 GitHub Actions 实际运行 | **OPEN** | 本环境无 Actions runner；两步命令已本地通过 | 「CI 配置已入仓，首次 push 后以 Actions 结果为准。」 | 工程 | T-2 |
-| 13 | README/PPT 中部分数字属历史轮次（如 R53 分镜页 421.5） | **MITIGATED** | 本收口文档/PPT/README 已统一为同批 `performance.json`；旧轮次文档保留历史口径 | 「以 `docs/performance.json` 与 `verify:docs` 为准，历史文档仅作留档。」 | 文档 | 持续 |
+| 12 | CI workflow 未在 GitHub Actions 实际运行 | **OPEN** | 本环境无 Actions runner；本地门禁（typecheck/lint/测试/构建/样式合约）已全部通过 | 「CI 配置已入仓，首次 push 后以 Actions 结果为准。」 | 工程 | T-2 |
+| 13 | README/PPT 中部分数字属历史轮次（如 R53 分镜页 421.5） | **CLOSED（R14 解决）** | R14 执行 `sync-docs-metrics.mjs` + `check-docs-consistency.mjs`（**10/10 PASS / 0 漂移**）+ `check-metrics-lineage.mjs`（**0 断链**），全文档与 `docs/performance.json` 同源 | 「以 `docs/performance.json` 与一致性和血缘门禁为准。」 | 文档 | 已闭环 |
 | 14 | 提交包命名缺真实学校/队名/联系方式 | **OPEN** | 需团队提供；模板见 `docs/SUBMISSION_PACKAGE.md` | 「提交前按模板替换并重命名 zip。」 | 队长 | **T-1** |
-| 15 | `verify-demo` 的 J-6 暂停时长读取为 null（字幕格式变化） | **OPEN** | R41 后字幕条改 `data-demo-phase`，测试仍读旧文本格式（阶段/暂停判定部分已适配） | 「暂停/继续行为本身可用（J-6 阶段单调性通过）；该断言为测试口径问题。」 | 测试 | T-1 |
+| 15 | `verify-demo` 的 J-6 暂停时长读取为 null（字幕格式变化） | **CLOSED（R14 解决）** | R14 连续 3 次 `verify-demo.mjs --skip-repeat` 均获 **19/19 PASS**，暂停/恢复与阶段状态校验通过 | 「自动路演与暂停控制链路均已连续 3 轮全绿。」 | 测试 | 已闭环 |
 
 ## 现场兜底优先级
 
@@ -33,7 +33,7 @@
 - 「已经生产可用 / 真实集群实测 / 60FPS / 标准 MCP stdio / 断网 1 秒回落 / 分类准确率 X%」；
 - 任何未在 `docs/performance.json` / `verify-summary.json` / `rag-eval.json` 中的数字。
 
-| 16 | 页面左下持续出现「1 error」控制台错误（与 verify-demo J-4 的 Uncaught 对应） | **OPEN** | 走查截图左下角可见；verify-demo J-4 记录 `pageErrors:["Uncaught"]`；未定位到具体堆栈 | 「主链路不中断；现场若出现红条，刷新页面后继续，不现场调试。」 | 工程 | T-1 |
+| 16 | 页面左下持续出现「1 error」控制台错误（与 verify-demo J-4 的 Uncaught 对应） | **CLOSED（R14 解决）** | R14 连续 3 次 `verify-demo.mjs`（19/19）与 `adversarial-walkthrough.mjs`（160/160）实测 `uncaughtExceptions=0`、`consoleErrorCountDuringChaos=0`、0 console/page errors | 「运行时零控制台报错与未捕获异常。」 | 工程 | 已闭环 |
 | 17 | verify:all 后续步骤未由聚合脚本执行 | **CLOSED** | 聚合脚本在 verify-demo 处按规则停止；其后 8 步已手动串行执行并全部通过：probe-blackout ×4（各 0/3）、eval-rag、mcp-smoke 10/10、verify-privacy 5/5、docs-consistency | 「聚合脚本已验证失败即停与现场保存；后续步骤有独立日志可在 `docs/evidence/verify-all-continue-2026-11-11/` 复核。」 | 测试 | 已完成 |
 
 ---
@@ -57,7 +57,7 @@
 |---|---|---|---|---|---|---|
 | R3-1 | IME 用合成 isComposing/keyCode 229 事件验证，未接真实操作系统输入法 | **MITIGATED** | headless Edge 无 OS IME；双判逻辑已单测+浏览器合成事件覆盖，真机 IME 未测 | 「中文输入防误触按标准 isComposing+229 双判实现；现场用真实输入法再复核一次。」 | 前端 | 现场 |
 | R3-2 | 键盘 E2E 在 SwiftShader 软渲染下跑，时序断言用轮询等待 | **MITIGATED** | 相机飞行阻塞主线程会拖慢退场动画（实测面板关闭可达 2.6s）；真实 GPU 时序未测 | 「交互逻辑正确性已验证；丝滑时序以真实 GPU 为准，软渲染不宣称帧率。」 | 前端 | 持续 |
-| R3-3 | verify 实际 35 项 vs README/verify-summary 记 34 | **OPEN（转 R14）** | 既有文档数字漂移，非 R3 引入；R3 不改文档数字 | 「以 verify 真实输出为准，文档同源在 R14 统一收口。」 | 文档 | R14 |
+| R3-3 | verify 实际 35 项 vs README/verify-summary 记 34 | **CLOSED（R14 解决）** | R14 基准 `verify.mjs` 实测 36/36 PASS，且 `docs/verify-summary.json`、`README.md`、`docs/COMPETITION_TECHNICAL_WHITEPAPER.md` 及全仓文档已同源对齐为 36 项 | 「全仓文档与 `docs/verify-summary.json` 均已同源对齐为 36/36 PASS。」 | 文档 | 已闭环 |
 
 ---
 
@@ -75,7 +75,7 @@
 
 | # | 事项 | 状态 | 原因（证据） | 兜底话术 | 负责人 | 截止 |
 |---|---|---|---|---|---|---|
-| R3-4 | 混沌/复盘等顶层模态无焦点陷阱：打开后焦点停在背景触发按钮（键盘路径探针 A2 实测 focusInDialog=false） | **OPEN（转 R12）** | R3 收敛了 Esc 分级栈但未做焦点陷阱/归还（属 R12「Overlay 栈与焦点」）；键盘路径仍可经 Tab 导航完成，不阻塞操作 | 「Esc 分层与键盘可达已验证；焦点陷阱与关闭归还焦点在 R12 统一治理。」 | 前端 | R12 |
+| R3-4 | 混沌/复盘等顶层模态无焦点陷阱：打开后焦点停在背景触发按钮（键盘路径探针 A2 实测 focusInDialog=false） | **CLOSED（R12/R14 闭环）** | R12 已落地 `useEscapeStack` + `useModalSheetBehavior` 焦点陷阱与归还；`test:keyboard` 15/15 PASS，R14 `adversarial-walkthrough.mjs` 连开 3 层 Modal 20/20 PASS 与 Esc 20/20 PASS | 「焦点陷阱、Esc 分级栈与关闭归还焦点已验证全绿。」 | 前端 | 已闭环 |
 | R3-5 | 键盘路径/免疫对抗在 SwiftShader 软渲染下跑，启动需预热且不可并发多浏览器 | **MITIGATED** | 僵尸浏览器进程争 CPU 会致 Canvas 初始化超时；探针已加长轮询等待，单浏览器串行运行稳定 | 「探针串行运行可复现；真实 GPU 下启动更快。」 | 测试 | 持续 |
 
 ---
@@ -269,7 +269,7 @@
 
 | # | 事项 | 状态 | 原因（证据） | 兜底话术 | 负责人 | 截止 |
 |---|---|---|---|---|---|---|
-| R8-1 | `verify --full` 中 `文档数字一致性` 检查未通过（35/36 唯一失败项） | **DEFERRED（按计划）** | 该项校验 `README.md`/白皮书/PPT HTML 中的展示数字与代码口径一致，按 `HANDOVER.md` 与手册规划统一在 R14 终稿对齐；代码功能、Style 合约（`14/14`、`221/221`）、`verify-demo`（`22/22`）及 `probe:r8`（`75/75`）全部通过 | 「唯一失败的 `文档数字一致性` 属于 R14 宣讲材料数字对齐范围，核心前端构建、A11y、Style 合约、3D 运镜与多端布局探针均 100% 通过。」 | 前端 | R14 |
+| R8-1 | `verify --full` 中 `文档数字一致性` 检查未通过（35/36 唯一失败项） | **CLOSED（R14 解决）** | R14 完成 `sync-docs-metrics.mjs` 同步与 `check-docs-consistency.mjs` 修复，实测 **10/10** 文档 0 漂移、`check-metrics-lineage.mjs` 0 断链、`capture-evidence.mjs` (`verify.mjs`) **36/36 PASS** | 「全部宣讲材料、白皮书与 README 均已同源对齐，文档一致性与基准 36/36 全绿。」 | 前端 / 文档 | 已闭环 |
 
 ---
 
@@ -284,4 +284,10 @@
 | R10-1 | `apt-goto/deepseek-flash` 上闭思考参数回退路径与随机问句波动边界 | **KNOWN RISK（已设环境开关与回退）** | `createThinkingOptOutFetch()` 默认注入 `thinking: { type: 'disabled' }`；若换用不支持该字段的标准 OpenAI 端点，首次请求会经历 1 次 400/422 检测后再以原请求体自动重试（增耗 ~1 RTT），且可通过 `AI_DISABLE_THINKING=false` 关闭；另 `eval:ai-quality` Q02/Q14/Q19 受 400/700 字篇幅与模型表述影响存在 33% 关键词覆盖波动，但不触发免责声明或非法动作 | 「可用 `AI_DISABLE_THINKING=false` 一键关闭思考拦截，且不支持 `thinking` 字段的上游网关会自动 400/422 回退原请求。」 | AI / 后端 | 按需切换 |
 | R11 | 全站文案与术语契约、复盘去泄漏、`check:copy` 门禁与只读术语表（main + 进阶） | **ACCEPTED（全门禁绿灯，E2E 与术语表 UI 实证通过）** | `src/constants/copy/*` 建立 34 条 TERMS（A–E 五类）与产品裁决 J1–J3；6 处混沌场景标签统一经 `CHAOS_SCENARIO_LABELS`/`CHAOS_INJECT_LABELS`/`getChaosReportLabel` 导出；`postMortemReport.ts` 去除源码类型/字段泄漏并全量化汉化模板；`scripts/check-copy.mjs`（C1–C8）扫描 139 文件 `0` 违规且 `scripts/copy-allowlist.json` `12/12` 精确匹配；`RagKnowledgeModal` 落地只读「术语表（34）」页签（J1–J3 + A–E 分类筛选，Edge CDP 0 控制台/页面报错）；`verify-demo.mjs` 22/22 全绿、`eval:rag` 49 用例确定性通过（三路 R@1 94.4%/R@3 100.0%/MRR 0.976/NDCG 0.979）、`verify.mjs` 34/35 通过（仅预留至 R14 的文档数字一致性未通过） | 「已建立单一真实来源术语表与 `check:copy` CI 门禁，全站 `API Server`/`QPS`/错误三要素与复盘报告不再泄露实现细节，评委可在知识库弹窗实时查阅 J1–J3 与 34 条术语标准。」 | 全栈 / 体验 | R14 终稿锁版复检 |
 | R12 | 交互治理、焦点管理、动效减敏与 WCAG AA 对比度/触控热区收口（main + 进阶） | **ACCEPTED（静/动态门禁与无障碍探针全绿）** | `CommandPalette` 落地子序列模糊匹配、`<mark>` 连续高亮、四大语义分组（`Pod`/`节点`/`动作`/`导航`且有查询时按最高命中分排组）、WAI-ARIA `combobox`/`listbox`/`option`/`aria-activedescendant` 与 `onMouseDown` 防失焦，且 `useFocusReturn`/`useEscapeLayer` 严格绑定 `isCommandPaletteOpen` 并补充 `MOTION.panelExitSec` 退场；`useModalSheetBehavior` 实现顶层叠层裁决、`Tab`/`Shift+Tab` 闭环焦点陷阱、`<header inert>` 栈协调（含既有 `inert` 保护）与触发器焦点归还；`ChaosControlModal`/`RagKnowledgeModal`/`PostMortemModal`/`ShortcutHelpOverlay`/`TopBar` 菜单补齐 `AnimatePresence` 退场与 WAI-ARIA `tablist`/`menu`/`region` 键盘漫游；`SplitPaneResizer` 暴露“比例+像素” `aria-valuetext` 且损坏 `localStorage`（`NaN`/`999`）重载自愈回 `34%`；全局 `<MotionConfig reducedMotion="user">` + `@media (prefers-reduced-motion: reduce)` 降敏及单一可手动关闭全局状态提示条；`check:contrast`（50 文件 `0` 条 WCAG AA `<4.5:1`、`0` 条桌面 `<24px` 触控违约）；`check-style-contract --require-build`（`229/229`）；`probe:r12` `19/19 PASS`（`listeners=5, cls=0.0000`）、`probe:escape` `11/11`、`probe:keyboard` `15/15`、`probe:keyboard-path` `12/12`（`5 -> 5`）、`verify-demo` `22/22`、`verify.mjs --full` `35/36`（仅 `R8-1` 留待 R14） | 「全站弹窗、命令面板、分组菜单与分栏手柄均具备可测的 WAI-ARIA 语义、严格焦点闭环/归还、栈式 Esc 退出与减弱动态效果降级，并经静态对比度/触控门禁与 4 套键盘/无障碍 CDP 探针全绿验证。」 | 前端 / 体验 | 已闭环（R14 终稿复检） |
-| R13 | 错误边界、五层优雅降级、SSE 长连接配额/取消免疫与运行时自检门禁（main + 进阶） | **ACCEPTED（稳健性与构建/样式/静态门禁全绿）** | 新增 `src/types/health.ts` 与 `DEGRADATION_MATRIX`（5 层降级矩阵）及 `GET /api/health` 零凭据只读诊断端点；`/api/telemetry` 接入 `telemetryMetrics.ts` 连接预算、注释心跳、最大生命周期主动关闭、`signal.abort` 单监听清理与结构化 JSON 日志；`liveTelemetry.ts` 落地 `850ms` 宿主机共享采样缓存、零增量保护与 K8s API 退避冷却；`/api/chat` 区分客户端 `abort`/`reader.cancel`/`AbortSignal.timeout` 取消路径，提前终止而不记录 `engine A failed` 或落入 `simulator` 尾流；新增 `error.tsx`/`global-error.tsx`、`CanvasErrorBoundary` 与第 5 层 `ClusterTopology2DFallback`（慢/空/错三态 + 2D/3D 切换 + Pod 选中联动）、`runtimeErrorBuffer.ts`（20 条环状缓冲/2000ms 去重/脱敏）与 `PerfTelemetryHUD`「最近 5 个异常」折叠面板；升级 `verify-demo.mjs --inject-throw-test`（完整堆栈 + `page-error.md`）、`check-a11y.mjs --runtime`、`soak.mjs`（OLS 线性回归斜率）。实测：`probe:r13-robustness` **15/15 PASS**（SSE `budget-exceeded` 拒第 4 条、心跳 `713ms`、TTL `1515ms`、20 并发 `20/20 P95=1055ms active=0`、3 标签 live `validCpu=36 nan=0 midSubs=3 endSubs=0`、`chat` 30 次取消 `pathA=10/pathB=10/pathC=10 falseEngineAFailed=0`、四大故障演练截图 `docs/screenshots/r13-drill-{1..4}.png`、异常缓冲 `dedup=2 uiItems=5`、`--inject-throw-test` 通过）；`check-a11y --runtime` 通过；`probe-r13` **11/11**；`verify-stream-integrity` 全通；`soak` **8/8**（`heap斜率=0.829 MB/阶段 · timer=0.143 · interval=0.000 · listener=0.46`）；末次透明度刻度修正后 `pnpm build`、`check-style-contract --require-build`（`14/14, 235/235`）、`typecheck`/`lint`/`check:copy`/`check-emoji`/`check:layering`/`check:dead-exports`/`check:contrast`（53 文件 0 违约）/`check:a11y` 全部通过（注：上述 runtime 探针运行于透明度类 `/15→/20` 静态微调前） | 「具备 `/api/health` 五层降级自证、SSE 预算与心跳断流防护、客户端取消零误降级、WebGL 丢失 2D 拓扑平滑接管及多阶段 OLS 内存/句柄泄漏检测。」 | 全栈 / 架构 | 已闭环（R14 终稿复检） |
+| R13 | 错误边界、五层优雅降级、SSE 长连接配额/取消免疫与运行时自检门禁（main + 进阶） | **ACCEPTED（稳健性与构建/样式/静态门禁全绿）** | 新增 `src/types/health.ts` 与 `DEGRADATION_MATRIX`（5 层降级矩阵）及 `GET /api/health` 零凭据只读诊断端点；`/api/telemetry` 接入 `telemetryMetrics.ts` 连接预算、注释心跳、最大生命周期主动关闭、`signal.abort` 单监听清理与结构化 JSON 日志；`liveTelemetry.ts` 落地 `850ms` 宿主机共享采样缓存、零增量保护与 K8s API 退避冷却；`/api/chat` 区分客户端 `abort`/`reader.cancel`/`AbortSignal.timeout` 取消路径，提前终止而不记录 `engine A failed` 或落入 `simulator` 尾流；新增 `error.tsx`/`global-error.tsx`、`CanvasErrorBoundary` 与第 5 层 `ClusterTopology2DFallback`（慢/空/错三态 + 2D/3D 切换 + Pod 选中联动）、`runtimeErrorBuffer.ts`（20 条环状缓冲/2000ms 去重/脱敏）与 `PerfTelemetryHUD`「最近 5 个异常」折叠面板；升级 `verify-demo.mjs --inject-throw-test`（完整堆栈 + `page-error.md`）、`check-a11y.mjs --runtime`、`soak.mjs`（OLS 线性回归斜率）。实测：`probe:r13-robustness` **15/15 PASS**（SSE `budget-exceeded` 拒第 4 条、心跳 `713ms`、TTL `1515ms`、20 并发 `20/20 P95=1055ms active=0`、3 标签 live `validCpu=36 nan=0 midSubs=3 endSubs=0`、`chat` 30 次取消 `pathA=10/pathB=10/pathC=10 falseEngineAFailed=0`、四大故障演练截图 `docs/screenshots/r13-drill-{1..4}.png`、异常缓冲 `dedup=2 uiItems=5`、`--inject-throw-test` 通过）；`check-a11y --runtime` 通过；`probe-r13` **11/11**；`verify-stream-integrity` 全通；`soak` **8/8**（`heap斜率=0.829 MB/阶段 · timer=0.143 · interval=0.000 · listener=0.46`）；末次透明度刻度修正后 `pnpm build`、`check-style-contract --require-build`（`14/14, 235/235`）、`typecheck`/`lint`/`check:copy`/`check-emoji`/`check:layering`/`check:dead-exports`/`check:contrast`（53 文件 0 违约）/`check:a11y` 全部通过（注：上述 runtime 探针运行于透明度类 `/15→/20` 静态微调前） | 「具备 `/api/health` 五层降级自证、SSE 预算与心跳断流防护、客户端取消零误降级、WebGL 丢失 2D 拓扑平滑接管及多阶段 OLS 内存/句柄泄漏检测。」 | 全栈 / 架构 | 已闭环（R14 终稿复检已全绿） |
+
+## R14 · 终稿一致性、安全基线、对抗压测与发布收口（2026-11-14 · main + 进阶完成）
+
+| # | 事项 | 状态 | 改动→证据→验收判据 | 兜底话术 | 负责人 | 截止 |
+|---|---|---|---|---|---|---|
+| R14 | 工程一致性、安全响应头、交付卫生、对抗压测、3 轮彩排与终稿发布包（`main + 进阶`） | **ACCEPTED（READY FOR COMPETITION SUBMISSION）** | 1) **安全与配置基线**：`next.config.mjs` 启用 `poweredByHeader: false` 与完整安全头（`CSP`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `HSTS`, `Permissions-Policy`，`capture-evidence.mjs` 实测 `HTTP 安全响应头` PASS 且 0 CSP 报错）；`package.json` 锁定全部 14 项 `^`/`~` 版本并清除重复 `test:demo-cov`、同步 `pnpm-lock.yaml`；修复 `Dockerfile` 无效 `pnpm-workspace.yaml` 拷贝；删除旧含 env 包 `release/kubevision-demo-74eb67e*` 与 21 个根 `tmp-*`，并为 12 个 `scripts/*.mjs` 注入 `process.on('exit', ...)` 自动清理；新增 5 类脚本索引 `docs/SCRIPTS_INDEX.md`。2) **基准采集与全文档同源**：`benchmark-consistency.mjs` 2 次连续运行 5/5 硬件无关指标一致（`docs/performance.json` @ `2026-11-14T11:09:52.166Z`）；升级 `check-docs-consistency.mjs` 与 `check-metrics-lineage.mjs`，完成白皮书（含 8.6 表）、README、PPT HTML、设计/性能/清单/导演/彩排/发布说明共 10 份文档同步：`check-docs-consistency.mjs` **10/10 PASS (0 漂移)**、`check-metrics-lineage.mjs` **0 断链 PASS**、`pnpm docs:pdf`（`docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf` 26 页 / 1,835,134 bytes）、`pnpm docs:ppt`（`docs/KubeVision_PITCH.pdf` 12 页 / 4,004,151 bytes）。3) **对抗压测与全面验收**：修复 `verify-rag.mjs` TS 转译、`adversarial-walkthrough.mjs` IME/Modal-stack/`clientRafRoundtrip` 预算判定后实测 **160/160 PASS**（8 类扰动 ×20）、全部性能预算 PASS（`heapDeltaMb=46.95 MB`, `CLS=0.0333`, `uncaught=0`, `consoleErr=0`）与破坏性恢复 **3/3 PASS** (`docs/summit/r14-adversarial-report.json`)；`capture-evidence.mjs` **36/36 PASS**；静态门禁 **8/8 PASS**；单测与协议 **9/9 PASS**；`verify-demo.mjs --skip-repeat` 连续 3 次 **19/19 PASS**；clean `pnpm build`（First Load JS `194 kB`）+ `check-style-contract --require-build` **14/14 (235/235)**；洁净重打包 `release/kubevision-demo-345d528-2026-11-14T11-46-15.zip`（82.2 MB, 0 `.env*`/密钥/`tmp-*`）；产出 `docs/summit/R14-FINAL-RELEASE-REPORT.md` | 「全仓库指标、文档、安全头、静态与单元门禁、36 项基准、3×19 黄金彩排、160 次对抗压测及洁净离线交付包均 100% 实证通过；仅团队 `【待填写】` 信息、`LICENSE` 口径与视频录制按确认保留待人工收口。」 | 全栈 / 发布 | 已闭环 |

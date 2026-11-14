@@ -28,6 +28,9 @@ const ROOT = process.cwd();
  * 用普通名字才能让"状态机文件覆盖率"这一项真正可读。
  */
 const OUT_DIR = join(ROOT, 'tmp-demo-test');
+process.on('exit', () => {
+  try { rmSync(OUT_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 const MACHINE_SRC = join('src', 'utils', 'demoMachine.ts');
 const WITH_COVERAGE = !process.argv.includes('--no-cov');
 

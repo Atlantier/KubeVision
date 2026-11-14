@@ -34,6 +34,9 @@ const ts = require('typescript');
 
 const ROOT = process.cwd();
 const OUT_DIR = join(ROOT, 'tmp-telemetry');
+process.on('exit', () => {
+  try { rmSync(OUT_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 const VERBOSE = process.argv.includes('--verbose');
 
 /* ========================================================================== */

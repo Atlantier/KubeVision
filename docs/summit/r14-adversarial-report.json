@@ -1,0 +1,161 @@
+{
+  "generatedAt": "2026-11-14T11:34:33.319Z",
+  "baseUrl": "http://127.0.0.1:3000",
+  "summary": {
+    "totalPerturbations": 160,
+    "passedPerturbations": 160,
+    "allPerturbationsPass": true,
+    "allBudgetsPass": true,
+    "allDestructivePass": true,
+    "overallOk": true
+  },
+  "perturbations": [
+    {
+      "id": 1,
+      "name": "快速连点视图切换与战术指令",
+      "attempts": 20,
+      "passedCount": 20,
+      "passed": true,
+      "note": "防并发抖动与状态撕裂校验通过"
+    },
+    {
+      "id": 2,
+      "name": "中文 IME 组合态防误发送",
+      "attempts": 20,
+      "passedCount": 20,
+      "passed": true,
+      "note": "isComposing=true / keyCode=229 时 Enter 不误提交"
+    },
+    {
+      "id": 3,
+      "name": "流式 Abort 后 50ms 立即重发",
+      "attempts": 20,
+      "passedCount": 20,
+      "passed": true,
+      "note": "世代隔离与旧流清理正常，无服务端挂死"
+    },
+    {
+      "id": 4,
+      "name": "断网 3s 及连续重连冲击",
+      "attempts": 20,
+      "passedCount": 20,
+      "passed": true,
+      "note": "含首轮完整 3s 离线 + 19 轮快速闪断，全部自愈不白屏"
+    },
+    {
+      "id": 5,
+      "name": "Esc 连按 5 次 × 4 轮（共 20 次）",
+      "attempts": 20,
+      "passedCount": 20,
+      "passed": true,
+      "note": "分层退栈无残留 dialog，焦点可控"
+    },
+    {
+      "id": 6,
+      "name": "窄屏 390×844 响应式切换冲击",
+      "attempts": 20,
+      "passedCount": 20,
+      "passed": true,
+      "note": "scrollWidth <= innerWidth+2 零横向溢出"
+    },
+    {
+      "id": 7,
+      "name": "后台切回 visibilitychange 扰动",
+      "attempts": 20,
+      "passedCount": 20,
+      "passed": true,
+      "note": "帧 Delta 保护正常，3D Canvas 与 Store 无报错"
+    },
+    {
+      "id": 8,
+      "name": "连开/关闭 3 类 Modal 栈压力",
+      "attempts": 20,
+      "passedCount": 20,
+      "passed": true,
+      "note": "故障演练 / 知识库 / 命令面板连续开关零 inert 死锁"
+    }
+  ],
+  "performanceBudgets": {
+    "apiHealth": {
+      "samples": 30,
+      "unit": "ms",
+      "p50": 11.07,
+      "p75": 12.15,
+      "p95": 15.11,
+      "min": 9.4,
+      "max": 16.09,
+      "limitP95": 150,
+      "passed": true
+    },
+    "telemetrySseTtfb": {
+      "samples": 30,
+      "unit": "ms",
+      "p50": 8.14,
+      "p75": 9.19,
+      "p95": 10.8,
+      "min": 6.48,
+      "max": 14.99,
+      "limitP95": 500,
+      "passed": true
+    },
+    "clientRafRoundtrip": {
+      "samples": 30,
+      "unit": "ms",
+      "p50": 122.7,
+      "p75": 128.4,
+      "p95": 160.3,
+      "min": 61.7,
+      "max": 186.5,
+      "limitP95": 250,
+      "passed": true
+    },
+    "hydrationReady": {
+      "samples": 5,
+      "unit": "ms",
+      "p50": 723.5,
+      "p75": 842.3,
+      "p95": 901.4,
+      "min": 519.1,
+      "max": 901.4,
+      "limitP95": 5000,
+      "passed": true
+    },
+    "heapDeltaMb": {
+      "value": 46.95,
+      "limitMaxMb": 64,
+      "passed": true
+    },
+    "cls": {
+      "value": 0.0333,
+      "limitMax": 0.05,
+      "passed": true
+    },
+    "uncaughtExceptions": {
+      "value": 0,
+      "limitMax": 0,
+      "passed": true
+    }
+  },
+  "destructiveRecovery": [
+    {
+      "id": "D1",
+      "name": "畸形/越界载荷攻击零崩溃",
+      "passed": true,
+      "detail": "badJson=400 empty=400 badMcp=400 healthAfter=200"
+    },
+    {
+      "id": "D2",
+      "name": "流式强杀 Abort 后服务零残留锁死",
+      "passed": true,
+      "detail": "health=200 status=ok"
+    },
+    {
+      "id": "D3",
+      "name": "高可靠兜底路径响应就绪",
+      "passed": true,
+      "detail": "status=200 engine=llm"
+    }
+  ],
+  "uncaughtExceptions": [],
+  "consoleErrorCountDuringChaos": 0
+}

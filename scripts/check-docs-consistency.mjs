@@ -30,6 +30,22 @@ const verify = readJson('docs/verify-summary.json');
 const comma = (value) => Number(value).toLocaleString('en-US');
 const fixed = (value, digits = 2) => Number(value).toFixed(digits);
 
+/** 性能事实源中允许出现的数值 */
+const draw = perf.rendering.drawCalls;
+const tri = perf.rendering.triangles;
+const ragLatency = perf.rag.latencyMs;
+const throughput = perf.sanitizer.throughputPerSec;
+const firstLoadKb = (() => {
+  const line = (perf.bundle?.routes ?? []).find(
+    (row) => typeof row === 'string' && /^\s*[┌├└]\s*[○ƒ]?\s*\/\s/.test(row),
+  );
+  const match = typeof line === 'string' ? line.match(/(\d+(?:\.\d+)?)\s*kB\s*$/) : null;
+  return match === null ? null : Number(match[1]);
+})();
+
+/** 验收期望全绿数量（首次自举重采允许按 verify.total 核对以打破自引用环） */
+const verifyExpectedCount = process.env.KV_BOOTSTRAP_VERIFY === '1' ? verify.total : verify.pass;
+
 /** 必须出现的关键数字（允许多种排版，做归一化后匹配） */
 const REQUIRED_NUMBERS = [
   { name: 'Draw Calls 中位', value: String(perf.rendering.drawCalls.median), aliases: [String(perf.rendering.drawCalls.median)] },
@@ -37,8 +53,8 @@ const REQUIRED_NUMBERS = [
   { name: 'RAG 均值延迟', value: `${fixed(perf.rag.latencyMs.mean)}ms`, aliases: [`${fixed(perf.rag.latencyMs.mean)}ms`, `${fixed(perf.rag.latencyMs.mean)} ms`] },
   { name: 'RAG P95 延迟', value: `${fixed(perf.rag.latencyMs.p95)}ms`, aliases: [`${fixed(perf.rag.latencyMs.p95)}ms`, `${fixed(perf.rag.latencyMs.p95)} ms`] },
   { name: '脱敏吞吐', value: `${comma(perf.sanitizer.throughputPerSec)} 条/秒`, aliases: [comma(perf.sanitizer.throughputPerSec), String(perf.sanitizer.throughputPerSec)] },
-  { name: '首屏 First Load', value: '176 kB', aliases: ['176 kB', '176kB'] },
-  { name: '验收通过数', value: `${verify.pass}/${verify.total}`, aliases: [`通过 ${verify.pass}`, `${verify.pass} 项`, `${verify.pass}/${verify.total}`] },
+  ...(firstLoadKb === null ? [] : [{ name: '首屏 First Load', value: `${firstLoadKb} kB`, aliases: [`${firstLoadKb} kB`, `${firstLoadKb}kB`] }]),
+  { name: '验收通过数', value: `${verifyExpectedCount}/${verify.total}`, aliases: [`通过 ${verifyExpectedCount}`, `${verifyExpectedCount} 项`, `${verifyExpectedCount}/${verify.total}`] },
 ];
 
 /** 已知旧数字 / 旧口径：出现即视为漂移（尽量用足够长的串，避免误伤普通数字） */
@@ -51,23 +67,21 @@ const STALE_TOKENS = [
   '188,738',
   '84.8 kB',
   '172 kB',
+  '176 kB',
+  '176kB',
+  '178 kB',
+  '8.27ms',
+  '12,880',
+  '12,237',
+  '206,028',
+  '206,050',
+  '3.35',
   'K8S_API_URL',
   'useSpeechRecognition',
   '混沌故障演练',
   '确认并执行自愈',
   '「快照诊断」',
 ];
-
-/** 性能事实源中允许出现的数值 */
-const draw = perf.rendering.drawCalls;
-const tri = perf.rendering.triangles;
-const ragLatency = perf.rag.latencyMs;
-const throughput = perf.sanitizer.throughputPerSec;
-const firstLoadKb = (() => {
-  const line = (perf.bundle?.routes ?? []).find((row) => row.includes('First Load') || row.trim().startsWith('┌'));
-  const match = typeof line === 'string' ? line.match(/(\d+)\s*kB\s*$/) : null;
-  return match === null ? null : Number(match[1]);
-})();
 
 /**
  * findContradictions —— 交叉核对：同一指标在文档里出现的值必须与事实源一致。
@@ -80,7 +94,7 @@ function findContradictions(text, docName) {
   const problems = [];
   const allowed = (values) => values.filter((value) => typeof value === 'number' && Number.isFinite(value));
 
-  /* draw calls：单个值必须等于中位；区间必须在实测 min~max 内 */
+  /* draw calls：单个值必须等于中位（允许同行的均值表项/说明）；区间必须在实测 min~max 内 */
   for (const match of text.matchAll(/(?:draw\s*calls?|Draw Calls)[^\d\n]{0,16}(\d{2,4})(?:\s*[~～\-–]\s*(\d{2,4}))?/gi)) {
     const first = Number(match[1]);
     const second = match[2] === undefined ? null : Number(match[2]);
@@ -89,7 +103,15 @@ function findContradictions(text, docName) {
         problems.push(`${docName}: draw calls 区间 ${first}~${second} 超出实测 ${draw.min}~${draw.max}`);
       }
     } else if (first !== draw.median) {
-      problems.push(`${docName}: draw calls ${first} ≠ 中位 ${draw.median}`);
+      const lineStart = text.lastIndexOf('\n', match.index) + 1;
+      const lineEnd = text.indexOf('\n', match.index);
+      const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+      const isMeanWithMedian =
+        (first === Math.floor(draw.mean) || first === Math.round(draw.mean)) &&
+        (line.includes(String(draw.median)) || /mean|均值/i.test(line));
+      if (!isMeanWithMedian) {
+        problems.push(`${docName}: draw calls ${first} ≠ 中位 ${draw.median}`);
+      }
     }
   }
 
@@ -103,10 +125,18 @@ function findContradictions(text, docName) {
     }
   }
 
-  /* 三角面 */
+  /* 三角面（允许性能汇总表同行的均值 + 中位数同时出现） */
   for (const match of text.matchAll(/(?:Triangles|三角面|三角形)[^\d\n]{0,14}([\d,]{5,9})/gi)) {
     const value = Number(match[1].replace(/,/g, ''));
-    if (value !== tri.median) problems.push(`${docName}: 三角面 ${match[1]} ≠ 中位 ${tri.median}`);
+    if (value !== tri.median) {
+      const lineStart = text.lastIndexOf('\n', match.index) + 1;
+      const lineEnd = text.indexOf('\n', match.index);
+      const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+      const isMeanWithMedian =
+        (value === Math.floor(tri.mean) || value === Math.round(tri.mean)) &&
+        (line.includes(String(tri.median)) || line.includes(comma(tri.median)));
+      if (!isMeanWithMedian) problems.push(`${docName}: 三角面 ${match[1]} ≠ 中位 ${tri.median}`);
+    }
   }
 
   /* 脱敏吞吐 */
@@ -118,9 +148,9 @@ function findContradictions(text, docName) {
     if (value !== throughput) problems.push(`${docName}: 脱敏吞吐 ${match[1]} 条/秒 ≠ ${throughput}`);
   }
 
-  /* 首屏 First Load（若文档出现该口径） */
+  /* 首屏 First Load（若文档出现该口径；避免误把"首屏 JS | 路由 107 kB"当成 First Load） */
   if (firstLoadKb !== null) {
-    for (const match of text.matchAll(/(?:First Load JS|First Load|首屏 JS)[^\d\n]{0,28}(\d{1,3})\s*kB/gi)) {
+    for (const match of text.matchAll(/(?:First Load JS|First Load|首屏 JS(?![^\n]{0,12}路由))[^\d\n]{0,16}(\d{1,3})\s*kB/gi)) {
       const value = Number(match[1]);
       if (value !== firstLoadKb) problems.push(`${docName}: 首屏 First Load ${value}kB ≠ ${firstLoadKb}kB`);
     }
@@ -135,6 +165,12 @@ const DOCS = [
   { name: '白皮书', file: 'docs/COMPETITION_TECHNICAL_WHITEPAPER.md', numbers: true },
   { name: 'PPT 文案', file: 'docs/KubeVision_PITCH_COPY.md', numbers: true },
   { name: 'PPT HTML', file: 'docs/pitch/index.html', numbers: false },
+  { name: '启动说明', file: '启动说明.md', numbers: false },
+  { name: '证据索引', file: 'docs/EVIDENCE.md', numbers: false },
+  { name: '性能报告', file: 'docs/performance.md', numbers: false },
+  { name: '发布说明', file: 'docs/summit/RELEASE_NOTES.md', numbers: false },
+  { name: '导演手册', file: 'docs/summit/DEMO_DIRECTOR_PLAYBOOK.md', numbers: false },
+  { name: '答辩预演', file: 'docs/summit/JUDGE_REHEARSAL.md', numbers: false },
 ];
 
 const results = [];

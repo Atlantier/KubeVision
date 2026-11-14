@@ -6,13 +6,13 @@
 # 说明：
 # - 基础镜像固定 Node 20 LTS（Next 14 官方支持范围）；本机开发为 Node 24，二者均可。
 # - .env.local 不进入镜像（.dockerignore 已排除），运行时通过 --env-file/环境变量注入。
-# - 未在本仓库 CI 中实际构建过（当前环境无 Docker），提交前请在有 Docker 的机器上验证。
+# - 当前宿主机无 Docker daemon，本 Dockerfile 仅完成静态审阅，未在容器内实跑验证。
 
 # ---------- deps：仅安装依赖（利用层缓存） ----------
 FROM node:20-alpine AS deps
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc* ./
+COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # ---------- builder：生产构建 ----------

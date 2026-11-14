@@ -49,7 +49,7 @@ const FULL = args.has('--full');
 /* 结果收集                                                                    */
 /* ========================================================================== */
 
-const results = { pass: 0, fail: 0, skip: 0, failures: [] };
+const results = { pass: 0, fail: 0, skip: 0, failures: [], skips: [] };
 
 function ok(name, detail = '') {
   results.pass++;
@@ -64,6 +64,7 @@ function bad(name, detail = '') {
 
 function skip(name, why = '') {
   results.skip++;
+  results.skips.push({ name, why });
   console.log(`  \x1b[33m○\x1b[0m ${name}${why ? ` \x1b[90m(${why})\x1b[0m` : ''}`);
 }
 
@@ -376,6 +377,26 @@ async function phaseUnit(baseUrl) {
 
 async function phaseApi(baseUrl) {
   section('阶段 3 · API 契约');
+
+  /* ---- HTTP 安全响应头（next.config.mjs headers） ---- */
+  try {
+    const hdrRes = await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(10000) });
+    const requiredHeaders = [
+      'x-content-type-options',
+      'x-frame-options',
+      'referrer-policy',
+      'content-security-policy',
+      'permissions-policy',
+    ];
+    const missingHdrs = requiredHeaders.filter((h) => !hdrRes.headers.get(h));
+    if (hdrRes.ok && missingHdrs.length === 0) {
+      ok('HTTP 安全响应头', 'CSP / XFO / XCTO / Referrer / Permissions-Policy 齐全');
+    } else {
+      bad('HTTP 安全响应头', `status=${hdrRes.status} 缺失=[${missingHdrs.join(', ')}]`);
+    }
+  } catch (e) {
+    bad('HTTP 安全响应头', String(e).slice(0, 80));
+  }
 
   /* ---- /api/telemetry SSE ---- */
   try {
@@ -907,12 +928,16 @@ async function main() {
   console.log('\n\x1b[1m╔══════════════════════════════════════════════════════╗\x1b[0m');
   console.log('\x1b[1m║  KubeVision AI — 完整验收回归                        ║\x1b[0m');
   console.log('\x1b[1m╚══════════════════════════════════════════════════════╝\x1b[0m');
-  if (QUICK) console.log('\x1b[90m  模式: --quick（跳过 API 与浏览器阶段）\x1b[0m');
+  if (QUICK) console.log('\x1b[90m  模式: --quick（仅执行静态阶段，跳过单元 / API / 浏览器运行时阶段）\x1b[0m');
   if (FULL) console.log('\x1b[90m  模式: --full（追加路演回归 verify-demo）\x1b[0m');
 
   await phaseStatic();
 
-  if (!QUICK) {
+  if (QUICK) {
+    skip('阶段 2 · 核心模块单元测试', '--quick 模式显式跳过（需运行 pnpm verify）');
+    skip('阶段 3 · API 路由与安全响应头', '--quick 模式显式跳过（需运行 pnpm verify）');
+    skip('阶段 4 · 无头浏览器与 3D 运行时', '--quick 模式显式跳过（需运行 pnpm verify）');
+  } else {
     /**
      * 【端口占用前置清理】上一轮若异常退出，残留的 dev server 会占住 3000，
      * 导致新实例无法绑定、浏览器连到状态异常的旧实例上——表现为
@@ -1001,6 +1026,11 @@ async function main() {
   const total = results.pass + results.fail + results.skip;
   console.log('\n\x1b[1m══════════════════ 汇总 ══════════════════\x1b[0m');
   console.log(`  总计 ${total} 项 · \x1b[32m通过 ${results.pass}\x1b[0m · \x1b[31m失败 ${results.fail}\x1b[0m · \x1b[33m跳过 ${results.skip}\x1b[0m`);
+
+  if (results.skips.length > 0) {
+    console.log('\n\x1b[33m跳过原因:\x1b[0m');
+    for (const s of results.skips) console.log(`  · ${s.name}${s.why ? ` — ${s.why}` : ''}`);
+  }
 
   if (results.fail > 0) {
     console.log('\n\x1b[31m失败项:\x1b[0m');

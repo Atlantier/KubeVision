@@ -23,6 +23,9 @@ const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const OUT = join(ROOT, 'tmp-sanitizer');
+process.on('exit', () => {
+  try { rmSync(OUT, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 if (existsSync(OUT)) rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });

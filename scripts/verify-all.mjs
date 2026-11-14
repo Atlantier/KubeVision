@@ -11,17 +11,18 @@
  * 行为：
  *  - 自动探测/拉起 dev server（仅当 3000 不可达时；结束时只杀自己拉起的进程）；
  *  - 每一步 stdout/stderr 原样落盘到 docs/evidence/verify-all/<时间戳>/<序号>-<name>.log；
- *  - 失败时写 FAILURE.md（步骤、退出码、日志路径、尾部输出）并停止；
+ *  - 默认完整跑完全部步骤、收集所有失败项（传 `--fail-fast` 可恢复失败即停），并写 FAILURE.md；
  *  - 结束时打印 Markdown 汇总表（通过/失败/耗时），同时写 summary.md / summary.json。
  *
- * 用法：node scripts/verify-all.mjs
+ * 用法：node scripts/verify-all.mjs [--fail-fast]
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT = process.cwd();
+const FAIL_FAST = process.argv.includes('--fail-fast');
 const BASE_URL = process.env.KV_BASE_URL ?? 'http://127.0.0.1:3000';
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
 const OUT_DIR = join(ROOT, 'docs/evidence/verify-all', STAMP);
@@ -113,7 +114,7 @@ async function main() {
   }
 
   const rows = [];
-  let failed = null;
+  const failedSteps = [];
   for (let i = 0; i < STEPS.length; i += 1) {
     const step = STEPS[i];
     console.log(`\n━━━ [${i + 1}/${STEPS.length}] ${step.name} ━━━`);
@@ -142,12 +143,13 @@ async function main() {
     rows.push({ name: step.name, exitCode: outcome.code, durationMs, logFile: logFile.replace(ROOT + '\\', '').replace(ROOT + '/', '') });
     console.log(`  → exit ${outcome.code}（${(durationMs / 1000).toFixed(1)}s）`);
     if (outcome.code !== 0) {
-      failed = { step: step.name, index: i + 1, exitCode: outcome.code, logFile, tail: tail(outcome.output) };
-      break;
+      failedSteps.push({ step: step.name, index: i + 1, exitCode: outcome.code, logFile, tail: tail(outcome.output) });
+      if (FAIL_FAST) break;
     }
   }
 
   const finishedAt = new Date();
+  const failed = failedSteps[0] ?? null;
   const summary = {
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
@@ -155,8 +157,9 @@ async function main() {
     outDir: OUT_DIR,
     steps: rows,
     failed,
+    failedSteps,
     passCount: rows.filter((row) => row.exitCode === 0).length,
-    failCount: failed === null ? 0 : 1,
+    failCount: failedSteps.length,
     totalSteps: STEPS.length,
   };
   writeFileSync(join(OUT_DIR, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
@@ -174,21 +177,40 @@ async function main() {
     const idx = rows.indexOf(row) + 1;
     lines.push(`| ${idx} | ${row.name} | ${row.exitCode === 0 ? 'PASS' : 'FAIL'} | ${(row.durationMs / 1000).toFixed(1)} | \`${row.logFile}\` |`);
   }
-  if (failed !== null) {
+  if (failedSteps.length > 0) {
     lines.push('');
-    lines.push(`> **失败即停**：第 ${failed.index} 步 \`${failed.step}\` exit ${failed.exitCode}；现场日志 \`${failed.logFile.replace(ROOT + '\\', '').replace(ROOT + '/', '')}\`。`);
-    lines.push('');
-    lines.push('```text');
-    lines.push(failed.tail);
-    lines.push('```');
+    lines.push(`> **失败汇总**：共 ${failedSteps.length} 步未通过（${failedSteps.map((f) => `#${f.index} \`${f.step}\` (exit ${f.exitCode})`).join(' · ')}）。`);
+    for (const item of failedSteps) {
+      lines.push('');
+      lines.push(`### 第 ${item.index} 步 \`${item.step}\`（exit ${item.exitCode}）`);
+      lines.push(`日志：\`${item.logFile.replace(ROOT + '\\', '').replace(ROOT + '/', '')}\``);
+      lines.push('');
+      lines.push('```text');
+      lines.push(item.tail);
+      lines.push('```');
+    }
   }
   const summaryMd = lines.join('\n') + '\n';
   writeFileSync(join(OUT_DIR, 'summary.md'), summaryMd, 'utf8');
 
   console.log('\n══════════════════ verify:all 汇总 ══════════════════');
   console.log(summaryMd);
-  if (failed !== null) {
-    writeFileSync(join(OUT_DIR, 'FAILURE.md'), `# verify:all 失败现场\n\n- 步骤：${failed.step}\n- 退出码：${failed.exitCode}\n- 日志：${failed.logFile}\n\n\`\`\`text\n${failed.tail}\n\`\`\`\n`, 'utf8');
+  if (failedSteps.length > 0) {
+    const failureMd = [
+      '# verify:all 失败现场',
+      '',
+      `共 ${failedSteps.length} 步失败：`,
+      ...failedSteps.map((item) => [
+        '',
+        `## 第 ${item.index} 步：${item.step}（exit ${item.exitCode}）`,
+        `- 日志：${item.logFile}`,
+        '',
+        '```text',
+        item.tail,
+        '```',
+      ].join('\n')),
+    ].join('\n');
+    writeFileSync(join(OUT_DIR, 'FAILURE.md'), `${failureMd}\n`, 'utf8');
     killTree(devRef);
     process.exit(1);
   }

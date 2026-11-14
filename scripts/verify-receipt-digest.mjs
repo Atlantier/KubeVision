@@ -21,6 +21,9 @@ const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const OUT = join(ROOT, 'tmp-receipt-digest');
+process.on('exit', () => {
+  try { rmSync(OUT, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 let pass = 0;
 let fail = 0;

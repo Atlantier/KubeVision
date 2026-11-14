@@ -7,14 +7,15 @@
 
 ## 1. 一句话现状
 
-**R5–R13（均含 main + 进阶）已完成并通过端到端及静态/样式契约验收（仅 R14 终稿一致性与彩排待推进）**：
+**R5–R14（均含 main + 进阶）已全部完成并通过全套基准、静态/样式契约、对抗压测与洁净发布包终验收（`READY FOR COMPETITION SUBMISSION`）**：
 - R7 `pnpm probe:camera`（真机 `d3d11`）`H1–H7` + `ERR=0` 全项通过（Pod 特写 `16.25%×16.5%` / `17.8%×16.5%`、720ms/820ms 实测 `720.1ms`/`820ms`、`dt` 阻尼跨帧率残差 `3.22% < 8%`、hover `commit=0`、Esc/`prefers-reduced-motion` `181.3ms`），同步闭环 `R6-2`。
 - R8 `pnpm probe:r8`（`scripts/probe-r8-layout.mjs`）`PASS 75 · FAIL 0`（覆盖 6 档视口 `360×740`–`1920×1080` + 连续宽度 `1080/1180/1260` + E1–E5 边界 + 全链路 E2E），并完成 `pnpm probe:keyboard`（`15/15`）、`pnpm probe:escape`（`11/11`）、`node scripts/check-style-contract.mjs --require-build`（`14/14`，`221/221` 透明度类零缺失）、`pnpm check:a11y`（`133` 文件 `0` 命中）、`node scripts/verify.mjs --full`（`verify-demo` `22/22`；`verify` `35/36`，唯一失败 `文档数字一致性` 按计划留待 R14）。
 - **R9 终检（`pnpm probe:stream-perf` · `d3d11`）**：**16/16 PASS**（总 Bubble 提交 `1718→77`，历史重渲染 `1290→0`，长任务 `65→0`，`CLS 0.00071`，修复 `N2c` 平滑回底竞态后 `distanceFromBottom=0`，50+ 虚拟化 DOM `12` / 滚顶 `min=11` / 历史重渲染 `0`，N4/N5/N6 及 0 error 全部通过）。
 - **R10 终检（`pnpm probe:r10` + `pnpm eval:rag` + `pnpm eval:ai-quality`）**：`probe:r10` **12/12 PASS**（`F1–F4` 容灾/隔离/12s 超时与只读 GET 复查/UTF-8 EOF 截断零乱码 + 真实 Upstream socket 中断 `F1-Server`；真实 LLM TTFT `p50 5605.66ms→685.39ms` / `p95 10596.70ms→840.23ms`，Simulator `p50=33.39ms`）；`eval:rag` 49 用例确定性 PASS（三路 `R@1 94.4%` / `R@3 100.0%` / 误拒率 `0.0%` / 错别字 `R@1 91.7%`）；`eval:ai-quality` 20/20 真实 LLM 零回落（RAG 正确率 `80.0%` vs 裸模型 `78.3%`，引用率 `65.0%` vs `0.0%`，动作合理性 `100.0%`）。
 - **R13 终检（`probe:r13-robustness` + `check-a11y --runtime` + `soak` + 样式契约）**：`probe:r13-robustness` **15/15 PASS**（`/api/health` 5 层矩阵与零密钥泄露、SSE 预算第 4 条 `budget-exceeded` / 心跳 `713ms` / 最大生命 `1515ms` / 20 并发 `20/20 P95=1055ms active=0`、3 标签 `?mode=live` `validCpu=36 nan=0 midSubs=3 endSubs=0`、`/api/chat` 30 次三路取消 `pathA=10/pathB=10/pathC=10 falseEngineAFailed=0`、4 大演练截图 `docs/screenshots/r13-drill-{1..4}.png`、20 条异常环状缓冲 `dedup=2 uiItems=5`、`verify-demo --inject-throw-test` 完整堆栈与 `page-error.md` 自检）；`check-a11y --runtime` 通过、`probe-r13` **11/11**、`verify-stream-integrity` 全通、`soak` **8/8**（`heapGrowth=3.3%`、跨阶段 OLS 斜率 `heap=0.829 MB/阶段 · timer=0.143 · interval=0.000 · listener=0.46`）；末次透明度刻度修正后 `pnpm build`、`check-style-contract --require-build`（`14/14, 235/235`）、`typecheck`/`lint`/`check:copy`/`check-emoji`/`check:layering`/`check:dead-exports`/`check:contrast`（53 文件 0 违约）/`check:a11y` 全通过。
+- **R14 终稿终检（同源 / 安全 / 对抗 / 彩排 / 发布包）**：`next.config.mjs` 开启 `poweredByHeader: false` 与全套安全响应头（`capture-evidence.mjs` 实测 `HTTP 安全响应头` PASS 且零 CSP 阻塞）；`package.json` 锁定全量 14 项范围版本并同步 `pnpm-lock.yaml`，修正 `Dockerfile`，清理 21 个 `tmp-*` 与旧包并向 12 个脚本注入退场清理，新建 `docs/SCRIPTS_INDEX.md`；`benchmark-consistency.mjs` 2 次连续运行 5/5 硬件无关字段一致（`docs/performance.json` @ `2026-11-14T11:09:52.166Z`）；升级 `check-docs-consistency.mjs`（**10/10 PASS / 0 漂移**）与 `check-metrics-lineage.mjs`（**0 断链**）并同步 10 份文档及重新导出白皮书 PDF（26 页 / 1,835,134 bytes）与 PPT PDF（12 页 / 4,004,151 bytes）；`verify.mjs` **36/36 PASS**、静态门禁 **8/8 PASS**、单测/协议 **9/9 PASS**、`verify-demo.mjs --skip-repeat` 连续 3 轮均 **19/19 PASS**、`adversarial-walkthrough.mjs` **160/160 PASS** + 全性能预算绿 + 破坏性恢复 **3/3 PASS**；clean `pnpm build`（First Load JS **194 kB**）+ `check-style-contract --require-build` **14/14 (235/235)**；洁净重打包 `release/kubevision-demo-345d528-2026-11-14T11-46-15.zip`（82.2 MB, 0 `.env*`/密钥/`tmp-*`）；生成终稿报告 `docs/summit/R14-FINAL-RELEASE-REPORT.md`。
 
-仓库无 remote，master 落后当前分支 97 个提交；未跟踪用户文档 `docs/KubeVision_终极Prompt手册.md`、`.verify-artifacts/` 基线/诊断产物及历史 `tmp-*.mjs` 临时脚本未触碰。
+仓库无 remote，将在 `chore/dead-code-cleanup` 提交 R14 收口后快进对齐 `master`；未跟踪用户文档 `docs/KubeVision_终极Prompt手册.md` 与 `.verify-artifacts/` 基线/诊断产物保持未追踪未提交。
 
 ---
 
@@ -96,8 +97,8 @@
 | R10 AI 可靠性与可信度 | P1 | 首 token 前装饰 sleep、回落两段结论、畸形载荷白屏、MCP 超时、RAG 置信度语义 | **已完成**：`run-chat-stream-tests` **19/19**、`probe-stream-determinism` **160/160**、`probe:r10` **12/12**（TTFT `p50 5605.66→685.39ms`、`p95 10596.70→840.23ms`）、`eval:rag` 49 用例三路 `R@1 94.4% / R@3 100.0% / 误拒率 0.0%`、`eval:ai-quality` 20/20（RAG 正确率 `80.0%` vs 裸模型 `78.3%`，引用率 `65.0%` vs `0.0%`） |
 | R11 全站汉化与术语治理 | 已完成（main + 进阶） | `src/constants/copy/*`（34 条术语 A–E + J1–J3）、全站文案与报告去泄漏替换、`check:copy`（C1–C8）与只读「术语表（34）」 | `check:copy` 139 文件 0 违规（allowlist 12/12）；`verify-demo` 22/22；`verify.mjs` 34/35（仅文档数字一致性留待 R14）；术语表 UI CDP 0 报错 |
 | R12 交互与动效治理 | 已完成（main + 进阶） | `CommandPalette` 模糊匹配/分组/`combobox-listbox`、`useFocusReturn` 栈式焦点陷阱与 `<header inert>`、`AnimatePresence` 退场、WAI-ARIA Tabs/Menu、`SplitPaneResizer` 损坏存储自愈、`<MotionConfig reducedMotion="user">`、单全局 Toast、`check:contrast` WCAG AA/触控整改 | `check:contrast` 50 文件 0 违约；`check-style-contract` 229/229；`probe:r12` 19/19（`listeners=5, cls=0.0000`）；`probe:escape` 11/11；`probe:keyboard` 15/15；`probe:keyboard-path` 12/12；`verify-demo` 22/22；`verify.mjs --full` 35/36（仅 `R8-1` 留待 R14） |
-| R13 错误边界/a11y/长连接 | 已完成（main + 进阶） | `/api/health` 5 层矩阵、`DEGRADATION_MATRIX`、SSE 预算/心跳/TTL、850ms `live` 共享采样、`/api/chat` 3 路取消零误降级、`error.tsx`/`global-error.tsx`/`CanvasErrorBoundary` + 2D 拓扑降级、20 条环状异常缓冲与 `PerfHUD` 最近 5 条诊断、`soak` OLS 斜率与 `--inject-throw-test` / `--runtime` A11y | `probe:r13-robustness` **15/15**、`check-a11y --runtime` 通过、`probe-r13` **11/11**、`verify-stream-integrity` 全通、`soak` **8/8**（`heap斜率=0.829 MB/阶段`）；末次样式修整后 `pnpm build`、`check-style-contract --require-build`（`14/14, 235/235`）与静态/对比度门禁全绿 |
-| R14 工程一致性/交付卫生 | P0·最后 | 文档数字=代码事实、安全头、release 卫生、verify:all 19 步、黄金演示彩排 | 文档同源；安全头齐全；19 步全跑；34/34；彩排偏差≤10s |
+| R13 错误边界/a11y/长连接 | 已完成（main + 进阶） | 已提交归档 | `/api/health` 5 层矩阵、`DEGRADATION_MATRIX`、SSE 预算/心跳/TTL、850ms `live` 共享采样、`/api/chat` 3 路取消零误降级、`error.tsx`/`global-error.tsx`/`CanvasErrorBoundary` + 2D 拓扑降级、20 条环状异常缓冲与 `PerfHUD` 最近 5 条诊断、`soak` OLS 斜率与 `--inject-throw-test` / `--runtime` A11y | `probe:r13-robustness` **15/15**、`check-a11y --runtime` 通过、`probe-r13` **11/11**、`verify-stream-integrity` 全通、`soak` **8/8**（`heap斜率=0.829 MB/阶段`）；样式修整后构建与静态门禁全绿 |
+| R14 工程一致性/交付卫生 | 已完成（main + 进阶） | 工作区待提交（含 fast-forward `master`） | `next.config.mjs` 安全头（`poweredByHeader: false` + CSP/HSTS/XFO）；`package.json` 锁全量版本 + `pnpm-lock.yaml` 同步 + `Dockerfile` 修正；清除旧泄露 release 与 21 个根 `tmp-*`、注入 12 个脚本退场清理并新增 `docs/SCRIPTS_INDEX.md`；升级 `check-docs-consistency` / `check-metrics-lineage` 与 `verify-rag` / `adversarial-walkthrough`；同源同步 10 份文档、重导出白皮书/PPT PDF、重打包洁净离线包并产出 `docs/summit/R14-FINAL-RELEASE-REPORT.md` | `verify.mjs` **36/36**、静态 **8/8**、单测/协议 **9/9**、`verify-demo` ×3 **19/19**、`benchmark-consistency` **5/5**、`docs-consistency` **10/10 (0 漂移)**、`metrics-lineage` **0 断链**、`adversarial` **160/160 + 3/3 恢复 + 全预算绿**、`style-contract` **14/14 (235/235)**、离线 zip 0 `.env*` |
 
 **依赖顺序**：R1→(R2/R3/R4/R5)→R6→R7→R8→R9→R10→R11→R12→R13→R14。P0 不可砍：R1/R2/R3/R4/R5/R11 文案-脚本同步/R14 全量回归。
 
@@ -148,9 +149,10 @@ git revert 9e106b4   # R5-1 修测量（最后退）
 
 ---
 
-## 8. 建议的下一步（推进 R14）
+## 8. R5–R14 收口完成状态与提交前人工事项
 
-1. **R11–R13 已闭环归档**：
-   - R11（全站汉化与术语治理）、R12（交互治理、焦点管理、动效减敏与对比度/触控热区收口）与 R13（错误边界、五层优雅降级、SSE 长连接配额/取消免疫与 OLS/运行时门禁）均已完成 main + 进阶并提交归档（**严禁提交** `docs/KubeVision_终极Prompt手册.md` 及 `.verify-artifacts/` / `tmp-*.mjs` 临时探针）。
-2. **继续推进 R14**：
-   - 完成终稿文档同源对齐（含 README / 白皮书 / PPT 文档数字一致性，解决 `R8-1`）、安全响应头 / release 卫生检查与 `verify:all` 19 步黄金彩排（R14）。
+1. **R5–R14 已全部完成并归档收口**：
+   - R5–R13 与 **R14（工程一致性、安全响应头、依赖锁与交付卫生、10 份文档零漂移、对抗压测 160/160、3×19 黄金彩排、洁净离线打包与终稿报告 `docs/summit/R14-FINAL-RELEASE-REPORT.md`）** 已全部完成 main + 进阶并通过终验收，可在 `chore/dead-code-cleanup` 提交后快进 `master` 对齐（**严禁提交** `docs/KubeVision_终极Prompt手册.md` 与 `.verify-artifacts/`）。
+2. **团队提交前人工确认清单**：
+   - 替换 `README.md`（18 处）与 `docs/pitch/index.html`（3 处）中的 `【待填写】` 占位符后重跑 `pnpm docs:ppt`；
+   - 按组委会/团队口径确认 `LICENSE` 全文与最终投稿压缩包命名，并按真实录制计划完成独立视频录制。

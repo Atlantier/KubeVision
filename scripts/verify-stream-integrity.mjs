@@ -40,6 +40,9 @@ const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const PROTOCOL_OUT = join(ROOT, 'tmp-stream-protocol');
+process.on('exit', () => {
+  try { rmSync(PROTOCOL_OUT, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 
 if (existsSync(PROTOCOL_OUT)) rmSync(PROTOCOL_OUT, { recursive: true, force: true });
 mkdirSync(PROTOCOL_OUT, { recursive: true });

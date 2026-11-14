@@ -22,7 +22,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +66,9 @@ const GPU_FLAGS = GPU === 'swiftshader'
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
 const TOKENS_TMP = join(ROOT, 'tmp-glass-tokens');
+process.on('exit', () => {
+  try { rmSync(TOKENS_TMP, { recursive: true, force: true }); } catch { /* ignore */ }
+});
 mkdirSync(TOKENS_TMP, { recursive: true });
 {
   const result = ts.transpileModule(readFileSync(join(ROOT, 'src/constants/tokens.ts'), 'utf8'), {

@@ -232,7 +232,7 @@ sequenceDiagram
     Store-->>UI: React 重渲染（仅低频字段）
 ```
 
-**关键设计**：遥测数据 1Hz 更新，渲染循环以 60FPS 为目标帧率做插值（本机 SwiftShader 实测 FPS 3.35，仅作设计目标，不作为性能证据）。若把 1Hz 快照直接写入 React state，每帧都要等待协调器，会造成明显卡顿。瞬态轨用模块级可变单例 + `Float32Array`，绕过 React 直达 `useFrame`，实现**零组件重渲染**。
+**关键设计**：遥测数据 1Hz 更新，渲染循环以 60FPS 为目标帧率做插值（本机 SwiftShader 实测 FPS 均值 4.75 / 中位 5，仅作设计目标，不作为性能证据）。若把 1Hz 快照直接写入 React state，每帧都要等待协调器，会造成明显卡顿。瞬态轨用模块级可变单例 + `Float32Array`，绕过 React 直达 `useFrame`，实现**零组件重渲染**。
 
 ### 3.3 瞬态渲染与 React 状态隔离（目标帧率 60FPS）
 
@@ -636,7 +636,7 @@ flowchart LR
 | R02–R05 | 程序化 3D 场景、机架/Pod 实例化、双轨遥测、全息 HUD | `src/components/canvas/**`、`docs/summit/shots/` | FPS 未真机；仅 draw calls 可作证 |
 | R04 | 自动演练导演状态机（4 阶段/34s、暂停/续播/停止） | `src/utils/demoDirector.ts`、`scripts/run-demo-tests.mjs` | 依赖预检 5 项；失败不自动降级到手动 |
 | R06 | 性能基准脚本与 `docs/performance.json` | `scripts/benchmark.mjs` | SwiftShader 环境，FPS 不作证据 |
-| R10 | 34 项自动化验收（静态/接口/浏览器） | `docs/evidence/verify-*.png/.log`、`docs/verify-summary.json` | 浏览器用 CDP 模拟输入，非人工操作 |
+| R10–R14 | 36 项自动化验收（静态/安全响应头/接口/浏览器） | `docs/evidence/verify-*.png/.log`、`docs/verify-summary.json` | 浏览器用 CDP 模拟输入，非人工操作 |
 | R11–R15 | 视觉/A11y/启动胶囊/一键演示链路 | `docs/summit/shots/r41-*`、`scripts/shot.mjs` | 视觉回归依赖基线图 |
 | R16 | traceId/细分 span/usage tokens/成本字段 | `src/utils/agentTrace.ts`、`AgentTracePanel` | 成本需配置 env 单价，未配置显示"未配置" |
 | R17 | RAG 评测 49 用例（两路/三路/负例/拒答） | `docs/rag-eval.json`、`scripts/eval-rag.mjs` | 构造用例，非线上流量 |
@@ -818,7 +818,7 @@ Next.js App Router 默认服务端渲染。若组件在渲染期读取 `localSto
 node scripts/verify.mjs
 ```
 
-自动完成 <!-- VERIFY:BEGIN -->**通过 34 · 失败 0 · 跳过 0（共 34 项）**<!-- VERIFY:END -->，分四阶段：
+自动完成 <!-- VERIFY:BEGIN -->**通过 36 · 失败 0 · 跳过 0（共 36 项）**<!-- VERIFY:END -->，分四阶段：
 
 | 阶段 | 覆盖内容 | 检查数 |
 |---|---|---|
@@ -840,18 +840,18 @@ node scripts/benchmark.mjs
 <!-- METRICS:BEGIN -->
 | 指标 | 实测值 | 采集口径 / 是否可作性能证据 |
 |---|---|---|
-| 数据采集时间 | 2026-11-13 20:59（Asia/Shanghai） | `node scripts/benchmark.mjs` |
+| 数据采集时间 | 2026-11-14 19:09（Asia/Shanghai） | `node scripts/benchmark.mjs` |
 | 运行环境 | win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM · Node v24.16.0 · 24 核 | 同上 |
 | WebGL 渲染器 | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver) | 软件光栅化，**FPS 不作为性能证据** |
-| Draw Calls | **229**（20 次采样 229~232） | 硬件无关，可作渲染优化证据 |
-| Triangles | 206,050（中位） | 硬件无关 |
-| 场景对象 | 151 Mesh / 27 InstancedMesh / 1,017 实例 / 3 Points / 4 Lines | 场景统计 |
-| RAG 检索延迟 | 均值 **8.05ms** · 中位 7.79ms · P95 11.87ms（20 次采样） | 真实耗时 |
-| 脱敏吞吐 | **12,237 条/秒**（100 条/批 × 5） | 真实耗时 |
-| 端侧分类延迟 | 均值 0.05ms（15 条） | builtin (fallback)，非神经网络推理 |
-| 首屏 JS | 路由 90.5 kB · First Load 178 kB · 共享 87.5 kB | next build 输出 |
-| FPS（软件光栅化） | 均值 4.85 · 中位 5.00 · P95 8.00（20 次采样） | **不作为性能证据** |
-| 帧时间（软件光栅化） | 均值 237.73ms · P95 829.50ms | **不作为性能证据** |
+| Draw Calls | **235**（20 次采样 235~238） | 硬件无关，可作渲染优化证据 |
+| Triangles | 206,626（中位） | 硬件无关 |
+| 场景对象 | 154 Mesh / 27 InstancedMesh / 1,017 实例 / 3 Points / 4 Lines | 场景统计 |
+| RAG 检索延迟 | 均值 **8.39ms** · 中位 8.07ms · P95 12.05ms（20 次采样） | 真实耗时 |
+| 脱敏吞吐 | **11,264 条/秒**（100 条/批 × 5） | 真实耗时 |
+| 端侧分类延迟 | 均值 0.12ms（21 条） | builtin (fallback)，非神经网络推理 |
+| 首屏 JS | 路由 107 kB · First Load 194 kB · 共享 87.5 kB | next build 输出 |
+| FPS（软件光栅化） | 均值 4.75 · 中位 5.00 · P95 6.00（20 次采样） | **不作为性能证据** |
+| 帧时间（软件光栅化） | 均值 280.78ms · P95 892.40ms | **不作为性能证据** |
 | 视口休眠 | 前台 `always` → 后台 `demand`，已验证生效 | 行为验证 |
 
 | RAG 召回方案（真实评测） | Recall@1 | Recall@3 | MRR@5 | NDCG@5 |
@@ -991,7 +991,7 @@ docker run -p 3000:3000 --env-file .env.local kubevision:latest
 | 网络丢包（NET_PACKET_LOSS） | 2 / 2 | [0:Ready, 1:Ready, 2:NetworkPartition] / [0:Ready, 1:Ready, 2:NetworkPartition] | P0:1·P1:0·P2:0 / P0:1·P1:0·P2:0 | 一致 |
 | CPU 尖峰（NODE_CPU_SPIKE） | 0 / 0 | [0:HighLoad, 1:Ready, 2:Ready] / [0:HighLoad, 1:Ready, 2:Ready] | P0:0·P1:1·P2:0 / P0:0·P1:1·P2:0 | 一致 |
 
-> 采集时间 2026-11-12 20:28 · 40 tick 演进 · 语义一致 3/3 场景。
+> 采集时间 2026-11-14 19:24 · 40 tick 演进 · 语义一致 3/3 场景。
 <!-- PARITY:END -->
 
 判定口径：**受害者数量 / 节点状态 / 告警级别分布**三项必须一致；
@@ -1184,20 +1184,20 @@ flowchart TB
 
 ---
 
-### 8.6 文档口径一致化记录（R55）
+### 8.6 文档口径一致化记录（R14）
 
 | # | 修正项 | 旧口径 | 新口径（以代码/脚本为准） |
 |---|---|---|---|
 | 1 | K8s 地址环境变量 | 旧变量名（已废弃） | `K8S_API_SERVER`（配合 `K8S_BEARER_TOKEN`） |
 | 2 | 真实集群接入描述 | "已完成适配层"易被读成已连通 | 适配层已实现，未现场连接真实集群 |
-| 3 | FPS 表述 | 多处写 60FPS | 目标帧率 60FPS；本机实测 3.35，不作性能证据 |
-| 4 | Draw Calls | 旧值（多版本不一致） | 统一取 `docs/performance.json`（本次 423） |
-| 5 | 三角面 | 旧值（早期采样） | 统一取最新（本次 206,028 中位） |
-| 6 | RAG 延迟 | 旧值（多版本不一致） | 统一取最新（本次均值 8.27ms / P95 9.97ms） |
-| 7 | 脱敏吞吐 | 旧值（多版本不一致） | 统一取最新（本次 12,880 条/秒） |
-| 8 | 首屏体积 | 旧值 84.8kB / 172kB | 统一取最新构建（88.9kB / 176kB） |
+| 3 | FPS 表述 | 多处写 60FPS | 目标帧率 60FPS；本机 SwiftShader 软光栅实测中位 5（均值 4.75），不作 GPU 性能证据 |
+| 4 | Draw Calls | 旧值（多版本不一致） | 统一取 `docs/performance.json`（本次中位 235） |
+| 5 | 三角面 | 旧值（早期采样） | 统一取最新（本次 206,626 中位） |
+| 6 | RAG 延迟 | 旧值（多版本不一致） | 统一取最新（本次均值 8.39ms / P95 12.05ms） |
+| 7 | 脱敏吞吐 | 旧值（多版本不一致） | 统一取最新（本次 11,264 条/秒） |
+| 8 | 首屏体积 | 旧值 84.8kB / 172kB | 统一取最新构建（107kB / 194kB） |
 | 9 | 代码规模 | 64 文件 / 34,600 行 | 120 文件 / 59,063 行（src/**/*.{ts,tsx}） |
-| 10 | 演示按钮名 | 「故障演练」「立即执行自愈方案」「3D 视口多模态3D 视口多模态快照诊断」 | 「故障演练」「立即执行自愈方案」「3D 视口多模态3D 视口多模态快照诊断」 |
+| 10 | 演示按钮名 | 旧按钮文案（已统一） | 「故障演练」「立即执行自愈方案」「3D 视口多模态快照诊断」 |
 | 11 | 路演入口 | 「路演」 | 「剧本路演」 |
 | 12 | 死链 | 旧 Hook 文件名（已修复） | `useSpeechInput.ts` |
 

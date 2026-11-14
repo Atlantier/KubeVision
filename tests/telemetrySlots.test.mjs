@@ -29,6 +29,13 @@ const OUT_DIR = join(ROOT, 'tmp-slots');
 
 if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true });
 mkdirSync(OUT_DIR, { recursive: true });
+process.on('exit', () => {
+  try {
+    if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true });
+  } catch {
+    // 忽略进程退出阶段的临时目录清理异常
+  }
+});
 
 function transpile(srcRel, outName, rewrite) {
   const source = readFileSync(join(ROOT, srcRel), 'utf8');

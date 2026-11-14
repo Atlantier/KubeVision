@@ -11,7 +11,7 @@
 
 | 需求/旧稿写法 | **真实 UI 文案（以代码/实测为准）** | 证据 |
 |---|---|---|
-| 顶栏「混沌故障演练」 | 按钮 **「故障演练」**（aria：打开故障演练场景选择）；激活后顶栏显示 **「演练中：OOM 风暴」**，右侧终止按钮为图标（aria：**终止故障演练，恢复稳态**） | DOM 抓取 + `TopBar.tsx:423/526` |
+| 顶栏演练触发按钮 | 按钮 **「故障演练」**（aria：打开故障演练场景选择）；激活后顶栏显示 **「演练中：OOM 风暴」**，右侧终止按钮为图标（aria：**终止故障演练，恢复稳态**） | DOM 抓取 + `TopBar.tsx:423/526` |
 | 弹窗内独立「注入」按钮 | **不存在**。弹窗 aria **「混沌工程故障演练控制台」**，**点场景卡片即注入**。场景卡 aria：`A · POD_OOM_SWARM · 内存溢出雪崩`、`B · NODE_CPU_SPIKE · 计算节点算力打满`、`C · NET_PACKET_LOSS · CNI 网络插件分区丢包`、`D · NONE · 一键恢复集群稳态` | DOM 抓取 |
 | 自愈「先勾选风险确认，再点立即执行」 | **只对高危动作成立**。OOM 的 restart 是非高危：**无复选框**，按钮直接是 **「立即执行自愈方案」**。高危动作才出现复选框：**「我已知晓该操作将影响生产环境，确认立即执行（此操作会记录审计日志）」**；**未勾选时按钮文案变成「需二次确认」且 disabled**（不是「立即执行」变灰） | `GenUI/ActionConfirm.tsx:626-634/701` |
 | 快照诊断按钮文字 | 3D 视口工具条内**相机图标**，无可见文字；aria **「3D 视口多模态快照诊断」**，title「截取当前 3D 帧并唤醒 AI Copilot 执行多模态空间异常联合诊断」 | DOM 抓取 |
@@ -65,7 +65,7 @@
 
 | 插入点 | 时长 | 操作（真实文案） | 讲解词（约字数） | 证据/边界 |
 |---|---|---|---|---|
-| 0:45 后（故障注入前） | +30s | 点 **「性能」**（Shift+P）看 HUD | 「场景里 322 个 mesh、25 个 InstancedMesh 承载 1026 个实例，全场景实测 421.5 draw calls。如果 1026 个实例逐个画，仅它们就至少 1026 次 draw call——实例合并把量级压下来了。」（约 78 字） | `docs/performance.json`：drawCalls mean 421.5/median 423、meshes 322、instanced 25/1026；**环境是 SwiftShader，不讲 FPS** |
+| 0:45 后（故障注入前） | +30s | 点 **「性能」**（Shift+P）看 HUD | 「场景里 154 个 mesh、27 个 InstancedMesh 承载 1,017 个实例，全场景实测 235 draw calls。如果 1,017 个实例逐个画，仅它们就至少 1,017 次 draw call——实例合并把量级压下来了。」（约 78 字） | `docs/performance.json`：drawCalls median 235、meshes 154、instanced 27/1017；**环境是 SwiftShader，不讲 FPS** |
 | 1:30 后（自愈前） | +35s | 不点，指 3D 画面 + HUD | 「遥测 1Hz，渲染循环按 60FPS 设计的插值在跑；1Hz 快照进的是瞬态引用，不进 React state——所以 1Hz 的数据不会触发组件重渲染。这是我们敢在软渲染环境里也讲架构的原因。」（约 84 字） | `telemetryTransientRef` 双轨状态；**只说设计，不说实测 60FPS** |
 | 2:05 后（RAG 后） | +45s | 断网演示：停掉本地网关（或断网卡）→ 发一条故障问题 | 「现在把网关断掉，再发一次。注意延迟——它不会卡死，几秒内自动切到『本地确定性容灾引擎』，继续给结构化诊断和卡片。这是离线优先，不是降级故障。实测这次回落约 6.7 秒（含重试），不是 1 秒。」（约 95 字） | 实测 TTFT 6688.66ms → engine=simulator；`trace-summary`；**别说 1 秒** |
 | 2:25 后（复盘前） | +40s | 点 **「RAG 知识库」** → **「新增自定义 Runbook」** → 填标题/症状/根因/特征词 → **「提交入库」** → 回检索框搜该关键词 | 「评委可以现场出题：新增一条自定义手册，提交后立刻进检索池。提示会写『已写入语料池并选中』。它存在 localStorage，服务端读不到，所以每次对话随请求上送。」（约 78 字） | `RagKnowledgeModal` 真实按钮；「已写入语料池并选中：<id>」；检索立即命中 |
@@ -145,17 +145,17 @@
 1. **和真实 K8s 什么关系？**
    「演示默认跑确定性仿真引擎：故障语义按真实 K8s 建模，数值是合成值，不声称是真实集群实测。真实集群适配层在，但这次没接。证据：白皮书第七章数据边界；`syntheticEngine.ts` 注释明说无 Math.random。」
 2. **RAG 效果怎么证明？**
-   「49 条评测用例：两路 Recall@1 66.7%、三路 69.4%（+2.8pp），MRR 0.746→0.803；负例拒答 87.5%，误拒 0%。文件：`docs/rag-eval.md`，可用 `pnpm eval:rag` 重跑，两次结果一致。」
+   「49 条评测用例：两路 Recall@1 88.9%、三路 94.4%（+5.6pp），MRR 0.927→0.976；负例拒答 100.0%，误拒 0%。文件：`docs/rag-eval.md`，可用 `pnpm eval:rag` 重跑，两次结果一致。」
 3. **三路召回真的上线了吗？**
    「引擎支持 MinerLM 384 维查询向量，Worker embed 协议和 `/api/chat` 入参都做了；但浏览器端到端未真机验证，生产未开三路时自动两路。评测用的是预计算查询向量，这点我们在 R45 文档里写明了。」
 4. **60FPS 是真的吗？**
-   「不是。本机只有 SwiftShader 软渲染，实测 FPS 3.45，我们不能拿它当卖点。可验证的是硬件无关指标：421.5 draw calls、322 mesh、25 个 InstancedMesh 承载 1026 实例。白皮书 8.5 明确写了『无 GPU 环境声称 60FPS 不诚实』。」
+   「不是。本机只有 SwiftShader 软渲染，实测 FPS 中位 5（均值 4.75），我们不能拿它当卖点。可验证的是硬件无关指标：235 draw calls（中位，均值 236.35）、154 mesh、27 个 InstancedMesh 承载 1,017 实例。白皮书 8.5 明确写了『无 GPU 环境声称 60FPS 不诚实』。」
 5. **MCP 是标准实现吗？**
    「是 JSON-RPC 2.0 over HTTP：`/api/mcp` 支持 initialize / tools/list / tools/call / ping，错误码符合规范；不是 stdio transport。工具三个，执行复用 `/api/mcp/execute`（legacy 标注）。文件：`src/app/api/mcp/route.ts`。」
 6. **端侧模型真跑了吗？**
-   「权重已随包（`public/models/Xenova/all-MiniLM-L6-v2`，Apache-2.0），但这台机器端侧推理走的是 builtin fallback，0.14ms 不是神经网络延迟；页面会写明当前引擎，我们不冒充。」
+   「权重已随包（`public/models/Xenova/all-MiniLM-L6-v2`，Apache-2.0），但这台机器端侧推理走的是 builtin fallback，0.12ms 不是神经网络延迟；页面会写明当前引擎，我们不冒充。」
 7. **隐私安全怎么保证？**
-   「端侧脱敏：100 条批量 6.46ms，约 15,481 条/秒；原始凭证不出浏览器。高危动作必须人工确认，执行有回执与 sha256 摘要。边界：这不是等保认证，只是架构层面的数据最小化。」
+   「端侧脱敏：100 条批量均值 8.88ms，约 11,264 条/秒；原始凭证不出浏览器。高危动作必须人工确认，执行有回执与 sha256 摘要。边界：这不是等保认证，只是架构层面的数据最小化。」
 8. **没 Key/断网怎么办？**
    「自动切本地确定性容灾引擎，继续给结构化诊断与卡片；实测这次回落 6.7 秒（含重试），不是 1 秒。这是离线优先设计，白皮书 4.x 有说明。」
 9. **多模态是真的看图吗？**
@@ -213,15 +213,15 @@
 | 数字 | 值 | 来源 |
 |---|---|---|
 | 内置手册 | 12 篇（RUNBOOK-K8S-042…SRE-RB-012） | `src/utils/sreRagEngine.ts`；RAG 弹窗左侧列表 |
-| RAG 评测 | 49 用例；两路 R@1 66.7% / 三路 69.4%（+2.8pp）；负例拒答 87.5%；误拒 0% | `docs/rag-eval.md` / `.json` |
+| RAG 评测 | 49 用例；两路 R@1 88.9% / 三路 94.4%（+5.6pp）；负例拒答 100%；误拒 0% | `docs/rag-eval.md` / `.json` |
 | AI 质量 20 问 | 正确率 91.7%（RAG 与裸模型相同）；引用命中 95% vs 50%；40 次真实调用 | `docs/ai-quality.md` / `.json` |
-| Draw Calls | mean 421.5 / median 423 / p95 423（SwiftShader） | `docs/performance.json`（2026-11-10T14:27Z） |
-| 场景规模 | mesh 322；InstancedMesh 25；实例 1026；三角面 205,980 | 同上 |
-| FPS | 3.45（SwiftShader，**禁讲**） | 同上，notes |
-| RAG 引擎延迟 | mean 7.93ms / p95 10.05ms | 同上 |
-| 脱敏吞吐 | 100 条 6.46ms ≈ 15,481 条/秒 | 同上 |
-| 构建 | `/` 路由 88.9 kB · First Load 176 kB；首屏 gzip 172.2 KB（audit） | `docs/performance.json` bundle；`docs/deps-audit.md` |
-| 回归 | verify 33/33；tsc 0；lint 0（any 规则已启用） | `tmp-b3-verify-full.log` 历史产物；`pnpm verify` |
+| Draw Calls | mean 236.35 / median 235 / p95 238（SwiftShader） | `docs/performance.json`（2026-11-14） |
+| 场景规模 | mesh 154；InstancedMesh 27；实例 1,017；三角面 206,626 | 同上 |
+| FPS | 中位 5 / 均值 4.75（SwiftShader，**禁讲**） | 同上，notes |
+| RAG 引擎延迟 | mean 8.39ms / p95 12.05ms | 同上 |
+| 脱敏吞吐 | 11,264 条/秒（100 条/批 均值 8.88ms） | 同上 |
+| 构建 | `/` 路由 107 kB · First Load 194 kB；共享 87.5 kB | `docs/performance.json` bundle |
+| 回归 | verify 36/36；tsc 0；lint 0（any 规则已启用） | `docs/verify-summary.json`；`pnpm verify` |
 | 断网回落 | TTFT 6,688.66ms → simulator（含重试），**不是 1 秒** | 本轮实测 `/api/chat` trace-summary |
 | 路演时长 | OOM 剧本约 34 秒 / 4 阶段（字幕条） | `TopBar.tsx` 剧本菜单 |
 | MCP | JSON-RPC 2.0 over HTTP；4 方法；3 工具 | `src/app/api/mcp/route.ts` |

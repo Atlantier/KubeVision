@@ -15,7 +15,7 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 
 1. **问题**：K8s 告警把三维现场压成一行日志——定位靠猜、根因无出处、高危操作难审计。
 2. **方案**：3D 空间索引 + 双擎 Agent（云端 LLM / 离线引擎 B）+ 混合 RAG + 端侧脱敏 + MCP 人工在环闭环。
-3. **证据**：34/34 自动化验收；draw calls 中位 423；RAG 三路 Recall@1 69.4%（+2.8pp）；检索均值 8.27ms；脱敏 12,880 条/秒。
+3. **证据**：36/36 自动化验收；draw calls 中位 235；RAG 三路 Recall@1 94.4%（+5.6pp）；检索均值 8.39ms；脱敏 11,264 条/秒。
 4. **边界**：无真实集群、FPS 未在真实 GPU 采集、端侧模型降级、MCP 走 HTTP JSON-RPC 非 stdio、无客户/营收数据。
 5. **价值**：离线优先、零凭证出域、可审计可复盘的 SRE 副驾，降低中小企业 K8s 排障门槛。
 
@@ -66,7 +66,7 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 |---|---|---|
 | **AI 技术深度** | **35%** | 双擎流式大模型 + 四阶段 ReAct Agent + BM25/TF-IDF/RRF 混合 RAG + 端侧 Transformers.js + MCP 工具闭环 |
 | **创新性** | **25%** | 空间-语义双向绑定（3D 坐标 ↔ 数据面板）、云端推理 + 端侧隐私审计双模协同 |
-| **前端工程质量** | **10%** | 零 `any` 严格类型、<!-- VERIFY:BEGIN -->**通过 34 · 失败 0 · 跳过 0（共 34 项）**<!-- VERIFY:END -->、双轨状态架构（60FPS 为目标帧率，实测见局限） |
+| **前端工程质量** | **10%** | 零 `any` 严格类型、<!-- VERIFY:BEGIN -->**通过 36 · 失败 0 · 跳过 0（共 36 项）**<!-- VERIFY:END -->、双轨状态架构（60FPS 为目标帧率，实测见局限） |
 | **实用性** | **10%** | 覆盖真实 K8s 五大类高频故障，处置动作直连 MCP 协议 |
 | **用户体验** | **10%** | 电影级 3D 场景、生成式 UI 卡片水合、3 分钟黄金演示动线 |
 | **社会价值与商业潜力** | **10%** | 降低中小企业 K8s 运维门槛，金融/政务信创私有化合规 |
@@ -101,18 +101,18 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 <!-- METRICS:BEGIN -->
 | 指标 | 实测值 | 采集口径 / 是否可作性能证据 |
 |---|---|---|
-| 数据采集时间 | 2026-11-13 20:59（Asia/Shanghai） | `node scripts/benchmark.mjs` |
+| 数据采集时间 | 2026-11-14 19:09（Asia/Shanghai） | `node scripts/benchmark.mjs` |
 | 运行环境 | win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM · Node v24.16.0 · 24 核 | 同上 |
 | WebGL 渲染器 | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver) | 软件光栅化，**FPS 不作为性能证据** |
-| Draw Calls | **229**（20 次采样 229~232） | 硬件无关，可作渲染优化证据 |
-| Triangles | 206,050（中位） | 硬件无关 |
-| 场景对象 | 151 Mesh / 27 InstancedMesh / 1,017 实例 / 3 Points / 4 Lines | 场景统计 |
-| RAG 检索延迟 | 均值 **8.05ms** · 中位 7.79ms · P95 11.87ms（20 次采样） | 真实耗时 |
-| 脱敏吞吐 | **12,237 条/秒**（100 条/批 × 5） | 真实耗时 |
-| 端侧分类延迟 | 均值 0.05ms（15 条） | builtin (fallback)，非神经网络推理 |
-| 首屏 JS | 路由 90.5 kB · First Load 178 kB · 共享 87.5 kB | next build 输出 |
-| FPS（软件光栅化） | 均值 4.85 · 中位 5.00 · P95 8.00（20 次采样） | **不作为性能证据** |
-| 帧时间（软件光栅化） | 均值 237.73ms · P95 829.50ms | **不作为性能证据** |
+| Draw Calls | **235**（20 次采样 235~238） | 硬件无关，可作渲染优化证据 |
+| Triangles | 206,626（中位） | 硬件无关 |
+| 场景对象 | 154 Mesh / 27 InstancedMesh / 1,017 实例 / 3 Points / 4 Lines | 场景统计 |
+| RAG 检索延迟 | 均值 **8.39ms** · 中位 8.07ms · P95 12.05ms（20 次采样） | 真实耗时 |
+| 脱敏吞吐 | **11,264 条/秒**（100 条/批 × 5） | 真实耗时 |
+| 端侧分类延迟 | 均值 0.12ms（21 条） | builtin (fallback)，非神经网络推理 |
+| 首屏 JS | 路由 107 kB · First Load 194 kB · 共享 87.5 kB | next build 输出 |
+| FPS（软件光栅化） | 均值 4.75 · 中位 5.00 · P95 6.00（20 次采样） | **不作为性能证据** |
+| 帧时间（软件光栅化） | 均值 280.78ms · P95 892.40ms | **不作为性能证据** |
 | 视口休眠 | 前台 `always` → 后台 `demand`，已验证生效 | 行为验证 |
 
 | RAG 召回方案（真实评测） | Recall@1 | Recall@3 | MRR@5 | NDCG@5 |
@@ -174,7 +174,7 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 
 24 个 Pod、3 个 Worker 机架、1 个控制平面以程序化 3D 场景实时呈现。故障不是一行日志，而是**空间里的红色脉冲**——机架底部扩散警示波纹、Pod 实例剧烈红光抖动、网络流量变红卡顿、地面拓扑电路切换绯红。
 
-**批量渲染优化**：场景 **322 个 Mesh / 25 个 InstancedMesh / 1,026 个实例**，全场景实测 **423 draw calls**（`docs/performance.json`，2026-11-11 采集）。实例合并把逐实例绘制压成少量 draw call。
+**批量渲染优化**：场景 **154 个 Mesh / 27 个 InstancedMesh / 1,017 个实例**，全场景实测 **235 draw calls**（`docs/performance.json`，2026-11-14 采集）。实例合并把逐实例绘制压成少量 draw call。
 
 **电影级材质与光影**：
 
@@ -214,7 +214,7 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 
 **防幻觉机制**：查询 IDF 质量闸门（无区分度直接返回空）+ 语义证据闸门（零分文档不进入排名池）。实测"你好"、"今天天气不错"均正确返回**零命中**，而非虚假高分。
 
-实测：4 类故障场景全部命中正确手册，RAG 引擎平均检索延迟 **8.27ms**（P95 9.97ms，`docs/performance.json`）。
+实测：4 类故障场景全部命中正确手册，RAG 引擎平均检索延迟 **8.39ms**（P95 12.05ms，`docs/performance.json`）。
 
 ### 4.4 端侧隐私零出域
 
@@ -229,7 +229,7 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 | IPv4（含端口） | `10.244.1.15:6379` | `[REDACTED_IP]` |
 | 邮箱 | `alice@example.com` | `[REDACTED_EMAIL]` |
 
-脱敏后文本才允许送入模型。**实测吞吐 12,880 条/秒**（100 条/批，`docs/performance.json`）。
+脱敏后文本才允许送入模型。**实测吞吐 11,264 条/秒**（100 条/批，`docs/performance.json`）。
 
 端侧推理运行在独立 Web Worker 中（Transformers.js v3 + WebGPU/WASM），主线程零阻塞。模型以 `all-MiniLM-L6-v2` 输出 **384 维句向量**，与 4 类语义原型锚点做余弦比对，再与领域特征词先验加权融合（0.68 神经 / 0.32 符号）。
 
@@ -290,7 +290,7 @@ AI_MODEL_NAME=glm-4-flash
 node scripts/verify.mjs
 ```
 
-自动完成 <!-- VERIFY:BEGIN -->**通过 34 · 失败 0 · 跳过 0（共 34 项）**<!-- VERIFY:END -->，覆盖静态检查、核心算法、API 契约与浏览器端 E2E：
+自动完成 <!-- VERIFY:BEGIN -->**通过 36 · 失败 0 · 跳过 0（共 36 项）**<!-- VERIFY:END -->，覆盖静态检查、核心算法、API 契约与浏览器端 E2E：
 
 ```
 阶段 1 · 静态检查         tsc / ESLint / 文件完整性 / 禁 any 扫描
@@ -324,18 +324,18 @@ node scripts/benchmark.mjs
 <!-- METRICS:BEGIN -->
 | 指标 | 实测值 | 采集口径 / 是否可作性能证据 |
 |---|---|---|
-| 数据采集时间 | 2026-11-13 20:59（Asia/Shanghai） | `node scripts/benchmark.mjs` |
+| 数据采集时间 | 2026-11-14 19:09（Asia/Shanghai） | `node scripts/benchmark.mjs` |
 | 运行环境 | win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM · Node v24.16.0 · 24 核 | 同上 |
 | WebGL 渲染器 | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver) | 软件光栅化，**FPS 不作为性能证据** |
-| Draw Calls | **229**（20 次采样 229~232） | 硬件无关，可作渲染优化证据 |
-| Triangles | 206,050（中位） | 硬件无关 |
-| 场景对象 | 151 Mesh / 27 InstancedMesh / 1,017 实例 / 3 Points / 4 Lines | 场景统计 |
-| RAG 检索延迟 | 均值 **8.05ms** · 中位 7.79ms · P95 11.87ms（20 次采样） | 真实耗时 |
-| 脱敏吞吐 | **12,237 条/秒**（100 条/批 × 5） | 真实耗时 |
-| 端侧分类延迟 | 均值 0.05ms（15 条） | builtin (fallback)，非神经网络推理 |
-| 首屏 JS | 路由 90.5 kB · First Load 178 kB · 共享 87.5 kB | next build 输出 |
-| FPS（软件光栅化） | 均值 4.85 · 中位 5.00 · P95 8.00（20 次采样） | **不作为性能证据** |
-| 帧时间（软件光栅化） | 均值 237.73ms · P95 829.50ms | **不作为性能证据** |
+| Draw Calls | **235**（20 次采样 235~238） | 硬件无关，可作渲染优化证据 |
+| Triangles | 206,626（中位） | 硬件无关 |
+| 场景对象 | 154 Mesh / 27 InstancedMesh / 1,017 实例 / 3 Points / 4 Lines | 场景统计 |
+| RAG 检索延迟 | 均值 **8.39ms** · 中位 8.07ms · P95 12.05ms（20 次采样） | 真实耗时 |
+| 脱敏吞吐 | **11,264 条/秒**（100 条/批 × 5） | 真实耗时 |
+| 端侧分类延迟 | 均值 0.12ms（21 条） | builtin (fallback)，非神经网络推理 |
+| 首屏 JS | 路由 107 kB · First Load 194 kB · 共享 87.5 kB | next build 输出 |
+| FPS（软件光栅化） | 均值 4.75 · 中位 5.00 · P95 6.00（20 次采样） | **不作为性能证据** |
+| 帧时间（软件光栅化） | 均值 280.78ms · P95 892.40ms | **不作为性能证据** |
 | 视口休眠 | 前台 `always` → 后台 `demand`，已验证生效 | 行为验证 |
 
 | RAG 召回方案（真实评测） | Recall@1 | Recall@3 | MRR@5 | NDCG@5 |
@@ -464,7 +464,7 @@ src/
 
 | 插入点 | 时长 | 操作（真实文案） | 讲解要点 | 证据 |
 |---|---|---|---|---|
-| 0:45 后 | +30s | 点 **「性能」**（Shift+P） | 「322 mesh、25 个 InstancedMesh 承载 1026 实例，全场 423 draw calls」 | docs/performance.json |
+| 0:45 后 | +30s | 点 **「性能」**（Shift+P） | 「154 mesh、27 个 InstancedMesh 承载 1,017 实例，全场 235 draw calls」 | docs/performance.json |
 | 1:30 后 | +35s | 指 3D 画面与 HUD | 「遥测 1Hz，渲染插值在跑；1Hz 快照走瞬态引用，不进 React state，零组件重渲染」 | 双轨状态架构 |
 | 2:05 后 | +45s | 停网关/断网 → 发问题 | 「几秒内切本地确定性容灾引擎（本次实测约 6.7s），是离线优先不是故障」 | trace-summary |
 | 2:25 后 | +40s | **「RAG 知识库」** → **「新增自定义 Runbook」** → 填表 → **「提交入库」** | 「现场新增手册，入库后立即参与混合检索；提示『已写入语料池并选中』」 | RagKnowledgeModal |
@@ -505,7 +505,7 @@ src/
 | # | 局限 | 现状 | 影响 |
 |---|---|---|---|
 | 1 | **无真实 K8s 集群** | demo 默认确定性仿真引擎；真实集群适配层由 `K8S_API_SERVER` 启用但未现场连接 | 数值是合成值，只声称故障语义可信 |
-| 2 | **FPS 未在真实 GPU 采集** | 本机 SwiftShader，FPS 均值 3.35 | 不宣称 60FPS；只讲 Draw Calls/Triangles |
+| 2 | **FPS 未在真实 GPU 采集** | 本机 SwiftShader，FPS 均值 4.75 / 中位 5（不作性能证据） | 不宣称 60FPS；只讲 Draw Calls/Triangles |
 | 3 | **端侧模型降级** | 本机无 WebGPU/权重加载受限，端侧走 builtin fallback | 0.09ms 不是神经推理延迟；真机验证待补 |
 | 4 | **MCP transport** | JSON-RPC 2.0 over HTTP（`/api/mcp`），不是 stdio | 未与官方 CLI/SDK 做互通验证 |
 | 5 | **无 Key 走引擎 B** | 无 API Key/网关不可用时自动回落确定性引擎 | 回落实测约 6.7s（含重试），不是瞬时 |

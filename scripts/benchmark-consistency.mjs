@@ -24,10 +24,20 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, copyFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, copyFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ROOT = process.cwd();
+const TMP_BENCH_FILES = [
+  join(ROOT, 'tmp-bench-run1.json'),
+  join(ROOT, 'tmp-bench-run2.json'),
+  join(ROOT, 'tmp-bench-run1.md'),
+];
+process.on('exit', () => {
+  for (const f of TMP_BENCH_FILES) {
+    try { rmSync(f, { force: true }); } catch { /* ignore */ }
+  }
+});
 const BASE_URL = 'http://127.0.0.1:3000';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -111,6 +121,7 @@ if (firstCode !== 0) {
   process.exit(1);
 }
 copyFileSync(join(ROOT, 'docs/performance.json'), join(ROOT, 'tmp-bench-run1.json'));
+copyFileSync(join(ROOT, 'docs/performance.md'), join(ROOT, 'tmp-bench-run1.md'));
 
 await sleep(3000);
 killDevOnPort3000();
@@ -213,11 +224,12 @@ for (const [label, x, y] of volatileFields) {
 
 /* 第一遍产物作为文档数据源 */
 copyFileSync(join(ROOT, 'tmp-bench-run1.json'), join(ROOT, 'docs/performance.json'));
+copyFileSync(join(ROOT, 'tmp-bench-run1.md'), join(ROOT, 'docs/performance.md'));
 
 console.log('');
 if (invariantViolations.length === 0) {
   console.log(`✓ 硬件无关指标两遍完全一致（${invariantFields.length} 项）`);
-  console.log('  文档数据源已恢复为第一遍产物 docs/performance.json');
+  console.log('  文档数据源已恢复为第一遍产物 docs/performance.json 与 docs/performance.md');
   process.exit(0);
 }
 console.error(`✗ 有 ${invariantViolations.length} 个硬件无关字段不一致:`);

@@ -106,8 +106,8 @@ grep -rn "text-\[[0-9]px\]" src  → 0（已无 <10px；含小数也覆盖）
 node scripts/check-a11y.mjs      → 0 命中，通过（102 文件）
 backdrop-blur 手写残留            → 0；kv-blur-* 12 处（≤12 上限）
 slate-600/700 残留                → 0
-shot 1920×1080                   → 3 FPS / 420 draws / 亮度均值 20.6 / 过曝 0.05%
-shot 1366×768                    → 5 FPS / 420 draws / 亮度均值 22.4 / 过曝 0.06%
+shot 1920×1080                   → 3 FPS（SwiftShader 软件光栅化，不作为性能证据） / 420 draws / 亮度均值 20.6 / 过曝 0.05%
+shot 1366×768                    → 5 FPS（SwiftShader 软件光栅化，不作为性能证据） / 420 draws / 亮度均值 22.4 / 过曝 0.06%
 verify.mjs                       → 33/33
 tsc / next lint                  → 0 / 干净
 ```

@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-11-11T06:51:40.470Z",
+  "generatedAt": "2026-11-14T11:20:34.675Z",
   "command": "node scripts/verify.mjs",
   "exitCode": 0,
-  "total": 34,
-  "pass": 34,
+  "total": 36,
+  "pass": 36,
   "fail": 0,
   "skip": 0,
   "parsed": true,
-  "log": "docs/evidence/verify-2026-11-11T06-50-24-504Z.log",
-  "screenshot": "docs/evidence/verify-2026-11-11T06-50-24-504Z.png"
+  "log": "docs/evidence/verify-2026-11-14T11-19-35-295Z.log",
+  "screenshot": "docs/evidence/verify-2026-11-14T11-19-35-295Z.png"
 }
