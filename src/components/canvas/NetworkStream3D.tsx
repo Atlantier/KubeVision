@@ -66,6 +66,7 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { shallow } from 'zustand/shallow';
 
+import { REDUCED_MOTION_AMPLITUDE, isReducedMotion } from '@/constants/motion';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
@@ -752,6 +753,8 @@ export default function NetworkStream3D() {
 
   /* ---- 渲染对象与动画通道 ---- */
   const packetsRef = useRef<THREE.InstancedMesh>(null);
+  /** 减弱动效连续相位累积器（H7：切换无相位跳变） */
+  const motionPhaseRef = useRef<number>(0);
 
   /**
    * 预分配（useMemo 一次）：
@@ -980,10 +983,15 @@ export default function NetworkStream3D() {
    * 5. 颜色渐变：实例色向目标色（健康青 / 故障红）指数阻尼 lerp（k=6）；
    * 6. 帧末显式 instanceMatrix/instanceColor.needsUpdate（第 7 条强制契约）。
    */
-  useFrame((state, delta): void => {
+  useFrame((_state, delta): void => {
+    const dt = Math.min(delta, MAX_FRAME_DELTA);
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
+    motionPhaseRef.current += dt * motionScale;
+    const t = motionPhaseRef.current;
+
     const mesh = packetsRef.current;
     /* 伴飞星尘的时间推进（即使 packets mesh 未就绪也要推进，保持相位连续） */
-    sparkleUniforms.uTime.value = state.clock.getElapsedTime();
+    sparkleUniforms.uTime.value = t;
     if (mesh === null) return;
 
     /* instanceColor 兜底（正常由挂载 effect 创建） */
@@ -991,8 +999,6 @@ export default function NetworkStream3D() {
       mesh.setColorAt(0, tempColor.set('#ffffff'));
     }
 
-    const t = state.clock.getElapsedTime();
-    const dt = Math.min(delta, MAX_FRAME_DELTA);
     const colorAlpha = 1 - Math.exp(-COLOR_LERP_RATE * dt);
     const netArray = telemetryTransientRef.nodeNetFloat32;
     const faults = laneFaultsRef.current;
@@ -1055,8 +1061,8 @@ export default function NetworkStream3D() {
         ),
       );
 
-      /* 速度 = 基础速度（含 mbps 项）× 负载倍率 */
-      speed *= loadMultiplier;
+      /* 速度 = 基础速度（含 mbps 项）× 负载倍率 × 减弱动效倍率（H7） */
+      speed *= loadMultiplier * motionScale;
 
       /*
        * ---- 故障态阻塞抖动（本轮强化）----

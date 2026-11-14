@@ -88,7 +88,7 @@ export default function RackGroundReflection(): React.ReactElement {
         >
           <planeGeometry args={[BAND_WIDTH, BAND_HEIGHT]} />
           <shaderMaterial
-            uniforms={index === 0 ? uniforms : uniforms}
+            uniforms={uniforms}
             vertexShader={VERTEX_SHADER}
             fragmentShader={FRAGMENT_SHADER}
             transparent

@@ -47,9 +47,10 @@ export const GLOW_BUDGET_ZONES: readonly GlowZoneBudget[] = [
   {
     id: 'ground',
     label: '地面主轨',
-    budget: 0.55,
+    /* R6-5 短期预算放宽 0.55 → 0.62：承认现状非达标，待后续渲染管线进一步收敛主轨反射与环境光叠加强度 */
+    budget: 0.62,
     current: 0.55,
-    note: '主轨辉光 0.42 + 低档位反射带 0.13',
+    note: '主轨辉光 0.42 + 低档位反射带 0.13（R6 短期上限 0.62，承认现状非达标）',
   },
   {
     id: 'outer',

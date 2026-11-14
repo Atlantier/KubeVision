@@ -33,6 +33,7 @@
 
 import { useMemo, useRef, type ReactNode } from 'react';
 import { useFrame } from '@react-three/fiber';
+import { REDUCED_MOTION_AMPLITUDE, isReducedMotion } from '@/constants/motion';
 import * as THREE from 'three';
 
 import { useClusterStore } from '@/store/useClusterStore';
@@ -274,14 +275,21 @@ export function RackErrorRing({ rackIndex }: RackErrorRingProps) {
     [],
   );
 
-  /* useFrame：仅推进 uTime 标量（零分配、零 setState） */
-  useFrame((state): void => {
+  /* useFrame：推进 uTime 并按 reduced-motion 将波纹强度收敛到 25% */
+  useFrame((state, delta): void => {
     const material = materialRef.current;
     if (material === null) return;
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
+    const clampedDelta = Math.min(delta, 0.1);
     const timeUniform = material.uniforms.uTime;
     if (timeUniform !== undefined) {
-      timeUniform.value = state.clock.getElapsedTime();
+      timeUniform.value = (Number(timeUniform.value) || 0) + clampedDelta * motionScale;
     }
+    const opacityUniform = material.uniforms.uOpacity;
+    if (opacityUniform !== undefined) {
+      opacityUniform.value = RING_BASE_OPACITY * motionScale;
+    }
+    void state;
   });
 
   return (

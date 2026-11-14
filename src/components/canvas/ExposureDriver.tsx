@@ -43,10 +43,11 @@ import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { useClusterStore } from '@/store/useClusterStore';
 
 /**
- * 曝光上下限（R62）。
+ * 曝光上下限（R62 / R6-5 协同）。
  *
  * 稳态上限 1.00：绝不凭空放大亮度；故障/高发光期温和压到 0.85（-15%）。
- * 旧的 [1.0, 1.18] 会在稳态放大 18%，叠加渲染器曝光后就是双重过曝。
+ * 为什么是 0.85：R6-5 把 ambientLight 抬至 0.36、地面提至 #060d1a 后，
+ * 下限锁定 0.85 确保自适应曝光最暗时地面仍保深海蓝灰（不跌回死黑）且不过曝。
  */
 export const EXPOSURE_MIN = 0.85;
 export const EXPOSURE_MAX = 1.0;

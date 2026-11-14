@@ -42,20 +42,27 @@
  * 保证「更具体的目标优先」且永不误选机架。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useFrame, type ThreeEvent } from '@react-three/fiber';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { shallow } from 'zustand/shallow';
 
-import { cn } from '@/utils/cn';
-import { HoloFrame, MiniBar } from '@/components/canvas/HoloHud';
+import {
+  CAMERA_MOTION,
+  REDUCED_MOTION_AMPLITUDE,
+  computeHoverAlpha,
+  isReducedMotion,
+} from '@/constants/motion';
+import { HoloFrame } from '@/components/canvas/HoloHud';
 import { useClusterStore } from '@/store/useClusterStore';
-import { MAX_PODS, telemetryTransientRef } from '@/store/useTelemetryRef';
 import { PALETTE } from '@/constants/palette';
+import { HUD_LABEL_SPEC, applyHtmlFogAttenuation, createHtmlFogStyleCache } from '@/constants/hud';
+import { MAX_PODS, telemetryTransientRef } from '@/store/useTelemetryRef';
 import type { PodStatus } from '@/types/cluster';
-import type { PodHoverLabelData, PodStatusBadgeStyle } from '@/types/canvas';
-import type { ClusterState, SelectedEntityType, StatusFilter } from '@/types/store';
+import type { PodStatusBadgeStyle } from '@/types/canvas';
+import type { SelectedEntityType, StatusFilter } from '@/types/store';
+import { recordDebugHoverSample, recordDebugHoverStart } from '@/utils/cameraDebugBridge';
+import { scheduleSelectionFlight } from '@/utils/canvasClickIntent';
 import { BASE_PAD_CLEARANCE, POD_BOX_HEIGHT, POD_BOX_SIZE, getPodWorldTransform } from '@/utils/spatialLayout';
 
 /* ========================================================================== */
@@ -85,22 +92,47 @@ import { BASE_PAD_CLEARANCE, POD_BOX_HEIGHT, POD_BOX_SIZE, getPodWorldTransform 
  *
  * 【只读约定】PALETTE 里的 Color 实例只读；需要可变副本时 clone()。
  */
-const COLOR_RUNNING = PALETTE.healthy.color; // emerald-400
-const COLOR_PENDING = PALETTE.elevated.color; // amber-400
-const COLOR_CRASH = PALETTE.critical.color; // rose-500
-
-/* -------------------------------------------------------------------------- */
-/* 自愈充能脉冲（点击自愈 → 3D 腔体瞬间点亮的视觉反馈）                              */
-/* -------------------------------------------------------------------------- */
-
 /**
  * 自愈高亮色（青白）。
  *
- * 【配色推导】它必须比 COLOR_RUNNING 更"白"、更亮，才能在翠绿底色上产生
+ * 【配色推导】它必须比基础翡翠绿更"白"、更亮，才能在翠绿底色上产生
  * 「被能量充满」的观感；同时保留绿相（G 通道最高），避免看起来像选中态青色。
  * #a7f3d0 是 emerald-200，正是"翠绿被白光冲淡"的中间色。
  */
 const COLOR_HEAL_FLASH = new THREE.Color('#a7f3d0');
+
+/*
+ * R6-6：去「荧光棒感」—— 写入 instanceColor 时把健康翠绿饱和度下调 8~12%（向 #a7f3d0 靠拢）。
+ * 为什么是 0.08：PALETTE.healthy (#34d399) 与 #a7f3d0 在线性空间按 0.08 混合得 #47d69e，
+ * HSV 饱和度从 75.4% 降至 66.9%（绝对降 8.4 个百分点 / 相对降 11.2%，色相偏移 -1.37°），
+ * 在保留翡翠语义辨识度的同时消除过饱和"荧光棒"观感；PALETTE 单一事实源本身不改。
+ */
+const COLOR_RUNNING = PALETTE.healthy.color.clone().lerp(COLOR_HEAL_FLASH, 0.08);
+const COLOR_PENDING = PALETTE.elevated.color; // amber-400
+const COLOR_CRASH = PALETTE.critical.color; // rose-500
+
+/*
+ * R6-6：为什么是 0.85：在原默认 emissiveIntensity=1.0 基础上统一下调 15%，
+ * 使正常运行态刀片亮线峰值收束至 Bloom 阈值 (0.92) 以下，告别整排容器荧光溢出。
+ */
+const POD_EMISSIVE_INTENSITY = 0.85;
+
+/**
+ * Pod 晶体着色器运行期共享 uniforms（零重渲染动态对齐 Composer 与兜底路径）。
+ * - uEmissiveScale：自定义发光注入层与材质 emissiveIntensity 同步下调 15%（0.85）；
+ * - uFallbackParity：当走非 Composer 兜底路径（gl.toneMapping !== NoToneMapping）时置 1，
+ *   补齐与 ExposureEffect + NeutralToneMapping 同源的色调映射前色彩补偿；
+ * - uExposure：实时同步 ExposureDriver 的动态曝光值。
+ */
+const POD_CRYSTAL_UNIFORMS: {
+  readonly uEmissiveScale: THREE.IUniform<number>;
+  readonly uFallbackParity: THREE.IUniform<number>;
+  readonly uExposure: THREE.IUniform<number>;
+} = {
+  uEmissiveScale: { value: POD_EMISSIVE_INTENSITY },
+  uFallbackParity: { value: 0 },
+  uExposure: { value: 1 },
+};
 
 /**
  * 充能脉冲时长（毫秒）——与 healEntity 写入 healedPodIds 的时间戳同一时钟域。
@@ -439,6 +471,10 @@ const POD_PHASES: readonly number[] = (() => {
  * @param shader three 传入的可变 shader 对象（含 vertexShader/fragmentShader）
  */
 function injectCrystalShader(shader: THREE.WebGLProgramParametersWithUniforms): void {
+  shader.uniforms.uEmissiveScale = POD_CRYSTAL_UNIFORMS.uEmissiveScale;
+  shader.uniforms.uFallbackParity = POD_CRYSTAL_UNIFORMS.uFallbackParity;
+  shader.uniforms.uExposure = POD_CRYSTAL_UNIFORMS.uExposure;
+
   /* ---- 顶点着色器：把面 UV、视图空间法线与几何局部坐标传给片元 ---- */
   shader.vertexShader = shader.vertexShader
     .replace(
@@ -479,10 +515,37 @@ function injectCrystalShader(shader: THREE.WebGLProgramParametersWithUniforms): 
     .replace(
       '#include <common>',
       `#include <common>
+       uniform float uEmissiveScale;
+       uniform float uFallbackParity;
+       uniform float uExposure;
        varying vec2 vCrystalUv;
        varying vec3 vViewNormal;
        varying vec3 vLocalPos;
-       varying vec3 vLocalNormal;`,
+       varying vec3 vLocalNormal;
+
+       /*
+        * R6-6 两路径色调映射前色彩对齐函数（与 ExposureDriver + ToneMappingMode.NEUTRAL 同构）。
+        * 为什么必须内嵌：Pod 材质遵循 AGENTS.md 第 7 条开启 toneMapped=false，
+        * 在无 Composer 的兜底路径下 Three.js 会跳过内置 NeutralToneMapping，
+        * 在此对兜底路径补齐同一套软膝曝光压缩 + Khronos Neutral 曲线，确保色相角差 < 6°。
+        */
+       vec3 kvApplyParityToneMapping(vec3 color, float exposure) {
+         vec3 safe = max(color, vec3(0.0));
+         vec3 exposed = safe * clamp(exposure, 0.85, 1.0);
+         vec3 compressed = exposed / (vec3(1.0) + max(vec3(0.0), exposed - vec3(0.85)) * 0.45);
+         const float startComp = 0.76;
+         const float desat = 0.15;
+         float x = min(compressed.r, min(compressed.g, compressed.b));
+         float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+         vec3 c = max(compressed - offset, vec3(0.0));
+         float peak = max(c.r, max(c.g, c.b));
+         if (peak < startComp) return clamp(c, 0.0, 1.0);
+         float d = 1.0 - startComp;
+         float newPeak = 1.0 - (d * d) / (peak + d - startComp);
+         c *= newPeak / max(peak, 1.0e-4);
+         float g = 1.0 - 1.0 / (desat * (peak - newPeak) + 1.0);
+         return clamp(mix(c, vec3(newPeak), g), 0.0, 1.0);
+       }`,
     )
     .replace(
       '#include <emissivemap_fragment>',
@@ -564,8 +627,16 @@ function injectCrystalShader(shader: THREE.WebGLProgramParametersWithUniforms): 
          vec3 viewDir = normalize(-vViewPosition);
          float fresnel = pow(max(1.0 - clamp(dot(normalize(vViewNormal), viewDir), 0.0, 1.0), 1.0e-4), 2.8);
 
-         totalEmissiveRadiance += faceGlow + diffuseColor.rgb * fresnel * 0.22;
+         /* R6-6：与材质 emissiveIntensity=0.85 同源下调 15%，压住荧光棒白炽泛光 */
+         totalEmissiveRadiance += (faceGlow + diffuseColor.rgb * fresnel * 0.22) * uEmissiveScale;
        }`,
+    )
+    .replace(
+      '#include <colorspace_fragment>',
+      `if (uFallbackParity > 0.5) {
+         gl_FragColor = vec4(clamp(kvApplyParityToneMapping(gl_FragColor.rgb, uExposure), 0.0, 1.0), clamp(gl_FragColor.a, 0.0, 1.0));
+       }
+       #include <colorspace_fragment>`,
     );
 }
 
@@ -642,103 +713,192 @@ export default function PodInstancedMesh() {
    * 才 setState——同一 Pod 上的移动零 setState、零重渲染，只有跨 Pod 边界
    * 的瞬间产生一次状态迁移。这是「精准且不掉帧」的核心手段。
    */
-  const [hoveredInstanceId, setHoveredInstanceId] = useState<number | null>(null);
+  const gl = useThree((s): THREE.WebGLRenderer => s.gl);
 
   /**
-   * 悬停标签视图模型（低频派生：仅 hoveredInstanceId 或 1Hz 快照变更时重算）。
-   *
-   * 【数据源选择】刻意取响应轨 snapshotSummary 而非瞬态池：瞬态池的 mutation
-   * 不触发 React 更新，标签若从瞬态池取值将永远停留在挂载时的读数；
-   * 响应轨快照以 1Hz 整体替换，恰好为标签提供「实时 CPU/MEM%」的刷新节拍，
-   * 且与 3D 实例渲染（瞬态池 60FPS）在视觉上同源同值。
-   * shallow 比较器保证字段全等时复用旧对象引用，避免无谓重渲染。
+   * 瞬态悬停追踪（R7 零 React Commit 契约）：
+   * 仅更新 ref 与常驻 <Html> DOM ref，pointerover/pointermove 全程零 setState。
    */
-  const hoverLabelData = useClusterStore(
-    (s: ClusterState): PodHoverLabelData | null => {
-      if (hoveredInstanceId === null) return null;
-      const pod = s.snapshotSummary.pods[hoveredInstanceId];
-      if (pod === undefined) return null;
-      return {
-        name: pod.name,
-        status: pod.status,
-        cpuUsage: pod.cpuUsage,
-        memoryUsage: pod.memoryUsage,
-        rackIndex: pod.rackIndex,
-        slotIndex: pod.slotIndex,
-      };
+  const hoveredInstanceRef = useRef<number | null>(null);
+  const pressedInstanceRef = useRef<number | null>(null);
+  const hoverIntensityBufferRef = useRef<Float32Array>(new Float32Array(MAX_PODS));
+  const hoverAnchorGroupRef = useRef<THREE.Group | null>(null);
+
+  /* R6-3：悬停微型探针卡 DOM 引用与直接写入子树 ref（zero React commit） */
+  const hoverHudRef = useRef<HTMLDivElement>(null);
+  const hoverDotRef = useRef<HTMLSpanElement>(null);
+  const hoverNameRef = useRef<HTMLSpanElement>(null);
+  const hoverStatusBadgeRef = useRef<HTMLSpanElement>(null);
+  const hoverSlotRef = useRef<HTMLSpanElement>(null);
+  const hoverCpuValueRef = useRef<HTMLSpanElement>(null);
+  const hoverCpuFillRef = useRef<HTMLSpanElement>(null);
+  const hoverMemValueRef = useRef<HTMLSpanElement>(null);
+  const hoverMemFillRef = useRef<HTMLSpanElement>(null);
+  const hoverFogCache = useMemo(() => createHtmlFogStyleCache(), []);
+  const hoverWorldPosRef = useRef<[number, number, number] | null>(null);
+  const syncColorScratch = useMemo(() => new THREE.Color(), []);
+
+  /**
+   * syncHoverTooltipDom —— 直接把悬停实例的元数据写入常驻 DOM ref（零 React 重渲染）。
+   */
+  const syncHoverTooltipDom = useCallback((instanceId: number): void => {
+    const pods = useClusterStore.getState().snapshotSummary.pods;
+    const pod = pods[instanceId] ?? telemetryTransientRef.snapshot.pods[instanceId];
+    if (pod === undefined) {
+      if (hoverHudRef.current !== null) hoverHudRef.current.style.display = 'none';
+      hoverWorldPosRef.current = null;
+      return;
+    }
+
+    const rackIdx = ((pod.rackIndex % RACK_COUNT) + RACK_COUNT) % RACK_COUNT;
+    const slotIdx = ((Math.floor(pod.slotIndex) % SLOTS_PER_RACK) + SLOTS_PER_RACK) % SLOTS_PER_RACK;
+    const pose = SLOT_POSES[rackIdx * SLOTS_PER_RACK + slotIdx];
+    const wx = pose.position[0];
+    const wy = pose.position[1] + POD_REST_OFFSET_Y + HOVER_LABEL_OFFSET_Y;
+    const wz = pose.position[2];
+
+    if (hoverWorldPosRef.current === null) {
+      hoverWorldPosRef.current = [wx, wy, wz];
+    } else {
+      hoverWorldPosRef.current[0] = wx;
+      hoverWorldPosRef.current[1] = wy;
+      hoverWorldPosRef.current[2] = wz;
+    }
+    if (hoverAnchorGroupRef.current !== null) {
+      hoverAnchorGroupRef.current.position.set(wx, wy, wz);
+    }
+
+    const badge = POD_STATUS_BADGE[pod.status];
+    if (hoverDotRef.current !== null) {
+      hoverDotRef.current.style.backgroundColor = badge.color;
+    }
+    if (hoverNameRef.current !== null) {
+      hoverNameRef.current.textContent = pod.name;
+    }
+    if (hoverStatusBadgeRef.current !== null) {
+      hoverStatusBadgeRef.current.style.color = badge.color;
+      hoverStatusBadgeRef.current.textContent = badge.label;
+    }
+    if (hoverSlotRef.current !== null) {
+      hoverSlotRef.current.textContent = `RACK-${pod.rackIndex} // SLOT-${String(pod.slotIndex).padStart(2, '0')}`;
+    }
+
+    const cpuPct = Math.min(100, Math.max(0, Math.round(pod.cpuUsage)));
+    const memPct = Math.min(100, Math.max(0, Math.round(pod.memoryUsage)));
+    if (hoverCpuValueRef.current !== null) {
+      hoverCpuValueRef.current.textContent = `CPU ${cpuPct}%`;
+    }
+    if (hoverCpuFillRef.current !== null) {
+      hoverCpuFillRef.current.style.width = `${cpuPct}%`;
+    }
+    if (hoverMemValueRef.current !== null) {
+      hoverMemValueRef.current.textContent = `MEM ${memPct}%`;
+    }
+    if (hoverMemFillRef.current !== null) {
+      hoverMemFillRef.current.style.width = `${memPct}%`;
+    }
+    if (hoverHudRef.current !== null) {
+      hoverHudRef.current.style.display = 'flex';
+    }
+  }, []);
+
+  /**
+   * applyInstanceHighlightImmediate —— 悬停首帧或按压瞬间同步写 GPU 实例颜色，消除 1 帧滞后。
+   */
+  const applyInstanceHighlightImmediate = useCallback(
+    (instanceId: number, boostFactor: number): void => {
+      const mesh = meshRef.current;
+      if (mesh === null || instanceId < 0 || instanceId >= mesh.count) return;
+      const baseColors = smoothedBaseColorsRef.current;
+      const offset = instanceId * 3;
+      if (!baseColorsInitializedRef.current) return;
+      syncColorScratch
+        .setRGB(baseColors[offset], baseColors[offset + 1], baseColors[offset + 2])
+        .multiplyScalar(boostFactor);
+      syncColorScratch.r = Math.min(2.2, Math.max(0, syncColorScratch.r));
+      syncColorScratch.g = Math.min(2.2, Math.max(0, syncColorScratch.g));
+      syncColorScratch.b = Math.min(2.2, Math.max(0, syncColorScratch.b));
+      mesh.setColorAt(instanceId, syncColorScratch);
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     },
-    shallow,
+    [syncColorScratch],
+  );
+
+  useEffect((): (() => void) => {
+    const clearPressed = (): void => {
+      pressedInstanceRef.current = null;
+    };
+    window.addEventListener('pointerup', clearPressed);
+    window.addEventListener('pointercancel', clearPressed);
+    return (): void => {
+      window.removeEventListener('pointerup', clearPressed);
+      window.removeEventListener('pointercancel', clearPressed);
+      gl.domElement.style.cursor = 'auto';
+    };
+  }, [gl]);
+
+  /**
+   * handlePointerMove —— 悬停实例追踪（纯 ref + DOM 直写，0 React commit）。
+   */
+  const handlePointerMove = useCallback(
+    (event: ThreeEvent<PointerEvent>): void => {
+      const instanceId = event.instanceId;
+      const pods = telemetryTransientRef.snapshot.pods;
+      if (instanceId === undefined || instanceId < 0 || instanceId >= pods.length) {
+        return;
+      }
+      if (hoveredInstanceRef.current !== instanceId) {
+        hoveredInstanceRef.current = instanceId;
+        const buf = hoverIntensityBufferRef.current;
+        buf[instanceId] = Math.max(buf[instanceId], CAMERA_MOTION.hoverInstantJump);
+        gl.domElement.style.cursor = 'pointer';
+        syncHoverTooltipDom(instanceId);
+        applyInstanceHighlightImmediate(instanceId, 1 + buf[instanceId] * 0.45);
+        recordDebugHoverStart(pods[instanceId].id, 'pod', buf[instanceId], 1);
+      }
+    },
+    [gl, syncHoverTooltipDom, applyInstanceHighlightImmediate],
+  );
+
+  /** handlePointerOut —— 离开实例群即清除悬停（标签与光标同步撤除，零重渲染） */
+  const handlePointerOut = useCallback((): void => {
+    hoveredInstanceRef.current = null;
+    pressedInstanceRef.current = null;
+    hoverWorldPosRef.current = null;
+    gl.domElement.style.cursor = 'auto';
+    if (hoverHudRef.current !== null) {
+      hoverHudRef.current.style.display = 'none';
+    }
+  }, [gl]);
+
+  const handlePointerDown = useCallback(
+    (event: ThreeEvent<PointerEvent>): void => {
+      if (event.button !== 0) return;
+      const instanceId = event.instanceId;
+      const count = telemetryTransientRef.snapshot.pods.length;
+      if (instanceId === undefined || instanceId < 0 || instanceId >= count) return;
+      event.stopPropagation();
+      pressedInstanceRef.current = instanceId;
+      applyInstanceHighlightImmediate(instanceId, 1.85);
+    },
+    [applyInstanceHighlightImmediate],
   );
 
   /**
-   * 悬停标签的世界坐标（SLOT_POSES 查表，与实例渲染位姿严格同源）。
-   * 取槽位中心 + 落座偏移 + 标签抬升量，使标签恒悬于 Pod 正上方的层间空档。
-   * useMemo 依赖 label 数据，仅跨 Pod 移动或快照刷新时重算。
-   */
-  const hoverLabelPosition = useMemo((): [number, number, number] | null => {
-    if (hoverLabelData === null) return null;
-    const rackIdx = ((hoverLabelData.rackIndex % RACK_COUNT) + RACK_COUNT) % RACK_COUNT;
-    const slotIdx =
-      ((Math.floor(hoverLabelData.slotIndex) % SLOTS_PER_RACK) + SLOTS_PER_RACK) % SLOTS_PER_RACK;
-    const pose = SLOT_POSES[rackIdx * SLOTS_PER_RACK + slotIdx];
-    return [
-      pose.position[0],
-      pose.position[1] + POD_REST_OFFSET_Y + HOVER_LABEL_OFFSET_Y,
-      pose.position[2],
-    ];
-  }, [hoverLabelData]);
-
-  /* 悬停光标：Canvas 覆盖全视口，body 样式是唯一可靠通道（与机架模型同一手法） */
-  useEffect(() => {
-    if (hoveredInstanceId === null) return undefined;
-    const previous = document.body.style.cursor;
-    document.body.style.cursor = 'pointer';
-    return (): void => {
-      document.body.style.cursor = previous;
-    };
-  }, [hoveredInstanceId]);
-
-  /**
-   * handlePointerMove —— 悬停实例追踪（instanceId 变化才 setState）。
-   *
-   * 【instanceId 语义】R3F 对 InstancedMesh 的射线命中回填 e.instanceId
-   * 为实例下标（0-based），直接对应 snapshot.pods[i]，无需 id 查表遍历。
-   * 防御性校验：instanceId 越界（undefined 或 ≥ count，例如 count 收窄后
-   * 的残留命中）时按「无悬停」处理，避免标签读取到占位实例。
-   */
-  const handlePointerMove = useCallback((event: ThreeEvent<PointerEvent>): void => {
-    const instanceId = event.instanceId;
-    const count = telemetryTransientRef.snapshot.pods.length;
-    if (instanceId === undefined || instanceId < 0 || instanceId >= count) {
-      return;
-    }
-    setHoveredInstanceId((previous): number | null =>
-      previous === instanceId ? previous : instanceId,
-    );
-  }, []);
-
-  /** handlePointerOut —— 离开实例群即清除悬停（标签与光标同步撤除） */
-  const handlePointerOut = useCallback((): void => {
-    setHoveredInstanceId((previous): number | null => (previous === null ? previous : null));
-  }, []);
-
-  /**
-   * handleClick —— 点击 Pod 触发相机特写聚焦。
-   *
-   * stopPropagation 阻断命中链继续传播（装甲内壁、地面 Grid 等更远的命中
-   * 对象不再收到事件），防止一次点击既选中 Pod 又误触发 onPointerMissed
-   * 取消选中。选中后 CameraRig 以 getPodWorldTransform().cameraPosition
-   * 飞行至该 Pod 的特写机位（与本渲染器同一空间事实源）。
+   * handleClick —— 点击 Pod 后延迟 80ms 触发相机特写聚焦。
    */
   const handleClick = useCallback(
     (event: ThreeEvent<MouseEvent>): void => {
+      if (event.delta >= CAMERA_MOTION.dblClickMaxMovePx) return;
       const instanceId = event.instanceId;
       const pods = telemetryTransientRef.snapshot.pods;
       if (instanceId === undefined || instanceId < 0 || instanceId >= pods.length) {
         return;
       }
       event.stopPropagation();
-      selectEntity(pods[instanceId].id, 'pod');
+      pressedInstanceRef.current = null;
+      const targetPodId = pods[instanceId].id;
+      scheduleSelectionFlight(() => selectEntity(targetPodId, 'pod'));
     },
     [selectEntity],
   );
@@ -890,8 +1050,34 @@ export default function PodInstancedMesh() {
    *    缺任一 GPU 侧将继续绘制上一帧的陈旧缓冲）。
    */
   useFrame((state, delta): void => {
+    /* R6-6：每帧原地更新兜底路径色调映射对齐标志与实时曝光值（零分配） */
+    POD_CRYSTAL_UNIFORMS.uFallbackParity.value =
+      state.gl.toneMapping !== THREE.NoToneMapping ? 1 : 0;
+    POD_CRYSTAL_UNIFORMS.uExposure.value = telemetryTransientRef.glStats.toneMappingExposure;
+
+    /* R6-3：悬停微型探针卡距离吃雾（若悬停激活） */
+    const hoverWorldPos = hoverWorldPosRef.current;
+    if (hoverWorldPos !== null) {
+      applyHtmlFogAttenuation(
+        hoverHudRef.current,
+        state.camera.position,
+        hoverWorldPos[0],
+        hoverWorldPos[1],
+        hoverWorldPos[2],
+        hoverFogCache,
+        HUD_LABEL_SPEC.POD_HOVER_LABEL,
+        state.camera instanceof THREE.PerspectiveCamera ? state.camera.fov : 45,
+      );
+    }
+
     const mesh = meshRef.current;
     if (mesh === null) return;
+
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
+    const hoverAlpha = computeHoverAlpha(delta);
+    const hoverBuffer = hoverIntensityBufferRef.current;
+    const currentHoverIdx = hoveredInstanceRef.current;
+    const currentPressedIdx = pressedInstanceRef.current;
 
     const pods = telemetryTransientRef.snapshot.pods;
     const count = pods.length <= MAX_PODS ? pods.length : MAX_PODS;
@@ -1015,17 +1201,17 @@ export default function PodInstancedMesh() {
            * 方位位移不再直接改 posY，而是交给末段的"底面锚定"统一合算。
            */
           const hoverWave = 0.5 + 0.5 * Math.sin(wrappedPhase);
-          hoverLift = (RUN_HOVER_BASE + RUN_HOVER_LOAD_GAIN * smoothC) * hoverWave;
+          hoverLift = (RUN_HOVER_BASE + RUN_HOVER_LOAD_GAIN * smoothC) * hoverWave * motionScale;
           /* 高度只保留随负载的静态鼓胀（呼吸已交给竖直位移，避免双重抖动） */
-          scaleY = 1 + RUN_HEIGHT_LOAD_GAIN * smoothC;
+          scaleY = 1 + RUN_HEIGHT_LOAD_GAIN * smoothC * motionScale;
           break;
         }
         case 'Pending':
         case 'Terminating': {
-          // 缓慢明暗脉动：亮度包络 [0.72, 1.0] 正弦往复（几何静止）
+          // 缓慢明暗脉动：亮度包络 [0.72, 1.0] 正弦往复（reduced-motion 时摆幅 ×0.25）
           const pulse =
             PENDING_PULSE_MIN +
-            (1 - PENDING_PULSE_MIN) * (0.5 + 0.5 * Math.sin(t * PENDING_PULSE_RATE + phase));
+            (1 - PENDING_PULSE_MIN) * (0.5 + 0.5 * motionScale * Math.sin(t * PENDING_PULSE_RATE + phase));
           tempTargetColor.multiplyScalar(pulse);
           break;
         }
@@ -1034,29 +1220,12 @@ export default function PodInstancedMesh() {
           // 高亮鲜红：×1.5 过曝增强发光感（契约指定调用）
           tempTargetColor.multiplyScalar(CRASH_GLOW_BOOST);
 
-          /*
-           * ---- 水平抖动：沿**机架局部 X 轴**，而非世界 X 轴 ----
-           *
-           * 【缺陷复现】旧代码写 `posX += A·sin(...)`，只在世界 X 方向位移。
-           * 机架被 getRackTransform 旋转了 θ ≈ 30°~150°，因此世界 X 位移在
-           * 机架坐标系里会被分解成"局部 X 分量 cos θ + 局部 Z 分量 −sin θ"：
-           * 结果刀片是斜着朝邻位刀片蹭过去的，视觉上既晃错了方向，
-           * 又额外侵占了纵深空间（可能顶到前排/隔板）。
-           *
-           * 【正确公式】把标量抖动 j 映射到设备局部 X 单位向量在世界系的投影：
-           *   局部 X = (cos θ, 0, −sin θ)
-           *   → posX += j·cos θ；posZ −= j·sin θ
-           * 这与 getPodWorldTransform 的 R_y(θ) 复合规则完全一致。
-           *
-           * 【为何用 pose.rotationY 而不是重新算 θ】pose 就是本实例槽位的位姿查表
-           * 结果，机架旋转角在构建时已写入，直接复用零成本、且与矩阵复合同源。
-           */
-          const jitter = CRASH_JITTER_AMPLITUDE * Math.sin(CRASH_JITTER_RATE * t + phase);
+          const jitter = CRASH_JITTER_AMPLITUDE * motionScale * Math.sin(CRASH_JITTER_RATE * t + phase);
           posX += jitter * Math.cos(pose.rotationY);
           posZ -= jitter * Math.sin(pose.rotationY);
 
-          /* 尺寸脉冲（±15%，三轴均匀；不穿透由末段底面锚定保证） */
-          const pulse = 1 + CRASH_PULSE_AMPLITUDE * Math.sin(t * CRASH_PULSE_RATE + phase);
+          /* 尺寸脉冲（±15% × motionScale；不穿透由末段底面锚定保证） */
+          const pulse = 1 + CRASH_PULSE_AMPLITUDE * motionScale * Math.sin(t * CRASH_PULSE_RATE + phase);
           scaleX = pulse;
           scaleY = pulse;
           scaleZ = pulse;
@@ -1249,8 +1418,21 @@ export default function PodInstancedMesh() {
         pod.status === 'CrashLoopBackOff' || pod.status === 'OOMKilled' || pod.status === 'Terminating';
       if (isFaulty) {
         const breathPhase = t * FAULT_BREATH_RATE + i * 0.7;
-        const faultBreath = FAULT_BREATH_MIN + FAULT_BREATH_GAIN * (0.5 + 0.5 * Math.sin(breathPhase));
+        const faultBreath =
+          FAULT_BREATH_MIN + FAULT_BREATH_GAIN * (0.5 + 0.5 * motionScale * Math.sin(breathPhase));
         tempColor.multiplyScalar(faultBreath);
+      }
+
+      /* ---- 7c. R7 零帧悬停指数收敛与按压瞬间高光 ---- */
+      const hoverTarget = currentHoverIdx === i ? 1 : 0;
+      const nextHover = hoverBuffer[i] + (hoverTarget - hoverBuffer[i]) * hoverAlpha;
+      hoverBuffer[i] = nextHover < 0.001 && hoverTarget === 0 ? 0 : nextHover;
+      if (currentHoverIdx === i) {
+        recordDebugHoverSample(pod.id, hoverBuffer[i]);
+      }
+      const pressBoost = currentPressedIdx === i ? 0.45 : 0;
+      if (hoverBuffer[i] > 0 || pressBoost > 0) {
+        tempColor.multiplyScalar(1 + hoverBuffer[i] * 0.45 + pressBoost);
       }
 
       /*
@@ -1297,6 +1479,7 @@ export default function PodInstancedMesh() {
          让位协议」放行，本层 stopPropagation 即可独占事件。 */
       onPointerMove={handlePointerMove}
       onPointerOut={handlePointerOut}
+      onPointerDown={handlePointerDown}
       onClick={handleClick}
     >
       {/* 契约几何：0.66 × 0.56 × 0.56 容器晶块（尺寸源自 spatialLayout 单一事实源） */}
@@ -1329,6 +1512,7 @@ export default function PodInstancedMesh() {
         color="#ffffff"
         roughness={0.18}
         metalness={0.15}
+        emissiveIntensity={POD_EMISSIVE_INTENSITY}
         /*
          * 环境贴图贡献：0.30。
          *
@@ -1339,69 +1523,89 @@ export default function PodInstancedMesh() {
          */
         envMapIntensity={POD_SHELL_ENV_INTENSITY}
         toneMapped={false}
+        customProgramCacheKey={(): string => 'pod-crystal-r6'}
         onBeforeCompile={injectCrystalShader}
       />
       </instancedMesh>
 
-      {/* ---- 悬停微型标签（单个 <Html>，仅悬停实例存在时挂载） ----
-          【契约】center + distanceFactor=12 + zIndexRange=[10,0] +
-          pointer-events-none（AGENTS.md 第 6 条：严禁遮挡抽屉/Modal，
-          且不拦截射线——标签若吃指针事件会造成「悬停标签挡住下一个
-          Pod 命中」的拾取抖动）。位置查表 SLOT_POSES 与实例渲染同源。 */}
-      {hoverLabelData !== null && hoverLabelPosition !== null ? (
+      {/* ---- 常驻悬停微型标签（DOM ref 直写更新，悬停期间零 React 重渲染） ----
+          【契约】center + HUD_LABEL_SPEC.POD_HOVER_LABEL.distanceFactor(12) +
+          zIndexRange=[10,0] + pointer-events-none（AGENTS.md 第 6 条 + R6-2）。 */}
+      <group ref={hoverAnchorGroupRef} position={[0, 0, 0]}>
         <Html
-          position={hoverLabelPosition}
           center
-          distanceFactor={12}
+          distanceFactor={HUD_LABEL_SPEC.POD_HOVER_LABEL.distanceFactor}
           zIndexRange={[10, 0]}
           className="pointer-events-none"
         >
-          <div className="pointer-events-none flex flex-col gap-1">
-            {/*
-             * ---- 精密全息探针卡（与机架铭牌同一套 HUD 语言）----
-             *
-             * 升级点：四角战术折角框 + 扫描线底纹 + CPU/MEM 微型实时进度条
-             * + 所属槽位编码 `RACK-n // SLOT-nn`。
-             * 这样悬停任一容器时，弹出的卡片与机架铭牌、控制平面铭牌
-             * 共用同一套视觉语法，整个场景才像一个统一的 HUD 系统。
-             */}
-            <HoloFrame accent={POD_STATUS_BADGE[hoverLabelData.status].color}>
+          <div
+            ref={hoverHudRef}
+            style={{ display: 'none' }}
+            className="pointer-events-none flex-col gap-1"
+          >
+            <HoloFrame accent="#22d3ee">
               <span className="flex items-center gap-1.5">
                 <span
-                  className={cn(
-                    'inline-block h-1.5 w-1.5 rounded-full',
-                    POD_STATUS_BADGE[hoverLabelData.status].extraClass,
-                  )}
-                  style={{ backgroundColor: POD_STATUS_BADGE[hoverLabelData.status].color }}
+                  ref={hoverDotRef}
+                  className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400"
                 />
-                <span className="max-w-[180px] truncate font-mono text-[10px] font-bold tracking-wide text-slate-100">
-                  {hoverLabelData.name}
-                </span>
                 <span
-                  className={cn(
-                    'ml-1 font-mono text-[10px] uppercase tracking-[0.14em]',
-                    POD_STATUS_BADGE[hoverLabelData.status].extraClass,
-                  )}
-                  style={{ color: POD_STATUS_BADGE[hoverLabelData.status].color }}
-                >
-                  {POD_STATUS_BADGE[hoverLabelData.status].label}
-                </span>
+                  ref={hoverNameRef}
+                  data-kv-label="pod-hover"
+                  className="max-w-[180px] truncate font-mono font-bold leading-[1.15] tracking-wide text-slate-100"
+                  style={{ fontSize: HUD_LABEL_SPEC.POD_HOVER_LABEL.clampFontSize }}
+                />
+                <span
+                  ref={hoverStatusBadgeRef}
+                  className="ml-1 font-mono uppercase tracking-[0.14em] text-emerald-400"
+                  style={{ fontSize: HUD_LABEL_SPEC.POD_HOVER_LABEL.metaClampFontSize }}
+                />
               </span>
 
-              {/* 槽位编码：与 spatialLayout 的 rackIndex / slotIndex 同源 */}
-              <span className="mt-0.5 block font-mono text-[10px] tracking-[0.16em] text-slate-500">
-                RACK-{hoverLabelData.rackIndex} {'//'} SLOT-{String(hoverLabelData.slotIndex).padStart(2, '0')}
-              </span>
+              <span
+                ref={hoverSlotRef}
+                className="mt-0.5 block font-mono tracking-[0.16em] text-slate-500"
+                style={{ fontSize: HUD_LABEL_SPEC.POD_HOVER_LABEL.metaClampFontSize }}
+              />
 
-              {/* CPU / MEM 微型实时发光进度条 */}
               <span className="mt-1 flex items-center gap-2">
-                <MiniBar label="CPU" value={hoverLabelData.cpuUsage} />
-                <MiniBar label="MEM" value={hoverLabelData.memoryUsage} tone="#38bdf8" />
+                <span className="flex items-center gap-1">
+                  <span
+                    ref={hoverCpuValueRef}
+                    className="font-mono text-slate-300"
+                    style={{ fontSize: HUD_LABEL_SPEC.POD_HOVER_LABEL.metaClampFontSize }}
+                  >
+                    CPU 0%
+                  </span>
+                  <span className="inline-block h-1 w-8 overflow-hidden rounded-full bg-slate-800">
+                    <span
+                      ref={hoverCpuFillRef}
+                      className="block h-full rounded-full bg-emerald-400"
+                      style={{ width: '0%' }}
+                    />
+                  </span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <span
+                    ref={hoverMemValueRef}
+                    className="font-mono text-slate-300"
+                    style={{ fontSize: HUD_LABEL_SPEC.POD_HOVER_LABEL.metaClampFontSize }}
+                  >
+                    MEM 0%
+                  </span>
+                  <span className="inline-block h-1 w-8 overflow-hidden rounded-full bg-slate-800">
+                    <span
+                      ref={hoverMemFillRef}
+                      className="block h-full rounded-full bg-sky-400"
+                      style={{ width: '0%' }}
+                    />
+                  </span>
+                </span>
               </span>
             </HoloFrame>
           </div>
         </Html>
-      ) : null}
+      </group>
     </>
   );
 }

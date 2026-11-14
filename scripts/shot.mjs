@@ -485,6 +485,8 @@ async function main() {
         contextLost: null,
         renderer: null,
         canvas: null,
+        canvasRect: null,
+        labels: [],
         store: {},
       };
       /* ---- 瞬态轨：Shift+P HUD 的同源数据 ---- */
@@ -513,7 +515,34 @@ async function main() {
           out.renderer = ext === null ? 'unknown' : ctx.getParameter(ext.UNMASKED_RENDERER_WEBGL);
         } catch (e) { /* 上下文已丢失时读取会抛错，保持 null */ }
         out.canvas = { width: st.gl.domElement.width, height: st.gl.domElement.height };
+        const cRect = st.gl.domElement.getBoundingClientRect();
+        out.canvasRect = {
+          left: +cRect.left.toFixed(2),
+          top: +cRect.top.toFixed(2),
+          width: +cRect.width.toFixed(2),
+          height: +cRect.height.toFixed(2),
+        };
       }
+      /* ---- R6 进阶 Q2：采集全场景 [data-kv-label] 铭牌实时屏上尺寸与字体 ---- */
+      out.labels = Array.from(document.querySelectorAll('[data-kv-label]')).map((el) => {
+        const r = el.getBoundingClientRect();
+        const chip = el.closest('.kv-blur-chip') || el.parentElement;
+        const cs = getComputedStyle(el);
+        return {
+          id: el.getAttribute('data-kv-label'),
+          text: (el.textContent || '').trim(),
+          cssFontPx: +parseFloat(cs.fontSize).toFixed(3),
+          opacity: chip ? +parseFloat(getComputedStyle(chip).opacity).toFixed(3) : 1,
+          rect: {
+            left: +r.left.toFixed(2),
+            top: +r.top.toFixed(2),
+            right: +r.right.toFixed(2),
+            bottom: +r.bottom.toFixed(2),
+            width: +r.width.toFixed(2),
+            height: +r.height.toFixed(2),
+          },
+        };
+      });
       /* ---- Store 事实快照（证明这张图对应的状态） ---- */
       const s = window.__KUBEVISION_STORE__.getState();
       out.store = {
@@ -569,6 +598,18 @@ async function main() {
   const commit = readCommit();
   const timestamp = new Date().toISOString();
 
+  const labelHeights = Array.isArray(metrics?.labels)
+    ? metrics.labels.map((l) => l?.rect?.height).filter((v) => typeof v === 'number' && v > 0)
+    : [];
+  const labelBounds =
+    labelHeights.length > 0
+      ? {
+          count: labelHeights.length,
+          minHeightPx: Math.min(...labelHeights),
+          maxHeightPx: Math.max(...labelHeights),
+        }
+      : { count: 0, minHeightPx: null, maxHeightPx: null };
+
   const entry = {
     scene,
     sceneLabel: def.label,
@@ -579,6 +620,7 @@ async function main() {
     gpuMode,
     viewport: { width: viewportWidth, height: viewportHeight, deviceScaleFactor: 1 },
     metrics,
+    labelBounds,
     luminance,
     consoleErrors: cdp.consoleErrors.length,
     consoleWarns: cdp.consoleWarns.length,
@@ -624,6 +666,7 @@ async function main() {
   console.log(`  glStats   : ${JSON.stringify(metrics?.glStats ?? null)}`);
   console.log(`  DPR       : ${String(metrics?.dpr)} (devicePixelRatio=${metrics?.devicePixelRatio})`);
   console.log(`  canvas    : ${JSON.stringify(metrics?.canvas ?? null)}`);
+  console.log(`  labels    : ${JSON.stringify(labelBounds)}`);
   console.log(`  renderer  : ${String(metrics?.renderer)}`);
   if (luminance !== null) {
     const bar = luminance.bins

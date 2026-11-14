@@ -46,17 +46,39 @@
  * 它们是纯装饰，若可拾取会在视觉上"贴在" Pod 之上抢先命中，直接破坏让位协议。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useFrame, type ThreeEvent } from '@react-three/fiber';
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Edges, Html, RoundedBox, type EdgesRef } from '@react-three/drei';
 import * as THREE from 'three';
+
+import {
+  CAMERA_MOTION,
+  REDUCED_MOTION_AMPLITUDE,
+  computeHoverAlpha,
+  isReducedMotion,
+} from '@/constants/motion';
+import {
+  isCameraDebugEnabled,
+  recordDebugHoverSample,
+  recordDebugHoverStart,
+  registerCameraDebugProvider,
+  type RackEdgesDiagnostic,
+} from '@/utils/cameraDebugBridge';
+import { scheduleSelectionFlight } from '@/utils/canvasClickIntent';
 
 
 import { enhanceArmorMaterial, getBrushedMetalTextures } from '@/components/canvas/ProceduralPbrEnvironment';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { PALETTE } from '@/constants/palette';
+import { HUD_LABEL_SPEC, applyHtmlFogAttenuation, createHtmlFogStyleCache } from '@/constants/hud';
 import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
+import {
+  mergeStaticBoxes,
+  mergeStaticPlanes,
+  mergeStaticRawGeometries,
+  type StaticBoxPart,
+} from '@/utils/mergeStaticGeometries';
 import {
   POD_BOX_SIZE,
   RACK_BODY_CENTER_Y,
@@ -86,6 +108,8 @@ const COLOR_HEALTHY = PALETTE.healthy.color; // emerald-400
 const COLOR_WARNING = PALETTE.elevated.color; // amber-400
 const COLOR_CRITICAL = PALETTE.critical.color; // rose-500
 const COLOR_SELECTED = PALETTE.theme.color; // cyan-400
+const COLOR_EDGE_HOVER = new THREE.Color('#38bdf8');
+const rackDebugReaders = new Map<string, () => RackEdgesDiagnostic>();
 
 /** 高负载判定阈值（%）：CPU 或 MEM 越限即转琥珀，即使 status 仍为 Ready */
 const HIGH_LOAD_THRESHOLD = 85;
@@ -794,53 +818,8 @@ void main() {
 `;
 
 /**
- * 把一组 TubeGeometry 合并成单个 BufferGeometry（手工拼装，无额外依赖）。
- *
- * 【为什么必须合并】每层 2 个槽位 × 3 根光纤 = 6 根管；若不合并，
- * 单机架 4 层共 24 次 Draw Call × 3 机架 = 72 次，直接吃掉整帧预算。
- * 合并后每层 1 次、单机架 4 次、全局 12 次。
- *
- * @param tubes 待合并的管几何体（合并后原始几何体被 dispose）
+ * 层间光纤线束的几何已统一委托给 `src/utils/mergeStaticGeometries.ts` 在模块加载期合批。
  */
-function mergeTubeGeometries(tubes: readonly THREE.TubeGeometry[]): THREE.BufferGeometry {
-  let vertexTotal = 0;
-  let indexTotal = 0;
-  for (const tube of tubes) {
-    vertexTotal += tube.attributes.position.count;
-    indexTotal += tube.index === null ? 0 : tube.index.count;
-  }
-
-  const positions = new Float32Array(vertexTotal * 3);
-  const normals = new Float32Array(vertexTotal * 3);
-  const uvs = new Float32Array(vertexTotal * 2);
-  const indices = new Uint32Array(indexTotal);
-
-  let vertexOffset = 0;
-  let indexOffset = 0;
-  for (const tube of tubes) {
-    const positionAttr = tube.attributes.position;
-    const normalAttr = tube.attributes.normal;
-    const uvAttr = tube.attributes.uv;
-    positions.set(positionAttr.array as Float32Array, vertexOffset * 3);
-    normals.set(normalAttr.array as Float32Array, vertexOffset * 3);
-    uvs.set(uvAttr.array as Float32Array, vertexOffset * 2);
-    if (tube.index !== null) {
-      for (let k = 0; k < tube.index.count; k++) {
-        indices[indexOffset + k] = tube.index.getX(k) + vertexOffset;
-      }
-      indexOffset += tube.index.count;
-    }
-    vertexOffset += positionAttr.count;
-    tube.dispose();
-  }
-
-  const merged = new THREE.BufferGeometry();
-  merged.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-  merged.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-  merged.setIndex(new THREE.BufferAttribute(indices, 1));
-  return merged;
-}
 
 /** 层间光纤线束的管半径与每束根数 */
 const HARNESS_TUBE_RADIUS = 0.012;
@@ -921,14 +900,17 @@ const HARNESS_BASE_INTENSITY = 0.72;
  * 【3 根错落】同一槽位的 3 根管用微小的 X/Z 偏移错开成"束"，
  * 远看是一股线，近看能分辨根数。
  */
-const HARNESS_GEOMETRIES: readonly THREE.BufferGeometry[] = (() => {
+/**
+ * 机架 4 层全部 24 根弯曲光纤线束（模块加载期一次合并为单份 BufferGeometry）。
+ * 4 层使用完全一致的流动着色器与 uniforms，合并后每座机架从 4 Draw Call 降至 1。
+ */
+const ALL_HARNESS_GEOMETRY: THREE.BufferGeometry = (() => {
   const sideInnerX = RACK_BODY_SIZE[0] / 2 - 0.20;
   const halfDepth = RACK_BODY_SIZE[2] / 2;
-  const result: THREE.BufferGeometry[] = [];
+  const tubes: THREE.TubeGeometry[] = [];
 
   for (let tier = 0; tier < RACK_TIER_COUNT; tier++) {
     const tierY = RACK_TIER_BASE_Y + tier * RACK_TIER_HEIGHT;
-    const tubes: THREE.TubeGeometry[] = [];
 
     /*
      * 【前后双面对称】三座机架的 rotationY = α + π，导致局部 ±Z 面交替朝向相机：
@@ -968,10 +950,9 @@ const HARNESS_GEOMETRIES: readonly THREE.BufferGeometry[] = (() => {
         }
       }
     }
-
-    result.push(mergeTubeGeometries(tubes));
   }
-  return result;
+
+  return mergeStaticRawGeometries(tubes);
 })();
 
 /* ========================================================================== */
@@ -993,6 +974,82 @@ const LIGHT_GUIDE_Z = RACK_BODY_SIZE[2] / 2 - 0.1;
 
 /** 导光柱几何：细长竖直方柱（高度略短于机柜，留出顶盖与底座） */
 const LIGHT_GUIDE_HEIGHT = RACK_BODY_SIZE[1] - 0.5;
+
+/**
+ * 上下水平光学导轨合批几何（8 根框条 → 1 Draw Call，保留整圈材质与点击选中路径）。
+ */
+const OPTIC_RAIL_H_GEOMETRY: THREE.BufferGeometry = (() => {
+  const parts: StaticBoxPart[] = [];
+  for (const levelIndex of [0, 1] as const) {
+    const y =
+      levelIndex === 0
+        ? OPTIC_RAIL_SIZE / 2 + 0.01
+        : RACK_BODY_SIZE[1] - OPTIC_RAIL_SIZE / 2 - 0.01;
+    for (const zSign of [1, -1] as const) {
+      parts.push({
+        size: [RACK_BODY_SIZE[0], OPTIC_RAIL_SIZE, OPTIC_RAIL_SIZE],
+        position: [0, y, zSign * (RACK_BODY_SIZE[2] / 2 - OPTIC_RAIL_SIZE / 2)],
+      });
+    }
+    for (const xSign of [1, -1] as const) {
+      parts.push({
+        size: [OPTIC_RAIL_SIZE, OPTIC_RAIL_SIZE, RACK_BODY_SIZE[2]],
+        position: [xSign * (RACK_BODY_SIZE[0] / 2 - OPTIC_RAIL_SIZE / 2), y, 0],
+      });
+    }
+  }
+  return mergeStaticBoxes(parts);
+})();
+
+/** 4 层水平托盘隔板合批几何（4 → 1 Draw Call，统一 receiveShadow + raycast 关闭）。 */
+const TIER_DIVIDERS_GEOMETRY: THREE.BufferGeometry = mergeStaticBoxes(
+  TIER_DIVIDER_YS.map((tierY) => ({
+    size: [RACK_BODY_SIZE[0] - 0.16, 0.055, RACK_BODY_SIZE[2] - 0.14] as const,
+    position: [0, tierY, 0] as const,
+  })),
+);
+
+/** 4 层前后共 8 条发光灯眉合批几何（8 → 1 Draw Call，同材质同景深透明度同步）。 */
+const TIER_BANDS_GEOMETRY: THREE.BufferGeometry = (() => {
+  const parts: StaticBoxPart[] = [];
+  for (const tierY of TIER_DIVIDER_YS) {
+    for (const zSign of [1, -1] as const) {
+      parts.push({
+        size: [RACK_BODY_SIZE[0] - 0.42, 0.016, 0.016],
+        position: [0, tierY, zSign * (RACK_BODY_SIZE[2] / 2 - 0.05)],
+      });
+    }
+  }
+  return mergeStaticBoxes(parts);
+})();
+
+/** 左右两片蜂窝散热网侧板合批几何（2 → 1 Draw Call，各自保留独立 [0,1] UV）。 */
+const MESH_PANELS_GEOMETRY: THREE.BufferGeometry = mergeStaticPlanes(
+  ([1, -1] as const).map((sideSign) => ({
+    size: [RACK_BODY_SIZE[2] * 0.9, RACK_BODY_SIZE[1] * 0.9] as const,
+    position: [sideSign * (RACK_BODY_SIZE[0] / 2 - 0.02), RACK_BODY_CENTER_Y, 0] as const,
+    rotation: [0, sideSign * (Math.PI / 2), 0] as const,
+  })),
+);
+
+/** 顶冠 4 条全息蚀刻框线合批几何（4 → 1 Draw Call）。 */
+const CROWN_ETCH_GEOMETRY: THREE.BufferGeometry = (() => {
+  const y = CROWN_Y + CROWN_HEIGHT / 2 + 0.004;
+  return mergeStaticBoxes([
+    { size: [CROWN_WIDTH - 0.18, 0.004, 0.012], position: [0, y, -0.42] },
+    { size: [CROWN_WIDTH - 0.18, 0.004, 0.012], position: [0, y, 0.42] },
+    { size: [0.012, 0.004, CROWN_DEPTH - 0.18], position: [-(CROWN_WIDTH / 2 - 0.12), y, 0] },
+    { size: [0.012, 0.004, CROWN_DEPTH - 0.18], position: [CROWN_WIDTH / 2 - 0.12, y, 0] },
+  ]);
+})();
+
+/** 前后对称共 4 根垂直霓虹导光柱合批几何（4 → 1 Draw Call，单一材质同源 lerp）。 */
+const LIGHT_GUIDES_GEOMETRY: THREE.BufferGeometry = mergeStaticBoxes([
+  { size: [0.11, LIGHT_GUIDE_HEIGHT, 0.11], position: [-RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, LIGHT_GUIDE_Z] },
+  { size: [0.11, LIGHT_GUIDE_HEIGHT, 0.11], position: [RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, LIGHT_GUIDE_Z] },
+  { size: [0.11, LIGHT_GUIDE_HEIGHT, 0.11], position: [-RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, -LIGHT_GUIDE_Z] },
+  { size: [0.11, LIGHT_GUIDE_HEIGHT, 0.11], position: [RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, -LIGHT_GUIDE_Z] },
+]);
 
 /**
  * 腔体氛围点光源参数。
@@ -1070,14 +1127,28 @@ function noRaycast(): void {
  * LineSegments2 + LineMaterial），不自造结构化类型也不深链 three-stdlib。
  */
 export default function WorkerRack3D({ node }: WorkerRack3DProps) {
+  const gl = useThree((s): THREE.WebGLRenderer => s.gl);
+
   /* ---- Store 细粒度订阅 ---- */
   const selectedEntityId = useClusterStore((s): string | null => s.selectedEntityId);
+  const selectedEntityType = useClusterStore((s): SelectedEntityType | null => s.selectedEntityType);
   const selectEntity = useClusterStore(
     (s): ((entityId: string | null, entityType?: SelectedEntityType | null) => void) => s.selectEntity,
   );
 
-  /* ---- 交互态（低频 UI 事件，允许 useState） ---- */
-  const [hovered, setHovered] = useState<boolean>(false);
+  /* ---- R7 零帧瞬态交互 ref（严禁悬停 useState 触发重渲染） ---- */
+  const hoveredRef = useRef<boolean>(false);
+  const hoverAmountRef = useRef<number>(0);
+  const pressedRef = useRef<boolean>(false);
+  const isPodInRackSelected = useMemo((): boolean => {
+    if (selectedEntityType !== 'pod' || selectedEntityId === null) return false;
+    const targetPod = useClusterStore
+      .getState()
+      .snapshotSummary?.pods.find((pod) => pod.id === selectedEntityId);
+    return targetPod?.nodeId === node.id;
+  }, [selectedEntityId, selectedEntityType, node.id]);
+  const isPodInRackSelectedRef = useRef<boolean>(isPodInRackSelected);
+  isPodInRackSelectedRef.current = isPodInRackSelected;
 
   /**
    * 程序化拉丝金属纹理（模块级单例，三座机架共享同一份 GPU 纹理）。
@@ -1094,18 +1165,8 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   const brushedMetal = useMemo(() => getBrushedMetalTextures(), []);
 
   /* ---- 动画通道 ref ---- */
-  const leftGuideMat = useRef<THREE.MeshBasicMaterial>(null);
-  const rightGuideMat = useRef<THREE.MeshBasicMaterial>(null);
-  /**
-   * 背面（局部 −Z 侧）两根导光柱的材质 ref。
-   *
-   * 【为何需要】机架正面朝相机的那一侧随 rackIndex 在 ±Z 间交替，
-   * 只装 +Z 侧的导光柱会让 alpha（−Z 朝相机）整座机架看不到垂直光柱。
-   * 因此背面也各装一根，并由 useFrame 用与正面完全相同的
-   * target/alpha 同步 lerp，两面的色温与呼吸相位严格一致。
-   */
-  const backGuideMatLeft = useRef<THREE.MeshBasicMaterial>(null);
-  const backGuideMatRight = useRef<THREE.MeshBasicMaterial>(null);
+  /** 4 根垂直导光柱（前后双面合并为 1 Draw Call）共享同一发光材质 */
+  const lightGuideMatRef = useRef<THREE.MeshBasicMaterial>(null);
   /** 腔体点光源：useFrame 内与导光柱同源 lerp，保证状态色绝对一致 */
   const cavityLightRef = useRef<THREE.PointLight>(null);
 
@@ -1189,8 +1250,11 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
    */
   const rivetInstancesRef = useRef<THREE.InstancedMesh>(null);
 
-  /** 装甲棱线（drei Edges，官方 EdgesRef 类型）ref：useFrame 驱动选中态呼吸描边 */
-  const armorEdgesRef = useRef<EdgesRef | null>(null);
+  /** R7 全部 11 条机架棱线（4 竖导轨 + 4 承重柱 + 底座 + 下顶盖 + 上顶冠）ref 数组 */
+  const rackEdgesRefs = useRef<Array<EdgesRef | null>>(Array(11).fill(null));
+  /** 4 根竖直光学导轨材质 ref + 上下水平光学导轨材质 ref */
+  const opticRailVMatRefs = useRef<Array<THREE.MeshStandardMaterial | null>>(Array(4).fill(null));
+  const opticRailHMatRef = useRef<THREE.MeshStandardMaterial | null>(null);
 
   /* ---- 景深衰减：需要被统一调节亮度的发光件 ref ---- */
 
@@ -1204,14 +1268,10 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   const plinthGlowRef = useRef<THREE.MeshBasicMaterial>(null);
 
   /**
-   * 四层灯眉材质的集合（8 条：4 层 × 前后双面）。
-   *
-   * 【为何用数组】灯眉是按 TIER_DIVIDER_YS 映射生成的，无法用单个 ref。
-   * 在 useFrame 里遍历这个数组统一缩放 opacity 即可——
-   * 数组长度固定为 8，遍历开销可忽略且零分配。
+   * 四层灯眉合批材质引用（8 条合批为 1 Draw Call）。
+   * 仅在 useFrame 里原地缩放 opacity，零遍历零分配。
    */
-  const tierBandMatsRef = useRef<Array<THREE.MeshBasicMaterial | null>>([]);
-  tierBandMatsRef.current.length = TIER_DIVIDER_YS.length * 2;
+  const tierBandMatRef = useRef<THREE.MeshBasicMaterial>(null);
 
   /** 顶冠散热百叶窗实例网格（9 叶片合并为 1 draw，矩阵挂载时写入一次） */
   const louverInstancesRef = useRef<THREE.InstancedMesh>(null);
@@ -1228,21 +1288,129 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   /* 机架世界位姿：与 Pod 槽位/相机机位同源（spatialLayout 单一事实源） */
   const rackTransform = useMemo(() => getRackTransform(node.rackIndex), [node.rackIndex]);
 
+  /* R6-3：机架全息铭牌 DOM 引用、脏写缓存与预计算世界坐标（useFrame 零分配） */
+  const rackHudRef = useRef<HTMLDivElement>(null);
+  const rackFogCache = useMemo(() => createHtmlFogStyleCache(), []);
+  const rackHudLocalPos = useMemo(
+    (): readonly [number, number, number] => [1.18, 0.06, -(RACK_BODY_SIZE[2] / 2 + 0.58)],
+    [],
+  );
+  const rackHudWorldPos = useMemo((): readonly [number, number, number] => {
+    const theta = rackTransform.rotationY;
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+    const lx = rackHudLocalPos[0];
+    const ly = rackHudLocalPos[1];
+    const lz = rackHudLocalPos[2];
+    return [
+      rackTransform.position[0] + lx * cosT + lz * sinT,
+      rackTransform.position[1] + ly,
+      rackTransform.position[2] - lx * sinT + lz * cosT,
+    ];
+  }, [rackTransform, rackHudLocalPos]);
+
   /** 矩阵合成用的临时对象（组件生命周期内复用，绝不进 useFrame） */
   const ghostTempObject = useMemo((): THREE.Object3D => new THREE.Object3D(), []);
 
   const isSelected = selectedEntityId === node.id;
-  const emphasized = isSelected || hovered;
 
-  /* hover 光标：Canvas 覆盖全视口，body 样式是唯一可靠通道 */
-  useEffect(() => {
-    if (!hovered) return undefined;
-    const previous = document.body.style.cursor;
-    document.body.style.cursor = 'pointer';
-    return (): void => {
-      document.body.style.cursor = previous;
+  /**
+   * applyRackHighlightImmediate —— 悬停首帧或按下瞬间直接写材质/Edges 属性（0 帧延迟、0 重渲染）。
+   */
+  const applyRackHighlightImmediate = useCallback(
+    (hoverFraction: number, isPressedNow: boolean): void => {
+      const targetEmissive = isSelected
+        ? 0.85
+        : isPressedNow
+          ? 0.95
+          : isPodInRackSelectedRef.current
+            ? Math.max(0.35, 0.35 + 0.15 * hoverFraction)
+            : 0.28 + (0.52 - 0.28) * hoverFraction;
+
+      for (let i = 0; i < 4; i++) {
+        const railMat = opticRailVMatRefs.current[i];
+        if (railMat !== null) {
+          railMat.emissiveIntensity = targetEmissive;
+        }
+      }
+      if (opticRailHMatRef.current !== null) {
+        opticRailHMatRef.current.emissiveIntensity = targetEmissive;
+      }
+
+      for (let i = 0; i < rackEdgesRefs.current.length; i++) {
+        const edgeObj = rackEdgesRefs.current[i];
+        if (edgeObj === null) continue;
+        const edgeMat = edgeObj.material;
+        if (isPressedNow) {
+          edgeMat.color.copy(COLOR_SELECTED);
+          edgeMat.opacity = 1.0;
+          edgeMat.linewidth = 1.0;
+        } else if (isPodInRackSelectedRef.current) {
+          edgeMat.color.copy(COLOR_SELECTED);
+          edgeMat.opacity = Math.max(0.75, EDGE_IDLE_OPACITY + (EDGE_HOVER_OPACITY - EDGE_IDLE_OPACITY) * hoverFraction);
+          edgeMat.linewidth = 1.6;
+        } else if (!isSelected) {
+          edgeMat.color.lerpColors(COLOR_EDGE_IDLE, COLOR_EDGE_HOVER, hoverFraction);
+          edgeMat.opacity = EDGE_IDLE_OPACITY + (EDGE_HOVER_OPACITY - EDGE_IDLE_OPACITY) * hoverFraction;
+          edgeMat.linewidth = EDGE_IDLE_WIDTH + 0.35 * hoverFraction;
+        }
+      }
+    },
+    [isSelected],
+  );
+
+  useEffect((): (() => void) => {
+    const clearPressed = (): void => {
+      if (!pressedRef.current) return;
+      pressedRef.current = false;
+      applyRackHighlightImmediate(hoverAmountRef.current, false);
     };
-  }, [hovered]);
+    window.addEventListener('pointerup', clearPressed);
+    window.addEventListener('pointercancel', clearPressed);
+    return (): void => {
+      window.removeEventListener('pointerup', clearPressed);
+      window.removeEventListener('pointercancel', clearPressed);
+    };
+  }, [applyRackHighlightImmediate]);
+
+  useEffect((): (() => void) | undefined => {
+    if (!isCameraDebugEnabled()) return undefined;
+    rackDebugReaders.set(node.id, (): RackEdgesDiagnostic => {
+      const opacities: number[] = [];
+      for (let i = 0; i < rackEdgesRefs.current.length; i++) {
+        const edge = rackEdgesRefs.current[i];
+        if (edge !== null) {
+          opacities.push(Number(edge.material.opacity.toFixed(3)));
+        }
+      }
+      let maxRailEmissive = opticRailHMatRef.current?.emissiveIntensity ?? 0;
+      for (let i = 0; i < 4; i++) {
+        const vMat = opticRailVMatRefs.current[i];
+        if (vMat !== null && vMat.emissiveIntensity > maxRailEmissive) {
+          maxRailEmissive = vMat.emissiveIntensity;
+        }
+      }
+      return {
+        rackId: node.id,
+        edgeCount: opacities.length,
+        activeEdgeOpacities: opacities,
+        railEmissiveMax: Number(maxRailEmissive.toFixed(3)),
+        isHighlightedForPod: isPodInRackSelectedRef.current,
+        pressedBorderActive: pressedRef.current,
+      };
+    });
+    registerCameraDebugProvider({
+      getRackEdgesDiagnostic: (rackId: string) => rackDebugReaders.get(rackId)?.() ?? null,
+    });
+    const canvasDom = gl.domElement;
+    return () => {
+      rackDebugReaders.delete(node.id);
+      if (hoveredRef.current) {
+        hoveredRef.current = false;
+        canvasDom.style.cursor = 'auto';
+      }
+    };
+  }, [gl, node.id]);
 
   /**
    * @description 承托底座矩阵初始化（挂载时一次，含 StrictMode 双挂载安全）。
@@ -1455,11 +1623,28 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
   const handleSelect = useCallback(
     (event: ThreeEvent<MouseEvent>): void => {
       if (isPodHitInRack(event, node.id)) return;
+      if (event.delta >= CAMERA_MOTION.dblClickMaxMovePx) return;
       event.stopPropagation();
-      selectEntity(node.id, 'node');
+      scheduleSelectionFlight(() => selectEntity(node.id, 'node'));
     },
     [node.id, selectEntity],
   );
+
+  const handleRackPointerDown = useCallback(
+    (event: ThreeEvent<PointerEvent>): void => {
+      if (event.button !== 0 || isPodHitInRack(event, node.id)) return;
+      event.stopPropagation();
+      pressedRef.current = true;
+      applyRackHighlightImmediate(hoverAmountRef.current, true);
+    },
+    [node.id, applyRackHighlightImmediate],
+  );
+
+  const handleRackPointerUp = useCallback((): void => {
+    if (!pressedRef.current) return;
+    pressedRef.current = false;
+    applyRackHighlightImmediate(hoverAmountRef.current, false);
+  }, [applyRackHighlightImmediate]);
 
   /**
    * useFrame —— 导光柱 / 腔体点光按状态平滑变色 + 装甲棱线三态描边。
@@ -1531,14 +1716,29 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       target = COLOR_HEALTHY;
     }
 
-    const alpha = 1 - Math.exp(-COLOR_LERP_RATE * Math.min(delta, MAX_FRAME_DELTA));
+    const clampedDt = Math.min(delta, MAX_FRAME_DELTA);
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
+    const alpha = 1 - Math.exp(-COLOR_LERP_RATE * clampedDt);
+    const hoverTarget = hoveredRef.current ? 1 : 0;
+    hoverAmountRef.current += (hoverTarget - hoverAmountRef.current) * computeHoverAlpha(clampedDt);
+    if (hoveredRef.current) {
+      recordDebugHoverSample(node.id, hoverAmountRef.current);
+    }
+    const hoverAmt = hoverAmountRef.current;
+    const podInRack = isPodInRackSelectedRef.current;
+    const emphasisFactor = isSelected ? 1 : Math.max(hoverAmt, podInRack ? 0.72 : 0);
 
-    // 分区态告警呼吸脉冲；其余状态恒定透明度
+    // 分区态告警呼吸脉冲（reduced-motion 时幅值缩至 25%）；其余状态恒定透明度
+    const criticalWave =
+      0.5 +
+      0.5 *
+        motionScale *
+        Math.sin(
+          state.clock.getElapsedTime() * CRITICAL_PULSE_RATE + node.rackIndex * ((Math.PI * 2) / 3),
+        );
     const baseOpacity =
       current.status === 'NetworkPartition' && !isSelected
-        ? CRITICAL_PULSE_MIN +
-          (CRITICAL_PULSE_MAX - CRITICAL_PULSE_MIN) *
-            (0.5 + 0.5 * Math.sin(state.clock.getElapsedTime() * CRITICAL_PULSE_RATE + node.rackIndex * ((Math.PI * 2) / 3)))
+        ? CRITICAL_PULSE_MIN + (CRITICAL_PULSE_MAX - CRITICAL_PULSE_MIN) * criticalWave
         : GUIDE_BASE_OPACITY;
 
     /*
@@ -1547,22 +1747,9 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
      */
     const opacity = baseOpacity * emissiveDepth;
 
-    if (leftGuideMat.current !== null) {
-      leftGuideMat.current.color.lerp(target, alpha);
-      leftGuideMat.current.opacity = opacity;
-    }
-    if (rightGuideMat.current !== null) {
-      rightGuideMat.current.color.lerp(target, alpha);
-      rightGuideMat.current.opacity = opacity;
-    }
-    /* 背面导光柱：同一 target / 同一 alpha，保证前后两面色温与呼吸完全同步 */
-    if (backGuideMatLeft.current !== null) {
-      backGuideMatLeft.current.color.lerp(target, alpha);
-      backGuideMatLeft.current.opacity = opacity;
-    }
-    if (backGuideMatRight.current !== null) {
-      backGuideMatRight.current.color.lerp(target, alpha);
-      backGuideMatRight.current.opacity = opacity;
+    if (lightGuideMatRef.current !== null) {
+      lightGuideMatRef.current.color.lerp(target, alpha);
+      lightGuideMatRef.current.opacity = opacity;
     }
     /* 腔体点光：与导光柱同 target 同 alpha，色温永不脱节。
        强度也按 emissiveDepth 缩放 —— 远景机架的腔内不应再"照亮"周围地面。 */
@@ -1572,58 +1759,92 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
     }
 
     /*
-     * ---- 四层灯眉（8 条）随距离衰减 ----
-     *
-     * 灯眉是机架正面最显眼的分层标识。远景若不衰减，8 条亮线会与
-     * 近景机架的灯眉在同一亮度水平上竞争，纵深立刻被拉平。
-     * 这里用同一个 emissiveDepth 统一缩放，保持 8 条同步。
+     * ---- 四层灯眉（8 条合批为 1 Draw Call）随距离衰减 ----
      */
-    const tierBands = tierBandMatsRef.current;
-    const baseTierOpacity = emphasized ? 0.95 : 0.62;
+    const baseTierOpacity = 0.62 + (0.95 - 0.62) * emphasisFactor;
     const scaledTierOpacity = baseTierOpacity * emissiveDepth;
-    for (let i = 0; i < tierBands.length; i += 1) {
-      const bandMat = tierBands[i];
-      if (bandMat !== null && bandMat !== undefined) {
-        bandMat.opacity = scaledTierOpacity;
-      }
+    if (tierBandMatRef.current !== null) {
+      tierBandMatRef.current.opacity = scaledTierOpacity;
     }
 
-    /* ---- 底座光圈随距离衰减（结构件全幅度）---- */
+    /* R6-3：机架铭牌随相机距离吃雾 + 透视缩放护栏（opacity / saturate / scale，useFrame 零分配） */
+    applyHtmlFogAttenuation(
+      rackHudRef.current,
+      camPos,
+      rackHudWorldPos[0],
+      rackHudWorldPos[1],
+      rackHudWorldPos[2],
+      rackFogCache,
+      HUD_LABEL_SPEC.RACK_LABEL,
+      state.camera instanceof THREE.PerspectiveCamera ? state.camera.fov : 45,
+    );
+
+    /* ---- 底座光圈随距离衰减（结构件全幅度，零 JSX 重排）---- */
     if (plinthGlowRef.current !== null) {
-      plinthGlowRef.current.opacity = (isSelected ? 0.9 : 0.45) * depthFactor;
+      const targetPlinthOpacity = isSelected ? 0.9 : hoverAmt > 0.005 ? hoverAmt * 0.65 : 0;
+      plinthGlowRef.current.opacity = targetPlinthOpacity * depthFactor;
     }
 
     /*
      * 顶部落束光斑：颜色直接继承导光柱当前色（同源同相），
-     * 脉动用 sin 归一化到 [0.82, 1.18]，与星核心跳同频段。
+     * 脉动用 sin 归一化到 [0.82, 1.18]（reduced-motion 幅度 × 0.25）。
      * 全部为原地 .value 写入 —— useFrame 零分配。
      */
-    if (leftGuideMat.current !== null) {
-      (beamBloomUniforms.uColor.value as THREE.Color).copy(leftGuideMat.current.color);
+    if (lightGuideMatRef.current !== null) {
+      (beamBloomUniforms.uColor.value as THREE.Color).copy(lightGuideMatRef.current.color);
       /* 侧板网孔同源取色：故障时整片侧板也跟着泛红，语义一致 */
-      (meshPanelUniforms.uColor.value as THREE.Color).copy(leftGuideMat.current.color);
+      (meshPanelUniforms.uColor.value as THREE.Color).copy(lightGuideMatRef.current.color);
       /* 光纤线束同源取色 + 推进流动脉冲相位（原地写，零分配） */
-      (harnessUniforms.uColor.value as THREE.Color).copy(leftGuideMat.current.color);
+      (harnessUniforms.uColor.value as THREE.Color).copy(lightGuideMatRef.current.color);
     }
     harnessUniforms.uTime.value = state.clock.getElapsedTime();
     beamBloomUniforms.uPulse.value =
-      1 + 0.18 * Math.sin(state.clock.getElapsedTime() * BEAM_BLOOM_PULSE_RATE);
+      1 + 0.18 * motionScale * Math.sin(state.clock.getElapsedTime() * BEAM_BLOOM_PULSE_RATE);
 
-    /* ---- 装甲棱线：选中态青色呼吸描边 / hover 静态提亮 / 常态低对比 ---- */
-    const edges = armorEdgesRef.current;
-    if (edges !== null) {
+    /* ---- 导轨发光强度 + 全部 11 条装甲棱线（导轨/立柱/底座/顶盖/顶冠）同源驱动 ---- */
+    const railEmissiveTarget = pressedRef.current
+      ? 0.95
+      : isSelected
+        ? 0.85
+        : podInRack
+          ? Math.max(0.35, 0.35 + 0.15 * hoverAmt)
+          : 0.28 + (0.52 - 0.28) * hoverAmt;
+
+    for (let i = 0; i < 4; i++) {
+      const railMat = opticRailVMatRefs.current[i];
+      if (railMat !== null) {
+        railMat.emissiveIntensity = railEmissiveTarget;
+      }
+    }
+    if (opticRailHMatRef.current !== null) {
+      opticRailHMatRef.current.emissiveIntensity = railEmissiveTarget;
+    }
+
+    const breathMid = 0.5;
+    const breathWave = breathMid + 0.5 * motionScale * Math.sin(state.clock.getElapsedTime() * EDGE_BREATH_RATE);
+
+    for (let i = 0; i < rackEdgesRefs.current.length; i++) {
+      const edges = rackEdgesRefs.current[i];
+      if (edges === null) continue;
       const edgeMat = edges.material;
-      if (isSelected) {
-        // 正弦归一化到 [0,1] 后映射到透明度/线宽区间（慢呼吸 = 稳定选中强调）
-        const breath = 0.5 + 0.5 * Math.sin(state.clock.getElapsedTime() * EDGE_BREATH_RATE);
+      if (pressedRef.current) {
         edgeMat.color.copy(COLOR_SELECTED);
-        edgeMat.opacity = EDGE_BREATH_OPACITY_MIN + (EDGE_BREATH_OPACITY_MAX - EDGE_BREATH_OPACITY_MIN) * breath;
-        edgeMat.linewidth = EDGE_BREATH_WIDTH_MIN + (EDGE_BREATH_WIDTH_MAX - EDGE_BREATH_WIDTH_MIN) * breath;
+        edgeMat.opacity = 1.0;
+        edgeMat.linewidth = 1.0;
+      } else if (isSelected) {
+        edgeMat.color.copy(COLOR_SELECTED);
+        edgeMat.opacity =
+          EDGE_BREATH_OPACITY_MIN + (EDGE_BREATH_OPACITY_MAX - EDGE_BREATH_OPACITY_MIN) * breathWave;
+        edgeMat.linewidth =
+          EDGE_BREATH_WIDTH_MIN + (EDGE_BREATH_WIDTH_MAX - EDGE_BREATH_WIDTH_MIN) * breathWave;
+      } else if (podInRack) {
+        edgeMat.color.copy(COLOR_SELECTED);
+        edgeMat.opacity = 0.72 + 0.2 * hoverAmt;
+        edgeMat.linewidth = 1.6 + 0.3 * hoverAmt;
       } else {
-        // 非选中：颜色平滑回归常态深蓝，透明度/线宽按 hover 与否二值切换
-        edgeMat.color.lerp(COLOR_EDGE_IDLE, alpha);
-        edgeMat.opacity = hovered ? EDGE_HOVER_OPACITY : EDGE_IDLE_OPACITY;
-        edgeMat.linewidth = EDGE_IDLE_WIDTH;
+        edgeMat.color.lerpColors(COLOR_EDGE_IDLE, COLOR_EDGE_HOVER, hoverAmt);
+        edgeMat.opacity = EDGE_IDLE_OPACITY + (EDGE_HOVER_OPACITY - EDGE_IDLE_OPACITY) * hoverAmt;
+        edgeMat.linewidth = EDGE_IDLE_WIDTH + 0.35 * hoverAmt;
       }
     }
   });
@@ -1649,15 +1870,24 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       position={rackTransform.position}
       rotation={[0, rackTransform.rotationY, 0]}
       onClick={handleSelect}
+      onPointerDown={handleRackPointerDown}
+      onPointerUp={handleRackPointerUp}
       onPointerOver={(event): void => {
-        // Pod 命中让位：本机架腔体内有 Pod 被命中时不抢占 hover——
-        // onPointerOver 的 stopPropagation 会 break 距离升序派发链，
-        // 阻断更远处 Pod 实例的 onPointerMove（悬停标签将永不出现）。
         if (isPodHitInRack(event, node.id)) return;
         event.stopPropagation();
-        setHovered(true);
+        if (!hoveredRef.current) {
+          hoveredRef.current = true;
+          hoverAmountRef.current = Math.max(hoverAmountRef.current, CAMERA_MOTION.hoverInstantJump);
+          gl.domElement.style.cursor = 'pointer';
+          applyRackHighlightImmediate(hoverAmountRef.current, pressedRef.current);
+          recordDebugHoverStart(node.id, 'node', hoverAmountRef.current, 1);
+        }
       }}
-      onPointerOut={(): void => setHovered(false)}
+      onPointerOut={(): void => {
+        if (!hoveredRef.current) return;
+        hoveredRef.current = false;
+        gl.domElement.style.cursor = 'auto';
+      }}
     >
             
 
@@ -1691,20 +1921,25 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
            */}
           <boxGeometry args={[OPTIC_RAIL_SIZE, RACK_BODY_SIZE[1], OPTIC_RAIL_SIZE]} />
           <meshStandardMaterial
+            ref={(el): void => {
+              opticRailVMatRefs.current[cornerIndex] = el;
+            }}
             onBeforeCompile={enhanceArmorMaterial}
             color={OPTIC_RAIL_COLOR}
             metalness={0.92}
             roughness={0.16}
             envMapIntensity={OPTIC_RAIL_ENV_INTENSITY}
             emissive={OPTIC_RAIL_EMISSIVE}
-            emissiveIntensity={isSelected ? 0.85 : emphasized ? 0.5 : 0.28}
+            emissiveIntensity={isSelected ? 0.85 : isPodInRackSelected ? 0.35 : 0.28}
             transparent
             opacity={0.92}
           />
           <Edges
-            ref={cornerIndex === 0 ? armorEdgesRef : undefined}
+            ref={(el): void => {
+              rackEdgesRefs.current[cornerIndex] = el;
+            }}
             threshold={15}
-            color={isSelected ? '#22d3ee' : HARDWARE_EDGE_COLOR}
+            color={isSelected || isPodInRackSelected ? '#22d3ee' : HARDWARE_EDGE_COLOR}
             transparent
             opacity={EDGE_IDLE_OPACITY}
             linewidth={EDGE_IDLE_WIDTH}
@@ -1713,62 +1948,22 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
       ))}
 
       {/*
-       * ---- 上下水平光学导轨（各一圈：前/后/左/右四条细棱）----
-       *
-       * 与竖直导轨拼合成一个完整的"线框体"，机架的体积感来自这个框，
-       * 而不是来自一面遮住内部的半透明板。
+       * ---- 上下水平光学导轨（模块期 mergeStaticBoxes 合批为 1 Draw Call，保持点击选中）----
        */}
-      {[0, 1].map((levelIndex): ReactNode => {
-        /* 下层贴机架底部、上层贴机架顶部（各内缩半个导轨宽避免与外框重叠） */
-        const y =
-          levelIndex === 0
-            ? OPTIC_RAIL_SIZE / 2 + 0.01
-            : RACK_BODY_SIZE[1] - OPTIC_RAIL_SIZE / 2 - 0.01;
-        return (
-          <group key={`optic-rail-h-${levelIndex}`}>
-            {[1, -1].map((zSign): ReactNode => (
-              <mesh
-                key={`optic-h-z-${zSign}`}
-                position={[0, y, zSign * (RACK_BODY_SIZE[2] / 2 - OPTIC_RAIL_SIZE / 2)]}
-                onClick={handleSelect}
-              >
-                <boxGeometry args={[RACK_BODY_SIZE[0], OPTIC_RAIL_SIZE, OPTIC_RAIL_SIZE]} />
-                <meshStandardMaterial
-            onBeforeCompile={enhanceArmorMaterial}
-                  color={OPTIC_RAIL_COLOR}
-                  metalness={0.92}
-                  roughness={0.16}
-                  envMapIntensity={OPTIC_RAIL_ENV_INTENSITY}
-                  emissive={OPTIC_RAIL_EMISSIVE}
-                  emissiveIntensity={isSelected ? 0.85 : emphasized ? 0.5 : 0.28}
-                  transparent
-                  opacity={0.92}
-                />
-              </mesh>
-            ))}
-            {[1, -1].map((xSign): ReactNode => (
-              <mesh
-                key={`optic-h-x-${xSign}`}
-                position={[xSign * (RACK_BODY_SIZE[0] / 2 - OPTIC_RAIL_SIZE / 2), y, 0]}
-                onClick={handleSelect}
-              >
-                <boxGeometry args={[OPTIC_RAIL_SIZE, OPTIC_RAIL_SIZE, RACK_BODY_SIZE[2]]} />
-                <meshStandardMaterial
-            onBeforeCompile={enhanceArmorMaterial}
-                  color={OPTIC_RAIL_COLOR}
-                  metalness={0.92}
-                  roughness={0.16}
-                  envMapIntensity={OPTIC_RAIL_ENV_INTENSITY}
-                  emissive={OPTIC_RAIL_EMISSIVE}
-                  emissiveIntensity={isSelected ? 0.85 : emphasized ? 0.5 : 0.28}
-                  transparent
-                  opacity={0.92}
-                />
-              </mesh>
-            ))}
-          </group>
-        );
-      })}
+      <mesh geometry={OPTIC_RAIL_H_GEOMETRY} onClick={handleSelect}>
+        <meshStandardMaterial
+          ref={opticRailHMatRef}
+          onBeforeCompile={enhanceArmorMaterial}
+          color={OPTIC_RAIL_COLOR}
+          metalness={0.92}
+          roughness={0.16}
+          envMapIntensity={OPTIC_RAIL_ENV_INTENSITY}
+          emissive={OPTIC_RAIL_EMISSIVE}
+          emissiveIntensity={isSelected ? 0.85 : isPodInRackSelected ? 0.35 : 0.28}
+          transparent
+          opacity={0.92}
+        />
+      </mesh>
 
       {/*
        * ---- 四根重工承重角柱 ----
@@ -1807,7 +2002,16 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
               emissive={PILLAR_EMISSIVE}
               emissiveIntensity={PILLAR_EMISSIVE_INTENSITY}
             />
-            <Edges threshold={15} color="#334155" />
+            <Edges
+              ref={(el): void => {
+                rackEdgesRefs.current[4 + index] = el;
+              }}
+              threshold={15}
+              color="#334155"
+              transparent
+              opacity={EDGE_IDLE_OPACITY}
+              linewidth={EDGE_IDLE_WIDTH}
+            />
           </mesh>
 
           {/*
@@ -1917,7 +2121,16 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
-        <Edges threshold={15} color="#38bdf8" />
+        <Edges
+          ref={(el): void => {
+            rackEdgesRefs.current[8] = el;
+          }}
+          threshold={15}
+          color="#38bdf8"
+          transparent
+          opacity={EDGE_IDLE_OPACITY}
+          linewidth={EDGE_IDLE_WIDTH}
+        />
       </RoundedBox>
 
       {/*
@@ -1926,75 +2139,31 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        */}
 
 
-      {/* ---- 4 层水平服务器托盘隔板（Y 坐标与 Pod 槽位层位同源，推导见常量 JSDoc）。
-          【本轮升级】层板改为拉丝钛合金 + 前沿倒角亮边 + 与立柱交界处接缝 AO。
-          隔板从"暗色薄片"变为"承重金属托架"，是机架内部结构感的主要来源。
-          【raycast 关闭】层板横贯整个腔体，是「挡住 Pod 拾取」风险最高的部件：
-          斜视时射线常先命中 Pod 下方的隔板边缘。关闭后 Pod 直接被拾取，
-          不必再依赖让位协议从命中列表里"翻"出 Pod。 ---- */}
-      {TIER_DIVIDER_YS.map((tierY, index): ReactNode => (
-        <group key={`divider-${index}`}>
-          <mesh position={[0, tierY, 0]} receiveShadow raycast={noRaycast}>
-            <boxGeometry args={[RACK_BODY_SIZE[0] - 0.16, 0.055, RACK_BODY_SIZE[2] - 0.14]} />
-            <meshStandardMaterial
-            onBeforeCompile={enhanceArmorMaterial}
-              color="#1e293b"
-              metalness={TI_METALNESS}
-              roughness={TI_ROUGHNESS}
-              roughnessMap={brushedMetal?.roughnessMap ?? null}
-              bumpMap={brushedMetal?.bumpMap ?? null}
-              bumpScale={BRUSH_BUMP_SCALE}
-              envMapIntensity={INNER_FRAME_ENV_INTENSITY}
-              emissive="#0e7490"
-              emissiveIntensity={0.06}
-            />
-          </mesh>
-
-          {/*
-           * 说明：层板前沿倒角与层板-立柱接缝 AO 已改为实例化渲染，
-           * 见文件下方的 chamferInstancesRef / creviceAoInstancesRef。
-           */}
-
-          {/*
-           * ---- 层板正面发光灯眉（4 层科技抽屉的视觉分界线，**前后双面各一条**）----
-           *
-           * 【解决什么】没有灯带时四层隔板在暗场里几乎是同一块深色，
-           * 机架正面读不出"分层"结构，Pod 看起来悬浮在虚空里。
-           *
-           * 【为何必须前后双面】机架 rotationY = α + π，三座机架朝向相机的那一面
-           * 在局部 +Z 与 −Z 之间交替：rackIndex 0（angle 0）的 −Z 面朝相机，
-           * rackIndex 1/2（120°/240°）的 +Z 面朝相机。只装单面时，
-           * 总有一座机架的正面是"没有灯眉的空白背板"。
-           * 前后各一条后，任何机位看到的每座机架都拥有完整的 4 层横向灯带。
-           */}
-          <mesh position={[0, tierY, RACK_BODY_SIZE[2] / 2 - 0.05]} raycast={noRaycast}>
-            <boxGeometry args={[RACK_BODY_SIZE[0] - 0.42, 0.016, 0.016]} />
-            <meshBasicMaterial
-              ref={(mat): void => {
-                tierBandMatsRef.current[index * 2] = mat;
-              }}
-              color={statusColor}
-              toneMapped={false}
-              transparent
-              opacity={emphasized ? 0.95 : 0.62}
-              depthWrite={false}
-            />
-          </mesh>
-          <mesh position={[0, tierY, -(RACK_BODY_SIZE[2] / 2 - 0.05)]} raycast={noRaycast}>
-            <boxGeometry args={[RACK_BODY_SIZE[0] - 0.42, 0.016, 0.016]} />
-            <meshBasicMaterial
-              ref={(mat): void => {
-                tierBandMatsRef.current[index * 2 + 1] = mat;
-              }}
-              color={statusColor}
-              toneMapped={false}
-              transparent
-              opacity={emphasized ? 0.95 : 0.62}
-              depthWrite={false}
-            />
-          </mesh>
-        </group>
-      ))}
+      {/* ---- 4 层水平服务器托盘隔板 + 前后 8 条发光灯眉（模块期分别合批为 1 Draw Call） ---- */}
+      <mesh geometry={TIER_DIVIDERS_GEOMETRY} receiveShadow raycast={noRaycast}>
+        <meshStandardMaterial
+          onBeforeCompile={enhanceArmorMaterial}
+          color="#1e293b"
+          metalness={TI_METALNESS}
+          roughness={TI_ROUGHNESS}
+          roughnessMap={brushedMetal?.roughnessMap ?? null}
+          bumpMap={brushedMetal?.bumpMap ?? null}
+          bumpScale={BRUSH_BUMP_SCALE}
+          envMapIntensity={INNER_FRAME_ENV_INTENSITY}
+          emissive="#0e7490"
+          emissiveIntensity={0.06}
+        />
+      </mesh>
+      <mesh geometry={TIER_BANDS_GEOMETRY} raycast={noRaycast}>
+        <meshBasicMaterial
+          ref={tierBandMatRef}
+          color={statusColor}
+          toneMapped={false}
+          transparent
+          opacity={isSelected ? 0.95 : 0.62}
+          depthWrite={false}
+        />
+      </mesh>
 
       {/*
        * ---- 16 个刀片插槽幽灵框（单实例网格，1 次 Draw Call）----
@@ -2050,7 +2219,16 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
-        <Edges threshold={15} color="#38bdf8" />
+        <Edges
+          ref={(el): void => {
+            rackEdgesRefs.current[9] = el;
+          }}
+          threshold={15}
+          color="#38bdf8"
+          transparent
+          opacity={EDGE_IDLE_OPACITY}
+          linewidth={EDGE_IDLE_WIDTH}
+        />
       </RoundedBox>
 
       {/*
@@ -2085,7 +2263,16 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
           emissive={HARDWARE_EMISSIVE}
           emissiveIntensity={HARDWARE_EMISSIVE_INTENSITY}
         />
-        <Edges threshold={15} color="#38bdf8" />
+        <Edges
+          ref={(el): void => {
+            rackEdgesRefs.current[10] = el;
+          }}
+          threshold={15}
+          color="#38bdf8"
+          transparent
+          opacity={EDGE_IDLE_OPACITY}
+          linewidth={EDGE_IDLE_WIDTH}
+        />
       </RoundedBox>
 
       {/*
@@ -2152,92 +2339,38 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
        */}
 
 
-      {/*
-       * ---- 半透明蜂窝散热网侧板（左右各一片）----
-       *
-       * 【解决什么】机柜两侧此前只有四根角柱与透视内部，侧向看是"空架子"。
-       * 图五的机柜是冲孔钢板侧板：远看是一整片半透明金属，近看是密集孔阵，
-       * 内部刀片的绿光透过孔洞渗出。程序化孔阵（见 MESH_PANEL_FRAGMENT_SHADER）
-       * 用一个平面就能做到，成本仅 2 次 Draw Call。
-       *
-       * 【位置】x = ±(机架半宽 − 0.02)，略内收避免与角柱 Z 向穿插；
-       * 面片尺寸取机架宽高的 90%，留出顶/底框边。
-       * 【朝向】rotation.y = ±π/2 使平面法线指向 ±X，正对机柜侧面。
-       */}
-      {[1, -1].map((sideSign): ReactNode => (
-        <mesh
-          key={`mesh-panel-${sideSign > 0 ? 'right' : 'left'}`}
-          position={[sideSign * (RACK_BODY_SIZE[0] / 2 - 0.02), RACK_BODY_CENTER_Y, 0]}
-          rotation={[0, sideSign * (Math.PI / 2), 0]}
-          raycast={noRaycast}
-        >
-          <planeGeometry args={[RACK_BODY_SIZE[2] * 0.9, RACK_BODY_SIZE[1] * 0.9]} />
-          <shaderMaterial
+      {/* ---- 半透明蜂窝散热网侧板（左右两片已在模块期合批为 1 Draw Call）---- */}
+      <mesh geometry={MESH_PANELS_GEOMETRY} raycast={noRaycast}>
+        <shaderMaterial
           defines={KV_DEBUG_NAN_DEFINES}
-            uniforms={meshPanelUniforms}
-            vertexShader={MESH_PANEL_VERTEX_SHADER}
-            fragmentShader={MESH_PANEL_FRAGMENT_SHADER}
-            transparent
-            depthWrite={false}
-            side={THREE.DoubleSide}
-            toneMapped={false}
-          />
-        </mesh>
-      ))}
+          uniforms={meshPanelUniforms}
+          vertexShader={MESH_PANEL_VERTEX_SHADER}
+          fragmentShader={MESH_PANEL_FRAGMENT_SHADER}
+          transparent
+          depthWrite={false}
+          side={THREE.DoubleSide}
+          toneMapped={false}
+        />
+      </mesh>
 
-      {/*
-       * ---- 层间弯曲数字光纤线束（每层一束，共 4 束）----
-       *
-       * 【解决什么】图五最有辨识度的细节之一：每台刀片下方垂着一束
-       * 弯曲的发光光纤，收进侧轨。有了它机柜内部立刻"通电了"，
-       * 而不是几个悬空的盒子。
-       *
-       * 【几何】每层的 6 根 TubeGeometry 已在模块加载期合并为 1 个
-       * BufferGeometry（见 HARNESS_GEOMETRIES），因此每层仅 1 次 Draw Call。
-       * 材质用 meshBasicMaterial + 状态色 + 加色混合：光纤本身不参与光照，
-       * 亮度恒定，像真正的导光线缆。
-       */}
-      {HARNESS_GEOMETRIES.map((harness, tierIndex): ReactNode => (
-        <mesh
-          key={`harness-${tierIndex}`}
-          geometry={harness}
-          raycast={noRaycast}
-        >
-          <shaderMaterial
+      {/* ---- 层间弯曲数字光纤线束（4 层全部 24 根在模块期合批为 1 Draw Call）---- */}
+      <mesh geometry={ALL_HARNESS_GEOMETRY} raycast={noRaycast}>
+        <shaderMaterial
           defines={KV_DEBUG_NAN_DEFINES}
-            uniforms={harnessUniforms}
-            vertexShader={HARNESS_VERTEX_SHADER}
-            fragmentShader={HARNESS_FRAGMENT_SHADER}
-            transparent
-            blending={THREE.AdditiveBlending}
-            depthWrite={false}
-            toneMapped={false}
-          />
-        </mesh>
-      ))}
+          uniforms={harnessUniforms}
+          vertexShader={HARNESS_VERTEX_SHADER}
+          fragmentShader={HARNESS_FRAGMENT_SHADER}
+          transparent
+          blending={THREE.AdditiveBlending}
+          depthWrite={false}
+          toneMapped={false}
+        />
+      </mesh>
 
-      {/*
-       * ---- 顶冠全息蚀刻电路面板 ----
-       *
-       * 【解决什么】顶盖此前是一整块干净的金属，缺少图五那种"精密设备顶部
-       * 布满刻线与刻度"的细节。这里在接口环外围铺 4 条细长刻度框 +
-       * 2 条侧向散热灯条，用极低高度的 boxGeometry 贴面，成本仅 6 次 Draw Call。
-       */}
-      {[
-        { key: 'crown-etch-a', x: 0, z: -0.42, w: CROWN_WIDTH - 0.18, d: 0.012 },
-        { key: 'crown-etch-b', x: 0, z: 0.42, w: CROWN_WIDTH - 0.18, d: 0.012 },
-        { key: 'crown-etch-c', x: -(CROWN_WIDTH / 2 - 0.12), z: 0, w: 0.012, d: CROWN_DEPTH - 0.18 },
-        { key: 'crown-etch-d', x: CROWN_WIDTH / 2 - 0.12, z: 0, w: 0.012, d: CROWN_DEPTH - 0.18 },
-      ].map((bar): ReactNode => (
-        <mesh
-          key={bar.key}
-          position={[bar.x, CROWN_Y + CROWN_HEIGHT / 2 + 0.004, bar.z]}
-          raycast={noRaycast}
-        >
-          <boxGeometry args={[bar.w, 0.004, bar.d]} />
-          <meshBasicMaterial color="#38bdf8" toneMapped={false} transparent opacity={0.42} />
-        </mesh>
-      ))}
+      {/* ---- 顶冠全息蚀刻电路面板（4 条刻线合批为 1 Draw Call）---- */}
+      <mesh geometry={CROWN_ETCH_GEOMETRY} raycast={noRaycast}>
+        <meshBasicMaterial color="#38bdf8" toneMapped={false} transparent opacity={0.42} />
+      </mesh>
 
       {/*
        * ---- 光纤接口环（顶冠中心的水平发光端口）----
@@ -2288,52 +2421,10 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         />
       </mesh>
 
-      {/* ---- 两侧垂直霓虹导光柱（useFrame 平滑变色：翠绿/琥珀/警示红）。
-          【raycast 关闭】导光柱贴在机架正面内侧，是纯发光装饰；
-          关闭后点击会穿透到装甲面，由装甲的 handleSelect 负责选中。 ---- */}
-      <mesh position={[-RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, LIGHT_GUIDE_Z]} raycast={noRaycast}>
-        <boxGeometry args={[0.11, LIGHT_GUIDE_HEIGHT, 0.11]} />
+      {/* ---- 前后对称共 4 根垂直霓虹导光柱（模块期合批为 1 Draw Call，单一材质同源 lerp）---- */}
+      <mesh geometry={LIGHT_GUIDES_GEOMETRY} raycast={noRaycast}>
         <meshBasicMaterial
-          ref={leftGuideMat}
-          color="#10b981"
-          toneMapped={false}
-          transparent
-          opacity={GUIDE_BASE_OPACITY}
-        />
-      </mesh>
-      <mesh position={[RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, LIGHT_GUIDE_Z]} raycast={noRaycast}>
-        <boxGeometry args={[0.11, LIGHT_GUIDE_HEIGHT, 0.11]} />
-        <meshBasicMaterial
-          ref={rightGuideMat}
-          color="#10b981"
-          toneMapped={false}
-          transparent
-          opacity={GUIDE_BASE_OPACITY}
-        />
-      </mesh>
-
-      {/*
-       * ---- 背面导光柱（局部 −Z 侧，与正面镜像对称）----
-       *
-       * 【解决什么】rackIndex 0 的 rotationY = π，其局部 −Z 面朝向主相机；
-       * 若只在 +Z 侧装导光柱，alpha 整座机架从默认机位看完全没有垂直光柱。
-       * 这里补上 −Z 侧的一对，使三座机架无论哪面朝相机都拥有完整光柱。
-       * 颜色由 useFrame 用与正面相同的 target/alpha 同步 lerp，前后不会脱节。
-       */}
-      <mesh position={[-RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, -LIGHT_GUIDE_Z]} raycast={noRaycast}>
-        <boxGeometry args={[0.11, LIGHT_GUIDE_HEIGHT, 0.11]} />
-        <meshBasicMaterial
-          ref={backGuideMatLeft}
-          color="#10b981"
-          toneMapped={false}
-          transparent
-          opacity={GUIDE_BASE_OPACITY}
-        />
-      </mesh>
-      <mesh position={[RACK_LIGHT_GUIDE_X, RACK_BODY_CENTER_Y, -LIGHT_GUIDE_Z]} raycast={noRaycast}>
-        <boxGeometry args={[0.11, LIGHT_GUIDE_HEIGHT, 0.11]} />
-        <meshBasicMaterial
-          ref={backGuideMatRight}
+          ref={lightGuideMatRef}
           color="#10b981"
           toneMapped={false}
           transparent
@@ -2351,21 +2442,19 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
         decay={CAVITY_LIGHT_DECAY}
       />
 
-      {/* ---- 底座选中/hover 光环（青色辉光圆环贴地） ---- */}
-      {emphasized ? (
-        <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noRaycast}>
-          <ringGeometry args={[1.9, 2.15, 48]} />
-          <meshBasicMaterial
-            ref={plinthGlowRef}
-            color="#22d3ee"
-            toneMapped={false}
-            transparent
-            opacity={isSelected ? 0.9 : 0.45}
-            side={THREE.DoubleSide}
-            depthWrite={false}
-          />
-        </mesh>
-      ) : null}
+      {/* ---- 底座选中/hover 光环（青色辉光圆环贴地，常驻实例+opacity 零重排） ---- */}
+      <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} raycast={noRaycast}>
+        <ringGeometry args={[1.9, 2.15, 48]} />
+        <meshBasicMaterial
+          ref={plinthGlowRef}
+          color="#22d3ee"
+          toneMapped={false}
+          transparent
+          opacity={isSelected ? 0.9 : 0}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
 
       {/*
        * ---- 贴地全息铭牌 ----
@@ -2404,42 +2493,21 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
          *
          * Y = 0.06 仍低于第一层刀片底面（0.09），绝不遮挡任何 Pod。
          */
-        position={[1.18, 0.06, -(RACK_BODY_SIZE[2] / 2 + 0.58)]}
+        position={[rackHudLocalPos[0], rackHudLocalPos[1], rackHudLocalPos[2]]}
         center
-        distanceFactor={17}
+        distanceFactor={HUD_LABEL_SPEC.RACK_LABEL.distanceFactor}
         zIndexRange={[10, 0]}
         className="pointer-events-none"
       >
         {/*
-         * ---- 光学玻璃拟态节点 HUD（本轮重构）----
-         *
-         * 【排版升级的三个要点】
-         * 1. **顶部微标尺** `NODE // RACK-0X`——把面板从"信息卡片"
-         *    变成"测量仪表"。rackIndex + 1 补零成两位数，
-         *    与真实机柜的 01/02/03 编号习惯一致。
-         * 2. **节点名改用现代无衬线**：`font-semibold tracking-wider text-white`。
-         *    上一版用 font-mono 加粗，等宽字体在标题位置会显得"机器打字机"，
-         *    缺少展陈级设备那种克制的现代感。等宽只留给**数字**。
-         * 3. **数值严格等宽**：MiniBar 内部已是 `font-mono tabular-nums`，
-         *    外层不再包 font-mono（否则会污染标题的正文字体）。
-         *
-         * 【在线呼吸点】紧贴节点名左侧——它是"活着的系统"最轻量的信号，
-         * 比任何文字都更快被余光捕捉到；放在名字左侧而非标尺行，
-         * 是为了让它与"这个节点"语义绑定，而不是与"这块面板"绑定。
-         */}
-        {/*
-         * R27 D 项：无底色玻璃拟态铭牌（局部实现 R14 的 .kv-chip 规格）。
-         * 去掉了圆角矩形 + 顶部微标尺的"典型科幻 HUD"：
-         *  - 无底色，仅 1px white/8 内描边 + 8px backdrop blur；
-         *  - 四角 6px/1px 发光角标（状态色）；
-         *  - 标题 12px 无衬线、数值 10px 等宽 tabular-nums（全仓 ≥10px，R14）；
-         *  - 信息只留节点名 / 状态徽标 / POD 数 / CPU·MEM 2px 迷你条。
+         * R27 D 项 / R6-2 规格表：无底色玻璃拟态铭牌，distanceFactor 与字号 clamp 源自 HUD_LABEL_SPEC。
          */}
         <div
-          className="relative rounded-[2px] bg-slate-950/80 px-2.5 py-1.5 kv-blur-chip"
+          ref={rackHudRef}
+          className="relative rounded-[2px] bg-slate-950/80 px-2 py-1 kv-blur-chip"
           style={{
-            boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)',
-            background: 'transparent',
+            boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.12)',
+            background: 'rgba(2, 6, 23, 0.78)',
           }}
         >
           {/* 四角极细发光角标（6×6px，1px 线） */}
@@ -2477,35 +2545,54 @@ export default function WorkerRack3D({ node }: WorkerRack3DProps) {
               className="h-1 w-1 shrink-0 rounded-full animate-glow-pulse"
               style={{ backgroundColor: statusColor, boxShadow: `0 0 5px ${statusColor}` }}
             />
-            <span className="font-sans text-[12px] font-semibold tracking-wider text-white">
+            <span
+              data-kv-label={`rack-${node.name}`}
+              className="font-sans font-semibold leading-[1.15] tracking-wider text-white"
+              style={{ fontSize: HUD_LABEL_SPEC.RACK_LABEL.clampFontSize }}
+            >
               {node.name}
             </span>
             <span
-              className="ml-auto rounded-[2px] border px-1 font-mono text-[10px] font-semibold tracking-[0.08em]"
-              style={{ borderColor: `${statusColor}55`, color: statusColor }}
+              className="ml-auto hidden rounded-[2px] border px-1 font-mono font-semibold tracking-[0.08em] md:inline-block"
+              style={{
+                borderColor: `${statusColor}55`,
+                color: statusColor,
+                fontSize: HUD_LABEL_SPEC.RACK_LABEL.metaClampFontSize,
+              }}
             >
               {statusBadgeLabel}
             </span>
-            <span className="font-mono text-[10px] tabular-nums tracking-[0.06em] text-slate-500">
+            <span
+              className="hidden font-mono tabular-nums tracking-[0.06em] text-slate-500 md:inline"
+              style={{ fontSize: HUD_LABEL_SPEC.RACK_LABEL.metaClampFontSize }}
+            >
               {node.podIds.length} PODS
             </span>
           </div>
 
-          {/* 第二行：CPU / MEM 2px 迷你条 + 等宽数值 */}
-          <div className="mt-1 grid grid-cols-2 gap-2">
+          {/* 第二行：CPU / MEM 2px 迷你条 + 等宽数值（< 768px 隐藏次级读数，仅留点+节点名） */}
+          <div className="mt-1 hidden grid-cols-2 gap-2 md:grid">
             {[
               { label: 'CPU', value: node.cpuUsage, tone: statusColor },
               { label: 'MEM', value: node.memUsage, tone: '#38bdf8' },
             ].map((metric): React.ReactElement => (
               <div key={metric.label} className="flex items-center gap-1">
-                <span className="font-mono text-[10px] tracking-wider text-slate-500">{metric.label}</span>
+                <span
+                  className="font-mono tracking-wider text-slate-500"
+                  style={{ fontSize: HUD_LABEL_SPEC.RACK_LABEL.metaClampFontSize }}
+                >
+                  {metric.label}
+                </span>
                 <span className="relative h-[2px] w-10 overflow-hidden rounded-full bg-white/10">
                   <span
                     className="absolute left-0 top-0 h-full rounded-full"
                     style={{ width: `${Math.max(2, Math.min(100, metric.value))}%`, background: metric.tone }}
                   />
                 </span>
-                <span className="font-mono text-[10px] font-semibold tabular-nums text-slate-300">
+                <span
+                  className="font-mono font-semibold tabular-nums text-slate-300"
+                  style={{ fontSize: HUD_LABEL_SPEC.RACK_LABEL.metaClampFontSize }}
+                >
                   {Math.round(metric.value)}%
                 </span>
               </div>

@@ -40,19 +40,29 @@
  * CameraRig 对 master 类型执行「全景鸟瞰」飞行。
  */
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useFrame } from '@react-three/fiber';
-import { Edges, Html } from '@react-three/drei';
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
+import { Edges, Html, type EdgesRef } from '@react-three/drei';
 import * as THREE from 'three';
+
+import {
+  CAMERA_MOTION,
+  REDUCED_MOTION_AMPLITUDE,
+  computeHoverAlpha,
+  isReducedMotion,
+} from '@/constants/motion';
 import { PALETTE } from '@/constants/palette';
+import { recordDebugHoverSample, recordDebugHoverStart } from '@/utils/cameraDebugBridge';
+import { scheduleSelectionFlight } from '@/utils/canvasClickIntent';
 
 import { useClusterStore } from '@/store/useClusterStore';
 import { MASTER_ENTITY_ID } from '@/types/canvas';
 import { MASTER_POSITION } from '@/utils/spatialLayout';
 import GlowHalo3D from '@/components/canvas/GlowHalo3D';
-import { HoloCorners, HoloMicroRuler, HoloRefractionEdges, HoloSpecularSheen } from '@/components/canvas/HoloHud';
+import { HUD_LABEL_SPEC, applyHtmlFogAttenuation, createHtmlFogStyleCache } from '@/constants/hud';
 import type { SelectedEntityType } from '@/types/store';
-import { KV_DEBUG_NAN_DEFINES } from '@/utils/glslNanGuard';
+import { KV_DEBUG_NAN_DEFINES, withNanGuard } from '@/utils/glslNanGuard';
+import { mergeStaticBoxes } from '@/utils/mergeStaticGeometries';
 
 /* ========================================================================== */
 /* 模型几何常量（模块级，集中定义防漂移）                                          */
@@ -288,6 +298,80 @@ void main() {
 }
 `;
 
+/**
+ * 外层八面体半透明菲涅尔晶壳顶点着色器（Part 1 · 替代 transmission={0.72}）。
+ */
+const CRYSTAL_SHELL_VERTEX_SHADER = `
+varying vec3 vViewNormal;
+varying vec3 vViewPosition;
+
+/* 零向量安全归一化：八面体 sharp normal 或掠射视角防 normalize(0)=NaN */
+vec3 safeNormalize(vec3 v, vec3 fallback) {
+  float lenSq = dot(v, v);
+  return lenSq > 1.0e-8 ? v * inversesqrt(lenSq) : fallback;
+}
+
+void main() {
+  vViewNormal = safeNormalize(normalMatrix * normal, vec3(0.0, 0.0, 1.0));
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  vViewPosition = -mvPosition.xyz;
+  gl_Position = projectionMatrix * mvPosition;
+}
+`;
+
+/**
+ * 外层八面体半透明菲涅尔晶壳片元着色器 —— 替代 meshPhysicalMaterial transmission（Part 1）。
+ *
+ * 【设计意图】（性能 + 光学双收益）
+ * 原 meshPhysicalMaterial transmission={0.72} 会迫使 Three.js 为主相机与 T3 真反射虚拟相机
+ * 各执行一次 _transmissionRenderTarget 全场景重绘（每相机 Pass 约 +64 Draw Call，双 Pass 约 +128）。
+ * 本着色器以单次透明绘制计算视空间 DoubleSide Fresnel：中心低雾度通透露出内部星云与热核，
+ * 掠射晶面轮廓聚集青蓝边缘高光，同时 100% 保留 T3 MeshReflectorMaterial 真实镜面反射。
+ */
+const CRYSTAL_SHELL_FRAGMENT_SHADER = withNanGuard(`
+uniform vec3 uBaseColor;
+uniform vec3 uEmissiveColor;
+uniform vec3 uRimColor;
+uniform float uBaseAlpha;
+uniform float uEmphasis;
+
+varying vec3 vViewNormal;
+varying vec3 vViewPosition;
+
+vec3 safeNormalize(vec3 v, vec3 fallback) {
+  float lenSq = dot(v, v);
+  return lenSq > 1.0e-8 ? v * inversesqrt(lenSq) : fallback;
+}
+
+void main() {
+  vec3 n = safeNormalize(vViewNormal, vec3(0.0, 0.0, 1.0));
+  vec3 v = safeNormalize(vViewPosition, vec3(0.0, 0.0, 1.0));
+  /* DoubleSide 晶壳正反面均参与光学边缘高光，abs(dot) 保证正反连续 */
+  float facing = clamp(abs(dot(n, v)), 0.0, 1.0);
+  /* 为什么指数取 2.4（Part 1）：高于 2.0 使正面中心保持通透、边缘高光收敛为纤细玻璃折射带 */
+  float fresnel = pow(max(1.0 - facing, 1.0e-4), 2.4);
+  float edgeSheen = smoothstep(0.08, 0.92, fresnel);
+  float emphasisGain = clamp(uEmphasis, 0.0, 1.0);
+
+  vec3 tint = mix(uBaseColor, uEmissiveColor, 0.42 + 0.36 * fresnel);
+  vec3 color = tint * (0.48 + 0.24 * emphasisGain) + uRimColor * edgeSheen * (0.95 + 0.40 * emphasisGain);
+  float alpha = uBaseAlpha + fresnel * 0.26 + emphasisGain * 0.07;
+
+  gl_FragColor = vec4(clamp(color, 0.0, 2.4), clamp(alpha, 0.06, 0.56));
+  #ifdef KV_DEBUG_NAN
+    if (!(gl_FragColor.r == gl_FragColor.r)
+        || !(gl_FragColor.g == gl_FragColor.g)
+        || !(gl_FragColor.b == gl_FragColor.b)
+        || !(gl_FragColor.a == gl_FragColor.a)
+        || abs(gl_FragColor.r) > 1.0e38
+        || abs(gl_FragColor.g) > 1.0e38
+        || abs(gl_FragColor.b) > 1.0e38) {
+      gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0); // glsl-lint-allow: 洋红调试标记为常量输出，无 HDR 溢出风险
+    }
+  #endif
+}
+`);
+
 /** 外层正向自转角速度（rad/s）：约 25 秒/圈，从容的全局扫描节奏 */
 const OUTER_SPIN_RATE = 0.25;
 
@@ -409,13 +493,30 @@ const RING_TICKS: ReadonlyArray<{
 });
 
 /**
- * 铭牌的局部坐标（R67 复原）。
+ * 24 根径向刻度齿静态合批几何（模块加载期合并一次，24 Draw Calls → 1）。
+ * 材质与局部坐标同原实现完全一致，且自动计算完整包围球（无需 frustumCulled=false）。
+ */
+const RING_TICKS_GEOMETRY: THREE.BufferGeometry = mergeStaticBoxes(
+  RING_TICKS.map((tick) => ({
+    size: [0.05, 0.022, 0.34] as const,
+    position: tick.position,
+    rotation: [0, tick.rotationY, 0] as const,
+  })),
+);
+
+/**
+ * 铭牌的局部坐标（R67 / R6-1）。
  *
- * 晶核正下方居中：世界坐标约 [0, 0.54, 1.48]。
- * 铭牌回到晶核下方后不再向左前方偏置，避免与左侧 worker 机架铭牌重叠；
- * 不再需要侧向引线。
+ * 晶核正下方居中：世界坐标约 [0, 0.54, 1.48]，屏幕投影约 (48.5%, 62.7%)，
+ * 与中心 ±5% 区域保持充足留白，零文字覆盖晶核与屏心。
  */
 const LABEL_POSITION: readonly [number, number, number] = [0, -1.96, 1.48];
+/** Master 全息铭牌世界坐标常量（useFrame 吃雾计算零分配直读） */
+const MASTER_HUD_WORLD_POS: readonly [number, number, number] = [
+  MASTER_POSITION[0] + LABEL_POSITION[0],
+  MASTER_POSITION[1] + LABEL_POSITION[1],
+  MASTER_POSITION[2] + LABEL_POSITION[2],
+];
 
 /* ========================================================================== */
 /* MasterNode3D 主体                                                           */
@@ -428,25 +529,51 @@ const LABEL_POSITION: readonly [number, number, number] = [0, -1.96, 1.48];
  * 动画通道全部走 useFrame ref 突变，与 React 渲染完全解耦。
  */
 export default function MasterNode3D() {
+  const gl = useThree((s): THREE.WebGLRenderer => s.gl);
+
   /* ---- Store 细粒度订阅 ---- */
   const selectedEntityId = useClusterStore((s): string | null => s.selectedEntityId);
   const selectEntity = useClusterStore(
     (s): ((entityId: string | null, entityType?: SelectedEntityType | null) => void) => s.selectEntity,
   );
 
-  /* ---- 交互态（低频 UI 事件，允许 useState） ---- */
-  const [hovered, setHovered] = useState<boolean>(false);
+  /* ---- R7 瞬态交互引用（悬停/按压零 setState） ---- */
+  const hoveredRef = useRef<boolean>(false);
+  const hoverAmountRef = useRef<number>(0);
+  const pressedRef = useRef<boolean>(false);
 
   /* ---- 动画通道 ref（useFrame 内原地突变） ---- */
   const floatGroupRef = useRef<THREE.Group>(null);
   const outerRef = useRef<THREE.Mesh>(null);
-  const outerMatRef = useRef<THREE.MeshPhysicalMaterial>(null);
+  const outerMatRef = useRef<THREE.ShaderMaterial>(null);
+  const outerEdgesRef = useRef<EdgesRef | null>(null);
   const coreRef = useRef<THREE.Mesh>(null);
   const coreMatRef = useRef<THREE.MeshStandardMaterial>(null);
+  const coreEdgesRef = useRef<EdgesRef | null>(null);
   const selectionRingRef = useRef<THREE.Mesh>(null);
   const pulseRingRef = useRef<THREE.Mesh>(null);
   const pulseRingMatRef = useRef<THREE.MeshBasicMaterial>(null);
   const ringGroupRef = useRef<THREE.Group>(null);
+  const masterHudRef = useRef<HTMLDivElement>(null);
+  const masterFogCache = useMemo(() => createHtmlFogStyleCache(), []);
+  const equatorRingMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const innerRingMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const ringTicksMatRef = useRef<THREE.MeshBasicMaterial>(null);
+
+  /**
+   * 外层菲涅尔晶壳 uniforms（useMemo 预分配，useFrame 原地突变 uEmphasis）。
+   */
+  const crystalUniforms = useMemo(
+    (): Record<string, THREE.IUniform> => ({
+      uBaseColor: { value: new THREE.Color('#06b6d4') },
+      uEmissiveColor: { value: new THREE.Color('#0891b2') },
+      uRimColor: { value: new THREE.Color('#67e8f9') },
+      /* 为什么是 0.14（Part 1）：中心保留微弱青色通透感而不糊内核星云，边缘 Fresnel 叠至 0.40+ */
+      uBaseAlpha: { value: 0.14 },
+      uEmphasis: { value: 0 },
+    }),
+    [],
+  );
 
   /**
    * 等离子星核的 uniforms（useMemo 预分配，useFrame 内只写 .value）。
@@ -816,17 +943,93 @@ export default function MasterNode3D() {
   }, [vertexAnchorMatrices]);
 
   const isSelected = selectedEntityId === MASTER_ENTITY_ID;
-  const emphasized = isSelected || hovered;
 
-  /* hover 光标：Canvas 覆盖全视口，body 样式是唯一可靠通道 */
-  useEffect(() => {
-    if (!hovered) return undefined;
-    const previous = document.body.style.cursor;
-    document.body.style.cursor = 'pointer';
-    return (): void => {
-      document.body.style.cursor = previous;
+  const applyMasterHighlightImmediate = useCallback(
+    (hoverFraction: number, isPressedNow: boolean): void => {
+      const emphasis = isSelected ? 1 : Math.max(hoverFraction, isPressedNow ? 1 : 0);
+      crystalUniforms.uEmphasis.value = emphasis;
+      if (equatorRingMatRef.current !== null) {
+        equatorRingMatRef.current.opacity = 0.5 + 0.2 * emphasis;
+      }
+      if (tickRingMatRef.current !== null) {
+        tickRingMatRef.current.opacity = 0.5 + 0.35 * emphasis;
+      }
+      if (innerRingMatRef.current !== null) {
+        innerRingMatRef.current.opacity = 0.38 + 0.32 * emphasis;
+      }
+      if (ringTicksMatRef.current !== null) {
+        ringTicksMatRef.current.opacity = 0.42 + 0.33 * emphasis;
+      }
+      if (outerEdgesRef.current !== null) {
+        outerEdgesRef.current.material.opacity = isPressedNow ? 1.0 : 0.72 + 0.28 * emphasis;
+        outerEdgesRef.current.material.linewidth = isPressedNow ? 1.0 : 1.2 + 0.5 * emphasis;
+      }
+      if (coreEdgesRef.current !== null) {
+        coreEdgesRef.current.material.opacity = isPressedNow ? 1.0 : 0.65 + 0.35 * emphasis;
+        coreEdgesRef.current.material.linewidth = isPressedNow ? 1.0 : 1.0 + 0.4 * emphasis;
+      }
+    },
+    [isSelected, crystalUniforms],
+  );
+
+  useEffect((): (() => void) => {
+    const clearPressed = (): void => {
+      if (!pressedRef.current) return;
+      pressedRef.current = false;
+      applyMasterHighlightImmediate(hoverAmountRef.current, false);
     };
-  }, [hovered]);
+    window.addEventListener('pointerup', clearPressed);
+    window.addEventListener('pointercancel', clearPressed);
+    return (): void => {
+      window.removeEventListener('pointerup', clearPressed);
+      window.removeEventListener('pointercancel', clearPressed);
+    };
+  }, [applyMasterHighlightImmediate]);
+
+  const handleMasterClick = useCallback(
+    (event: ThreeEvent<MouseEvent>): void => {
+      if (event.delta >= CAMERA_MOTION.dblClickMaxMovePx) return;
+      event.stopPropagation();
+      scheduleSelectionFlight(() => selectEntity(MASTER_ENTITY_ID, 'master'));
+    },
+    [selectEntity],
+  );
+
+  const handleMasterPointerDown = useCallback(
+    (event: ThreeEvent<PointerEvent>): void => {
+      if (event.button !== 0) return;
+      event.stopPropagation();
+      pressedRef.current = true;
+      applyMasterHighlightImmediate(hoverAmountRef.current, true);
+    },
+    [applyMasterHighlightImmediate],
+  );
+
+  const handleMasterPointerUp = useCallback((): void => {
+    if (!pressedRef.current) return;
+    pressedRef.current = false;
+    applyMasterHighlightImmediate(hoverAmountRef.current, false);
+  }, [applyMasterHighlightImmediate]);
+
+  const handleMasterPointerOver = useCallback(
+    (event: ThreeEvent<PointerEvent>): void => {
+      event.stopPropagation();
+      if (!hoveredRef.current) {
+        hoveredRef.current = true;
+        hoverAmountRef.current = Math.max(hoverAmountRef.current, CAMERA_MOTION.hoverInstantJump);
+        gl.domElement.style.cursor = 'pointer';
+        applyMasterHighlightImmediate(hoverAmountRef.current, pressedRef.current);
+        recordDebugHoverStart(MASTER_ENTITY_ID, 'master', hoverAmountRef.current, 1);
+      }
+    },
+    [gl, applyMasterHighlightImmediate],
+  );
+
+  const handleMasterPointerOut = useCallback((): void => {
+    if (!hoveredRef.current) return;
+    hoveredRef.current = false;
+    gl.domElement.style.cursor = 'auto';
+  }, [gl]);
 
   /**
    * useFrame —— 双层反向自转 + 内核呼吸 + 圆环慢转（单回调集中处理）。
@@ -885,23 +1088,52 @@ export default function MasterNode3D() {
       neuralRef.current.rotation.y = t * CONSTELLATION_SPIN_RATE;
     }
 
-    /* 外层水晶壳：正向自转 + 正弦倾角摆动（调度扫描感） */
+    /* 外层水晶壳：正向自转 + 正弦倾角摆动 + R7 零帧瞬时高光与 1-exp(-16*dt) 收敛 */
+    const clampedDtForCrystal = Math.min(delta, 0.1);
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
+    const hoverTarget = hoveredRef.current ? 1 : 0;
+    hoverAmountRef.current += (hoverTarget - hoverAmountRef.current) * computeHoverAlpha(clampedDtForCrystal);
+    if (hoveredRef.current) {
+      recordDebugHoverSample(MASTER_ENTITY_ID, hoverAmountRef.current);
+    }
+    const emphasis = isSelected ? 1 : Math.max(hoverAmountRef.current, pressedRef.current ? 1 : 0);
+    crystalUniforms.uEmphasis.value = emphasis;
+
+    if (equatorRingMatRef.current !== null) {
+      equatorRingMatRef.current.opacity = 0.5 + 0.2 * emphasis;
+    }
+    if (tickRingMatRef.current !== null) {
+      tickRingMatRef.current.opacity = 0.5 + 0.35 * emphasis;
+    }
+    if (innerRingMatRef.current !== null) {
+      innerRingMatRef.current.opacity = 0.38 + 0.32 * emphasis;
+    }
+    if (ringTicksMatRef.current !== null) {
+      ringTicksMatRef.current.opacity = 0.42 + 0.33 * emphasis;
+    }
+    if (outerEdgesRef.current !== null) {
+      outerEdgesRef.current.material.opacity = pressedRef.current ? 1.0 : 0.72 + 0.28 * emphasis;
+      outerEdgesRef.current.material.linewidth = pressedRef.current ? 1.0 : 1.2 + 0.5 * emphasis;
+    }
+    if (coreEdgesRef.current !== null) {
+      coreEdgesRef.current.material.opacity = pressedRef.current ? 1.0 : 0.65 + 0.35 * emphasis;
+      coreEdgesRef.current.material.linewidth = pressedRef.current ? 1.0 : 1.0 + 0.4 * emphasis;
+    }
+
     if (outerRef.current !== null) {
       outerRef.current.rotation.y = t * OUTER_SPIN_RATE;
-      outerRef.current.rotation.x = Math.sin(t * 0.4) * 0.18;
+      outerRef.current.rotation.x = Math.sin(t * 0.4) * 0.18 * motionScale;
     }
     /* 内层晶核：反向自转 + 余弦滚转（仪差机械感）+ 呼吸缩放 */
     if (coreRef.current !== null) {
       coreRef.current.rotation.y = t * INNER_SPIN_RATE;
-      coreRef.current.rotation.z = Math.cos(t * 0.32) * 0.22;
-      const breath = 1 + BREATH_AMPLITUDE * Math.sin(t * BREATH_RATE);
+      coreRef.current.rotation.z = Math.cos(t * 0.32) * 0.22 * motionScale;
+      const breath = 1 + BREATH_AMPLITUDE * motionScale * Math.sin(t * BREATH_RATE);
       /* R67：JSX 的基础缩放为 0.78，呼吸必须相对基础缩放，不能把它覆盖掉 */
       coreRef.current.scale.setScalar(0.78 * breath);
     }
-    /* 等离子星核脉动：uPulse ∈ [0.82, 1.18]，驱动整个径向衰减包络呼吸。
-       必须原地写 .value —— 若赋新对象字面量，就是每帧一次堆分配，
-       违反 AGENTS.md 第 3 条的 useFrame 零分配契约。 */
-    plasmaUniforms.uPulse.value = 1 + 0.18 * Math.sin(t * BREATH_RATE + Math.PI / 4);
+    /* 等离子星核脉动（reduced-motion 时幅度 ×0.25） */
+    plasmaUniforms.uPulse.value = 1 + 0.18 * motionScale * Math.sin(t * BREATH_RATE + Math.PI / 4);
 
     /* 底部全息圆环：缓慢自转（刻度扫过 = 控制面巡检隐喻） */
     if (ringGroupRef.current !== null) {
@@ -923,7 +1155,7 @@ export default function MasterNode3D() {
     /* 环绕星火：整体缓慢上旋 + 轻微呼吸缩放（只动对象变换，不动顶点） */
     if (sparkRef.current !== null) {
       sparkRef.current.rotation.y = t * AMBIENT_SPARK_SPIN_RATE;
-      const sparkBreath = 1 + 0.06 * Math.sin(t * 1.7);
+      const sparkBreath = 1 + 0.06 * motionScale * Math.sin(t * 1.7);
       sparkRef.current.scale.setScalar(sparkBreath);
     }
 
@@ -937,7 +1169,7 @@ export default function MasterNode3D() {
     /* ---- 二十面体测地线内胆：反向慢速自转 + 极轻微滚转 ---- */
     if (icosaCoreRef.current !== null) {
       icosaCoreRef.current.rotation.y = t * ICOSA_CORE_SPIN_RATE;
-      icosaCoreRef.current.rotation.x = Math.sin(t * 0.21) * 0.14;
+      icosaCoreRef.current.rotation.x = Math.sin(t * 0.21) * 0.14 * motionScale;
     }
 
     /* ---- 双向正交刻度星轨环：各自绕法线自转，方向相反形成正交差速 ---- */
@@ -948,54 +1180,56 @@ export default function MasterNode3D() {
       gimbalRingBRef.current.rotation.z = t * GIMBAL_RING_B_SPIN;
     }
 
-    /* ---- 顶点电光锚点：呼吸脉动（lio 缩放 + 材质自发光） ---- */
+    /* ---- 顶点电光锚点：呼吸脉动（缩放 + 材质自发光，reduced-motion ×0.25） ---- */
     if (vertexAnchorRef.current !== null) {
-      const anchorBreath = VERTEX_ANCHOR_BASE_SCALE + 0.16 * Math.sin(t * VERTEX_ANCHOR_BREATH_RATE);
+      const anchorBreath =
+        VERTEX_ANCHOR_BASE_SCALE + 0.16 * motionScale * Math.sin(t * VERTEX_ANCHOR_BREATH_RATE);
       vertexAnchorRef.current.scale.setScalar(anchorBreath);
-      /*
-       * 【为何在 useFrame 里改材质而不改实例矩阵】
-       * 锚点需要"整体同步呼吸"——若逐实例写矩阵，就要 6 次 setMatrixAt
-       * 加一次 needsUpdate，而整体 scale 只需一次 .scale.setScalar()，
-       * 矩阵由 GPU 在渲染时自动合成。后者快一个数量级。
-       */
       const anchorMaterial = vertexAnchorRef.current.material;
       if (anchorMaterial instanceof THREE.MeshBasicMaterial) {
-        anchorMaterial.opacity = 0.72 + 0.28 * Math.sin(t * VERTEX_ANCHOR_BREATH_RATE);
+        anchorMaterial.opacity = 0.72 + 0.28 * motionScale * Math.sin(t * VERTEX_ANCHOR_BREATH_RATE);
       }
     }
 
     /* ---- R67：浮游组呼吸、选中锁定框、点击脉冲波纹、底部光柱呼吸 ---- */
     if (floatGroupRef.current !== null) {
-      floatGroupRef.current.position.y = Math.sin(t * 0.8) * 0.04;
+      floatGroupRef.current.position.y = Math.sin(t * 0.8) * 0.04 * motionScale;
     }
     if (selectionRingRef.current !== null) {
       selectionRingRef.current.rotation.z = t * 0.35;
     }
     if (pulseRingRef.current !== null && pulseRingMatRef.current !== null) {
-      /* 2.2s 一圈的向外扩散：scale 1→2.8，alpha 0.36→0；循环复用于选中/故障强调 */
+      /* 2.2s 一圈的向外扩散：scale 1→2.8，alpha 0.36→0；reduced-motion 时幅值缩至 25% */
       const cycle = (t * 0.45) % 1;
-      pulseRingRef.current.scale.setScalar(1 + cycle * 1.8);
-      pulseRingMatRef.current.opacity = (1 - cycle) * 0.36;
+      pulseRingRef.current.scale.setScalar(1 + cycle * 1.8 * motionScale);
+      pulseRingMatRef.current.opacity = (1 - cycle) * 0.36 * motionScale;
     }
     if (beamMatRef.current !== null) {
-      beamMatRef.current.opacity = 0.32 + 0.04 * Math.sin(t * 1.6);
+      beamMatRef.current.opacity = 0.32 + 0.04 * motionScale * Math.sin(t * 1.6);
     }
+
+    /* R6-3：Master 铭牌距离吃雾 + 透视缩放护栏驱动（useFrame 零分配 / 零 setState） */
+    applyHtmlFogAttenuation(
+      masterHudRef.current,
+      state.camera.position,
+      MASTER_HUD_WORLD_POS[0],
+      MASTER_HUD_WORLD_POS[1],
+      MASTER_HUD_WORLD_POS[2],
+      masterFogCache,
+      HUD_LABEL_SPEC.MASTER_LABEL,
+      state.camera instanceof THREE.PerspectiveCamera ? state.camera.fov : 45,
+    );
 
   });
 
   return (
     <group
       position={MASTER_POSITION}
-      onClick={(event): void => {
-        /* 阻止穿透：防止一次点击同时命中 MASTER 与其身后的机架/地面 */
-        event.stopPropagation();
-        selectEntity(MASTER_ENTITY_ID, 'master');
-      }}
-      onPointerOver={(event): void => {
-        event.stopPropagation();
-        setHovered(true);
-      }}
-      onPointerOut={(): void => setHovered(false)}
+      onClick={handleMasterClick}
+      onPointerDown={handleMasterPointerDown}
+      onPointerUp={handleMasterPointerUp}
+      onPointerOver={handleMasterPointerOver}
+      onPointerOut={handleMasterPointerOut}
     >
       {/*
        * ═══ R67：多层全息晶核（由内到外 8 层 + 底部光柱/环）═══
@@ -1040,34 +1274,25 @@ export default function MasterNode3D() {
         {/* ---- 第 1 层：外层八面体半透明全息晶壳 + 发光棱线 ---- */}
         <mesh
           ref={outerRef}
-          onClick={(event): void => {
-            event.stopPropagation();
-            selectEntity(MASTER_ENTITY_ID, 'master');
-          }}
-          onPointerOver={(event): void => {
-            event.stopPropagation();
-            setHovered(true);
-          }}
-          onPointerOut={(): void => setHovered(false)}
+          onClick={handleMasterClick}
+          onPointerDown={handleMasterPointerDown}
+          onPointerUp={handleMasterPointerUp}
+          onPointerOver={handleMasterPointerOver}
+          onPointerOut={handleMasterPointerOut}
         >
           <octahedronGeometry args={[1.45, 0]} />
-          <meshPhysicalMaterial
+          <shaderMaterial
             ref={outerMatRef}
-            color="#06b6d4"
-            emissive="#0891b2"
-            emissiveIntensity={0.45}
-            transmission={0.72}
+            defines={KV_DEBUG_NAN_DEFINES}
+            uniforms={crystalUniforms}
+            vertexShader={CRYSTAL_SHELL_VERTEX_SHADER}
+            fragmentShader={CRYSTAL_SHELL_FRAGMENT_SHADER}
             transparent
-            opacity={0.28}
-            roughness={0.12}
-            metalness={0.1}
-            ior={1.45}
-            thickness={1.2}
             depthWrite={false}
             side={THREE.DoubleSide}
             toneMapped={false}
           />
-          <Edges scale={1.002} threshold={1} color="#67e8f9" />
+          <Edges ref={outerEdgesRef} scale={1.002} threshold={1} color="#67e8f9" transparent opacity={0.72} />
         </mesh>
 
         {/* ---- 第 2 层：内层反向旋转八面体晶核 + 高亮棱线 ---- */}
@@ -1086,7 +1311,7 @@ export default function MasterNode3D() {
             depthWrite={false}
             toneMapped={false}
           />
-          <Edges scale={1.003} threshold={1} color="#a5f3fc" />
+          <Edges ref={coreEdgesRef} scale={1.003} threshold={1} color="#a5f3fc" transparent opacity={0.65} />
         </mesh>
 
         {/* ---- 第 3 层：80 面二十面体测地线高密线框内胆 ---- */}
@@ -1325,9 +1550,10 @@ export default function MasterNode3D() {
       <mesh ref={equatorRingRef} rotation={[-Math.PI / 2, 0, 0]} raycast={(): void => undefined}>
         <ringGeometry args={[EQUATOR_RADIUS, EQUATOR_RADIUS + EQUATOR_THICKNESS, 128]} />
         <meshBasicMaterial
+          ref={equatorRingMatRef}
           color={GLOW_CYAN}
           transparent
-          opacity={emphasized ? 0.7 : 0.5}
+          opacity={0.5}
           side={THREE.DoubleSide}
           toneMapped={false}
           depthWrite={false}
@@ -1372,7 +1598,7 @@ export default function MasterNode3D() {
             ref={tickRingMatRef}
             color={GLOW_CYAN}
             transparent
-            opacity={emphasized ? 0.85 : 0.5}
+            opacity={0.5}
             toneMapped={false}
             side={THREE.DoubleSide}
           />
@@ -1381,26 +1607,24 @@ export default function MasterNode3D() {
         <mesh rotation={[-Math.PI / 2, 0, 0]}>
           <ringGeometry args={[RING_INNER_RADIUS, RING_INNER_RADIUS + 0.03, 96]} />
           <meshBasicMaterial
+            ref={innerRingMatRef}
             color={GLOW_CYAN}
             transparent
-            opacity={emphasized ? 0.7 : 0.38}
+            opacity={0.38}
             toneMapped={false}
             side={THREE.DoubleSide}
           />
         </mesh>
-        {/* 24 根径向刻度齿（渲染期预计算位置/朝向；几何由 R3F 内联托管，
-            卸载自动 dispose——规避共享实例在 StrictMode 双挂载下的泄漏风险） */}
-        {RING_TICKS.map((tick, index): ReactNode => (
-          <mesh key={index} position={[tick.position[0], tick.position[1], tick.position[2]]} rotation={[0, tick.rotationY, 0]}>
-            <boxGeometry args={[0.05, 0.022, 0.34]} />
-            <meshBasicMaterial
-              color={GLOW_CYAN}
-              transparent
-              opacity={emphasized ? 0.75 : 0.42}
-              toneMapped={false}
-            />
-          </mesh>
-        ))}
+        {/* 24 根径向刻度齿（模块期已通过 mergeGeometries 合批为 1 次 Draw Call） */}
+        <mesh geometry={RING_TICKS_GEOMETRY}>
+          <meshBasicMaterial
+            ref={ringTicksMatRef}
+            color={GLOW_CYAN}
+            transparent
+            opacity={0.42}
+            toneMapped={false}
+          />
+        </mesh>
       </group>
 
       {/*
@@ -1415,108 +1639,34 @@ export default function MasterNode3D() {
        * drei Html 契约（AGENTS.md 第 6 条）：zIndexRange=[10,0] +
        * pointer-events-none，永不遮挡右侧 Copilot 抽屉与顶层 Modal。
        */}
+      {/* ---- 极简全息标签：R6-1 收敛为单行「控制平面 · API Server」 + R6-2 规格表 + R6-3 吃雾 ---- */}
       <Html
         position={[LABEL_POSITION[0], LABEL_POSITION[1], LABEL_POSITION[2]]}
         center
+        distanceFactor={HUD_LABEL_SPEC.MASTER_LABEL.distanceFactor}
         zIndexRange={[10, 0]}
         className="pointer-events-none"
         style={{ pointerEvents: 'none' }}
       >
-        {/*
-         * ---- 光学玻璃拟态控制平面铭牌（本轮重构）----
-         *
-         * 【废除闭合边框】上一版是 `border border-cyan-400/[0.35]` 的完整闭合框 +
-         * `bg-slate-950/90` 近不透明深底，观感是"贴在场景上的一块黑牌"。
-         * 本版改为与机架铭牌统一的光学玻璃语言：
-         *   · 基底 `bg-slate-950/50 kv-blur-panel`——半通透，
-         *     背后的墨色晶体与光纤总线仍隐约可见；
-         *   · 无闭合边，结构由上下 1px 折射亮边 + 四角发光靶标表达；
-         *   · 斜向折射高光 + 顶部毫米微标尺，把面板从"标题牌"升级为"仪表台"。
-         */}
-        <div className="pointer-events-none relative flex flex-col items-center gap-1 whitespace-nowrap bg-slate-950/50 px-3 py-1 kv-blur-panel">
-          <HoloSpecularSheen />
-          <HoloRefractionEdges accent="#22d3ee" />
-          <HoloCorners color="#22d3ee" />
-
-          {/*
-           * ── 顶部毫米级微标尺 ──
-           * 上一版的"七道渐变刻度"是纯装饰，没有读数语义。
-           * 换成 HoloMicroRuler 后，刻度长短交替 + 游标三角 + 等宽编号，
-           * 读者会本能地把它当作"量程"，这是展陈级仪表的通用语言。
-           */}
-          <HoloMicroRuler
-            label="SYS // CONTROL-PLANE"
-            accent="#22d3ee"
-            tickCount={28}
-            cursorAt={0.62}
-            className="w-full"
-          />
-          {/*
-           * ── 左右对称水平发光翼线 ──
-           * 从标题两侧向外延伸的细横线，是 HUD 铭牌的"翼展"：
-           * 它把孤立的文字锚进视野，暗示这是一块被标定的系统面板。
-           *
-           * 说明：原先紧邻其上还有一条「顶部 1px 渐变青色扫描高光」，
-           * 它的职责已由 HoloRefractionEdges 统一接管（上沿折射亮边），
-           * 两条叠在一起会形成双亮线，反而削弱玻璃质感，故移除。
-           */}
+        {/* R6-1：为什么是单行轻量玻璃胶囊：移除原 SYS.CORE/微标尺/翼线避免中心视区杂乱抢戏 */}
+        <div
+          ref={masterHudRef}
+          className="pointer-events-none inline-flex items-center gap-1.5 whitespace-nowrap rounded-[2px] bg-slate-950/60 px-2 py-0.5 md:px-2.5 md:py-1 kv-blur-chip"
+          style={{
+            boxShadow: 'inset 0 0 0 1px rgba(34,211,238,0.22)',
+          }}
+        >
           <span
             aria-hidden
-            className="block h-px w-full"
-            style={{
-              background:
-                'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.85) 30%, rgba(165,243,252,0.95) 50%, rgba(34,211,238,0.85) 70%, transparent 100%)',
-            }}
+            className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-300 shadow-[0_0_6px_#22d3ee]"
           />
-          {/*
-           * ── 系统标识行 ──
-           * 左侧七道发光刻度（中间高），后接 SYS.CORE 标识，
-           * 像仪器面板上的量程标记。
-           */}
-          <span className="flex items-center gap-1 text-[10px] uppercase tracking-[0.32em] text-cyan-400/60">
-            {[3, 2, 1, 0, 1, 2, 3].map((tier, index): ReactNode => (
-              <span
-                key={`scale-${index}`}
-                aria-hidden
-                className="block bg-cyan-400/50"
-                style={{ width: '1px', height: tier === 0 ? '6px' : '3px' }}
-              />
-            ))}
-            <span className="ml-1.5 text-cyan-300/70">SYS.CORE // CONTROL PLANE · API-SERVER</span>
-          </span>
-
-          {/*
-           * ── 主体：两侧光翼括弧 + 发光主标题 ──
-           * 对称斜切括弧把标题"夹"起来，是 HUD 表达"该对象处于系统焦点"的标准手法。
-           */}
-          <span className="flex items-center gap-2">
-            <span
-              aria-hidden
-              className="block h-3 w-[6px] border-l border-t border-cyan-300/70"
-              style={{ borderTopWidth: '1px', transform: 'skewX(-18deg)' }}
-            />
-            <span className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_6px_#22d3ee] animate-glow-pulse" />
-              <span className="text-[11px] font-semibold tracking-wider text-cyan-50 drop-shadow-[0_0_8px_rgba(34,211,238,0.8)]">
-                控制平面 · API-SERVER
-              </span>
-            </span>
-            <span
-              aria-hidden
-              className="block h-3 w-[6px] border-r border-t border-cyan-300/70"
-              style={{ borderTopWidth: '1px', transform: 'skewX(18deg)' }}
-            />
-          </span>
-
-          {/* ── 底部：缓慢呼吸的能量基线 ── */}
           <span
-            aria-hidden
-            className="mt-0.5 block h-px w-full animate-pulse"
-            style={{
-              background:
-                'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.75) 50%, transparent 100%)',
-            }}
-          />
+            data-kv-label="master"
+            className="font-sans font-medium leading-[1.15] tracking-wide text-cyan-50 drop-shadow-[0_0_6px_rgba(34,211,238,0.55)]"
+            style={{ fontSize: HUD_LABEL_SPEC.MASTER_LABEL.clampFontSize }}
+          >
+            控制平面<span className="hidden md:inline"> · API Server</span>
+          </span>
         </div>
       </Html>
     </group>

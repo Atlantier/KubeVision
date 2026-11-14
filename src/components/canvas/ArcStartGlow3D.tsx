@@ -18,6 +18,7 @@
 import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { REDUCED_MOTION_AMPLITUDE, isReducedMotion } from '@/constants/motion';
 import { getRackTransform } from '@/utils/spatialLayout';
 import { MASTER_POSITION } from '@/utils/spatialLayout';
 
@@ -44,9 +45,13 @@ const ARC_STARTS: readonly THREE.Vector3[] = (() => {
 export default function ArcStartGlow3D(): React.ReactElement {
   const meshRefs = useRef<ReadonlyArray<THREE.Mesh | null>>([]);
   const materialRefs = useRef<ReadonlyArray<THREE.MeshBasicMaterial | null>>([]);
+  const animPhaseRef = useRef<number>(0);
 
-  useFrame((): void => {
-    const t = performance.now() / 1000;
+  useFrame((_state, delta): void => {
+    const dt = Math.min(delta, 0.1);
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
+    animPhaseRef.current += dt * motionScale;
+    const t = animPhaseRef.current;
     for (let k = 0; k < ARC_STARTS.length; k += 1) {
       const mesh = meshRefs.current[k];
       const material = materialRefs.current[k];
@@ -55,10 +60,10 @@ export default function ArcStartGlow3D(): React.ReactElement {
       const phase = (t + k * (CONVERGE_PERIOD / 3)) % CONVERGE_PERIOD;
       /* 前 0.15s 窗口内：亮度从 1 快速衰减到 0；窗口外恒 0.05（几乎不可见） */
       const windowNorm = phase < CONVERGE_WINDOW ? 1 - phase / CONVERGE_WINDOW : 0;
-      const intensity = 0.05 + 0.95 * windowNorm * windowNorm;
+      const intensity = 0.05 + 0.95 * motionScale * windowNorm * windowNorm;
       material.opacity = intensity * 0.9;
       /* 收敛：窗口初期尺寸大，结束前收缩到 0.6 倍（"汇聚"而不是"爆开"） */
-      const scale = 0.55 + 0.45 * (1 - windowNorm);
+      const scale = 0.55 + 0.45 * (1 - windowNorm * motionScale);
       mesh.scale.setScalar(scale);
     }
   });

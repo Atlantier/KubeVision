@@ -123,6 +123,8 @@ export interface EntityInspectView {
   readonly entityType: SelectedEntityType;
   /** 展示名（Pod metadata.name / 节点名 / 'MASTER control plane'） */
   readonly displayName: string;
+  /** 左上角空间层级面包屑（如 `'集群 / 机架 rack-0 / 槽位 slot-1'`） */
+  readonly breadcrumb?: string;
   /** 状态原文（PodStatus / NodeStatus / 集群健康分档名） */
   readonly statusLabel: string;
   /** 状态语义色（驱动徽标高亮） */

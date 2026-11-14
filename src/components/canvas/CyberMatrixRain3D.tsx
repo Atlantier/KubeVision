@@ -24,6 +24,7 @@
  */
 
 import { useFrame } from '@react-three/fiber';
+import { REDUCED_MOTION_AMPLITUDE, isReducedMotion } from '@/constants/motion';
 import { useClusterStore } from '@/store/useClusterStore';
 import { useMemo } from 'react';
 import * as THREE from 'three';
@@ -217,16 +218,18 @@ export default function CyberMatrixRain3D(): React.ReactElement {
   const targetOpacity =
     clusterHealthScore >= HEALTHY_SCORE_THRESHOLD ? RAIN_MAX_OPACITY : RAIN_FAULT_OPACITY;
 
-  useFrame((state, delta): void => {
-    uniforms.uTime.value = state.clock.getElapsedTime();
+  useFrame((_state, delta): void => {
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
+    const clampedDelta = Math.min(delta, 0.1);
+    uniforms.uTime.value = (Number(uniforms.uTime.value) || 0) + clampedDelta * motionScale;
     /*
      * 指数阻尼逼近目标不透明度：α = 1 − e^(−k·Δt)
      * 原地写 .value，零分配；故障恢复时雨幕同样平滑退回。
      */
-    const clampedDelta = Math.min(delta, 0.1);
+    const scaledTarget = targetOpacity * motionScale;
     const alpha = 1 - Math.exp(-2.2 * clampedDelta);
     const current = uniforms.uOpacity.value as number;
-    uniforms.uOpacity.value = current + (targetOpacity - current) * alpha;
+    uniforms.uOpacity.value = current + (scaledTarget - current) * alpha;
   });
 
   return (

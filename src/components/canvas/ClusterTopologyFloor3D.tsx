@@ -33,6 +33,7 @@
  */
 
 import { useFrame } from '@react-three/fiber';
+import { REDUCED_MOTION_AMPLITUDE, isReducedMotion } from '@/constants/motion';
 import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 
@@ -532,7 +533,8 @@ function pushAnnulus(
     const cos1 = Math.cos(a1);
     const sin1 = Math.sin(a1);
 
-    const innerScale = fadeOutward ? 1 : 1;
+    /* R6-7：内环恒为全亮（清理无意义的 fadeOutward ? 1 : 1 死分支） */
+    const innerScale = 1;
     const outerScale = fadeOutward ? 0.18 : 1;
 
     /* 两个三角形：(内0, 外0, 外1) 与 (内0, 外1, 内1) */
@@ -1322,6 +1324,8 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
 
   /** 当前故障电平持久态（跨帧 lerp 的"当前值"） */
   const faultLevelsCurrent = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
+  /** 减弱动效连续相位累积器（H7：切换无跳变） */
+  const animPhaseRef = useRef<number>(0);
 
   teethRefs.current.length = racks.length;
   lanePulseRefs.current.length = racks.length;
@@ -1482,8 +1486,11 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
    * 【为何脉冲用 fract 而不是 sin】sin 会在两端折返（看起来像来回滑动），
    * fract 让脉冲沿总线**单向循环**输送，语义正确且无回程。
    */
-  useFrame((state, delta): void => {
-    const t = state.clock.getElapsedTime();
+  useFrame((_state, delta): void => {
+    const clampedDelta = Math.min(delta, 0.1);
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
+    animPhaseRef.current += clampedDelta * motionScale;
+    const t = animPhaseRef.current;
 
     /* 0) 数据星城推进径向数据波 + 雷达装甲弧批次自转（原地写，零分配） */
     dataCityUniforms.uTime.value = t;
@@ -1499,7 +1506,6 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
      * 着色器只需读一个连续标量，逻辑最简且零额外 GPU 分支。
      * 三个分量逐个更新后整体 copy 进 uniform（Vector3 原地写，零分配）。
      */
-    const clampedDelta = Math.min(delta, 0.1);
     const faultAlpha = 1 - Math.exp(-4 * clampedDelta);
     faultLevelsCurrent.x += (faultTargets.x - faultLevelsCurrent.x) * faultAlpha;
     faultLevelsCurrent.y += (faultTargets.y - faultLevelsCurrent.y) * faultAlpha;
@@ -1507,43 +1513,21 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
     (dataCityUniforms.uFaultLevels.value as THREE.Vector3).copy(faultLevelsCurrent);
     (dataCityUniforms.uFaultAngles.value as THREE.Vector3).copy(faultAngles);
 
-    /*
-     * 0c) 60° 雷达扫描扇区推进（放在 clampedDelta 之后，依赖它）。
-     *
-     * 【为何用增量累积而非 t·ω】与装甲弧的 `t * RATE` 不同，这里用
-     * angle += ω·Δt 再 mod 2π：
-     * · 增量累积天然支持"暂停后继续"——若用绝对时间，页签切回时
-     *   角度会一次性跳变到新位置，扫描看起来像瞬移；
-     * · mod 2π 保证角度始终落在 [0, 6.28)，着色器收到的始终是小数，
-     *   长时间运行不丢精度。
-     *
-     * 【零分配】纯标量算术，仅写 uniform 的 .value。
-     */
-    let sweep = radarSweepAngleRef.current + RADAR_SWEEP_SPEED * clampedDelta;
+    let sweep = radarSweepAngleRef.current + RADAR_SWEEP_SPEED * motionScale * clampedDelta;
     /* 手动 mod 2π（比 % 更快且对负数安全，虽然此处的值恒为正） */
     if (sweep >= Math.PI * 2) sweep -= Math.PI * 2;
     radarSweepAngleRef.current = sweep;
     radarSweepUniforms.uSweepAngle.value = sweep;
 
-    /*
-     * 0d) 双层量子点阵：整体浮动 + 呼吸明暗。
-     *
-     * 【为何整组统一浮动而非逐点】逐点浮动需要每帧重写 216 个实例矩阵，
-     * 是这一层唯一的性能敏感点。改为**整体 Y 偏移 + 透明度呼吸**后，
-     * 每帧只写 2 个 position.y 与 2 个 material.opacity，
-     * 视觉上仍是"整片点阵在起伏呼吸"，成本却降了两个数量级。
-     *
-     * 【两层相位错开 π/3】若同相浮动，两层会像一块板一起上下；
-     * 错相后两层交替起伏，产生"量子泡沫翻涌"的层次感。
-     */
-    const quantumFloatA = Math.sin(t * QUANTUM_FLOAT_RATE) * QUANTUM_FLOAT_AMPLITUDE;
-    const quantumFloatB = Math.sin(t * QUANTUM_FLOAT_RATE + Math.PI / 3) * QUANTUM_FLOAT_AMPLITUDE;
+    const quantumFloatA = Math.sin(t * QUANTUM_FLOAT_RATE) * QUANTUM_FLOAT_AMPLITUDE * motionScale;
+    const quantumFloatB =
+      Math.sin(t * QUANTUM_FLOAT_RATE + Math.PI / 3) * QUANTUM_FLOAT_AMPLITUDE * motionScale;
     const layerA = quantumLayerARef.current;
     if (layerA !== null) {
       layerA.position.y = 0.009 + quantumFloatA;
       const matA = layerA.material;
       if (matA instanceof THREE.MeshBasicMaterial) {
-        matA.opacity = 0.38 + 0.2 * (0.5 + 0.5 * Math.sin(t * QUANTUM_PULSE_RATE));
+        matA.opacity = 0.38 + 0.2 * motionScale * (0.5 + 0.5 * Math.sin(t * QUANTUM_PULSE_RATE));
       }
     }
     const layerB = quantumLayerBRef.current;
@@ -1551,7 +1535,8 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
       layerB.position.y = 0.011 + quantumFloatB;
       const matB = layerB.material;
       if (matB instanceof THREE.MeshBasicMaterial) {
-        matB.opacity = 0.26 + 0.16 * (0.5 + 0.5 * Math.sin(t * QUANTUM_PULSE_RATE + Math.PI / 2));
+        matB.opacity =
+          0.26 + 0.16 * motionScale * (0.5 + 0.5 * Math.sin(t * QUANTUM_PULSE_RATE + Math.PI / 2));
       }
     }
 
@@ -1581,7 +1566,7 @@ export default function ClusterTopologyFloor3D(): React.ReactElement {
         const fade = Math.sin(cycle * Math.PI);
         const material = pulse.material;
         if (material instanceof THREE.MeshBasicMaterial) {
-          material.opacity = 0.25 + 0.65 * fade;
+          material.opacity = 0.25 + 0.65 * motionScale * fade;
         }
       }
     }

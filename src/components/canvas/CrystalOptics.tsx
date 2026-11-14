@@ -102,9 +102,8 @@ const TONE_CRITICAL = new THREE.Color('#f43f5e');
 /** 健康分阈值（与全局一致） */
 const HEALTHY_SCORE = 90;
 const WARNING_SCORE = 70;
-/** 色温阻尼：常规 k=2.2；故障恢复使用 1.2s 缓动 => k≈0.83 */
+/** 色温指数阻尼率（1/秒）：健康/告警/恢复统一度量，移除不可达 RECOVERY_RATE 死分支（R6-7） */
 const TONE_LERP_RATE = 2.2;
-const RECOVERY_RATE = 1 / 1.2;
 
 /* ========================================================================== */
 /* GLSL：3D simplex 噪声（3 倍频，R01 安全：无倒置 smoothstep、全部 clamp）        */
@@ -667,10 +666,8 @@ export default function CrystalOptics(): React.ReactElement {
     } else {
       toneTarget.copy(TONE_CRITICAL);
     }
-    /* 故障恢复用 1.2s 慢缓动；其余沿用常规阻尼 */
-    const recovering = health >= HEALTHY_SCORE && toneCurrent.getHex() === TONE_CRITICAL.getHex();
-    const rate = recovering ? RECOVERY_RATE : TONE_LERP_RATE;
-    toneCurrent.lerp(toneTarget, 1 - Math.exp(-rate * dt));
+    /* R6-7：清理不可达的恢复分支（旧判断 toneCurrent.getHex() === TONE_CRITICAL.getHex() 在连续 lerp 中不可达） */
+    toneCurrent.lerp(toneTarget, 1 - Math.exp(-TONE_LERP_RATE * dt));
 
     /* ---- QPS 联动呼吸（幅度 ≤ 6%） ---- */
     const qps = telemetryTransientRef.snapshot.totalQps;
@@ -684,7 +681,10 @@ export default function CrystalOptics(): React.ReactElement {
     coreUniforms.uTime.value = t;
     coreUniforms.uBreath.value = breath;
     (coreUniforms.uColorCool.value as THREE.Color).copy(toneCurrent);
-    (coreUniforms.uColorHot.value as THREE.Color).copy(breath > 1 ? TONE_HEALTHY_CORE : TONE_HEALTHY_CORE);
+    /* R6-7：清理左右返回值恒等的死三元表达式，并保留状态语义随 toneTarget 过渡的基准光核 */
+    (coreUniforms.uColorHot.value as THREE.Color).copy(
+      health < WARNING_SCORE ? TONE_CRITICAL : TONE_HEALTHY_CORE,
+    );
     (coreUniforms.uColorDeep.value as THREE.Color).copy(toneCurrent).multiplyScalar(0.18);
     fogUniforms.uBreath.value = breath;
     (fogUniforms.uColor.value as THREE.Color).copy(toneCurrent);

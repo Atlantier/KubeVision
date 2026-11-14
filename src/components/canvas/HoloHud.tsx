@@ -38,6 +38,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 
 import { cn } from '@/utils/cn';
+import { HUD_LABEL_SPEC } from '@/constants/hud';
 
 /* ========================================================================== */
 /* 四角高精密靶标（Corner Reticles）                                            */
@@ -328,12 +329,15 @@ export function MiniBar({
   };
   return (
     <span className="flex items-center gap-1">
-      <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
+      <span
+        className="font-mono uppercase tracking-[0.16em] text-slate-500"
+        style={{ fontSize: HUD_LABEL_SPEC.POD_HOVER_LABEL.metaClampFontSize }}
+      >
         {label}
       </span>
       <span
-        className="w-[24px] text-right font-mono text-[10px] font-semibold tabular-nums leading-none"
-        style={{ color }}
+        className="w-[24px] text-right font-mono font-semibold tabular-nums leading-none"
+        style={{ color, fontSize: HUD_LABEL_SPEC.POD_HOVER_LABEL.metaClampFontSize }}
       >
         {Math.round(clamped)}%
       </span>

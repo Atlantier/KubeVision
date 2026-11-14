@@ -20,6 +20,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { LANE_CURVES } from '@/components/canvas/NetworkStream3D';
+import { REDUCED_MOTION_AMPLITUDE, isReducedMotion } from '@/constants/motion';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 
 /** 每条回程车道的粒子数 */
@@ -106,13 +107,14 @@ export default function ReturnStream3D(): React.ReactElement {
     }
 
     const phases = phaseRef.current;
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
     for (let lane = 0; lane < 3; lane += 1) {
       const curve = LANE_CURVES[lane];
       const missing = missingRef.current[lane];
       for (let p = 0; p < RETURN_PER_LANE; p += 1) {
         const index = lane * RETURN_PER_LANE + p;
         let u = phases[index];
-        u = (u + RETURN_SPEED * dt) % 1;
+        u = (u + RETURN_SPEED * motionScale * dt) % 1;
         phases[index] = u;
         if (missing) {
           /* 回程缺失：缩到 0（不提交可见像素），而不是删除实例（容量恒定） */

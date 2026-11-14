@@ -27,6 +27,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
+import { REDUCED_MOTION_AMPLITUDE, isReducedMotion } from '@/constants/motion';
 import * as THREE from 'three';
 
 import { useClusterStore } from '@/store/useClusterStore';
@@ -220,18 +221,20 @@ export default function SelectionBeacon3D(): React.ReactElement | null {
 
     /* 用场景时钟驱动动画：单一时间源，标签页切回时不会累积跳变 */
     const t = state.clock.elapsedTime;
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
 
-    /* ---- 呼吸缩放：sin 波在 1±AMPLITUDE 之间往复 ---- */
+    /* ---- 呼吸缩放：sin 波在 1±AMPLITUDE×motionScale 之间往复 ---- */
     const group = groupRef.current;
     if (group !== null) {
-      const breath = 1 + Math.sin((t / BREATH_PERIOD_S) * Math.PI * 2) * BREATH_AMPLITUDE;
+      const breath =
+        1 + Math.sin((t / BREATH_PERIOD_S) * Math.PI * 2) * BREATH_AMPLITUDE * motionScale;
       group.scale.setScalar(breath);
     }
 
     /* ---- 刻度环自转（仅改 rotation.z，零分配） ---- */
     const ring = ringRef.current;
     if (ring !== null) {
-      ring.rotation.z = t * SPIN_SPEED;
+      ring.rotation.z = t * SPIN_SPEED * motionScale;
     }
 
     /*

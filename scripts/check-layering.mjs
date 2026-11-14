@@ -140,6 +140,170 @@ function isUnder(targetPath, dirPath) {
   return targetPath === dirPath || targetPath.startsWith(dirPath + '/');
 }
 
+/**
+ * 剥离 JS/TS 注释但保留全部换行符，避免注释文本误命中 `<Html>` 契约且保持报错行号精确一致。
+ *
+ * @param source 文件源码
+ * @returns 等行数的去注释源码
+ */
+function stripCommentsPreserveLines(source) {
+  let out = '';
+  let i = 0;
+  let quote = null;
+  while (i < source.length) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (quote !== null) {
+      out += ch;
+      if (ch === '\\' && i + 1 < source.length) {
+        out += source[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      while (i < source.length && source[i] !== '\n') i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) {
+        if (source[i] === '\n') out += '\n';
+        i += 1;
+      }
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * 校验 `src/components/canvas/**` 下 `<Html>` 铭牌契约（R6 进阶）：
+ * 所有 `<Html>` 必须显式传入 `distanceFactor` 属性，且值必须来自 `HUD_LABEL_SPEC.<KEY>.distanceFactor`
+ * （同时文件内需从 `constants/hud` 导入 `HUD_LABEL_SPEC`），严禁字面量或其他未受控表达式。
+ *
+ * @param file 相对仓库根路径
+ * @param source 文件源码
+ * @param specifiers 已提取的模块引用列表
+ * @returns 违规记录列表
+ */
+function checkCanvasHtmlLabelContract(file, source, specifiers) {
+  if (!file.startsWith('src/components/canvas/')) return [];
+  const clean = stripCommentsPreserveLines(source);
+  const htmlTagRegex = /<Html(?=\s|>|\/)/g;
+  const issues = [];
+
+  const importsHudSpec =
+    /\bHUD_LABEL_SPEC\b/.test(clean) &&
+    specifiers.some((item) => {
+      const target = resolveSpecifier(item.specifier, file);
+      return target === 'src/constants/hud';
+    });
+
+  let match = htmlTagRegex.exec(clean);
+  while (match !== null) {
+    const tagStart = match.index;
+    const line = clean.slice(0, tagStart).split('\n').length;
+    /* 从 `<Html` 扫到开标签闭合 `>`（追踪 `{...}` 深度和引号，避免 `=>` 或 `raycast={() => undefined}` 提前截断） */
+    let cursor = tagStart + 5;
+    let braceDepth = 0;
+    let quote = null;
+    while (cursor < clean.length) {
+      const ch = clean[cursor];
+      if (quote !== null) {
+        if (ch === '\\' && cursor + 1 < clean.length) {
+          cursor += 2;
+          continue;
+        }
+        if (ch === quote) quote = null;
+        cursor += 1;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') {
+        quote = ch;
+        cursor += 1;
+        continue;
+      }
+      if (ch === '{') braceDepth += 1;
+      else if (ch === '}') braceDepth = Math.max(0, braceDepth - 1);
+      else if (ch === '>' && braceDepth === 0) break;
+      cursor += 1;
+    }
+
+    const openTagAttrs = clean.slice(tagStart, cursor + 1);
+    const dfMatch = /\bdistanceFactor\b\s*=\s*/.exec(openTagAttrs);
+    if (dfMatch === null) {
+      issues.push({
+        file,
+        line,
+        rule: 'canvas-html-spec',
+        specifier: '<Html> 缺少显式 distanceFactor={HUD_LABEL_SPEC.<KEY>.distanceFactor}',
+        allowlisted: false,
+        allowReason: null,
+      });
+    } else {
+      const afterEq = openTagAttrs.slice(dfMatch.index + dfMatch[0].length);
+      let expr = '';
+      if (afterEq.startsWith('{')) {
+        let depth = 0;
+        let q = null;
+        for (let k = 0; k < afterEq.length; k += 1) {
+          const c = afterEq[k];
+          if (q !== null) {
+            if (c === '\\') {
+              k += 1;
+              continue;
+            }
+            if (c === q) q = null;
+            continue;
+          }
+          if (c === "'" || c === '"' || c === '`') {
+            q = c;
+            continue;
+          }
+          if (c === '{') depth += 1;
+          else if (c === '}') {
+            depth -= 1;
+            if (depth === 0) {
+              expr = afterEq.slice(1, k).trim();
+              break;
+            }
+          }
+        }
+      } else {
+        expr = afterEq.split(/[\s/>]/)[0];
+      }
+
+      const validExpr = /^HUD_LABEL_SPEC\.[A-Z0-9_]+\.distanceFactor$/.test(expr);
+      if (!validExpr || !importsHudSpec) {
+        issues.push({
+          file,
+          line,
+          rule: 'canvas-html-spec',
+          specifier: `distanceFactor={${expr || '?'}}（必须导入并引用 HUD_LABEL_SPEC.<KEY>.distanceFactor，禁字面量）`,
+          allowlisted: false,
+          allowReason: null,
+        });
+      }
+    }
+
+    match = htmlTagRegex.exec(clean);
+  }
+  return issues;
+}
+
 /** 检查一条 import 是否命中某规则的 forbid 项 */
 function matchesForbid(specifier, resolvedPath, forbid) {
   if (forbid.kind === 'module') {
@@ -167,6 +331,7 @@ function main() {
     const source = readFileSync(join(ROOT, file), 'utf8');
     const specifiers = extractSpecifiers(source);
     checkedImports += specifiers.length;
+    violations.push(...checkCanvasHtmlLabelContract(file, source, specifiers));
     for (const rule of RULES) {
       if (!rule.includes(file)) continue;
       for (const item of specifiers) {
@@ -200,6 +365,10 @@ function main() {
         LAYER_ALLOWLIST.filter((entry) => entry.rule === rule.id).length
       } 条）`);
     }
+    const htmlContractCount = blocking.filter((violation) => violation.rule === 'canvas-html-spec').length;
+    console.log(
+      `  ${htmlContractCount === 0 ? '✓' : '✗'} canvas-html-spec — canvas 下所有 <Html> 显式引用 HUD_LABEL_SPEC.distanceFactor（禁字面量）`,
+    );
     if (violations.length > 0) {
       console.log('\n  明细（含已白名单）：');
       for (const violation of violations) {

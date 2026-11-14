@@ -1,0 +1,301 @@
+{
+  "baseline": {
+    "commit": "17c6536",
+    "tag": "r6-after",
+    "generatedAt": "2026-11-13T13:28:49.717Z"
+  },
+  "scenes": {
+    "overview@1920x1080": {
+      "scene": "overview",
+      "sceneLabel": "全景稳态（三机架 + 控制平面 + 地面拓扑）",
+      "file": "overview-1920x1080.png",
+      "timestamp": "2026-11-13T13:28:31.250Z",
+      "commit": "17c6536",
+      "tag": "r6-after",
+      "gpuMode": "d3d11",
+      "viewport": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "metrics": {
+        "glStats": {
+          "fps": 463,
+          "frameTimeMs": 2.2,
+          "drawCalls": 474,
+          "triangles": 399011,
+          "sseLatencyMs": 1009,
+          "workerStatus": "idle"
+        },
+        "dpr": 0.75,
+        "devicePixelRatio": 1,
+        "contextLost": false,
+        "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Laptop GPU (0x00002D18) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "canvas": {
+          "width": 933,
+          "height": 760
+        },
+        "canvasRect": {
+          "left": 9,
+          "top": 57,
+          "width": 1244.64,
+          "height": 1014
+        },
+        "labels": [
+          {
+            "id": "master",
+            "text": "控制平面 · API Server",
+            "cssFontPx": 11.136,
+            "opacity": 0.858,
+            "rect": {
+              "left": 544.6,
+              "top": 627.32,
+              "right": 678.63,
+              "bottom": 642.43,
+              "width": 134.03,
+              "height": 15.11
+            }
+          },
+          {
+            "id": "rack-worker-alpha",
+            "text": "worker-alpha",
+            "cssFontPx": 11.904,
+            "opacity": 0.965,
+            "rect": {
+              "left": 166.92,
+              "top": 980.78,
+              "right": 274.04,
+              "bottom": 997.76,
+              "width": 107.12,
+              "height": 16.97
+            }
+          },
+          {
+            "id": "rack-worker-beta",
+            "text": "worker-beta",
+            "cssFontPx": 11.904,
+            "opacity": 0.78,
+            "rect": {
+              "left": 1100.62,
+              "top": 577.36,
+              "right": 1180.77,
+              "bottom": 591.15,
+              "width": 80.14,
+              "height": 13.79
+            }
+          },
+          {
+            "id": "rack-worker-gamma",
+            "text": "worker-gamma",
+            "cssFontPx": 11.904,
+            "opacity": 0.672,
+            "rect": {
+              "left": 299.63,
+              "top": 414.39,
+              "right": 393.27,
+              "bottom": 427.4,
+              "width": 93.64,
+              "height": 13.01
+            }
+          }
+        ],
+        "store": {
+          "activeChaos": "NONE",
+          "selectedEntityId": null,
+          "connectionMode": "demo",
+          "clusterHealthScore": 100,
+          "runningPods": 24,
+          "totalPods": 24,
+          "activeAlerts": 0,
+          "isOrbitPatrolActive": false
+        }
+      },
+      "labelBounds": {
+        "count": 4,
+        "minHeightPx": 13.01,
+        "maxHeightPx": 16.97
+      },
+      "luminance": {
+        "bins": [
+          907078,
+          694326,
+          101661,
+          80467,
+          58220,
+          62249,
+          46863,
+          33474,
+          26118,
+          22435,
+          16250,
+          7118,
+          8001,
+          5348,
+          3382,
+          610
+        ],
+        "mean": 30.59354355884472,
+        "overexposed": 31,
+        "overexposedRatio": 0.0014949845679012347,
+        "totalPixels": 2073600
+      },
+      "consoleErrors": 0,
+      "consoleWarns": 11,
+      "consoleErrorSamples": [],
+      "consoleWarnSamples": [
+        "[DEPRECATED] Use `createWithEqualityFn` instead of `create` or use `useStoreWithEqualityFn` instead of `useStore`. They can be imported from 'zustand/traditional'. https://github.com/pmndrs/zustand/di",
+        "[renderBudget] 超预算警告（仅 dev 观测，不阻断渲染）：Draw Calls 478 > T3 预算 200（超出 +278）；反射占比 45.6% > 预算 8%（reflection=218）",
+        "[glowBudget] 晶核（屏幕半径 120px 内） 超预算：实际 16.28 > 目标 1.15",
+        "[glowBudget] 地面主轨 超预算：实际 11.89 > 目标 0.62",
+        "[glowBudget] 外围（星云 / 大气） 超预算：实际 11.63 > 目标 0.4"
+      ],
+      "note": "dpr 取自 renderer.getPixelRatio()，是该构建下唯一可观测的\"自适应画质档位\"代理；glStats 的 fps/frameTime 来自 SwiftShader 软件光栅化，不代表真机 GPU 性能，drawCalls/triangles 与硬件无关。"
+    },
+    "pod-closeup@1920x1080": {
+      "scene": "pod-closeup",
+      "sceneLabel": "刀片近景（worker-alpha 机架内 Pod 阵列）",
+      "file": "pod-closeup-1920x1080.png",
+      "timestamp": "2026-11-13T13:28:49.717Z",
+      "commit": "17c6536",
+      "tag": "r6-after",
+      "gpuMode": "d3d11",
+      "viewport": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "metrics": {
+        "glStats": {
+          "fps": 425,
+          "frameTimeMs": 2.4,
+          "drawCalls": 225,
+          "triangles": 274243,
+          "sseLatencyMs": 1007,
+          "workerStatus": "idle"
+        },
+        "dpr": 0.75,
+        "devicePixelRatio": 1,
+        "contextLost": false,
+        "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Laptop GPU (0x00002D18) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "canvas": {
+          "width": 933,
+          "height": 760
+        },
+        "canvasRect": {
+          "left": 9,
+          "top": 57,
+          "width": 1244.64,
+          "height": 1014
+        },
+        "labels": [
+          {
+            "id": "master",
+            "text": "控制平面 · API Server",
+            "cssFontPx": 11.136,
+            "opacity": 1,
+            "rect": {
+              "left": 0,
+              "top": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          {
+            "id": "rack-worker-alpha",
+            "text": "worker-alpha",
+            "cssFontPx": 11.904,
+            "opacity": 1,
+            "rect": {
+              "left": 725.72,
+              "top": 794.54,
+              "right": 832.75,
+              "bottom": 811.5,
+              "width": 107.03,
+              "height": 16.96
+            }
+          },
+          {
+            "id": "rack-worker-beta",
+            "text": "worker-beta",
+            "cssFontPx": 11.904,
+            "opacity": 1,
+            "rect": {
+              "left": 0,
+              "top": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          {
+            "id": "rack-worker-gamma",
+            "text": "worker-gamma",
+            "cssFontPx": 11.904,
+            "opacity": 1,
+            "rect": {
+              "left": 0,
+              "top": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          }
+        ],
+        "store": {
+          "activeChaos": "NONE",
+          "selectedEntityId": "node-worker-alpha",
+          "connectionMode": "demo",
+          "clusterHealthScore": 100,
+          "runningPods": 24,
+          "totalPods": 24,
+          "activeAlerts": 0,
+          "isOrbitPatrolActive": false
+        }
+      },
+      "labelBounds": {
+        "count": 1,
+        "minHeightPx": 16.96,
+        "maxHeightPx": 16.96
+      },
+      "luminance": {
+        "bins": [
+          735832,
+          452406,
+          223432,
+          119233,
+          104850,
+          76190,
+          36542,
+          40810,
+          30835,
+          29421,
+          93374,
+          22680,
+          16913,
+          12985,
+          34607,
+          43490
+        ],
+        "mean": 51.899795006004695,
+        "overexposed": 228,
+        "overexposedRatio": 0.01099537037037037,
+        "totalPixels": 2073600
+      },
+      "consoleErrors": 0,
+      "consoleWarns": 11,
+      "consoleErrorSamples": [],
+      "consoleWarnSamples": [
+        "[DEPRECATED] Use `createWithEqualityFn` instead of `create` or use `useStoreWithEqualityFn` instead of `useStore`. They can be imported from 'zustand/traditional'. https://github.com/pmndrs/zustand/di",
+        "[renderBudget] 超预算警告（仅 dev 观测，不阻断渲染）：Draw Calls 477 > T3 预算 200（超出 +277）；反射占比 45.5% > 预算 8%（reflection=217）",
+        "[glowBudget] 晶核（屏幕半径 120px 内） 超预算：实际 16.28 > 目标 1.15",
+        "[glowBudget] 地面主轨 超预算：实际 11.89 > 目标 0.62",
+        "[glowBudget] 外围（星云 / 大气） 超预算：实际 11.38 > 目标 0.4"
+      ],
+      "note": "dpr 取自 renderer.getPixelRatio()，是该构建下唯一可观测的\"自适应画质档位\"代理；glStats 的 fps/frameTime 来自 SwiftShader 软件光栅化，不代表真机 GPU 性能，drawCalls/triangles 与硬件无关。"
+    }
+  }
+}

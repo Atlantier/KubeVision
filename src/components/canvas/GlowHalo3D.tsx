@@ -50,6 +50,7 @@
 import { useMemo, useRef } from 'react';
 import { Billboard } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
+import { REDUCED_MOTION_AMPLITUDE, isReducedMotion } from '@/constants/motion';
 import * as THREE from 'three';
 import { withNanGuard } from '@/utils/glslNanGuard';
 
@@ -205,15 +206,16 @@ export default function GlowHalo3D({
     [color, opacity, falloff],
   );
 
-  /* 呼吸脉动：仅修改 uniform，不触碰几何体（零分配） */
+  /* 呼吸脉动：仅修改 uniform，不触碰几何体（reduced-motion 时幅度 ×0.25） */
   useFrame((state): void => {
     if (!pulse) return;
     const mat = materialRef.current;
     if (mat === null) return;
-    /* sin ∈ [-1,1] → 映射到 [0.55, 1.0] 的透明度区间，避免完全熄灭 */
+    const motionScale = isReducedMotion() ? REDUCED_MOTION_AMPLITUDE : 1;
+    /* sin ∈ [-1,1] → 映射到受 motionScale 约束的透明度摆幅，避免完全熄灭 */
     const t = state.clock.elapsedTime;
     const wave = Math.sin((t / pulsePeriod) * Math.PI * 2);
-    mat.uniforms.uOpacity.value = opacity * (0.775 + wave * 0.225);
+    mat.uniforms.uOpacity.value = opacity * (0.775 + wave * 0.225 * motionScale);
   });
 
   /**

@@ -1,0 +1,97 @@
+{
+  "baseline": {
+    "commit": "17c6536",
+    "tag": "r6-before",
+    "generatedAt": "2026-11-13T13:28:13.353Z"
+  },
+  "scenes": {
+    "overview@1920x1080": {
+      "scene": "overview",
+      "sceneLabel": "全景稳态（三机架 + 控制平面 + 地面拓扑）",
+      "file": "overview-1920x1080.png",
+      "timestamp": "2026-11-13T13:28:13.353Z",
+      "commit": "17c6536",
+      "tag": "r6-before",
+      "gpuMode": "d3d11",
+      "viewport": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "metrics": {
+        "glStats": {
+          "fps": 380,
+          "frameTimeMs": 2.6,
+          "drawCalls": 804,
+          "triangles": 436547,
+          "sseLatencyMs": 1007,
+          "workerStatus": "idle"
+        },
+        "dpr": 0.75,
+        "devicePixelRatio": 1,
+        "contextLost": false,
+        "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Laptop GPU (0x00002D18) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        "canvas": {
+          "width": 933,
+          "height": 760
+        },
+        "canvasRect": {
+          "left": 9,
+          "top": 57,
+          "width": 1244.64,
+          "height": 1014
+        },
+        "labels": [],
+        "store": {
+          "activeChaos": "NONE",
+          "selectedEntityId": null,
+          "connectionMode": "demo",
+          "clusterHealthScore": 100,
+          "runningPods": 24,
+          "totalPods": 24,
+          "activeAlerts": 0,
+          "isOrbitPatrolActive": false
+        }
+      },
+      "labelBounds": {
+        "count": 0,
+        "minHeightPx": null,
+        "maxHeightPx": null
+      },
+      "luminance": {
+        "bins": [
+          1018412,
+          576283,
+          108932,
+          89669,
+          58865,
+          60846,
+          44409,
+          32531,
+          23578,
+          21575,
+          14271,
+          6431,
+          7680,
+          5306,
+          3607,
+          1205
+        ],
+        "mean": 29.89055516808428,
+        "overexposed": 484,
+        "overexposedRatio": 0.02334104938271605,
+        "totalPixels": 2073600
+      },
+      "consoleErrors": 0,
+      "consoleWarns": 4,
+      "consoleErrorSamples": [],
+      "consoleWarnSamples": [
+        "[DEPRECATED] Use `createWithEqualityFn` instead of `create` or use `useStoreWithEqualityFn` instead of `useStore`. They can be imported from 'zustand/traditional'. https://github.com/pmndrs/zustand/di",
+        "[glowBudget] 晶核（屏幕半径 120px 内） 超预算：实际 16.28 > 目标 1.15",
+        "[glowBudget] 地面主轨 超预算：实际 20.88 > 目标 0.55",
+        "[glowBudget] 外围（星云 / 大气） 超预算：实际 11.37 > 目标 0.4"
+      ],
+      "note": "dpr 取自 renderer.getPixelRatio()，是该构建下唯一可观测的\"自适应画质档位\"代理；glStats 的 fps/frameTime 来自 SwiftShader 软件光栅化，不代表真机 GPU 性能，drawCalls/triangles 与硬件无关。"
+    }
+  }
+}
