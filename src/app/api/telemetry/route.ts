@@ -42,6 +42,7 @@ import {
 /* ---- Next.js Route Segment 配置（必须位于模块顶层且为字面量导出） ---- */
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 /** 推流间隔（毫秒）：与引擎 TICK_INTERVAL_MS 严格一致，避免快照时间戳与墙钟漂移 */
 const STREAM_INTERVAL_MS = TICK_INTERVAL_MS;

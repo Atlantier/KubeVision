@@ -26,10 +26,13 @@ const PROCESS_STARTED_AT_MS = Date.now();
 export function GET(): Response {
   const apiKey = process.env.OPENAI_API_KEY;
   const llmConfigured = typeof apiKey === 'string' && apiKey.trim().length > 0;
-  const modelName =
-    typeof process.env.OPENAI_MODEL === 'string' && process.env.OPENAI_MODEL.trim().length > 0
-      ? process.env.OPENAI_MODEL.trim()
-      : 'glm-4-flash';
+  const configuredModel =
+    typeof process.env.AI_MODEL_NAME === 'string' && process.env.AI_MODEL_NAME.trim().length > 0
+      ? process.env.AI_MODEL_NAME.trim()
+      : typeof process.env.OPENAI_MODEL === 'string' && process.env.OPENAI_MODEL.trim().length > 0
+        ? process.env.OPENAI_MODEL.trim()
+        : 'glm-4-flash';
+  const modelName = configuredModel;
 
   const sseMetrics = getTelemetryHealthMetrics();
   const hostSamplerSubscribers = getHostSamplerSubscriberCount();

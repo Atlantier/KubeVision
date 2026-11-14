@@ -81,6 +81,7 @@ import { pickRemediationActionType } from '@/utils/chaosFacts';
 /* ---- Next.js Route Segment 配置 ---- */
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 /* ========================================================================== */
 /* 常量                                                                       */
