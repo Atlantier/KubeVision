@@ -24,6 +24,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
+import { Z_CLASS } from '@/constants/zIndex';
+import { useFocusReturn, useSheetSwipeClose } from '@/hooks/useModalSheetBehavior';
 import { createPortal } from 'react-dom';
 import { Check, Copy, Download, FileText, X } from 'lucide-react';
 
@@ -107,6 +109,9 @@ export default function PostMortemModal({
 
   /** 复制反馈定时器（卸载 / 重入时必须清理，避免对已卸载组件 setState） */
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  useFocusReturn(open, closeBtnRef);
+  const swipe = useSheetSwipeClose(onClose);
 
   /**
    * clearFeedbackTimer —— 清理反馈定时器。
@@ -223,7 +228,10 @@ export default function PostMortemModal({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 kv-overlay sm:p-4"
+      className={cn(
+        'fixed inset-0 flex items-end justify-center p-0 kv-overlay md:items-center md:p-4',
+        Z_CLASS.MODAL,
+      )}
       role="dialog"
       aria-modal="true"
       aria-label="SRE 故障复盘报告"
@@ -236,13 +244,30 @@ export default function PostMortemModal({
         className="absolute inset-0 cursor-default"
       />
 
-      {/* ============ 主面板：深空毛玻璃 ============ */}
-      <div className="relative flex h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl kv-panel shadow-modal">
+      {/* ============ 主面板：深空毛玻璃（移动端 90dvh Bottom Sheet） ============ */}
+      <div
+        className="relative flex h-[90dvh] max-h-[90dvh] w-full max-w-4xl flex-col overflow-hidden rounded-t-2xl rounded-b-none kv-panel shadow-modal md:h-[80vh] md:rounded-xl"
+        style={
+          swipe.dragOffsetY > 0 ? { transform: `translateY(${swipe.dragOffsetY}px)` } : undefined
+        }
+      >
         {/* ---- 顶部主题流光细线 ---- */}
         <div
           className="h-px w-full shrink-0 bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent"
           aria-hidden
         />
+
+        {/* ---- 移动端 Bottom Sheet 下拉把手 ---- */}
+        <div
+          className="flex shrink-0 cursor-grab touch-none justify-center pb-1 pt-2.5 md:hidden"
+          onPointerDown={swipe.handlePointerDown}
+          onPointerMove={swipe.handlePointerMove}
+          onPointerUp={swipe.handlePointerUp}
+          onPointerCancel={swipe.handlePointerCancel}
+          aria-hidden
+        >
+          <span className="h-1 w-10 rounded-full bg-white/25" />
+        </div>
 
         {/* ==================== 标题栏：标题 + 字数统计 + 关闭 ==================== */}
         <header className="flex shrink-0 items-center gap-2 border-b border-white/[0.07] px-3 py-2 sm:px-4">
@@ -254,7 +279,7 @@ export default function PostMortemModal({
             <h2 className="truncate text-[13px] font-semibold tracking-wide text-slate-100">
               SRE 故障复盘报告
             </h2>
-            <p className="mt-0.5 truncate font-mono text-[10px] tracking-[0.16em] text-slate-500">
+            <p className="mt-0.5 truncate font-mono text-[10px] tracking-[0.16em] text-slate-400">
               incident post-mortem · markdown export
             </p>
           </div>
@@ -268,10 +293,11 @@ export default function PostMortemModal({
           </span>
 
           <button
+            ref={closeBtnRef}
             type="button"
             onClick={onClose}
             aria-label="关闭复盘报告弹窗"
-            className="shrink-0 rounded-md border border-white/[0.07] p-1.5 text-slate-500 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95"
+            className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-md border border-white/[0.07] p-1.5 text-slate-400 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95 md:min-h-0 md:min-w-0"
           >
             <X className="h-3.5 w-3.5" aria-hidden />
           </button>
@@ -329,13 +355,13 @@ export default function PostMortemModal({
           )}
         </div>
 
-        {/* ==================== 底部操作栏 ==================== */}
-        <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-white/[0.07] bg-slate-900/40 px-3 py-2 sm:px-4">
+        {/* ==================== 底部操作栏（Sticky + Safe Area） ==================== */}
+        <footer className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center gap-2 border-t border-white/[0.07] bg-slate-950/[0.92] px-3 py-2 kv-safe-bottom sm:px-4">
           <button
             type="button"
             onClick={handleDownload}
             aria-label="下载 Markdown 报告"
-            className="flex items-center gap-1.5 rounded-md border border-cyan-500/50 bg-cyan-500/[0.15] px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300 transition-colors hover:border-cyan-400/70 hover:bg-cyan-500/25 active:scale-[0.985]"
+            className="flex min-h-[40px] items-center gap-1.5 rounded-md border border-cyan-500/50 bg-cyan-500/[0.15] px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-300 transition-colors hover:border-cyan-400/70 hover:bg-cyan-500/25 active:scale-[0.985] md:min-h-0"
           >
             <Download className="h-2.5 w-2.5" aria-hidden />
             下载 .md
@@ -346,10 +372,10 @@ export default function PostMortemModal({
             onClick={handleCopy}
             aria-label="复制 Markdown 源码"
             className={cn(
-              'flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors active:scale-[0.985]',
+              'flex min-h-[40px] items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors active:scale-[0.985] md:min-h-0',
               copied
                 ? 'border-emerald-500/50 bg-emerald-500/[0.15] text-emerald-300'
-                : 'border-white/[0.07] bg-slate-800/50 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
+                : 'border-white/[0.07] bg-slate-800/50 text-slate-300 hover:border-cyan-400/40 hover:text-cyan-300',
             )}
           >
             {copied ? (

@@ -28,12 +28,19 @@
  */
 
 import {
+  Component,
+  memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type ReactElement } from 'react';
+  type ErrorInfo,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
+import { flushSync } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { AnimatePresence,
   motion } from 'framer-motion';
@@ -45,8 +52,10 @@ import {
   FileText,
   Bot,
   Camera,
+  Check,
   CheckCircle2,
   ChevronDown,
+  Copy,
   Cpu,
   Eraser,
   Flame,
@@ -72,6 +81,7 @@ import GenUISkeleton from '@/components/ai/GenUI/GenUISkeleton';
 import MarkdownLite, { InlineMarkdown } from '@/components/ai/MarkdownLite';
 import PodMetricsCard from '@/components/ai/GenUI/PodMetricsCard';
 import RootCauseAlert from '@/components/ai/GenUI/RootCauseAlert';
+import { Z_CLASS } from '@/constants/zIndex';
 import { cn } from '@/utils/cn';
 import { isImeComposing } from '@/utils/keyboardTargets';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
@@ -100,16 +110,14 @@ import TraceIdChip from '@/components/hud/TraceIdChip';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
   CHAT_ERROR_COPY,
+  actionConfirmPayloadSchema,
   classifyToolName,
-} from '@/types/ai';
-import type {
-  ActionConfirmProps,
-  ChatStreamEvent,
-  ClusterContext,
-  CopilotMessage,
-  CopilotToolCard,
-  PodMetricsCardProps,
-  RootCauseAlertProps,
+  podMetricsCardSchema,
+  rootCauseAlertSchema,
+  type ChatStreamEvent,
+  type ClusterContext,
+  type CopilotMessage,
+  type CopilotToolCard,
 } from '@/types/ai';
 import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
 import { useSpeechInput } from '@/hooks/useSpeechInput';
@@ -236,8 +244,59 @@ const QUICK_PROMPTS: readonly TacticalCommand[] = [
 /** 3D 视口截图压缩质量（JPEG 0.8：清晰度与体积的平衡点） */
 const CAPTURE_QUALITY = 0.8;
 
-/** 消息列表自动滚动阈值（距底部小于此值才跟随，避免打断用户阅读历史） */
-const STICKY_SCROLL_THRESHOLD_PX = 80;
+/** 消息列表自动滚动暂停阈值（向上滚动超过 120px 时暂停跟随，避免打断历史阅读） */
+const STICKY_SCROLL_THRESHOLD_PX = 120;
+
+/** 文本流 rAF 合批提交下限间隔（毫秒，60FPS 单帧上限；首帧及 >100ms 停顿除外） */
+const STREAM_FRAME_COMMIT_MS = 16;
+
+/** 流式 delta 静默刷新阈值（毫秒）：帧间隔或空闲超过 100ms 立即提交缓冲文本 */
+const STREAM_GAP_FLUSH_MS = 100;
+
+/** 触发手动窗口虚拟化的消息条数阈值（>30 条启用） */
+const VIRTUALIZE_THRESHOLD = 30;
+
+/** 虚拟列表可视窗口上下超扫（overscan）条数 */
+const VIRTUAL_OVERSCAN = 5;
+
+/** 未实测气泡的初始预估高度（像素）与列表垂直间距（对应 space-y-2.5 = 10px） */
+const VIRTUAL_DEFAULT_BUBBLE_HEIGHT = 132;
+const VIRTUAL_ITEM_GAP_PX = 10;
+
+/** 50+ 条消息窗口最大挂起 DOM 气泡目标上限（防止小卡片密集堆叠超标） */
+const VIRTUAL_MAX_RENDERED_TARGET = 15;
+
+/** 流式调试性能快照（仅 dev 或 ?debug=stream 暴露） */
+interface StreamPerfDebugSnapshot {
+  readonly totalBubbleCommits: number;
+  readonly historyBubbleCommits: number;
+  readonly activeBubbleCommits: number;
+  readonly userBubbleCommits: number;
+  readonly drawerCommits: number;
+  readonly rafFlushes: number;
+  readonly virtualized: boolean;
+  readonly mountedMsgDomCount: number;
+  readonly perMessageCommits: Readonly<Record<string, number>>;
+}
+
+interface StreamPerfDebugApi {
+  readonly reset: () => void;
+  readonly getSnapshot: () => StreamPerfDebugSnapshot;
+}
+
+declare global {
+  interface Window {
+    __KUBEVISION_STREAM_DEBUG__?: StreamPerfDebugApi;
+  }
+}
+
+/** 判断当前运行期是否启用流式性能调试钩子（仅非生产环境或显式 ?debug=stream 开启） */
+function isStreamDebugEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'production') return true;
+  if (typeof window === 'undefined') return false;
+  const debugFlag = new URLSearchParams(window.location.search).get('debug');
+  return debugFlag === 'stream' || debugFlag === '1' || debugFlag === 'true';
+}
 
 /**
  * 骨架屏看门狗超时（毫秒）。
@@ -501,6 +560,18 @@ function ContextPill({
  * @param cards 该条 assistant 消息携带的卡片列表
  * @returns 可直接拼接在正文末尾的摘要文本；无卡片时返回空串
  */
+/** 格式化 Zod 校验问题为紧凑可读摘要 */
+function formatSchemaIssues(issues: readonly { readonly path: readonly (string | number)[]; readonly message: string }[]): string {
+  if (issues.length === 0) return '字段不符合预期契约';
+  return issues
+    .slice(0, 2)
+    .map((issue): string => {
+      const pathText = issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
+      return `${pathText}${issue.message}`;
+    })
+    .join('；');
+}
+
 function summarizeToolCardsForHistory(cards: readonly CopilotToolCard[]): string {
   if (cards.length === 0) return '';
 
@@ -512,26 +583,41 @@ function summarizeToolCardsForHistory(cards: readonly CopilotToolCard[]): string
       continue;
     }
 
-    if (card.toolName === 'renderPodMetrics') {
-      const args = card.args as PodMetricsCardProps;
-      lines.push(
-        `[已生成指标卡: Pod=${args.podName}, 命名空间=${args.namespace}, ` +
-          `CPU=${args.cpuUsage}%, 内存=${args.memoryUsage}%, 重启=${args.restarts}次]`,
-      );
-    } else if (card.toolName === 'renderRootCauseAnalysis') {
-      const args = card.args as RootCauseAlertProps;
-      const citationIds = args.ragReferences.map((doc): string => doc.id).join(', ');
-      lines.push(
-        `[已生成根因卡片: 严重度=${args.severity}, 标题=${args.title}, ` +
-          `置信度=${(args.confidence * 100).toFixed(0)}%, ` +
-          `引用知识库=${citationIds.length > 0 ? citationIds : '无'}]`,
-      );
+    if (isPodMetricsTool(card.toolName)) {
+      const parsed = podMetricsCardSchema.safeParse(card.args);
+      if (parsed.success) {
+        const args = parsed.data;
+        lines.push(
+          `[已生成指标卡: Pod=${args.podName}, 命名空间=${args.namespace}, ` +
+            `CPU=${args.cpuUsage}%, 内存=${args.memoryUsage}%, 重启=${args.restarts}次]`,
+        );
+      } else {
+        lines.push(`[已生成指标卡: ${card.toolName}（载荷校验未通过）]`);
+      }
+    } else if (isRootCauseTool(card.toolName)) {
+      const parsed = rootCauseAlertSchema.safeParse(card.args);
+      if (parsed.success) {
+        const args = parsed.data;
+        const citationIds = args.ragReferences.map((doc): string => doc.id).join(', ');
+        lines.push(
+          `[已生成根因卡片: 严重度=${args.severity}, 标题=${args.title}, ` +
+            `置信度=${(args.confidence * 100).toFixed(0)}%, ` +
+            `引用知识库=${citationIds.length > 0 ? citationIds : '无'}]`,
+        );
+      } else {
+        lines.push(`[已生成根因卡片: ${card.toolName}（载荷校验未通过）]`);
+      }
     } else if (isActionTool(card.toolName)) {
-      const args = card.args as ActionConfirmProps;
-      lines.push(
-        `[已生成自愈审批卡: 动作=${args.actionType}, 目标=${args.targetName}, ` +
-          `工具=${args.mcpEndpoint}, 高危=${args.isHighRisk ? '是' : '否'}]`,
-      );
+      const parsed = actionConfirmPayloadSchema.safeParse(card.args);
+      if (parsed.success) {
+        const args = parsed.data;
+        lines.push(
+          `[已生成自愈审批卡: 动作=${args.actionType}, 目标=${args.targetName}, ` +
+            `工具=${args.mcpEndpoint}, 高危=${args.isHighRisk ? '是' : '否'}]`,
+        );
+      } else {
+        lines.push(`[已生成自愈审批卡: ${card.toolName}（载荷校验未通过）]`);
+      }
     } else {
       lines.push(`[已生成卡片: ${card.toolName}]`);
     }
@@ -541,16 +627,169 @@ function summarizeToolCardsForHistory(cards: readonly CopilotToolCard[]): string
 }
 
 /* ========================================================================== */
+/* 子组件：单卡错误边界与畸形载荷降级                                            */
+/* ========================================================================== */
+
+interface CardErrorBoundaryProps {
+  readonly cardLabel: string;
+  readonly children: ReactNode;
+}
+
+interface CardErrorBoundaryState {
+  readonly hasError: boolean;
+  readonly errorMessage: string;
+  readonly retryNonce: number;
+}
+
+/**
+ * CardErrorBoundary —— 单张 GenUI / 思考链卡片级别的独立 ErrorBoundary（R10）。
+ *
+ * 【设计意图】任意单张卡片因脏数据或 SVG 几何异常抛出渲染错误时，仅在原地降级为
+ * 「这张卡渲染失败，其余不受影响」+ 重试按钮，绝不拖垮整个 Copilot 面板或 3D 视口。
+ */
+class CardErrorBoundary extends Component<CardErrorBoundaryProps, CardErrorBoundaryState> {
+  public constructor(props: CardErrorBoundaryProps) {
+    super(props);
+    this.state = {
+      hasError: false,
+      errorMessage: '',
+      retryNonce: 0,
+    };
+  }
+
+  public static getDerivedStateFromError(error: Error): Partial<CardErrorBoundaryState> {
+    return {
+      hasError: true,
+      errorMessage: error.message.length > 0 ? error.message : '组件渲染异常',
+    };
+  }
+
+  public componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.warn(`[CardErrorBoundary:${this.props.cardLabel}]`, error, info.componentStack);
+  }
+
+  private readonly handleRetry = (): void => {
+    this.setState((prev): CardErrorBoundaryState => ({
+      hasError: false,
+      errorMessage: '',
+      retryNonce: prev.retryNonce + 1,
+    }));
+  };
+
+  public render(): ReactNode {
+    if (this.state.hasError) {
+      return (
+        <div
+          role="alert"
+          data-card-state="error-boundary"
+          className="rounded-md border border-rose-500/40 bg-rose-500/10 px-2.5 py-2"
+        >
+          <p className="flex items-center gap-1.5 font-mono text-[11px] font-semibold text-rose-200">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-400" aria-hidden />
+            <span>这张卡渲染失败，其余不受影响</span>
+          </p>
+          <p className="mt-0.5 truncate font-mono text-[10px] text-rose-300/80" title={this.state.errorMessage}>
+            {this.props.cardLabel} · {this.state.errorMessage}
+          </p>
+          <button
+            type="button"
+            onClick={this.handleRetry}
+            className="mt-1.5 inline-flex items-center gap-1 rounded border border-rose-500/50 bg-rose-500/[0.15] px-2 py-0.5 font-mono text-[10px] font-bold text-rose-200 transition-colors hover:border-rose-400 hover:bg-rose-500/25"
+          >
+            <RotateCw className="h-2.5 w-2.5" aria-hidden />
+            重试
+          </button>
+        </div>
+      );
+    }
+
+    return <div key={this.state.retryNonce}>{this.props.children}</div>;
+  }
+}
+
+/**
+ * InvalidCardPayload —— Zod 校验失败时展示的「载荷不合法」降级卡（可查看与复制原始 JSON）。
+ */
+function InvalidCardPayload({
+  card,
+  issueSummary,
+}: {
+  readonly card: CopilotToolCard;
+  readonly issueSummary: string;
+}) {
+  const [showRawJson, setShowRawJson] = useState<boolean>(false);
+  const [copied, setCopied] = useState<boolean>(false);
+
+  const rawJson = useMemo((): string => {
+    try {
+      return JSON.stringify(card.args ?? null, null, 2);
+    } catch {
+      return String(card.args);
+    }
+  }, [card.args]);
+
+  const handleCopyJson = useCallback((): void => {
+    if (typeof navigator === 'undefined' || navigator.clipboard === undefined) return;
+    void navigator.clipboard.writeText(rawJson).then(
+      (): void => {
+        setCopied(true);
+        window.setTimeout((): void => setCopied(false), 1600);
+      },
+      (): void => {
+        /* 剪贴板权限受限时静默降级，用户仍可展开手动选择 */
+      },
+    );
+  }, [rawJson]);
+
+  return (
+    <div
+      role="alert"
+      data-card-state="invalid"
+      aria-label={`${card.toolName} 载荷不合法`}
+      className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2"
+    >
+      <p className="flex items-center gap-1.5 font-mono text-[11px] font-semibold text-amber-200">
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-400" aria-hidden />
+        <span>载荷不合法 · {card.toolName}</span>
+      </p>
+      <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-amber-200/80">
+        {issueSummary}
+      </p>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          onClick={handleCopyJson}
+          className="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/[0.12] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-200 transition-colors hover:border-amber-400 hover:bg-amber-500/20"
+        >
+          {copied ? <Check className="h-2.5 w-2.5 text-emerald-300" aria-hidden /> : <Copy className="h-2.5 w-2.5" aria-hidden />}
+          {copied ? '已复制原始 JSON' : '复制原始 JSON'}
+        </button>
+        <button
+          type="button"
+          onClick={(): void => setShowRawJson((prev): boolean => !prev)}
+          className="rounded border border-white/[0.08] bg-slate-900/60 px-1.5 py-0.5 font-mono text-[10px] text-slate-300 transition-colors hover:border-white/20 hover:text-slate-100"
+        >
+          {showRawJson ? '收起原始 JSON' : '查看原始 JSON'}
+        </button>
+      </div>
+      {showRawJson ? (
+        <pre className="mt-1.5 max-h-36 overflow-auto rounded border border-white/[0.06] bg-slate-950/75 p-1.5 font-mono text-[10px] leading-relaxed text-slate-300">
+          <code>{rawJson}</code>
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
+/* ========================================================================== */
 /* 子组件：单条工具卡片槽位                                                     */
 /* ========================================================================== */
 
 /**
- * ToolCardSlot —— 按工具调用状态渲染骨架屏或真实卡片。
- *
- * 【就地映射】骨架屏与结果卡占据同一个位置，result 到达后原地替换，
- * 用户看到的是"骨架 → 卡片"的连续过渡，而不是列表重排。
+ * ToolCardSlot —— 按工具调用状态与 Zod 运行时契约渲染骨架屏、真实卡片或降级卡。
+ * 使用 React.memo 避免正文增量更新时重复渲染已就绪的工具卡片。
  */
-function ToolCardSlot({
+const ToolCardSlot = memo(function ToolCardSlot({
   card,
   onActionExecuted,
 }: {
@@ -558,12 +797,19 @@ function ToolCardSlot({
   readonly onActionExecuted?: (targetId: string, actionType: string) => void;
 }) {
   if (card.state === 'skeleton') {
-    return <GenUISkeleton toolName={card.toolName} mcpUri={card.mcpUri} />;
+    return (
+      <div data-card-state="skeleton">
+        <GenUISkeleton toolName={card.toolName} mcpUri={card.mcpUri} />
+      </div>
+    );
   }
 
   if (card.state === 'error' || card.args === undefined) {
     return (
-      <div className="flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+      <div
+        data-card-state="error"
+        className="flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5"
+      >
         <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" aria-hidden />
         <span className="font-mono text-[12px] text-amber-300">
           {card.toolName} 返回的载荷无法渲染
@@ -573,9 +819,13 @@ function ToolCardSlot({
     );
   }
 
-  /* ---- 按工具名窄化载荷并挂载对应组件 ---- */
+  /* ---- Zod 校验窄化载荷并挂载对应组件（零 unsafe as 断言） ---- */
   if (isPodMetricsTool(card.toolName)) {
-    const args = card.args as PodMetricsCardProps;
+    const parsed = podMetricsCardSchema.safeParse(card.args);
+    if (!parsed.success) {
+      return <InvalidCardPayload card={card} issueSummary={formatSchemaIssues(parsed.error.issues)} />;
+    }
+    const args = parsed.data;
     return (
       <PodMetricsCard
         podId={args.podId}
@@ -591,7 +841,11 @@ function ToolCardSlot({
   }
 
   if (isRootCauseTool(card.toolName)) {
-    const args = card.args as RootCauseAlertProps;
+    const parsed = rootCauseAlertSchema.safeParse(card.args);
+    if (!parsed.success) {
+      return <InvalidCardPayload card={card} issueSummary={formatSchemaIssues(parsed.error.issues)} />;
+    }
+    const args = parsed.data;
     return (
       <RootCauseAlert
         severity={args.severity}
@@ -606,7 +860,11 @@ function ToolCardSlot({
   }
 
   if (isActionTool(card.toolName)) {
-    const args = card.args as ActionConfirmProps;
+    const parsed = actionConfirmPayloadSchema.safeParse(card.args);
+    if (!parsed.success) {
+      return <InvalidCardPayload card={card} issueSummary={formatSchemaIssues(parsed.error.issues)} />;
+    }
+    const args = parsed.data;
     return (
       <ActionConfirm
         actionType={args.actionType}
@@ -626,7 +884,7 @@ function ToolCardSlot({
       未知工具 {card.toolName}
     </div>
   );
-}
+});
 
 /* ========================================================================== */
 /* 子组件：主动异常嗅探横幅                                                     */
@@ -735,16 +993,17 @@ function ProactiveAnomalyBanner({
 
 /**
  * MessageBubble —— 单条消息渲染（用户气泡 / AI 复合卡片）。
+ * 使用 React.memo 隔离流式追加时的历史消息重渲染（确保 historyBubbleCommits === 0）。
  *
- * 【AI 消息结构】思考链（可折叠）→ 正文 Markdown 文本 → 工具卡片列表。
- * 顺序刻意如此：先让用户看到"AI 是怎么想的"，再给结论，最后给可交互卡片。
+ * 【AI 消息结构】轮换复位提示（可选）→ 思考链（可折叠 + 独立错误边界）→ 正文 Markdown → 工具卡片列表（独立错误边界）。
  */
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
   onRetry,
   onActionExecuted,
   isSpeaking,
   onToggleSpeak,
+  onCommitted,
 }: {
   readonly message: CopilotMessage;
   readonly onRetry?: (messageId: string, prompt: string) => void;
@@ -753,36 +1012,35 @@ function MessageBubble({
   readonly isSpeaking?: boolean;
   /** 切换本消息的朗读/停止 */
   readonly onToggleSpeak?: (message: CopilotMessage) => void;
+  /** dev/debug 性能观测：每次 React 提交该气泡后记录 */
+  readonly onCommitted?: (messageId: string, isStreamingMsg: boolean) => void;
 }) {
+  useLayoutEffect((): void => {
+    onCommitted?.(message.id, message.isStreaming);
+  });
+
   /**
    * 从本消息的根因卡推导 RAG 信号拆解，供思考链的检索步骤内联展示。
-   *
-   * 【必须放在所有 return 之前】本组件对 user / verification / assistant
-   * 三类消息有各自的分支 return。若把 useMemo 写在中间某个 return 之后，
-   * 后两类消息就会跳过这次 Hook 调用，导致同一次渲染中 Hook 数量不一致——
-   * React 会直接抛 "Rendered more hooks than during the previous render"。
-   * 抽到顶部是唯一正确的做法（ESLint react-hooks/rules-of-hooks 会检查这条）。
-   *
-   * 【非 assistant 消息的处理】user / verification 消息没有 toolCards，
-   * find 自然返回 undefined，这里返回 null，不产生任何额外开销。
+   * 使用 rootCauseAlertSchema.safeParse 取代危险的 as 断言。
    */
   const reasoningRagBreakdown = useMemo((): RagSignalBreakdown | null => {
     const rootCard = message.toolCards.find(
       (card): boolean =>
         card.state === 'ready' &&
-        card.toolName === 'renderRootCauseAnalysis' &&
+        isRootCauseTool(card.toolName) &&
         card.args !== undefined,
     );
     if (rootCard?.args === undefined) return null;
-    const props = rootCard.args as RootCauseAlertProps;
-    const breakdown = buildRagSignalBreakdown(props.ragReferences);
+    const parsed = rootCauseAlertSchema.safeParse(rootCard.args);
+    if (!parsed.success) return null;
+    const breakdown = buildRagSignalBreakdown(parsed.data.ragReferences);
     return breakdown.available ? breakdown : null;
   }, [message.toolCards]);
 
   /* ---- 用户消息：右侧对齐气泡 + 已发送的视口缩略图 ---- */
   if (message.role === 'user') {
     return (
-      <div className="flex flex-col items-end gap-1">
+      <div className="flex min-w-0 max-w-full flex-col items-end gap-1">
         {message.viewportSnapshot !== undefined ? (
           <div className="overflow-hidden rounded-md border border-cyan-500/40 bg-slate-900/60">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -796,8 +1054,11 @@ function MessageBubble({
             </p>
           </div>
         ) : null}
-        <div data-copilot-msg="user" className="max-w-[85%] rounded-lg rounded-br-sm border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5">
-          <p className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-cyan-50">
+        <div
+          data-copilot-msg="user"
+          className="min-w-0 max-w-[85%] overflow-x-hidden rounded-lg rounded-br-sm border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5"
+        >
+          <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-[11px] leading-relaxed text-cyan-50">
             {message.text}
           </p>
         </div>
@@ -808,9 +1069,12 @@ function MessageBubble({
   /* ---- 自愈验证摘要：绿色系统级回执，与 AI 回答明确区分 ---- */
   if (message.isVerification === true) {
     return (
-      <div data-copilot-msg="verification" className="flex items-start gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-2 shadow-glow-emerald">
+      <div
+        data-copilot-msg="verification"
+        className="flex min-w-0 max-w-full items-start gap-1.5 overflow-x-hidden rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-2 shadow-glow-emerald"
+      >
         <CheckCircle2 className="mt-[1px] h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden />
-        <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-caption leading-relaxed text-emerald-100">
+        <p className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-caption leading-relaxed text-emerald-100">
           {/* 行内富文本：回执里的目标名与 MCP 端点用反引号包裹，渲染为代码胶囊 */}
           <InlineMarkdown text={message.text} />
         </p>
@@ -818,42 +1082,46 @@ function MessageBubble({
     );
   }
 
-  /* ---- AI 消息：思考链 + 正文 + 卡片 ---- */
+  /* ---- AI 消息：复位提示 + 思考链 + 正文 + 卡片 ---- */
   return (
-    <div data-copilot-msg="assistant" className="flex flex-col gap-1.5">
-      {/* 思考链（流式过程中实时追加，默认折叠） */}
-      {message.reasoningSteps.length > 0 ? (
-        <AgentThoughtChain
-          steps={message.reasoningSteps}
-          isStreaming={message.isStreaming && message.text.length === 0}
-          ragBreakdown={reasoningRagBreakdown}
-        />
+    <div data-copilot-msg="assistant" className="flex min-w-0 max-w-full flex-col gap-1.5">
+      {/* R10-B：引擎中断/校验降级轮换横幅（独立于回答正文，不污染 Markdown） */}
+      {message.resetNotice !== undefined && message.resetNotice.length > 0 ? (
+        <div
+          role="status"
+          data-reset-notice="true"
+          className="flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 font-mono text-[10px] leading-snug text-amber-200"
+        >
+          <AlertTriangle className="h-3 w-3 shrink-0 text-amber-300" aria-hidden />
+          <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">
+            {message.resetNotice}
+          </span>
+        </div>
       ) : null}
 
-      {/* 正文：经 MarkdownLite 渲染（此前直接输出纯文本，会裸露 ## / ** 等语法） */}
+      {/* 思考链（流式过程中实时追加，默认折叠；包裹独立错误边界） */}
+      {message.reasoningSteps.length > 0 ? (
+        <CardErrorBoundary cardLabel="AI 思考与规划过程">
+          <AgentThoughtChain
+            steps={message.reasoningSteps}
+            isStreaming={message.isStreaming && message.text.length === 0}
+            ragBreakdown={reasoningRagBreakdown}
+          />
+        </CardErrorBoundary>
+      ) : null}
+
+      {/* 正文：经 MarkdownLite 渲染 */}
       {message.text.length > 0 ? (
-        <div className="rounded-lg rounded-bl-sm border border-white/[0.07] bg-slate-900/60 px-2.5 py-2">
+        <div className="min-w-0 max-w-full overflow-x-hidden break-words [overflow-wrap:anywhere] rounded-lg rounded-bl-sm border border-white/[0.07] bg-slate-900/60 px-2.5 py-2">
           <MarkdownLite markdown={message.text} isStreaming={message.isStreaming} />
         </div>
       ) : null}
 
-      {/* 工具卡片列表 */}
+      {/* 工具卡片列表（每张卡独立 ErrorBoundary 隔离） */}
       {message.toolCards.length > 0 ? (
-        <div className="flex flex-col gap-1.5">
-          {/*
-           * 【①②③ 编号导轨】（蓝图 §1.9）
-           *
-           * 图二把 Agent 的三张卡片标注为 ①→②→③ 的流水线顺序，
-           * 让评委一眼看懂"这不是三张随机卡片，而是一条诊断链路"：
-           * ① 采集指标 → ② 定位根因 → ③ 提出并执行自愈。
-           *
-           * 实现方式：在卡片左侧画一条竖直导轨，每个卡片前置一个圆形序号徽标，
-           * 徽标之间有连贯的竖线——视觉上形成"流程"而非"列表"。
-           * 序号用中文数字（一二三）而非 ①②③，因为 ①②③ 在某些
-           * 等宽字体下渲染为方框，中文数字跨平台更稳。
-           */}
+        <div className="flex min-w-0 max-w-full flex-col gap-1.5">
           {message.toolCards.map((card, cardIndex) => (
-            <div key={card.toolCallId} className="relative flex gap-2">
+            <div key={card.toolCallId} className="relative flex min-w-0 max-w-full gap-2">
               {/* ---- 左侧导轨：序号徽标 + 连接线 ---- */}
               <div className="flex shrink-0 flex-col items-center">
                 <span
@@ -862,21 +1130,12 @@ function MessageBubble({
                 >
                   {cardIndex + 1}
                 </span>
-                {/* 连接线：最后一个卡片不画，避免悬空断线 */}
                 {cardIndex < message.toolCards.length - 1 ? (
                   <span className="mt-0.5 w-px flex-1 bg-gradient-to-b from-cyan-500/40 to-cyan-500/10" aria-hidden />
                 ) : null}
               </div>
-              {/* ---- 右侧：卡片本体 + 补全角标 ---- */}
+              {/* ---- 右侧：卡片本体 + 补全角标 + 独立错误边界 ---- */}
               <div className="min-w-0 flex-1">
-                {/*
-                 * 【服务端补全角标】（诚实标注契约）
-                 *
-                 * 模型本次没有调用该工具（实测有 40%~50% 概率漏调），
-                 * 卡片由路由层用真实集群数据补齐。此处显式标注来源，
-                 * 让用户与评测者能区分「模型推断」与「服务端按规则拼装」——
-                 * 不做标注就等于把兜底伪装成模型能力。
-                 */}
                 {card.synthesized === true ? (
                   <span
                     className="mb-1 inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] tracking-wider text-amber-300/90"
@@ -886,23 +1145,16 @@ function MessageBubble({
                     服务端补全 · 真实数据
                   </span>
                 ) : null}
-                <ToolCardSlot card={card} onActionExecuted={onActionExecuted} />
+                <CardErrorBoundary cardLabel={card.toolName}>
+                  <ToolCardSlot card={card} onActionExecuted={onActionExecuted} />
+                </CardErrorBoundary>
               </div>
             </div>
           ))}
         </div>
       ) : null}
 
-      {/*
-        * ---- 单条消息朗读按钮 ----
-        *
-        * 【为何每条消息都要有】旧实现只能靠右上角的全局开关控制播报，
-        * 用户回看历史消息时无法单独重听某一条诊断结论——而"重听结论"
-        * 恰恰是语音在运维场景里最有价值的用法（值班时边做事边听）。
-        *
-        * 【为何只在流结束后显示】流式生成中正文还在增长，
-        * 此时朗读只会念到半句话。等整轮结束再允许朗读，语义完整。
-        */}
+      {/* ---- 单条消息朗读按钮 ---- */}
       {!message.isStreaming && message.text.trim().length > 0 && onToggleSpeak !== undefined ? (
         <div className="flex items-center gap-1.5">
           <button
@@ -918,7 +1170,6 @@ function MessageBubble({
                 : 'border-white/[0.04] bg-slate-800/40 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
             )}
           >
-            {/* 朗读中：跳动的声波条；静止：喇叭图标 */}
             {isSpeaking === true ? (
               <>
                 <span className="flex h-2.5 items-end gap-[1.5px]" aria-hidden>
@@ -948,15 +1199,11 @@ function MessageBubble({
       {/* 引擎来源标注（诚实标注，仅在流结束后显示） */}
       {!message.isStreaming && message.engine !== undefined ? (
         <p className="font-mono text-[10px] uppercase tracking-wider text-slate-500">
-            推理引擎 · {message.engine === 'llm' ? '云端大模型' : '本地确定性容灾引擎'}
+          推理引擎 · {message.engine === 'llm' ? '云端大模型' : '本地确定性容灾引擎'}
         </p>
       ) : null}
 
-      {/* ---- 失败降级提示框（带一键重试） ---- *
-       * 【设计意图】流中断是最伤体验的失败：用户已经看到思考链在动、
-       * 可能已读了一半正文，然后戛然而止。此处不用刺眼的红色错误块，
-       * 而是一个克制的琥珀色提示 + 明确的「一键重试」——
-       * 让用户知道"发生了什么"且"下一步只需点一下"，而不是陷入困惑。 */}
+      {/* ---- 失败降级提示框（带一键重试） ---- */}
       {message.failed === true && !message.isStreaming ? (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/[0.08] p-2">
           <p className="flex items-start gap-1 text-[10px] leading-relaxed text-amber-200">
@@ -978,11 +1225,6 @@ function MessageBubble({
             type="button"
             onClick={(): void => {
               if (onRetry !== undefined && message.failedPrompt !== undefined) {
-                /*
-                 * 【断网恢复后"继续生成"】网络/服务端中断时，已产出内容仍在页面上。
-                 * 这里在重试 prompt 末尾追加续写指令，模型会从断点继续而不是重头再来；
-                 * 其他错误（工具参数等）仍是标准重试。
-                 */
                 const resumable = message.errorCategory === 'network' || message.errorCategory === 'server';
                 onRetry(
                   message.id,
@@ -1002,10 +1244,7 @@ function MessageBubble({
         </div>
       ) : null}
 
-      {/* ---- R2 · 收尾不完整提示（未收到 done）：气泡底部「回答可能不完整」+ 重新生成 ----
-        * 【设计意图】连接在收到完成标记前被截断时，不冒充正常结束，也不当成硬错误：
-        * 用克制的中性色提示"内容可能不全"，并给一个明确的「重新生成」动作。
-        * 已生成的内容保留，用户可一眼判断要不要重来。 */}
+      {/* ---- R2 · 收尾不完整提示（未收到 done）：气泡底部「回答可能不完整」+ 重新生成 ---- */}
       {message.incomplete === true && !message.isStreaming ? (
         <div className="rounded-md border border-slate-500/40 bg-slate-500/[0.08] p-2">
           <p className="flex items-start gap-1 text-[10px] leading-relaxed text-slate-300">
@@ -1028,7 +1267,279 @@ function MessageBubble({
       ) : null}
     </div>
   );
+});
+
+/* ========================================================================== */
+/* 手动窗口虚拟化布局引擎（R9-D：>30 条历史消息仅挂在视口 ±5 条，流式尾部常驻） */
+/* ========================================================================== */
+
+interface VirtualItemPosition {
+  readonly top: number;
+  readonly height: number;
 }
+
+interface VirtualLayout {
+  readonly items: readonly VirtualItemPosition[];
+  readonly totalHeight: number;
+}
+
+interface VirtualRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * computeVirtualLayout —— 计算虚拟列表每条历史消息的累计纵向偏移与总高度。
+ *
+ * 【输入输出】接收待虚拟化消息切片、实测高度 Map 与是否存在常驻流式尾气泡，
+ * 返回每个索引对应的 `{ top, height }` 前缀数组及总高度，供二分视口切片使用。
+ */
+function computeVirtualLayout(
+  items: readonly CopilotMessage[],
+  measuredHeights: ReadonlyMap<string, number>,
+  hasPinnedTail: boolean,
+): VirtualLayout {
+  const positions: VirtualItemPosition[] = [];
+  let top = 0;
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (item === undefined) continue;
+    const measured = measuredHeights.get(item.id);
+    const height = measured !== undefined && measured > 0 ? measured : VIRTUAL_DEFAULT_BUBBLE_HEIGHT;
+    positions.push({ top, height });
+    const hasGapAfter = i < items.length - 1 || hasPinnedTail;
+    top += height + (hasGapAfter ? VIRTUAL_ITEM_GAP_PX : 0);
+  }
+  return { items: positions, totalHeight: top };
+}
+
+/**
+ * computeVirtualRange —— 根据当前 scrollTop 与视口高度计算可见区间 ±5 超扫窗口。
+ *
+ * 【核心逻辑】先通过二分查找定位首个下边缘进入视口的气泡，再向后推进至可视底部，
+ * 上下各扩展 VIRTUAL_OVERSCAN（5 条），并在超密集短卡场景下收敛外层超扫以满足
+ * mountedMsgDomCount <= 15 的内存与节点上限。
+ */
+function computeVirtualRange(
+  layout: VirtualLayout,
+  scrollTop: number,
+  viewportHeight: number,
+  maxRenderedTarget: number,
+): VirtualRange {
+  const len = layout.items.length;
+  if (len === 0) return { start: 0, end: 0 };
+
+  const safeScrollTop = Math.max(0, scrollTop);
+  const safeViewport = Math.max(viewportHeight, VIRTUAL_DEFAULT_BUBBLE_HEIGHT);
+  const viewBottom = safeScrollTop + safeViewport;
+
+  let low = 0;
+  let high = len - 1;
+  let firstVisible = len - 1;
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    const entry = layout.items[mid];
+    if (entry !== undefined && entry.top + entry.height > safeScrollTop) {
+      firstVisible = mid;
+      high = mid - 1;
+    } else {
+      low = mid + 1;
+    }
+  }
+
+  let lastVisible = firstVisible;
+  while (lastVisible < len - 1) {
+    const nextEntry = layout.items[lastVisible + 1];
+    if (nextEntry === undefined || nextEntry.top >= viewBottom) break;
+    lastVisible += 1;
+  }
+
+  let start = Math.max(0, firstVisible - VIRTUAL_OVERSCAN);
+  let end = Math.min(len, lastVisible + 1 + VIRTUAL_OVERSCAN);
+
+  if (end - start > maxRenderedTarget) {
+    let excess = end - start - maxRenderedTarget;
+    const trimBelow = Math.min(excess, Math.max(0, end - (lastVisible + 1)));
+    end -= trimBelow;
+    excess -= trimBelow;
+    if (excess > 0) {
+      const trimAbove = Math.min(excess, Math.max(0, firstVisible - start));
+      start += trimAbove;
+    }
+  }
+
+  return { start, end };
+}
+
+/**
+ * stabilizeBottomStickyRange —— 在贴底自动跟随状态下保持虚拟切片上界单调，防止尾气泡高度变化或收尾交接引发旧气泡回弹重挂。
+ *
+ * 【设计意图】当活跃流式尾气泡持续增高使滚动位置下移、或流结束（`done`）从 `pinnedTailMessage` 并入 `virtualPool` 时，
+ * 若朴素 `computeVirtualRange` 在高度微调后把 `start` 向回拉退，会导致已离开渲染窗的历史气泡重新挂载提交。
+ * 只要仍处于贴底模式（`stickToBottom === true`），在 `maxRendered` 节点预算范围内单调钳制 `start >= prevRange.start`。
+ *
+ * @param prevRange 上一帧虚拟切片区间
+ * @param nextRange 当前位置计算出的目标切片区间
+ * @param stickToBottom 当前是否处于自动贴底跟随状态
+ * @param maxRendered 虚拟池允许挂载的最大节点数
+ * @returns 经过上界单调稳定后的虚拟区间
+ */
+function stabilizeBottomStickyRange(
+  prevRange: VirtualRange,
+  nextRange: VirtualRange,
+  stickToBottom: boolean,
+  maxRendered: number,
+): VirtualRange {
+  if (!stickToBottom) return nextRange;
+  if (prevRange.end <= prevRange.start) return nextRange;
+  const minAllowedStart = Math.max(
+    nextRange.start,
+    prevRange.start,
+    nextRange.end - maxRendered,
+  );
+  return {
+    start: Math.min(minAllowedStart, nextRange.end),
+    end: nextRange.end,
+  };
+}
+
+/**
+ * VirtualMessageItem —— 虚拟列表单条历史消息定位包装器。
+ * 使用 translate3d 偏移定位，避免修改 top 触发重排，并通过 memo 隔离非变动历史条目的重渲染。
+ */
+const VirtualMessageItem = memo(function VirtualMessageItem({
+  message,
+  top,
+  isSpeaking,
+  onRetry,
+  onActionExecuted,
+  onToggleSpeak,
+  onCommitted,
+  onMeasureNode,
+}: {
+  readonly message: CopilotMessage;
+  readonly top: number;
+  readonly isSpeaking: boolean;
+  readonly onRetry?: (messageId: string, prompt: string) => void;
+  readonly onActionExecuted?: (targetId: string, actionType: string) => void;
+  readonly onToggleSpeak?: (message: CopilotMessage) => void;
+  readonly onCommitted?: (messageId: string, isStreamingMsg: boolean) => void;
+  readonly onMeasureNode: (messageId: string, node: HTMLDivElement | null) => void;
+}) {
+  const setContainerRef = useCallback(
+    (node: HTMLDivElement | null): void => {
+      onMeasureNode(message.id, node);
+    },
+    [message.id, onMeasureNode],
+  );
+  const itemStyle = useMemo(
+    (): {
+      readonly position: 'absolute';
+      readonly top: 0;
+      readonly left: 0;
+      readonly width: '100%';
+      readonly maxWidth: '100%';
+      readonly transform: string;
+    } => ({
+      position: 'absolute' as const,
+      top: 0,
+      left: 0,
+      width: '100%',
+      maxWidth: '100%',
+      transform: `translate3d(0, ${top}px, 0)`,
+    }),
+    [top],
+  );
+
+  return (
+    <div
+      ref={setContainerRef}
+      style={itemStyle}
+      className="min-w-0 max-w-full overflow-x-hidden"
+      data-virtual-msg-id={message.id}
+    >
+      <MessageBubble
+        message={message}
+        onRetry={onRetry}
+        onActionExecuted={onActionExecuted}
+        isSpeaking={isSpeaking}
+        onToggleSpeak={onToggleSpeak}
+        onCommitted={onCommitted}
+      />
+    </div>
+  );
+});
+
+/**
+ * PinnedTailItem —— 活跃流式尾气泡测量包装器。
+ *
+ * 【设计意图】正在流式输出的最后一条消息常驻在虚拟池末尾之外（免受窗口截断），但流结束（`done`）时
+ * 它会并入 `virtualPool`。若未预先记录其真实高度，进入 `virtualPool` 的首帧将按 132px 默认值占位，
+ * 导致 `totalHeight` 与 `scrollTop` 瞬间大幅回落并牵动虚拟窗口重新挂载历史气泡。
+ * 本组件通过 `useLayoutEffect` 与局部 `ResizeObserver` 仅更新 `measuredHeightsRef` 缓存而不触发 React 重渲染。
+ */
+const PinnedTailItem = memo(function PinnedTailItem({
+  message,
+  isSpeaking,
+  onRetry,
+  onActionExecuted,
+  onToggleSpeak,
+  onCommitted,
+  onRecordTailHeight,
+}: {
+  readonly message: CopilotMessage;
+  readonly isSpeaking: boolean;
+  readonly onRetry?: (messageId: string, prompt: string) => void;
+  readonly onActionExecuted?: (targetId: string, actionType: string) => void;
+  readonly onToggleSpeak?: (message: CopilotMessage) => void;
+  readonly onCommitted?: (messageId: string, isStreamingMsg: boolean) => void;
+  readonly onRecordTailHeight: (messageId: string, height: number) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect((): void => {
+    const node = containerRef.current;
+    if (node === null) return;
+    const height = node.getBoundingClientRect().height;
+    if (Number.isFinite(height) && height > 0) {
+      onRecordTailHeight(message.id, height);
+    }
+  }, [message, onRecordTailHeight]);
+
+  useEffect((): (() => void) | void => {
+    const node = containerRef.current;
+    if (node === null || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries): void => {
+      for (const entry of entries) {
+        const nextHeight = entry.contentRect.height;
+        if (Number.isFinite(nextHeight) && nextHeight > 0) {
+          onRecordTailHeight(message.id, nextHeight);
+        }
+      }
+    });
+    observer.observe(node);
+    return (): void => {
+      observer.disconnect();
+    };
+  }, [message.id, onRecordTailHeight]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="min-w-0 max-w-full overflow-x-hidden"
+      data-pinned-tail-id={message.id}
+    >
+      <MessageBubble
+        message={message}
+        onRetry={onRetry}
+        onActionExecuted={onActionExecuted}
+        isSpeaking={isSpeaking}
+        onToggleSpeak={onToggleSpeak}
+        onCommitted={onCommitted}
+      />
+    </div>
+  );
+});
 
 /* ========================================================================== */
 /* 主组件                                                                      */
@@ -1048,11 +1559,6 @@ export default function CopilotDrawer() {
 
   /**
    * selectedContextLabel —— 当前选中实体的可读上下文标签。
-   *
-   * 【为什么要做这一层】用户的提问常常是"它为什么挂了"——一个"它"字
-   * 承载了全部语义。若模型不知道当前选中的是哪个对象，任何诊断都只能泛泛而谈。
-   * 这枚标签把**隐性上下文显性化**：用户能确认模型将看到什么，
-   * 也能一眼发现自己是不是选错了对象。
    *
    * 【为何用 getState() 而非再订阅 nodes/pods】
    * 这两个数组是大对象，订阅它们会让抽屉在每次 1Hz 快照时重渲染。
@@ -1086,37 +1592,24 @@ export default function CopilotDrawer() {
   const [messages, setMessages] = useState<readonly CopilotMessage[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
-  /**
-   * 浏览器是否支持语音识别（C3：不支持的浏览器要给出可操作提示）。
-   *
-   * 【为何用 state 而非直接读 window】服务端渲染时 window 不存在，
-   * 直接在渲染体里读取会造成 hydration 不一致（服务端 true、客户端 false）。
-   */
+  /** 浏览器是否支持语音识别 */
   const [speechAsrSupported, setSpeechAsrSupported] = useState<boolean>(true);
-  /** RAG 知识库弹窗开关（低频 UI 态，允许 useState） */
-  const [ragModalOpen, setRagModalOpen] = useState<boolean>(false);
+  /** 底部语音说明默认收起为 1 行，点击详情按钮可展开完整提示 */
+  const [speechHintExpanded, setSpeechHintExpanded] = useState<boolean>(false);
+  /** 全局互斥模态框槽位 */
+  const activeModal = useClusterStore((s) => s.activeModal);
+  const openModal = useClusterStore((s) => s.openModal);
+  const closeModal = useClusterStore((s) => s.closeModal);
+  const ragModalOpen = activeModal === 'rag';
+  const [snapshotPreviewOpen, setSnapshotPreviewOpen] = useState<boolean>(false);
+  const postMortemOpen = activeModal === 'postMortem';
 
-  /* ---- 复盘报告：弹窗开关 + 已生成的 Markdown 与文件名 ---- */
-  const [postMortemOpen, setPostMortemOpen] = useState<boolean>(false);
+  /* ---- 复盘报告：已生成的 Markdown 与文件名 ---- */
   const [postMortemMarkdown, setPostMortemMarkdown] = useState<string>('');
   const [postMortemFilename, setPostMortemFilename] = useState<string>('');
 
-  /**
-   * 会话起点时刻。
-   *
-   * 【为何用 ref 存而非 state】它只在首次挂载时确定一次、之后永不变化，
-   * 放进 state 会引入无意义的渲染依赖。用 ref 惰性初始化，
-   * 保证复盘时间线的基准点稳定。
-   */
   const sessionStartedAtRef = useRef<number>(Date.now());
 
-  /**
-   * 是否有可复盘的内容。
-   *
-   * 【判定口径】至少产出一张 ready 态卡片才算。仅有聊天文字不构成
-   * 可复盘的事故——没有指标、根因或动作，导出的报告只剩空章节，
-   * 与其让用户下载一份无内容的文件，不如在源头上就不提供入口。
-   */
   const hasReplayableContent = useMemo(
     (): boolean =>
       messages.some((message): boolean =>
@@ -1126,87 +1619,308 @@ export default function CopilotDrawer() {
   );
 
   const [ttsEnabled, setTtsEnabled] = useState<boolean>(false);
-  /** 用户是否已关闭主动异常横幅（关闭后本轮会话不再打扰） */
+  /** 用户是否已关闭主动异常横幅 */
   const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
   /** 输入安全校验的即时错误提示 */
   const [inputGuardError, setInputGuardError] = useState<string | null>(null);
-  /** 提示注入等"放行但警告"的提示（区别于阻断性错误） */
+  /** 提示注入等"放行但警告"的提示 */
   const [guardWarning, setGuardWarning] = useState<string | null>(null);
   /** 用户是否已向上滚离底部（驱动「回到最新诊断」胶囊显隐） */
   const [isAwayFromBottom, setIsAwayFromBottom] = useState<boolean>(false);
-  /**
-   * 底部「快捷指令」折叠入口的展开状态。
-   *
-   * 【默认折叠】已有对话时，快捷指令只是"偶尔想用"的辅助入口，
-   * 默认收起以把高度全部让给消息流；空状态则由 2×2 卡片承担，
-   * 根本不渲染这个入口（见输入区 JSX）。
-   */
+  /** 底部「快捷指令」折叠入口的展开状态 */
   const [isQuickPromptsOpen, setQuickPromptsOpen] = useState<boolean>(false);
 
   /* ---- Refs ---- */
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const scrollContentRef = useRef<HTMLDivElement | null>(null);
+  const lastScrollTopRef = useRef<number>(0);
+  const programmaticJumpUntilRef = useRef<number>(0);
+  const programmaticJumpTimerRef = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-
-  /**
-   * 骨架屏看门狗定时器（toolCallId → timer）。
-   *
-   * 【解决什么】服务端保证 start/result 配对，但网络中断、代理截断、
-   * 服务端异常退出都可能让某张卡收不到 result。旧实现只在"整条流结束"时
-   * 兜底清理——若流一直不结束（长连接挂住），骨架屏就永久转圈。
-   * 现在每张骨架屏独立计时 8 秒：超时即转"生成失败，点击重试"。
-   */
+  const isMountedRef = useRef<boolean>(true);
   const skeletonWatchdogRef = useRef<Map<string, number>>(new Map());
-
-  /**
-   * 排队中的 prompt —— FIFO 数组（R2，替代旧的单槽覆盖）。
-   *
-   * 【解决什么】流式期间用户点"快照诊断"等操作会调用 sendMessage，
-   * 旧实现直接 return（丢弃）或单槽覆盖（连发丢第一条）。现在用跨会话共享的
-   * FIFO 队列：enqueue 追加尾部，每次流收尾 shift 出队首发送，连发不丢上下文。
-   */
   const promptQueueRef = useRef<PromptQueue>(createPromptQueue());
-  /**
-   * 当前活跃流式会话（R2）。
-   *
-   * 【为什么用 ref】卸载 / 全局中止（copilotAbortToken）时需要拿到正在跑的会话
-   * 做幂等收尾（清看门狗 + 复位 isStreaming/copilotStreaming），避免状态悬空。
-   */
   const activeSessionRef = useRef<ChatStreamSession | null>(null);
-  /**
-   * sendMessage 的最新引用（A5 排队重发用）。
-   *
-   * 【为什么用 ref】finalize 在流结束的闭包里执行，此时直接递归调用
-   * sendMessage 会命中旧的闭包（messages 为空），排队的请求会丢上下文。
-   * 用 ref 指向最新一次渲染的 sendMessage 实例，保证重发用的是最新状态。
-   */
   const sendMessageRef = useRef<((prompt: string) => void) | null>(null);
   const [queuedPromptNotice, setQueuedPromptNotice] = useState<string | null>(null);
-
-  /**
-   * TTS 播报请求（A6）。
-   *
-   * 【解决什么】旧实现把 speakMessage 写在 setMessages 的 updater 里，
-   * React StrictMode 会双调用 updater，导致同一段文本播两遍。
-   * 现在 updater 保持纯函数，播报请求走 ref + state，由 effect 执行。
-   */
   const [speechRequest, setSpeechRequest] = useState<{ readonly messageId: string; readonly nonce: number } | null>(null);
 
+  /* ---- 性能调试指标与回调稳定化引用（R9-A / R9-B） ---- */
+  const activeAssistantIdRef = useRef<string | null>(null);
+  const turnUserMessageIdsRef = useRef<Set<string>>(new Set());
+  const turnAssistantMessageIdsRef = useRef<Set<string>>(new Set());
+  const streamPerfStatsRef = useRef<{
+    totalBubbleCommits: number;
+    historyBubbleCommits: number;
+    activeBubbleCommits: number;
+    userBubbleCommits: number;
+    drawerCommits: number;
+    rafFlushes: number;
+    perMessageCommits: Record<string, number>;
+  }>({
+    totalBubbleCommits: 0,
+    historyBubbleCommits: 0,
+    activeBubbleCommits: 0,
+    userBubbleCommits: 0,
+    drawerCommits: 0,
+    rafFlushes: 0,
+    perMessageCommits: {},
+  });
+
+  const messagesRef = useRef<readonly CopilotMessage[]>(messages);
+  const isStreamingRef = useRef<boolean>(isStreaming);
+  const ttsEnabledRef = useRef<boolean>(ttsEnabled);
+  const capturedViewportRef = useRef<string | null>(capturedViewportDataUrl);
+
+  /* ---- 文本流 rAF 合批缓冲 refs（R9-A） ---- */
+  const textBufRef = useRef<Map<string, string>>(new Map());
+  const rafIdRef = useRef<number | null>(null);
+  const gapTimerRef = useRef<number | null>(null);
+  const lastDeltaAtRef = useRef<Map<string, number>>(new Map());
+  const lastCommitAtRef = useRef<number>(0);
+
+  /* ---- 虚拟化窗口状态与布局测量 refs（R9-D） ---- */
+  const measuredHeightsRef = useRef<Map<string, number>>(new Map());
+  const itemResizeObserverRef = useRef<ResizeObserver | null>(null);
+  const observedElementToIdRef = useRef<WeakMap<Element, string>>(new WeakMap());
+  const idToObservedElementRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [measureVersion, setMeasureVersion] = useState<number>(0);
+  const [virtualRange, setVirtualRange] = useState<VirtualRange>({ start: 0, end: 0 });
+  const virtualRangeRef = useRef<VirtualRange>({ start: 0, end: 0 });
+  const virtualizedRef = useRef<boolean>(false);
+  const hasPinnedTailRef = useRef<boolean>(false);
+  const virtualLayoutRef = useRef<VirtualLayout>({ items: [], totalHeight: 0 });
+  const prevVirtualPoolRef = useRef<readonly CopilotMessage[]>([]);
+
+  const virtualized = messages.length > VIRTUALIZE_THRESHOLD;
+  const hasPinnedTail =
+    virtualized &&
+    messages.length > 0 &&
+    messages[messages.length - 1]?.isStreaming === true;
+  const virtualPool = useMemo((): readonly CopilotMessage[] => {
+    if (!virtualized) {
+      if (prevVirtualPoolRef.current.length === 0) return prevVirtualPoolRef.current;
+      prevVirtualPoolRef.current = [];
+      return prevVirtualPoolRef.current;
+    }
+    const targetLen = hasPinnedTail ? messages.length - 1 : messages.length;
+    const prev = prevVirtualPoolRef.current;
+    if (prev.length === targetLen) {
+      let unchanged = true;
+      for (let i = 0; i < targetLen; i += 1) {
+        if (prev[i] !== messages[i]) {
+          unchanged = false;
+          break;
+        }
+      }
+      if (unchanged) return prev;
+    }
+    const next = hasPinnedTail ? messages.slice(0, -1) : messages;
+    prevVirtualPoolRef.current = next;
+    return next;
+  }, [hasPinnedTail, messages, virtualized]);
+  const pinnedTailMessage =
+    virtualized && hasPinnedTail ? (messages[messages.length - 1] ?? null) : null;
+  const virtualLayout = useMemo((): VirtualLayout => {
+    if (measureVersion < 0) return { items: [], totalHeight: 0 };
+    return virtualized
+      ? computeVirtualLayout(virtualPool, measuredHeightsRef.current, hasPinnedTail)
+      : { items: [], totalHeight: 0 };
+  }, [hasPinnedTail, measureVersion, virtualPool, virtualized]);
+  // 始终为虚拟池预留 1 个尾气泡槽位（流式固定尾与并入虚拟池阶段保持上限恒定，避免 done 时刻 14→15 放大引发旧气泡回挂）
+  const maxVirtualRendered = VIRTUAL_MAX_RENDERED_TARGET - 1;
+  const effectiveVirtualRange =
+    virtualRange.end > virtualRange.start && virtualRange.end <= virtualPool.length
+      ? virtualRange
+      : computeVirtualRange(
+          virtualLayout,
+          Number.MAX_SAFE_INTEGER,
+          VIRTUAL_DEFAULT_BUBBLE_HEIGHT * 4,
+          maxVirtualRendered,
+        );
+
+  useLayoutEffect((): void => {
+    virtualizedRef.current = virtualized;
+    hasPinnedTailRef.current = hasPinnedTail;
+    virtualLayoutRef.current = virtualLayout;
+    messagesRef.current = messages;
+    isStreamingRef.current = isStreaming;
+    ttsEnabledRef.current = ttsEnabled;
+    capturedViewportRef.current = capturedViewportDataUrl;
+  });
+
   /**
-   * 卸载清理：清空所有骨架屏看门狗。
+   * cancelStreamTimers —— 取消尚未触发的 rAF 帧回调与 100ms 停顿刷新定时器。
+   */
+  const cancelStreamTimers = useCallback((): void => {
+    if (rafIdRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+    if (gapTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(gapTimerRef.current);
+      gapTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * flushBufferedText —— 将 textBufRef 中累加的高频 text delta 一次性合批写入 messages。
    *
-   * 【为什么必须做】StrictMode 开发模式下组件会"挂载 → 卸载 → 再挂载"，
-   * 若首次挂载创建的 8 秒定时器不在卸载时清除，它们会在第二次挂载后
-   * 对着已失效的闭包执行 patchMessage —— 表现为无谓的状态更新与定时器累积。
-   * 这是 StrictMode 审计（docs/strictmode-audit.md）要求"卸载后零回调"的一部分。
+   * 【设计意图】通过单次 setMessages updater 合并整帧或多消息待提交正文，
+   * 将高频 SSE 分片下的 React 提交次数收敛至 60FPS 上限，并保障历史气泡零重渲染。
+   */
+  const flushBufferedText = useCallback(
+    (targetMessageId?: string, commitTimestamp?: number): void => {
+      if (!isMountedRef.current) {
+        textBufRef.current.clear();
+        lastDeltaAtRef.current.clear();
+        cancelStreamTimers();
+        return;
+      }
+      const pending: Array<readonly [string, string]> = [];
+      if (targetMessageId !== undefined) {
+        const chunk = textBufRef.current.get(targetMessageId);
+        if (chunk !== undefined && chunk.length > 0) {
+          pending.push([targetMessageId, chunk]);
+        }
+        textBufRef.current.delete(targetMessageId);
+        lastDeltaAtRef.current.delete(targetMessageId);
+      } else {
+        for (const [msgId, chunk] of textBufRef.current.entries()) {
+          if (chunk.length > 0) pending.push([msgId, chunk]);
+        }
+        textBufRef.current.clear();
+        lastDeltaAtRef.current.clear();
+      }
+
+      if (textBufRef.current.size === 0) {
+        cancelStreamTimers();
+      }
+      if (pending.length === 0) return;
+
+      lastCommitAtRef.current =
+        commitTimestamp ?? (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      streamPerfStatsRef.current.rafFlushes += 1;
+      setMessages((prev): readonly CopilotMessage[] => {
+        let changed = false;
+        const next = prev.map((message): CopilotMessage => {
+          const matched = pending.find(([id]): boolean => id === message.id);
+          if (matched === undefined) return message;
+          changed = true;
+          return mergeStreamState(message, appendText(message, matched[1]));
+        });
+        return changed ? next : prev;
+      });
+    },
+    [cancelStreamTimers],
+  );
+
+  /**
+   * scheduleBufferedFlush —— 调度下一帧 rAF 提交与 100ms 静默兜底刷新。
+   */
+  const scheduleBufferedFlush = useCallback((): void => {
+    if (!isMountedRef.current || typeof window === 'undefined') return;
+    if (gapTimerRef.current !== null) {
+      window.clearTimeout(gapTimerRef.current);
+    }
+    gapTimerRef.current = window.setTimeout((): void => {
+      gapTimerRef.current = null;
+      flushBufferedText();
+    }, STREAM_GAP_FLUSH_MS);
+
+    if (rafIdRef.current !== null || (typeof document !== 'undefined' && document.hidden)) {
+      return;
+    }
+    const tickFrame = (frameTs: number): void => {
+      rafIdRef.current = null;
+      if (!isMountedRef.current || textBufRef.current.size === 0) return;
+      const elapsed = frameTs - lastCommitAtRef.current;
+      if (elapsed >= STREAM_FRAME_COMMIT_MS - 1) {
+        flushBufferedText(undefined, frameTs);
+        return;
+      }
+      rafIdRef.current = window.requestAnimationFrame(tickFrame);
+    };
+    rafIdRef.current = window.requestAnimationFrame(tickFrame);
+  }, [flushBufferedText]);
+
+  /**
+   * enqueueTextDelta —— 将单个 text SSE 增量入队到 rAF 合批器。
+   * 首条增量或距上次增量超过 100ms 时立即提交以保持零额外 TTFT 延迟，连续分片走 rAF 合批。
+   */
+  const enqueueTextDelta = useCallback(
+    (messageId: string, delta: string): void => {
+      if (delta.length === 0 || !isMountedRef.current) return;
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const prevDeltaAt = lastDeltaAtRef.current.get(messageId) ?? 0;
+      lastDeltaAtRef.current.set(messageId, now);
+
+      const prevBuffered = textBufRef.current.get(messageId) ?? '';
+      textBufRef.current.set(messageId, prevBuffered + delta);
+
+      if (prevDeltaAt === 0 || now - prevDeltaAt > STREAM_GAP_FLUSH_MS) {
+        flushBufferedText(messageId, now);
+        lastDeltaAtRef.current.set(messageId, now);
+        return;
+      }
+      scheduleBufferedFlush();
+    },
+    [flushBufferedText, scheduleBufferedFlush],
+  );
+
+  /**
+   * takeBufferedText —— 在非 text 事件（工具卡/推理步/完成）到来前同步取出缓冲正文，
+   * 确保与当前事件在同一次 setMessages 原子合并，不引入额外渲染且严格保序。
+   */
+  const takeBufferedText = useCallback(
+    (messageId: string): string => {
+      const buffered = textBufRef.current.get(messageId) ?? '';
+      if (buffered.length > 0) {
+        textBufRef.current.delete(messageId);
+        lastDeltaAtRef.current.delete(messageId);
+      }
+      if (textBufRef.current.size === 0) {
+        cancelStreamTimers();
+      }
+      return buffered;
+    },
+    [cancelStreamTimers],
+  );
+
+  /**
+   * discardBufferedText —— 丢弃未提交的文本缓冲（轮换 reset / 清空会话 / 中止时调用）。
+   */
+  const discardBufferedText = useCallback(
+    (messageId?: string): void => {
+      if (messageId !== undefined) {
+        textBufRef.current.delete(messageId);
+        lastDeltaAtRef.current.delete(messageId);
+      } else {
+        textBufRef.current.clear();
+        lastDeltaAtRef.current.clear();
+      }
+      if (textBufRef.current.size === 0) {
+        cancelStreamTimers();
+      }
+    },
+    [cancelStreamTimers],
+  );
+
+  /**
+   * 卸载清理：标记卸载状态、取消 rAF/定时器、清空缓冲、中断在途流并销毁观察器。
    */
   useEffect((): (() => void) => {
+    isMountedRef.current = true;
     const watchdogs = skeletonWatchdogRef.current;
-    /* queue 引用恒定（createPromptQueue 只创建一次），在 effect 内捕获以避开
-     * react-hooks/exhaustive-deps 的 ref.current 变化告警。 */
     const queue = promptQueueRef.current;
+    const textBuf = textBufRef.current;
+    const deltaTimes = lastDeltaAtRef.current;
+    const observedMap = idToObservedElementRef.current;
     return (): void => {
-      /* 卸载即收尾：中止在途流 + 幂等 finalize（清看门狗、复位 streaming），
-       * 并清空排队队列，避免卸载后定时器回调 / 排队重发对着失效闭包执行。 */
+      isMountedRef.current = false;
+      cancelStreamTimers();
+      textBuf.clear();
+      deltaTimes.clear();
       abortRef.current?.abort();
       abortRef.current = null;
       activeSessionRef.current?.finalize('abort');
@@ -1216,22 +1930,37 @@ export default function CopilotDrawer() {
         window.clearTimeout(timer);
       }
       watchdogs.clear();
+      itemResizeObserverRef.current?.disconnect();
+      itemResizeObserverRef.current = null;
+      observedMap.clear();
     };
-  }, []);
-  /** 是否应贴底滚动（用户手动上滑查看历史时置 false） */
+  }, [cancelStreamTimers]);
+
+  /**
+   * 浏览器标签页切换守卫：后台挂起时撤销 rAF 并立刻提交残余缓冲，回前台后按需续调度。
+   */
+  useEffect((): (() => void) | void => {
+    if (typeof document === 'undefined') return;
+    const handleVisibilityChange = (): void => {
+      if (document.hidden) {
+        if (rafIdRef.current !== null) {
+          window.cancelAnimationFrame(rafIdRef.current);
+          rafIdRef.current = null;
+        }
+        flushBufferedText();
+      } else if (textBufRef.current.size > 0) {
+        scheduleBufferedFlush();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return (): void => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [flushBufferedText, scheduleBufferedFlush]);
+
+  /** 是否应贴底滚动（用户手动上滑超过 120px 查看历史时置 false） */
   const stickToBottomRef = useRef<boolean>(true);
 
-  /*
-   * ===== A 项：Copilot 活动状态写入器 =====
-   *
-   * 【为什么用细粒度选择器而非解构整个 store】本组件是流式渲染热点
-   * （每帧可能多次更新），订阅整棵 store 会让任何无关字段变化都触发重渲染。
-   * 这三个 setter 引用恒定，订阅成本为零。
-   *
-   * 【写入位置纪律】只在流事件回调（开始 / 结束 / 出错 / abort）里写，
-   * 绝不写在 render 或 setMessages 的 updater 内——StrictMode 下 updater
-   * 会执行两次，放在里面会导致重复副作用。
-   */
   const setCopilotStreaming = useClusterStore(
     (s): ((v: boolean) => void) => s.setCopilotStreaming,
   );
@@ -1239,20 +1968,10 @@ export default function CopilotDrawer() {
     (s): ((v: string | null) => void) => s.setLastAssistantMessageId,
   );
   const copilotAbortToken = useClusterStore((s): number => s.copilotAbortToken);
-
-  /**
-   * 上一次观察到的中止计数。
-   *
-   * 【为什么需要】effect 首次挂载也会执行一次，若不加比较就会把初始值
-   * 当作一次中止请求，导致刚打开抽屉就把流掐断。
-   */
   const lastAbortTokenRef = useRef<number>(copilotAbortToken);
 
   /**
-   * D 项：观察到中止请求时切断当前流。
-   *
-   * 【为何由 store 计数驱动而非直接调用】导演引擎在 utils 层，不能反向
-   * import React 组件；用计数当信号源，Copilot 侧自行观察，职责单向。
+   * 观察到外部中止请求时立即撤销流并清空未提交正文缓冲。
    */
   useEffect((): void => {
     if (copilotAbortToken === lastAbortTokenRef.current) return;
@@ -1260,67 +1979,306 @@ export default function CopilotDrawer() {
 
     abortRef.current?.abort();
     abortRef.current = null;
-    /*
-     * 中止后必须把活动状态复位，否则阶段 3→4 的事件门会一直等
-     * copilotStreaming === false 而永远不推进。R2：同时对活跃会话做幂等收尾，
-     * 立即复位消息级 isStreaming / 看门狗（abort 触发的 catch 也会再收尾一次，幂等安全）。
-     */
+    discardBufferedText();
     activeSessionRef.current?.finalize('abort');
     activeSessionRef.current = null;
     setCopilotStreaming(false);
-  }, [copilotAbortToken, setCopilotStreaming]);
+  }, [copilotAbortToken, discardBufferedText, setCopilotStreaming]);
 
   /* ========================================================================== */
-  /* 滚动跟随                                                                   */
+  /* 滚动锚定与虚拟列表测量（R9-C / R9-D）                                      */
   /* ========================================================================== */
 
-  /** scrollToBottom —— 仅在用户仍贴底时跟随，避免打断历史阅读 */
-  const scrollToBottom = useCallback((): void => {
-    const el = scrollRef.current;
-    if (el === null || !stickToBottomRef.current) return;
-    el.scrollTop = el.scrollHeight;
+  /**
+   * measureVirtualItemNode —— 注册/注销虚拟化消息外层节点的 ResizeObserver 观测。
+   * 若视口上方节点实测高度发生变化且当前未处于贴底自动跟随，则等比平移 scrollTop 保持视口稳定。
+   */
+  const measureVirtualItemNode = useCallback((messageId: string, node: HTMLDivElement | null): void => {
+    const prevNode = idToObservedElementRef.current.get(messageId);
+    if (prevNode === node) return;
+
+    if (prevNode !== undefined) {
+      itemResizeObserverRef.current?.unobserve(prevNode);
+      idToObservedElementRef.current.delete(messageId);
+    }
+
+    if (node === null) return;
+
+    if (itemResizeObserverRef.current === null && typeof ResizeObserver !== 'undefined') {
+      itemResizeObserverRef.current = new ResizeObserver((entries): void => {
+        let changed = false;
+        let scrollAdjust = 0;
+        const container = scrollRef.current;
+        for (const entry of entries) {
+          const targetId = observedElementToIdRef.current.get(entry.target);
+          if (targetId === undefined) continue;
+          const nextHeight = entry.contentRect.height;
+          if (!Number.isFinite(nextHeight) || nextHeight <= 0) continue;
+          const prevHeight = measuredHeightsRef.current.get(targetId);
+          if (prevHeight === undefined || Math.abs(prevHeight - nextHeight) >= 0.5) {
+            if (
+              prevHeight !== undefined &&
+              container !== null &&
+              !stickToBottomRef.current &&
+              entry.target instanceof HTMLElement &&
+              entry.target.offsetTop + prevHeight <= container.scrollTop + 2
+            ) {
+              scrollAdjust += nextHeight - prevHeight;
+            }
+            measuredHeightsRef.current.set(targetId, nextHeight);
+            changed = true;
+          }
+        }
+        if (changed && isMountedRef.current) {
+          if (container !== null && Math.abs(scrollAdjust) >= 1) {
+            container.scrollTop = Math.max(0, container.scrollTop + scrollAdjust);
+          }
+          setMeasureVersion((v): number => v + 1);
+        }
+      });
+    }
+
+    observedElementToIdRef.current.set(node, messageId);
+    idToObservedElementRef.current.set(messageId, node);
+    const rectHeight = node.getBoundingClientRect().height;
+    if (rectHeight > 0 && measuredHeightsRef.current.get(messageId) === undefined) {
+      measuredHeightsRef.current.set(messageId, rectHeight);
+    }
+    itemResizeObserverRef.current?.observe(node);
   }, []);
 
   /**
-   * onScroll —— 记录用户是否仍在底部附近。
-   *
-   * 【双写：ref + state】ref 供 useFrame 级别的高频判断（不受重渲染影响），
-   * state 用于驱动「↓ 回到最新诊断」胶囊的显隐——这是低频 UI 变化，
-   * 用 React 状态是合适的；两者同步写入保证判断与显示永远一致。
+   * recordVirtualTailHeight —— 静默写入流式尾气泡的实时像素高度，零状态提交，确保并入虚拟池瞬间不跌回默认值。
+   */
+  const recordVirtualTailHeight = useCallback((messageId: string, height: number): void => {
+    if (Number.isFinite(height) && height > 0) {
+      measuredHeightsRef.current.set(messageId, height);
+    }
+  }, []);
+
+  /**
+   * 滚动内容区 ResizeObserver：流式正文增高、卡片水合或骨架展开时若处于贴底状态，
+   * 直接赋值 scrollTop = scrollHeight（避免每帧在 React effect 中读取 scrollHeight 触发同步回流）。
+   */
+  useEffect((): (() => void) | void => {
+    const contentEl = scrollContentRef.current;
+    if (contentEl === null || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((): void => {
+      const container = scrollRef.current;
+      if (container === null || !stickToBottomRef.current) return;
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      /* 平滑回底动画进行中不重复触发 scrollTo({ behavior: 'smooth' })，避免每帧重置缓动曲线导致停滞；由跳转定时器在结束帧一次性对齐最新底部 */
+      if (now < programmaticJumpUntilRef.current) {
+        return;
+      }
+      container.scrollTop = container.scrollHeight;
+    });
+    observer.observe(contentEl);
+    return (): void => {
+      observer.disconnect();
+      if (programmaticJumpTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(programmaticJumpTimerRef.current);
+        programmaticJumpTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  /**
+   * 新消息入列或虚拟窗口切换时同步对齐贴底位置并重算当前可视切片。
+   */
+  useLayoutEffect((): void => {
+    const el = scrollRef.current;
+    if (el !== null && stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+    if (!virtualized) {
+      if (virtualRangeRef.current.start !== 0 || virtualRangeRef.current.end !== 0) {
+        const empty: VirtualRange = { start: 0, end: 0 };
+        virtualRangeRef.current = empty;
+        setVirtualRange(empty);
+      }
+      return;
+    }
+    const scrollTop = el !== null ? el.scrollTop : 0;
+    const viewportHeight = el !== null ? el.clientHeight : 0;
+    const maxRendered = maxVirtualRendered;
+    const rawNextRange = computeVirtualRange(virtualLayout, scrollTop, viewportHeight, maxRendered);
+    const nextRange = stabilizeBottomStickyRange(
+      virtualRangeRef.current,
+      rawNextRange,
+      stickToBottomRef.current,
+      maxRendered,
+    );
+    if (
+      nextRange.start !== virtualRangeRef.current.start ||
+      nextRange.end !== virtualRangeRef.current.end
+    ) {
+      virtualRangeRef.current = nextRange;
+      setVirtualRange(nextRange);
+    }
+  }, [hasPinnedTail, maxVirtualRendered, messages.length, virtualLayout, virtualized]);
+
+  /**
+   * handleScroll —— 记录用户是否上滑超过 120px，并在虚拟模式下通过 flushSync 同步刷新切片防止空白闪烁。
    */
   const handleScroll = useCallback((): void => {
     const el = scrollRef.current;
     if (el === null) return;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const prevTop = lastScrollTopRef.current;
+    lastScrollTopRef.current = el.scrollTop;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const nearBottom = distance < STICKY_SCROLL_THRESHOLD_PX;
+    let nearBottom = distance < STICKY_SCROLL_THRESHOLD_PX;
+    if (nearBottom) {
+      programmaticJumpUntilRef.current = 0;
+    } else if (now < programmaticJumpUntilRef.current) {
+      /* 仅当用户主动明显回滚（>24px）时才中断平滑回底，避免流式微幅高度抖动误取消跳转 */
+      if (el.scrollTop < prevTop - 24) {
+        programmaticJumpUntilRef.current = 0;
+        if (programmaticJumpTimerRef.current !== null && typeof window !== 'undefined') {
+          window.clearTimeout(programmaticJumpTimerRef.current);
+          programmaticJumpTimerRef.current = null;
+        }
+      } else {
+        nearBottom = true;
+      }
+    }
     stickToBottomRef.current = nearBottom;
-    setIsAwayFromBottom(!nearBottom);
+    setIsAwayFromBottom((prev): boolean => (prev === !nearBottom ? prev : !nearBottom));
+
+    if (virtualizedRef.current) {
+      const maxRendered = VIRTUAL_MAX_RENDERED_TARGET - 1;
+      const rawNextRange = computeVirtualRange(
+        virtualLayoutRef.current,
+        el.scrollTop,
+        el.clientHeight,
+        maxRendered,
+      );
+      const nextRange = stabilizeBottomStickyRange(
+        virtualRangeRef.current,
+        rawNextRange,
+        nearBottom,
+        maxRendered,
+      );
+      if (
+        nextRange.start !== virtualRangeRef.current.start ||
+        nextRange.end !== virtualRangeRef.current.end
+      ) {
+        virtualRangeRef.current = nextRange;
+        try {
+          flushSync((): void => {
+            setVirtualRange(nextRange);
+          });
+        } catch {
+          setVirtualRange(nextRange);
+        }
+      }
+    }
   }, []);
 
   /**
-   * jumpToLatest —— 回到底部并恢复自动跟随。
-   *
-   * 【为何要显式恢复 stickToBottomRef】用户点胶囊的意图明确是"我要看最新的"，
-   * 若只滚动一次而不恢复跟随标记，下一帧新消息到达时又会被判定为"用户在看历史"
-   * 而停止跟随——那胶囊等于白点。
+   * jumpToLatest —— 点击「回到最新诊断」时平滑滚动到底部并恢复自动跟随。
    */
   const jumpToLatest = useCallback((): void => {
     const el = scrollRef.current;
     if (el === null) return;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    /* 保护窗口高于定时器延迟（400ms），避免定时器未触发前 handleScroll 误判超时并关闭 stickToBottomRef */
+    programmaticJumpUntilRef.current = now + 520;
+    lastScrollTopRef.current = el.scrollTop;
+    if (programmaticJumpTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(programmaticJumpTimerRef.current);
+      programmaticJumpTimerRef.current = null;
+    }
     stickToBottomRef.current = true;
     setIsAwayFromBottom(false);
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    if (typeof window !== 'undefined') {
+      programmaticJumpTimerRef.current = window.setTimeout((): void => {
+        programmaticJumpTimerRef.current = null;
+        if (isMountedRef.current && scrollRef.current !== null) {
+          programmaticJumpUntilRef.current = 0;
+          stickToBottomRef.current = true;
+          setIsAwayFromBottom(false);
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          lastScrollTopRef.current = scrollRef.current.scrollTop;
+        }
+      }, 400);
+    }
   }, []);
 
-  /* 消息变化后跟随滚动（流式追加时持续贴底） */
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom]);
+  /**
+   * 观测 CopilotDrawer 自身提交次数并在 dev / ?debug 下挂载全局流式调试钩子。
+   */
+  useEffect((): void => {
+    streamPerfStatsRef.current.drawerCommits += 1;
+  });
+
+  useEffect((): (() => void) | void => {
+    if (!isStreamDebugEnabled()) return;
+    const api: StreamPerfDebugApi = {
+      reset: (): void => {
+        const stats = streamPerfStatsRef.current;
+        stats.totalBubbleCommits = 0;
+        stats.historyBubbleCommits = 0;
+        stats.activeBubbleCommits = 0;
+        stats.userBubbleCommits = 0;
+        stats.drawerCommits = 0;
+        stats.rafFlushes = 0;
+        stats.perMessageCommits = {};
+        if (!isStreamingRef.current) {
+          turnUserMessageIdsRef.current.clear();
+          turnAssistantMessageIdsRef.current.clear();
+          activeAssistantIdRef.current = null;
+        }
+      },
+      getSnapshot: (): StreamPerfDebugSnapshot => {
+        const stats = streamPerfStatsRef.current;
+        const container = scrollRef.current;
+        const mountedMsgDomCount =
+          container !== null ? container.querySelectorAll('[data-copilot-msg]').length : 0;
+        return {
+          totalBubbleCommits: stats.totalBubbleCommits,
+          historyBubbleCommits: stats.historyBubbleCommits,
+          activeBubbleCommits: stats.activeBubbleCommits,
+          userBubbleCommits: stats.userBubbleCommits,
+          drawerCommits: stats.drawerCommits,
+          rafFlushes: stats.rafFlushes,
+          virtualized: virtualizedRef.current,
+          mountedMsgDomCount,
+          perMessageCommits: { ...stats.perMessageCommits },
+        };
+      },
+    };
+    window.__KUBEVISION_STREAM_DEBUG__ = api;
+    return (): void => {
+      if (window.__KUBEVISION_STREAM_DEBUG__ === api) {
+        delete window.__KUBEVISION_STREAM_DEBUG__;
+      }
+    };
+  }, []);
+
+  const handleBubbleCommitted = useCallback((messageId: string, msgIsStreaming: boolean): void => {
+    const stats = streamPerfStatsRef.current;
+    stats.totalBubbleCommits += 1;
+    stats.perMessageCommits[messageId] = (stats.perMessageCommits[messageId] ?? 0) + 1;
+    const isCurrentActive =
+      messageId === activeAssistantIdRef.current ||
+      msgIsStreaming ||
+      turnAssistantMessageIdsRef.current.has(messageId);
+    if (isCurrentActive) {
+      stats.activeBubbleCommits += 1;
+    } else if (turnUserMessageIdsRef.current.has(messageId)) {
+      stats.userBubbleCommits += 1;
+    } else {
+      stats.historyBubbleCommits += 1;
+    }
+  }, []);
 
   /* ========================================================================== */
-  /**
-   * C3：探测浏览器原生语音识别能力（仅客户端执行，避免 hydration 不一致）。
-   */
+  /* 浏览器原生语音能力探测与 TTS 播报                                          */
+  /* ========================================================================== */
+
   useEffect((): void => {
     const candidate = window as unknown as {
       SpeechRecognition?: unknown;
@@ -1331,15 +2289,6 @@ export default function CopilotDrawer() {
     );
   }, []);
 
-  /* 语音播报（TTS）—— 全场景自动播报 + 单条消息朗读                            */
-  /* ========================================================================== */
-
-  /**
-   * 【改造要点】旧的 speakAlert 只播报根因卡，且不指定音色——这正是
-   * "点了喇叭不响"与"单条消息无法朗读"两个症状的直接来源。
-   * 现在统一交给 useSpeechSynthesis：中文音色优选、Markdown 净化、
-   * 状态机可见（准备中/朗读中/不支持），三种"不响"的原因都能被界面表达。
-   */
   const {
     playbackState: ttsPlaybackState,
     voiceInfo,
@@ -1350,13 +2299,7 @@ export default function CopilotDrawer() {
   } = useSpeechSynthesis();
 
   /**
-   * speakMessage —— 朗读指定 AI 消息。
-   *
-   * 【抽取正文的策略】优先用消息正文（那是 AI 的主要输出），
-   * 若正文为空则退到根因卡摘要——某些轮次模型只调工具不写正文。
-   * 两者都没有时用一句兜底提示，保证「点了要有反应」。
-   *
-   * @param message 目标 AI 消息
+   * speakMessage —— 朗读指定 AI 消息（通过 rootCauseAlertSchema 校验兜底摘要，移除 as 断言）。
    */
   const speakMessage = useCallback(
     (message: CopilotMessage): void => {
@@ -1366,8 +2309,12 @@ export default function CopilotDrawer() {
           isRootCauseTool(card.toolName) &&
           card.args !== undefined,
       );
+      const parsedRootCause =
+        rootCauseCard?.args !== undefined
+          ? rootCauseAlertSchema.safeParse(rootCauseCard.args)
+          : null;
       const rootCauseProps =
-        rootCauseCard?.args !== undefined ? (rootCauseCard.args as RootCauseAlertProps) : null;
+        parsedRootCause !== null && parsedRootCause.success ? parsedRootCause.data : null;
 
       const primary = message.text.trim();
       const fallback =
@@ -1380,17 +2327,15 @@ export default function CopilotDrawer() {
     [speak],
   );
 
-  /**
-   * A6：TTS 播报 effect —— 播报副作用移出 setMessages updater。
-   *
-   * 【StrictMode 双播根因】旧实现把 speakMessage 写在 setMessages 的
-   * updater 函数里。React 在开发模式会**双调用** updater 以检测副作用，
-   * 于是同一段文本播两遍；生产模式虽不双调，但 updater 里做副作用本身
-   * 就是错误用法（可能在渲染阶段被丢弃/重放）。
-   *
-   * 现在 updater 保持纯函数，finalize 只设置 speechRequest；本 effect
-   * 在 messages 提交后读取最新消息并播报，天然只执行一次。
-   */
+  const speakingMessageIdRef = useRef<string | null>(speakingMessageId);
+  const speakMessageRef = useRef<(message: CopilotMessage) => void>(speakMessage);
+  const stopSpeakingRef = useRef<() => void>(stopSpeaking);
+  useLayoutEffect((): void => {
+    speakingMessageIdRef.current = speakingMessageId;
+    speakMessageRef.current = speakMessage;
+    stopSpeakingRef.current = stopSpeaking;
+  });
+
   useEffect((): void => {
     if (speechRequest === null) return;
     const latest = messages.find((m): boolean => m.id === speechRequest.messageId);
@@ -1401,22 +2346,15 @@ export default function CopilotDrawer() {
   }, [speechRequest, messages, speakMessage]);
 
   /**
-   * toggleMessageSpeaking —— 单条消息的朗读/停止切换。
-   *
-   * 【为何以 speakingMessageId 为判据而非全局状态】用户可能正在听消息 A，
-   * 此时点消息 B 的喇叭应当**切到 B**（而不是把 A 停掉后什么都不播）。
-   * 因此判断条件是"这条消息是否正在朗读"。
+   * toggleMessageSpeaking —— 单条消息的朗读/停止切换（依赖 ref 维持稳定引用）。
    */
-  const toggleMessageSpeaking = useCallback(
-    (message: CopilotMessage): void => {
-      if (speakingMessageId === message.id) {
-        stopSpeaking();
-        return;
-      }
-      speakMessage(message);
-    },
-    [speakMessage, speakingMessageId, stopSpeaking],
-  );
+  const toggleMessageSpeaking = useCallback((message: CopilotMessage): void => {
+    if (speakingMessageIdRef.current === message.id) {
+      stopSpeakingRef.current();
+      return;
+    }
+    speakMessageRef.current(message);
+  }, []);
 
   /* 关闭 TTS 时立即停止正在进行的播报 */
   useEffect(() => {
@@ -1565,8 +2503,8 @@ export default function CopilotDrawer() {
           ].join('\n');
     setPostMortemMarkdown(baseReport + traceBlock);
     setPostMortemFilename(buildPostMortemFilename(nowMs));
-    setPostMortemOpen(true);
-  }, [buildClusterContext, messages]);
+    openModal('postMortem');
+  }, [buildClusterContext, messages, openModal]);
 
   /* ========================================================================== */
   /* 核心：发送消息并消费 NDJSON 流                                                */
@@ -1597,7 +2535,7 @@ export default function CopilotDrawer() {
        * 【R2 · FIFO 排队】流式期间不丢弃请求：enqueue 追加到共享队列尾部，
        * 当前流收尾时 shift 出队首自动发送。连发多条按序执行，不再单槽覆盖丢上下文。
        */
-      if (isStreaming) {
+      if (isStreamingRef.current) {
         promptQueueRef.current.enqueue(text);
         setQueuedPromptNotice(`已排队 ${promptQueueRef.current.length()} 条：当前回答结束后按序自动发送`);
         return;
@@ -1610,12 +2548,6 @@ export default function CopilotDrawer() {
         return;
       }
       setInputGuardError(null);
-      /**
-       * 【注入警告的落地】validatePrompt 对疑似提示注入**放行但警告**。
-       * 此前只返回了 warning 却没有任何地方渲染它——那等于警告根本没发生。
-       * 这里把它写进 guardWarning 状态并在输入区上方常驻显示，
-       * 保证用户确实看到「系统识别到了可疑表述」。
-       */
       setGuardWarning(guard.warning ?? null);
 
       /* ---- 中断上一条未完成的流 ---- */
@@ -1624,7 +2556,7 @@ export default function CopilotDrawer() {
       abortRef.current = controller;
 
       /* ---- 取出待发送的视口快照，并立即清空待发预览 ---- */
-      const viewportForSend = capturedViewportDataUrl;
+      const viewportForSend = capturedViewportRef.current;
       if (viewportForSend !== null) {
         setCapturedViewport(null);
       }
@@ -1651,8 +2583,12 @@ export default function CopilotDrawer() {
         isStreaming: true,
       };
 
+      activeAssistantIdRef.current = assistantId;
+      turnUserMessageIdsRef.current.add(userMessage.id);
+      turnAssistantMessageIdsRef.current.add(assistantId);
+
       /* 历史消息（供服务端理解上下文，取最近 8 条避免载荷膨胀） */
-      const history = [...messages, userMessage]
+      const history = [...messagesRef.current, userMessage]
         .slice(-8)
         .map((m): { role: 'user' | 'assistant'; content: string } => ({
           role: m.role,
@@ -1675,27 +2611,25 @@ export default function CopilotDrawer() {
       /* R2 · trace 换轮：新请求开始即清空上一轮 span/summary，避免跨轮串味 */
       useAgentTraceStore.getState().begin();
 
-      /**
-       * 【R2 · 收尾函数必须在任何 await 之前定义】旧实现先赋空函数、fetch 成功后才赋真值，
-       * 于是 embedQueryText / fetch 在赋值前抛错时 catch/finally 调到的是空函数，
-       * isStreaming / copilotStreaming 永不复位、输入框永久锁死。现在会话在第一个 await
-       * 之前就创建，finalize 从第一行起就是真实实现，任何失败路径都能幂等收尾。
-       */
       const session = createChatStreamSession({
         setStreaming: setIsStreaming,
         setCopilotStreaming,
         patchAssistant: (patch): void => {
-          patchMessage(assistantId, (m): CopilotMessage => ({
-            ...m,
-            isStreaming: patch.isStreaming,
-            ...(patch.incomplete === true ? { incomplete: true, failedPrompt: text } : {}),
-            ...(patch.failed === true ? { failed: true } : {}),
-            toolCards: m.toolCards.map((card): CopilotToolCard =>
-              card.state === 'skeleton'
-                ? { ...card, state: 'error', errorMessage: '流已结束但未收到该卡片的渲染结果' }
-                : card,
-            ),
-          }));
+          const buffered = takeBufferedText(assistantId);
+          patchMessage(assistantId, (m): CopilotMessage => {
+            const withText = buffered.length > 0 ? mergeStreamState(m, appendText(m, buffered)) : m;
+            return {
+              ...withText,
+              isStreaming: patch.isStreaming,
+              ...(patch.incomplete === true ? { incomplete: true, failedPrompt: text } : {}),
+              ...(patch.failed === true ? { failed: true } : {}),
+              toolCards: withText.toolCards.map((card): CopilotToolCard =>
+                card.state === 'skeleton'
+                  ? { ...card, state: 'error', errorMessage: '流已结束但未收到该卡片的渲染结果' }
+                  : card,
+              ),
+            };
+          });
         },
         schedule: (fn, ms): number => window.setTimeout(fn, ms),
         cancel: (id): void => window.clearTimeout(id),
@@ -1715,7 +2649,7 @@ export default function CopilotDrawer() {
           }, 0);
         },
         requestTts: (): void => {
-          if (ttsEnabled) setSpeechRequest({ messageId: assistantId, nonce: Date.now() });
+          if (ttsEnabledRef.current) setSpeechRequest({ messageId: assistantId, nonce: Date.now() });
         },
         onWatchdogTimeout: (toolCallId): void => {
           patchMessage(assistantId, (m): CopilotMessage => ({
@@ -1730,20 +2664,15 @@ export default function CopilotDrawer() {
       });
       activeSessionRef.current = session;
 
-      /*
-       * 【R2 次轮 · 开发期协议断言】非生产构建下把已分发事件收集起来，正常收尾时用
-       * validateStreamEvents 校验全局性质（重复 id / 孤儿 result / 未配对 start / done 唯一）。
-       * 生产构建 tree-shake 掉（NODE_ENV === 'production' 时 collected 恒为 null、不记录、不校验），
-       * 因此零运行时开销、零用户可见影响；开发期一旦协议被改坏，控制台立即报出违例。
-       */
       const devCollected: ChatStreamEvent[] | null =
         process.env.NODE_ENV === 'production' ? null : [];
       const finalize = (reason: SessionEndReason): void => {
-        /*
-         * 【只在正常收尾（收到 done）时校验】validateStreamEvents 要求"有且仅有一个 done"；
-         * 若本就把流截断/中止（没有 done），missing-terminal 是**预期**结果而非产侧缺陷，
-         * 对它告警属于误报。因此仅 reason === 'done' 时做开发期断言。
-         */
+        if (reason === 'abort') {
+          discardBufferedText(assistantId);
+        }
+        if (activeAssistantIdRef.current === assistantId) {
+          activeAssistantIdRef.current = null;
+        }
         if (devCollected !== null && reason === 'done' && !session.isFinalized()) {
           const violations = validateStreamEvents(devCollected);
           if (violations.length > 0) {
@@ -1751,10 +2680,13 @@ export default function CopilotDrawer() {
           }
         }
         session.finalize(reason);
+        if (reason !== 'abort') {
+          flushBufferedText(assistantId);
+        }
       };
 
       try {
-        /* R46：端侧像素特征（无截图则跳过）——移入 try，失败也能被统一收尾 */
+        /* R46：端侧像素特征（无截图则跳过） */
         const pixelFeatures =
           viewportForSend === null ? null : await computeViewportPixelFeatures(viewportForSend);
 
@@ -1769,17 +2701,6 @@ export default function CopilotDrawer() {
             clusterContext: buildClusterContext(),
             ...(viewportForSend !== null ? { viewportImage: viewportForSend } : {}),
             ...(pixelFeatures !== null ? { pixelFeatures } : {}),
-            /*
-             * 【自定义语料随请求上送】
-             *
-             * 自定义 Runbook 存在浏览器 localStorage，服务端读不到。
-             * 每次发消息时把当前语料一起带上，才能保证
-             * "评委刚在弹窗里新增的条目，下一条提问立刻可被检索"。
-             *
-             * 【为何每次现读而不缓存】getCustomRunbooks() 是同步读取
-             * localStorage 并做形状校验，开销在微秒级；而缓存会引入
-             * "弹窗新增后缓存未失效"的一致性 bug。此处宁可直接读。
-             */
             ...(getCustomRunbooks().length > 0
               ? { customRunbooks: getCustomRunbooks() }
               : {}),
@@ -1788,8 +2709,6 @@ export default function CopilotDrawer() {
           signal: controller.signal,
         });
 
-        /* 【R2 · 中止不回落】首行判 signal.aborted：用户主动停止直接收尾返回，
-         * 不 throw、不注入「诊断流意外中断」错误。 */
         if (controller.signal.aborted) {
           finalize('abort');
           return;
@@ -1803,42 +2722,45 @@ export default function CopilotDrawer() {
         let receivedDone = false;
 
         /**
-         * dispatch —— 事件分派：只消费已通过 isChatStreamEvent 形状校验的事件。
-         *
-         * 【状态流转】reasoning 追加思考链 / text 累积正文 / tool-start 挂骨架并注册
-         * 看门狗 / tool-result 撤销看门狗并原地升级卡片 / done 立即 finalize 并置
-         * receivedDone 以跳出读循环。畸形帧在解析器层就被拦下（markParseError），
-         * 不会进入这里的深层属性访问，故不会崩溃。
+         * dispatch —— 事件分派：text 走 rAF 合批队列，非 text 事件前先取出缓冲正文原子合并。
          */
         const dispatch = (event: ChatStreamEvent): void => {
-          /* 开发期协议断言用的事件收集（生产构建 devCollected 为 null，不产生开销） */
           if (devCollected !== null) devCollected.push(event);
           switch (event.type) {
             case 'reasoning': {
-              patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, appendReasoning(m, event.step)));
+              const buffered = takeBufferedText(assistantId);
+              patchMessage(assistantId, (m): CopilotMessage => {
+                const withText = buffered.length > 0 ? mergeStreamState(m, appendText(m, buffered)) : m;
+                return mergeStreamState(withText, appendReasoning(withText, event.step));
+              });
               break;
             }
 
             case 'text': {
-              patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, appendText(m, event.content)));
+              enqueueTextDelta(assistantId, event.content);
               break;
             }
 
             case 'tool-start': {
-              /* 【A1 自愈：按 toolCallId 去重】upsertToolStart 幂等，同 id 只挂一次。 */
-              patchMessage(assistantId, (m): CopilotMessage =>
-                mergeStreamState(m, upsertToolStart(m, event.toolCallId, event.toolName, event.mcpUri)),
-              );
-              /* R2：看门狗由会话统一管理；registerWatchdog 内部先 clearTimeout(prev)，
-               * 重复 tool-start 不会泄漏上一个定时器。 */
+              const buffered = takeBufferedText(assistantId);
+              patchMessage(assistantId, (m): CopilotMessage => {
+                const withText = buffered.length > 0 ? mergeStreamState(m, appendText(m, buffered)) : m;
+                return mergeStreamState(
+                  withText,
+                  upsertToolStart(withText, event.toolCallId, event.toolName, event.mcpUri),
+                );
+              });
               session.registerWatchdog(event.toolCallId, SKELETON_WATCHDOG_MS);
               break;
             }
 
             case 'tool-result': {
-              /* 收到结果即撤销该卡的看门狗 */
               session.clearWatchdog(event.toolCallId);
-              patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, applyToolResult(m, event)));
+              const buffered = takeBufferedText(assistantId);
+              patchMessage(assistantId, (m): CopilotMessage => {
+                const withText = buffered.length > 0 ? mergeStreamState(m, appendText(m, buffered)) : m;
+                return mergeStreamState(withText, applyToolResult(withText, event));
+              });
               break;
             }
 
@@ -1848,14 +2770,17 @@ export default function CopilotDrawer() {
             }
 
             case 'error': {
-              /* A9：结构化错误 → 分类文案 + requestId + 可重试标记 */
-              patchMessage(assistantId, (m): CopilotMessage => ({
-                ...m,
-                failed: true,
-                failedPrompt: text,
-                errorCategory: event.category,
-                requestId: event.requestId,
-              }));
+              const buffered = takeBufferedText(assistantId);
+              patchMessage(assistantId, (m): CopilotMessage => {
+                const withText = buffered.length > 0 ? mergeStreamState(m, appendText(m, buffered)) : m;
+                return {
+                  ...withText,
+                  failed: true,
+                  failedPrompt: text,
+                  errorCategory: event.category,
+                  requestId: event.requestId,
+                };
+              });
               break;
             }
 
@@ -1885,16 +2810,30 @@ export default function CopilotDrawer() {
             }
 
             case 'reset': {
-              /* R2 新增事件：轮换复位声明。服务端已保证它是整条流的第一帧，
-               * 因此这里可以连带把 trace 复位到干净起点（不会误清本轮 span），
-               * 同时只复位正文/思考链，**保留工具卡片**（用户已看到的诊断产物不丢）。 */
-              useAgentTraceStore.getState().begin();
-              patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, resetRound(m)));
+              /* R10-B：丢弃未刷新的旧轮缓冲正文；仅 new-round/缺省 清空 trace，fallback/guard 保留回落前 span */
+              const reason = event.reason;
+              const isFallbackReset = reason === 'engine-fallback' || reason === 'schema-guard';
+              const fallbackNote =
+                event.note !== undefined && event.note.trim().length > 0
+                  ? event.note.trim()
+                  : reason === 'engine-fallback'
+                    ? '主引擎异常中断，已自动切换本地诊断引擎重新生成'
+                    : reason === 'schema-guard'
+                      ? '输出未通过安全/格式校验，已自动重置本轮结果'
+                      : undefined;
+              discardBufferedText(assistantId);
+              if (!isFallbackReset) {
+                useAgentTraceStore.getState().begin();
+              }
+              patchMessage(
+                assistantId,
+                (m): CopilotMessage =>
+                  mergeStreamState(m, resetRound(m, { reason, note: fallbackNote })),
+              );
               break;
             }
 
             case 'done': {
-              /* 【R2 · 收尾判定】收到 done 立即 finalize 并跳出读循环，不再等连接关闭。 */
               session.markDone();
               receivedDone = true;
               finalize('done');
@@ -1902,16 +2841,16 @@ export default function CopilotDrawer() {
             }
 
             default:
-              /* 未知事件类型：向前兼容，直接忽略（协议扩展不影响旧前端） */
               break;
           }
         };
 
-        /* 解析器：consumeLine 内部 JSON.parse + isChatStreamEvent 校验，畸形帧走降级回调 */
         const parser = createNdjsonLineParser({
           onEvent: dispatch,
-          onMalformedLine: (): void => {
-            session.markParseError();
+          onMalformedLine: (_line, meta): void => {
+            if (meta?.atEof !== true) {
+              session.markParseError();
+            }
           },
           validate: isChatStreamEvent,
         });
@@ -1923,44 +2862,48 @@ export default function CopilotDrawer() {
           if (receivedDone) break;
         }
 
-        /* 流末 flush：decoder.decode()(stream:false) + 消费最后一条残行，截断流不丢尾。
-         * 收尾三态：收到 done=正常 / 未收到=incomplete / 解析出错=error。 */
         parser.flush();
         const endState = session.resolveState();
         finalize(endState === 'normal' ? 'done' : endState);
       } catch (error) {
-        /* 【R2 · 中止不回落】首行判 signal.aborted：用户主动停止不注入错误、直接收尾返回。 */
         if (controller.signal.aborted) {
           finalize('abort');
           return;
         }
-        /**
-         * 【错误降级契约】非中止异常：写入可读错误说明并记下原 prompt 供重试。
-         * 空正文 → 直接给错误文案；已有部分正文 → 保留正文并追加错误尾注。
-         */
         const reason = error instanceof Error ? error.message : '未知错误';
-        patchMessage(assistantId, (m): CopilotMessage => ({
-          ...m,
-          text:
-            m.text.length > 0
-              ? `${m.text}\n\n> [WARN] 诊断流意外中断：${reason}`
-              : `> [ERR] 诊断请求失败：${reason}`,
-          failed: true,
-          failedPrompt: text,
-          errorCategory: 'network',
-        }));
+        const buffered = takeBufferedText(assistantId);
+        patchMessage(assistantId, (m): CopilotMessage => {
+          const withText = buffered.length > 0 ? mergeStreamState(m, appendText(m, buffered)) : m;
+          return {
+            ...withText,
+            text:
+              withText.text.length > 0
+                ? `${withText.text}\n\n> [WARN] 诊断流意外中断：${reason}`
+                : `> [ERR] 诊断请求失败：${reason}`,
+            failed: true,
+            failedPrompt: text,
+            errorCategory: 'network',
+          };
+        });
         finalize('error');
       } finally {
-        /* 兜底收尾（finalize 幂等）：任何路径都复位 streaming / 看门狗 / 排队提示。 */
         const endState = session.resolveState();
         finalize(endState === 'normal' ? 'done' : endState);
         if (abortRef.current === controller) abortRef.current = null;
         activeSessionRef.current = null;
-      }    },
-    [buildClusterContext, capturedViewportDataUrl, isStreaming, messages, patchMessage, setCapturedViewport,
+      }
+    },
+    [
+      buildClusterContext,
+      discardBufferedText,
+      enqueueTextDelta,
+      flushBufferedText,
+      patchMessage,
+      setCapturedViewport,
       setCopilotStreaming,
       setLastAssistantMessageId,
-      ttsEnabled],
+      takeBufferedText,
+    ],
   );
 
   /* 排队请求重发用：始终指向最新一次渲染的 sendMessage 闭包 */
@@ -1969,21 +2912,14 @@ export default function CopilotDrawer() {
   };
 
   /**
-   * retryLastRequest —— 一键重试上一次失败的请求。
-   *
-   * 【实现方式】移除失败的 AI 消息气泡（避免对话流里堆积无效残片），
-   * 然后用同一 prompt 重新调用 sendMessage。用户消息保留（它确实发出去过）。
+   * retryLastRequest —— 一键重试上一次失败的请求（无状态依赖，保持回调函数引用恒定）。
    */
-  const retryLastRequest = useCallback(
-    (failedMessageId: string, prompt: string): void => {
-      setMessages((prev) => prev.filter((m): boolean => m.id !== failedMessageId));
-      /* 下一帧再发，确保上一条已从数组移除（sendMessage 读的是闭包里的 messages） */
-      window.setTimeout((): void => {
-        void sendMessage(prompt);
-      }, 0);
-    },
-    [sendMessage],
-  );
+  const retryLastRequest = useCallback((failedMessageId: string, prompt: string): void => {
+    setMessages((prev) => prev.filter((m): boolean => m.id !== failedMessageId));
+    window.setTimeout((): void => {
+      sendMessageRef.current?.(prompt);
+    }, 0);
+  }, []);
 
   /**
    * handleProactiveDiagnose —— 主动异常横幅的「一键启动诊断」。
@@ -2268,12 +3204,18 @@ export default function CopilotDrawer() {
   const clearSession = useCallback((): void => {
     abortRef.current?.abort();
     abortRef.current = null;
+    discardBufferedText();
+    activeAssistantIdRef.current = null;
+    turnUserMessageIdsRef.current.clear();
+    turnAssistantMessageIdsRef.current.clear();
+    activeSessionRef.current?.finalize('abort');
+    activeSessionRef.current = null;
     setMessages([]);
     setIsStreaming(false);
     /* 清空会话时同时停掉播报与拾音，避免没有内容时声音/录音还在跑 */
     stopSpeaking();
     speechInput.abort();
-  }, [speechInput, stopSpeaking]);
+  }, [discardBufferedText, speechInput, stopSpeaking]);
 
   /**
    * handleStopGeneration —— 停止当前流式生成，但**保留已产出的内容**。
@@ -2283,20 +3225,25 @@ export default function CopilotDrawer() {
    * - handleStopGeneration = 中途刹车（用户觉得答案太啰嗦/跑偏了）。
    *
    * 此前只有前者，用户为了停一段长回复被迫删掉全部历史——这是把
-   * "停止"和"销毁"混为一谈。这里 abort 后仅把 isStreaming 置回 false，
-   * 已渲染的正文与卡片原样留在屏幕上。
-   *
-   * 【兜底】abort 后 sendMessage 的 catch 会收到 AbortError 并跳过错误处理，
-   * 因此这里只需确保 UI 状态复位；同时终止语音播报避免念到一半。
+   * "停止"和"销毁"混为一谈。这里先落盘已缓冲的正文再 abort，并同步收敛流状态。
    */
   const handleStopGeneration = useCallback((): void => {
+    const activeId = activeAssistantIdRef.current;
+    if (activeId !== null) {
+      flushBufferedText(activeId);
+    } else {
+      flushBufferedText();
+    }
     abortRef.current?.abort();
     abortRef.current = null;
+    activeAssistantIdRef.current = null;
+    activeSessionRef.current?.finalize('abort');
+    activeSessionRef.current = null;
     setIsStreaming(false);
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
-  }, []);
+  }, [flushBufferedText]);
 
   /* ========================================================================== */
   /* 渲染                                                                       */
@@ -2451,10 +3398,10 @@ export default function CopilotDrawer() {
              */}
             <button
               type="button"
-              onClick={(): void => setRagModalOpen(true)}
+              onClick={(): void => openModal('rag')}
               aria-label="打开 SRE 领域知识库"
               title="SRE 领域知识库：浏览语料、实时检索沙盒、现场新增 Runbook"
-              className="flex shrink-0 items-center gap-1 rounded border border-cyan-400/25 bg-cyan-400/[0.07] px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wide text-cyan-300 transition-colors hover:border-cyan-300/60 hover:bg-cyan-400/[0.15]"
+              className="flex min-h-[44px] shrink-0 items-center gap-1 rounded border border-cyan-400/25 bg-cyan-400/[0.07] px-2 font-mono text-[10px] font-bold tracking-wide text-cyan-300 transition-colors hover:border-cyan-300/60 hover:bg-cyan-400/[0.15] md:min-h-0 md:px-1.5 md:py-0.5"
             >
               <BookOpen className="h-2.5 w-2.5" aria-hidden />
               RAG 知识库
@@ -2463,24 +3410,13 @@ export default function CopilotDrawer() {
               </span>
             </button>
 
-            {/*
-             * ---- 导出 SRE 复盘报告 ----
-             *
-             * 【为何在这里而不是每条消息下】复盘是**会话级**产物：
-             * 它要汇总整条时间线、所有推理步骤、全部卡片与知识库引用。
-             * 挂在单条消息下会让用户误以为只导出那一轮的内容。
-             *
-             * 【为何要有卡片才显示】没有任何卡片说明这一轮没产生可复盘的
-             * 排障证据，导出的报告只有空章节——与其让用户下载一份无内容
-             * 的文件，不如在源头上就不提供入口。
-             */}
             {hasReplayableContent ? (
               <button
                 type="button"
                 onClick={handleExportPostMortem}
                 aria-label="导出 SRE 故障复盘报告"
                 title="基于本次会话的时间线、推理链、RAG 引用与自愈动作生成复盘报告"
-                className="flex shrink-0 items-center gap-1 rounded border border-emerald-400/25 bg-emerald-400/[0.07] px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wide text-emerald-300 transition-colors hover:border-emerald-300/60 hover:bg-emerald-400/[0.15]"
+                className="flex min-h-[44px] shrink-0 items-center gap-1 rounded border border-emerald-400/25 bg-emerald-400/[0.07] px-2 font-mono text-[10px] font-bold tracking-wide text-emerald-300 transition-colors hover:border-emerald-300/60 hover:bg-emerald-400/[0.15] md:min-h-0 md:px-1.5 md:py-0.5"
               >
                 <FileText className="h-2.5 w-2.5" aria-hidden />
                 复盘报告
@@ -2491,16 +3427,6 @@ export default function CopilotDrawer() {
             <button
               type="button"
               onClick={(): void => {
-                /**
-                 * 【开启喇叭立即朗读最新回复】
-                 *
-                 * 旧实现只切换布尔值，用户点开喇叭后界面毫无动静——
-                 * 必须等到下一轮回答才会有声音，观感上就是"按钮没反应"。
-                 *
-                 * 现在开启时立即朗读最新一条 AI 回复（若有），
-                 * 关闭时立即停止正在播放的语音。这符合用户对开关的直觉预期：
-                 * 打开就该有声音，关闭就该安静。
-                 */
                 setTtsEnabled((prev): boolean => {
                   const next = !prev;
                   if (next) {
@@ -2511,8 +3437,6 @@ export default function CopilotDrawer() {
                           msg.role === 'assistant' && msg.text.trim().length > 0,
                       );
                     if (latestAssistant !== undefined) {
-                      /* 下一帧再播：此时 ttsEnabled 尚未提交，
-                         但 speak 不依赖它（开关只控制自动播报的触发条件） */
                       window.setTimeout((): void => speakMessage(latestAssistant), 0);
                     }
                   } else {
@@ -2531,21 +3455,21 @@ export default function CopilotDrawer() {
                     : '开启语音播报'
               }
               className={cn(
-                'shrink-0 rounded p-1 transition-colors',
+                'flex h-11 w-11 shrink-0 items-center justify-center rounded transition-colors md:h-auto md:w-auto md:p-1',
                 ttsEnabled
                   ? ttsPlaybackState === 'speaking'
                     ? 'text-cyan-200'
                     : 'text-cyan-300 hover:text-cyan-200'
-                  : 'text-slate-500 hover:text-slate-300',
+                  : 'text-slate-400 hover:text-slate-300',
               )}
             >
               {ttsEnabled ? (
                 <Volume2
-                  className={cn('h-3 w-3', ttsPlaybackState === 'speaking' && 'animate-pulse')}
+                  className={cn('h-3.5 w-3.5 md:h-3 md:w-3', ttsPlaybackState === 'speaking' && 'animate-pulse')}
                   aria-hidden
                 />
               ) : (
-                <VolumeX className="h-3 w-3" aria-hidden />
+                <VolumeX className="h-3.5 w-3.5 md:h-3 md:w-3" aria-hidden />
               )}
             </button>
 
@@ -2555,140 +3479,189 @@ export default function CopilotDrawer() {
               onClick={clearSession}
               aria-label="清空会话"
               title="清空会话"
-              className="shrink-0 rounded p-1 text-slate-500 transition-colors hover:text-rose-300"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:text-rose-300 md:h-auto md:w-auto md:p-1"
             >
-              <Eraser className="h-3 w-3" aria-hidden />
+              <Eraser className="h-3.5 w-3.5 md:h-3 md:w-3" aria-hidden />
             </button>
           </div>
 
-          {/* ---- 消息流 ---- */}
-          <div
-            ref={scrollRef}
-            onScroll={handleScroll}
-            className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-2 py-2"
-            aria-live="polite"
-            aria-label="对话消息流"
-          >
-            {messages.length === 0 ? (
-              /*
-               * ---- 2×2 战术指令启动舱 ----
-               *
-               * 【为何要改】旧空状态是"灰底 + 死灰字 + 两行说明"，读起来像
-               * 一个还没做完的占位页；而空状态恰恰是用户**第一次**接触
-               * Copilot 的地方，应当直接给出"你可以做什么"的可点击入口。
-               *
-               * 现改为：微光徽标 + 标题 + 一句说明 + 2×2 指令卡片。
-               * 卡片即入口——用户不必先想"我该问什么"，点一张就能开始。
-               */
-              <div className="flex h-full flex-col items-center justify-center gap-4 px-4 py-6">
-                {/* 微光徽标：单层细描边 + 柔和内发光，克制不刺眼 */}
-                <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
-                  <Radar className="h-5 w-5 text-cyan-300/90" aria-hidden />
-                </span>
+          {/* ---- 消息流视口容器（相对定位包住消息区与悬浮胶囊，防止胶囊遮挡输入区） ---- */}
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            <div
+              ref={scrollRef}
+              onScroll={handleScroll}
+              className="min-h-0 flex-1 overflow-y-auto px-2 py-2"
+              aria-live="polite"
+              aria-label="对话消息流"
+            >
+              <div ref={scrollContentRef} className={messages.length === 0 ? 'h-full' : undefined}>
+                {messages.length === 0 ? (
+                  /*
+                   * ---- 2×2 战术指令启动舱 ----
+                   *
+                   * 【为何要改】旧空状态是"灰底 + 死灰字 + 两行说明"，读起来像
+                   * 一个还没做完的占位页；而空状态恰恰是用户**第一次**接触
+                   * Copilot 的地方，应当直接给出"你可以做什么"的可点击入口。
+                   *
+                   * 现改为：微光徽标 + 标题 + 一句说明 + 2×2 指令卡片。
+                   * 卡片即入口——用户不必先想"我该问什么"，点一张就能开始。
+                   */
+                  <div className="flex min-h-full flex-col justify-between gap-4 px-3 py-4 sm:px-4">
+                    <div className="flex flex-col items-center gap-3 pt-2">
+                      {/* 微光徽标：单层细描边 + 柔和内发光，克制不刺眼 */}
+                      <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+                        <Radar className="h-5 w-5 text-cyan-300/90" aria-hidden />
+                      </span>
 
-                <div className="text-center">
-                  <p className="text-[13px] font-medium tracking-tight text-slate-200">
-                    KubeVision SRE 智能副驾
-                  </p>
-                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
-                    选择一条战术指令，或直接描述你观察到的异常。
-                  </p>
-                </div>
+                      <div className="text-center">
+                        <p className="text-[13px] font-medium tracking-tight text-slate-200">
+                          KubeVision SRE 智能副驾
+                        </p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                          选择一条战术指令，或直接描述你观察到的异常。
+                        </p>
+                      </div>
+                    </div>
 
-                {/*
-                 * 2×2 战术指令矩阵（工业风：编号 + 单色矢量图标，零 Emoji）。
-                 *
-                 * 卡片结构：左上 `CMD-0X` 等宽编号 + 14px 矢量图标容器，
-                 * 右上 ArrowUpRight 微箭头；下方主标题 + 一行技术副标题。
-                 * 流式生成中禁用（避免并发请求打架）。
-                 */}
-                <div className="grid w-full grid-cols-2 gap-2">
-                  {QUICK_PROMPTS.map((prompt): React.ReactElement => {
-                    const Icon = prompt.icon;
-                    return (
-                      <button
-                        key={prompt.id}
-                        type="button"
-                        onClick={(): void => void sendMessage(prompt.text)}
-                        disabled={isStreaming}
-                        title={prompt.text}
-                        className={cn(
-                          'group relative rounded-lg border p-2.5 text-left transition-all duration-150',
-                          isStreaming
-                            ? 'cursor-not-allowed border-white/[0.04] bg-white/[0.01] opacity-50'
-                            : 'border-white/[0.07] bg-white/[0.025] hover:border-cyan-400/40 hover:bg-white/[0.05]',
-                        )}
-                      >
-                        {/* 顶部：编号 + 图标容器（左） / 微箭头（右） */}
-                        <div className="flex items-start justify-between gap-1">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-mono text-[10px] tracking-wider text-slate-500">
-                              {prompt.id}
+                    {/*
+                     * 2×2 战术指令矩阵（工业风：编号 + 单色矢量图标，零 Emoji；< sm 收拢单列保可读）。
+                     */}
+                    <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
+                      {QUICK_PROMPTS.map((prompt): ReactElement => {
+                        const Icon = prompt.icon;
+                        return (
+                          <button
+                            key={prompt.id}
+                            type="button"
+                            onClick={(): void => void sendMessage(prompt.text)}
+                            disabled={isStreaming}
+                            title={prompt.text}
+                            className={cn(
+                              'group relative min-h-[44px] rounded-lg border p-2.5 text-left transition-all duration-150 kv-touch-feedback',
+                              isStreaming
+                                ? 'cursor-not-allowed border-white/[0.04] bg-white/[0.01] opacity-50'
+                                : 'border-white/[0.07] bg-white/[0.025] hover:border-cyan-400/40 hover:bg-white/[0.05]',
+                            )}
+                          >
+                            {/* 顶部：编号 + 图标容器（左） / 微箭头（右） */}
+                            <div className="flex items-start justify-between gap-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-mono text-[10px] tracking-wider text-slate-400">
+                                  {prompt.id}
+                                </span>
+                                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-white/[0.07] bg-slate-900/80 text-cyan-400 transition-colors group-hover:border-cyan-400/40 group-hover:text-cyan-300">
+                                  <Icon className="h-3.5 w-3.5" aria-hidden />
+                                </span>
+                              </div>
+                              <ArrowUpRight
+                                className="mt-0.5 h-3 w-3 shrink-0 text-slate-400 transition-colors group-hover:text-cyan-400/80"
+                                aria-hidden
+                              />
+                            </div>
+
+                            {/* 主标题 */}
+                            <span className="mt-2 block text-[12px] font-medium leading-snug text-slate-200">
+                              {prompt.label}
                             </span>
-                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-white/[0.07] bg-slate-900/80 text-cyan-400 transition-colors group-hover:border-cyan-400/40 group-hover:text-cyan-300">
-                              <Icon className="h-3.5 w-3.5" aria-hidden />
+                            {/* 技术副标题：一行，超出省略，保持卡片等高 */}
+                            <span className="mt-0.5 block truncate text-[11px] leading-snug text-slate-400">
+                              {prompt.subtitle}
                             </span>
-                          </div>
-                          <ArrowUpRight
-                            className="mt-0.5 h-3 w-3 shrink-0 text-slate-500 transition-colors group-hover:text-cyan-400/80"
-                            aria-hidden
-                          />
-                        </div>
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                        {/* 主标题 */}
-                        <span className="mt-2 block text-[12px] font-medium leading-snug text-slate-200">
-                          {prompt.label}
-                        </span>
-                        {/* 技术副标题：一行，超出省略，保持卡片等高 */}
-                        <span className="mt-0.5 block truncate text-[11px] leading-snug text-slate-500">
-                          {prompt.subtitle}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+                    <p className="border-t border-white/[0.06] pt-2.5 text-center font-mono text-[10px] leading-relaxed text-slate-400">
+                      支持 3D 视口快照多模态诊断、RAG Runbook 溯源与一键 MCP 闭环自愈
+                    </p>
+                  </div>
+                ) : virtualized ? (
+                  <div className="flex flex-col">
+                    <div
+                      className="relative w-full"
+                      style={{ height: `${virtualLayout.totalHeight}px` }}
+                    >
+                      {virtualPool
+                        .slice(
+                          Math.min(effectiveVirtualRange.start, virtualPool.length),
+                          Math.min(effectiveVirtualRange.end, virtualPool.length),
+                        )
+                        .map((message, offsetIdx): ReactElement => {
+                          const realIdx =
+                            Math.min(effectiveVirtualRange.start, virtualPool.length) + offsetIdx;
+                          const itemPos = virtualLayout.items[realIdx];
+                          const topPx =
+                            itemPos !== undefined
+                              ? itemPos.top
+                              : realIdx * (VIRTUAL_DEFAULT_BUBBLE_HEIGHT + VIRTUAL_ITEM_GAP_PX);
+                          return (
+                            <VirtualMessageItem
+                              key={message.id}
+                              message={message}
+                              top={topPx}
+                              isSpeaking={speakingMessageId === message.id}
+                              onRetry={retryLastRequest}
+                              onActionExecuted={handleActionExecuted}
+                              onToggleSpeak={toggleMessageSpeaking}
+                              onCommitted={handleBubbleCommitted}
+                              onMeasureNode={measureVirtualItemNode}
+                            />
+                          );
+                        })}
+                    </div>
+                    {pinnedTailMessage !== null ? (
+                      <PinnedTailItem
+                        key={pinnedTailMessage.id}
+                        message={pinnedTailMessage}
+                        onRetry={retryLastRequest}
+                        onActionExecuted={handleActionExecuted}
+                        isSpeaking={speakingMessageId === pinnedTailMessage.id}
+                        onToggleSpeak={toggleMessageSpeaking}
+                        onCommitted={handleBubbleCommitted}
+                        onRecordTailHeight={recordVirtualTailHeight}
+                      />
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {messages.map((message): ReactElement => (
+                      <MessageBubble
+                        key={message.id}
+                        message={message}
+                        onRetry={retryLastRequest}
+                        onActionExecuted={handleActionExecuted}
+                        isSpeaking={speakingMessageId === message.id}
+                        onToggleSpeak={toggleMessageSpeaking}
+                        onCommitted={handleBubbleCommitted}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
-            ) : (
-              messages.map((message) => (
-                <MessageBubble
-                  key={message.id}
-                  message={message}
-                  onRetry={retryLastRequest}
-                  onActionExecuted={handleActionExecuted}
-                  isSpeaking={speakingMessageId === message.id}
-                  onToggleSpeak={toggleMessageSpeaking}
-                />
-              ))
-            )}
-          </div>
+            </div>
 
-          {/*
-           * 【回到最新诊断 悬浮胶囊】（审查报告 §4.3）
-           *
-           * 用户在流式生成或阅读长报告时向上滚动后，auto-scroll 会让位
-           * （stickToBottomRef=false），此时新内容在下方持续产出但看不到。
-           * 这枚胶囊给出明确的"有新内容、点我回去"提示，
-           * 比让用户自己滚到底更符合对话产品的直觉。
-           *
-           * 用 AnimatePresence 做进出场，避免突然闪现/消失。
-           */}
-          <AnimatePresence>
-            {isAwayFromBottom && messages.length > 0 ? (
-              <motion.button
-                type="button"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 8 }}
-                transition={{ duration: 0.16 }}
-                onClick={jumpToLatest}
-                aria-label="回到最新诊断"
-                className="absolute bottom-[104px] left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-cyan-500/50 bg-slate-900/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-cyan-300 shadow-glow-cyan kv-blur-panel transition-colors hover:border-cyan-400 hover:bg-slate-800/90 active:scale-95"
-              >
-                <ChevronDown className="h-3 w-3" aria-hidden />
-                回到最新诊断
-              </motion.button>
-            ) : null}
-          </AnimatePresence>
+            {/*
+             * 【回到最新诊断 悬浮胶囊】（相对消息区视口底部固定，不会盖住底部输入框）
+             */}
+            <AnimatePresence>
+              {isAwayFromBottom && messages.length > 0 ? (
+                <motion.button
+                  type="button"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 8 }}
+                  transition={{ duration: 0.16 }}
+                  onClick={jumpToLatest}
+                  aria-label="回到最新诊断"
+                  className="pointer-events-auto absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-cyan-500/50 bg-slate-900/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-cyan-300 shadow-glow-cyan kv-blur-panel transition-colors hover:border-cyan-400 hover:bg-slate-800/90 active:scale-95"
+                >
+                  <ChevronDown className="h-3 w-3" aria-hidden />
+                  回到最新诊断
+                </motion.button>
+              ) : null}
+            </AnimatePresence>
+          </div>
 
           {/*
            * ---- 一体化圆角输入舱（Unified Composer）----
@@ -2745,23 +3718,23 @@ export default function CopilotDrawer() {
               <AnimatePresence>
                 {capturedViewportDataUrl !== null ? (
                   <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="mb-2 overflow-hidden"
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 4 }}
+                    className="relative mb-2"
                   >
                     <div className="flex items-center gap-2 rounded-lg border border-cyan-400/25 bg-cyan-400/[0.05] p-1">
                       {/*
-                       * 【缩略图卡】带青色扫描边框 + 悬停放大。
-                       *
-                       * - 扫描边框：外框青色描边 + 内部一条 animate-scan-line
-                       *   的细光带循环掠过，暗示"这是一份正在被解读的影像"；
-                       * - 悬停放大：group-hover 时浮出一张 3 倍大的预览（绝对定位、
-                       *   不改变布局），让用户确认自己截到的画面是否正确——
-                       *   h-9 w-14 的缩略图根本看不清拓扑细节。
+                       * 【缩略图卡】桌面悬停放大 + 移动端点击切换放大预览（clamp 防窄屏裁切）。
                        */}
                       <div className="group/thumb relative shrink-0">
-                        <div className="relative overflow-hidden rounded border border-cyan-400/40">
+                        <button
+                          type="button"
+                          onClick={(): void => setSnapshotPreviewOpen((prev): boolean => !prev)}
+                          aria-expanded={snapshotPreviewOpen}
+                          aria-label="切换 3D 视口快照大图预览"
+                          className="relative block overflow-hidden rounded border border-cyan-400/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400"
+                        >
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={capturedViewportDataUrl}
@@ -2777,9 +3750,18 @@ export default function CopilotDrawer() {
                                 'linear-gradient(90deg, transparent 0%, rgba(34,211,238,0.9) 50%, transparent 100%)',
                             }}
                           />
-                        </div>
-                        {/* 悬停放大预览：绝对定位，向上浮出，不挤动任何布局 */}
-                        <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden w-72 overflow-hidden rounded-lg border border-cyan-400/[0.45] bg-slate-950/95 p-1 shadow-[0_12px_36px_rgba(2,6,23,0.9)] group-hover/thumb:block">
+                        </button>
+                        {/* 悬停或点击放大预览：限幅防越出窄屏视口 */}
+                        <div
+                          onClick={(): void => setSnapshotPreviewOpen(false)}
+                          className={cn(
+                            'absolute bottom-full left-0 mb-2 w-[min(18rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-cyan-400/[0.45] bg-slate-950/95 p-1 shadow-[0_12px_36px_rgba(2,6,23,0.9)]',
+                            Z_CLASS.CHROME_POPOVER,
+                            snapshotPreviewOpen
+                              ? 'pointer-events-auto block'
+                              : 'pointer-events-none hidden group-hover/thumb:block',
+                          )}
+                        >
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={capturedViewportDataUrl}
@@ -2790,16 +3772,19 @@ export default function CopilotDrawer() {
                       </div>
                       <p className="min-w-0 flex-1 font-mono text-[10px] leading-tight tracking-wide text-cyan-300/80">
                         3D 视口快照就绪
-                        <span className="ml-1 text-slate-500">· 随消息发送</span>
+                        <span className="ml-1 text-slate-400">· 点击预览或随消息发送</span>
                       </p>
                       <button
                         type="button"
-                        onClick={(): void => setCapturedViewport(null)}
+                        onClick={(): void => {
+                          setSnapshotPreviewOpen(false);
+                          setCapturedViewport(null);
+                        }}
                         aria-label="移除快照"
                         title="移除快照"
-                        className="shrink-0 rounded p-0.5 text-slate-500 transition-colors hover:text-rose-400"
+                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:text-rose-400 md:h-6 md:w-6"
                       >
-                        <X className="h-3 w-3" aria-hidden />
+                        <X className="h-3.5 w-3.5 md:h-3 md:w-3" aria-hidden />
                       </button>
                     </div>
                   </motion.div>
@@ -2985,27 +3970,44 @@ export default function CopilotDrawer() {
                 className="w-full resize-none bg-transparent px-1 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none"
               />
 
-              {/* ---- C3：语音能力说明（原生 Web Speech / 无需 URL 或 Key） ---- */}
-              <p
-                className="mt-1 font-mono text-[10px] leading-relaxed text-slate-500"
-                aria-label="语音能力说明"
-              >
-                语音输入 / 播报使用<b className="text-slate-400">浏览器原生 Web Speech / SpeechSynthesis</b>
-                ，无需配置任何 URL 或 API Key。
-                {speechAsrSupported ? null : (
-                  <span className="text-amber-400/90"> 当前浏览器不支持语音识别：请改用 Chrome / Edge，或直接键盘输入。</span>
-                )}
-              </p>
+              {/* ---- R9-F：精简单行语音说明（默认 1 行 11px，点击 ⓘ 展开完整说明） ---- */}
+              <div className="mt-1 flex items-start justify-between gap-1.5">
+                <p
+                  className={cn(
+                    'min-w-0 flex-1 font-mono text-[11px] leading-snug text-slate-400',
+                    speechHintExpanded ? 'whitespace-normal' : 'truncate',
+                  )}
+                  aria-label="语音能力说明"
+                >
+                  {speechAsrSupported
+                    ? speechHintExpanded
+                      ? '语音输入 / 播报使用浏览器原生 Web Speech / SpeechSynthesis，无需配置任何 URL 或 API Key。'
+                      : '原生 Web Speech 语音输入与播报（无需 API Key）'
+                    : speechHintExpanded
+                      ? '语音播报使用浏览器原生 SpeechSynthesis；当前浏览器不支持语音识别，请改用 Chrome / Edge 或直接键盘输入。'
+                      : '当前浏览器不支持语音识别，请改用 Chrome / Edge 或键盘输入'}
+                </p>
+                <button
+                  type="button"
+                  onClick={(): void => setSpeechHintExpanded((prev): boolean => !prev)}
+                  aria-expanded={speechHintExpanded}
+                  aria-label={speechHintExpanded ? '收起语音能力说明' : '展开语音能力说明'}
+                  title="查看语音能力说明"
+                  className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-cyan-300"
+                >
+                  <Info className="h-3 w-3" aria-hidden />
+                </button>
+              </div>
 
               {/* ---- 底部内嵌工具栏 ---- */}
-              <div className="mt-1 flex items-center gap-1">
+              <div className="mt-1 flex flex-wrap items-center gap-1">
                 {/* 截取 3D 视口 */}
                 <button
                   type="button"
                   onClick={captureViewport}
                   aria-label="捕获当前 3D 视图"
                   title="截取当前 3D 视口快照，作为多模态输入"
-                  className="flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-1 font-mono text-[10px] tracking-tight text-slate-400 transition-colors hover:bg-white/[0.05] hover:text-cyan-300"
+                  className="flex min-h-[44px] min-w-0 shrink items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] tracking-tight text-slate-400 transition-colors hover:bg-white/[0.05] hover:text-cyan-300 md:min-h-0 md:px-1.5"
                 >
                   <Camera className="h-3 w-3 shrink-0" aria-hidden />
                   <span className="truncate">截取 3D 视口</span>
@@ -3019,7 +4021,7 @@ export default function CopilotDrawer() {
                   aria-pressed={isListening}
                   title={isListening ? '点击完成录音' : '语音输入（真实麦克风频谱）'}
                   className={cn(
-                    'relative flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-1 font-mono text-[10px] tracking-tight transition-colors',
+                    'relative flex min-h-[44px] min-w-0 shrink items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] tracking-tight transition-colors md:min-h-0 md:px-1.5',
                     isListening
                       ? 'bg-rose-500/[0.15] text-rose-300'
                       : 'text-slate-400 hover:bg-white/[0.05] hover:text-cyan-300',
@@ -3064,7 +4066,7 @@ export default function CopilotDrawer() {
                     <button
                       type="button"
                       onClick={(): void => void speechInput.start()}
-                      className="rounded border border-amber-400/50 px-1 text-[10px] font-bold uppercase tracking-wider hover:bg-amber-500/20"
+                      className="min-h-[44px] rounded border border-amber-400/50 px-2 text-[10px] font-bold uppercase tracking-wider hover:bg-amber-500/20 md:min-h-0 md:px-1"
                       aria-label="重试语音输入"
                     >
                       重试
@@ -3074,11 +4076,6 @@ export default function CopilotDrawer() {
 
                 {/*
                  * 【战术指令开关 —— 仅对话态提供】
-                 *
-                 * 空状态时画面中央已有 2×2 战术矩阵，底部再放同一个入口就是
-                 * **同一批指令出现两次**，纯属冗余。因此本按钮只在
-                 * messages.length > 0（已进入对话）时渲染，
-                 * 点击后在输入框上方展开一条极简工业风指令条。
                  */}
                 {messages.length > 0 ? (
                   <button
@@ -3088,7 +4085,7 @@ export default function CopilotDrawer() {
                     aria-label={isQuickPromptsOpen ? '收起战术指令' : '展开战术指令'}
                     title="战术指令（Tactical Commands）"
                     className={cn(
-                      'flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-1 font-mono text-[10px] tracking-tight transition-colors',
+                      'flex min-h-[44px] min-w-0 shrink items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] tracking-tight transition-colors md:min-h-0 md:px-1.5',
                       isQuickPromptsOpen
                         ? 'bg-cyan-400/10 text-cyan-300'
                         : 'text-slate-400 hover:bg-white/[0.05] hover:text-cyan-300',
@@ -3102,23 +4099,13 @@ export default function CopilotDrawer() {
                 {/* 弹性间隙：把发送按钮推到最右 */}
                 <span className="min-w-0 flex-1" />
 
-                {/*
-                 * 【发送 / 停止生成 双态按钮】（审查报告 §4.3）
-                 *
-                 * 此前流式期间发送按钮只是变成禁用的旋转菊花——用户想中断
-                 * 一段啰嗦的长回复，唯一出路是点「清空会话」把历史全删光。
-                 * 这是把"停止"与"销毁"混为一谈的产品缺陷。
-                 *
-                 * 现在流式中切换为高辨识度的玫瑰红停止按钮，
-                 * 点击调用 abortRef.abort()：已生成的内容保留，流优雅收尾。
-                 */}
                 {isStreaming ? (
                   <button
                     type="button"
                     onClick={handleStopGeneration}
                     aria-label="停止生成"
                     title="停止生成（保留已生成内容）"
-                    className="flex shrink-0 items-center gap-1 rounded-md border border-rose-500/50 bg-rose-500/[0.15] px-2 py-1 font-mono text-[10px] font-semibold text-rose-300 transition-colors hover:bg-rose-500/25 active:scale-95"
+                    className="flex min-h-[44px] shrink-0 items-center gap-1 rounded-md border border-rose-500/50 bg-rose-500/[0.15] px-3 py-1 font-mono text-[10px] font-semibold text-rose-300 transition-colors hover:bg-rose-500/25 active:scale-95 md:min-h-0 md:px-2"
                   >
                     <Square className="h-2.5 w-2.5" aria-hidden />
                     停止
@@ -3131,10 +4118,10 @@ export default function CopilotDrawer() {
                     aria-label="发送消息"
                     title="发送"
                     className={cn(
-                      'flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 font-mono text-[10px] font-semibold transition-colors',
+                      'flex min-h-[44px] shrink-0 items-center gap-1 rounded-md border px-3 py-1 font-mono text-[10px] font-semibold transition-colors md:min-h-0 md:px-2',
                       canSend
                         ? 'border-cyan-400/50 bg-cyan-400/[0.15] text-cyan-300 shadow-glow-cyan hover:bg-cyan-400/25'
-                        : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-500',
+                        : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-400',
                     )}
                   >
                     发送
@@ -3158,7 +4145,7 @@ export default function CopilotDrawer() {
        * 包括顶栏在内的全部内容，符合 AGENTS.md 第 6 条层级契约
        * （drei <Html> 恒为 [10,0]，绝不会盖住它）。
        */}
-      <RagKnowledgeModal open={ragModalOpen} onClose={(): void => setRagModalOpen(false)} />
+      <RagKnowledgeModal open={ragModalOpen} onClose={(): void => closeModal('rag')} />
 
       {/*
        * ---- SRE 故障复盘报告预览与导出 ----
@@ -3168,7 +4155,7 @@ export default function CopilotDrawer() {
        */}
       <PostMortemModal
         open={postMortemOpen}
-        onClose={(): void => setPostMortemOpen(false)}
+        onClose={(): void => closeModal('postMortem')}
         markdown={postMortemMarkdown}
         filename={postMortemFilename}
       />

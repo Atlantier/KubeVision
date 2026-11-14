@@ -4,37 +4,38 @@
  * KubeVision AI — 轻量级安全 Markdown 渲染器（MarkdownLite）
  *
  * 【为什么需要它】后端（真实大模型与仿真器都会）输出结构化 Markdown：
- * `## 诊断结论`、`**重点**`、`` `kubectl 命令` ``、`> 告警摘要`、有序列表。
- * 而前端此前用 `<p className="whitespace-pre-wrap">{text}</p>` 直接渲染纯文本，
- * 用户看到的是满屏 `##`、`**` 与反引号——这是审查报告判定的 **P0 级观感缺陷**：
- * 一个 AI 产品的回答裸露 Markdown 语法，专业感荡然无存。
+ * `## 诊断结论`、`**重点**`、`` `kubectl 命令` ``、`> 告警摘要`、有序列表、链接与 GFM 表格。
+ * 本组件将文本解析为结构化 AST 后通过 React 元素安全渲染，**绝不使用 dangerouslySetInnerHTML**。
  *
  * 【为什么不引入 react-markdown / marked】
- * AGENTS.md 第 9 条锁定了依赖世代矩阵。引入新依赖需要连带评估 ESM/CJS
- * 互操作、tree-shaking 与 SSR 行为，成本远高于收益；而本项目实际用到的
- * Markdown 子集非常小（标题/加粗/斜体/行内代码/引用/列表/表格）。
- * 自己写约 400 行状态机，**零新增依赖、零 SSR 风险、完全可控**。
+ * AGENTS.md 第 9 条锁定了依赖世代矩阵。自研状态机实现**零新增依赖、零 SSR 风险、完全可控**。
  *
- * 【安全契约：绝不使用 dangerouslySetInnerHTML】
- * LLM 输出是**不可信的外部输入**。任何把模型文本塞进 HTML 字符串的做法
- * 都会打开 XSS 通道（模型可能被提示注入诱导输出 `<img onerror=...>`）。
- * 本实现把文本解析为**数据结构**，再由 React 渲染为元素——
- * React 会自动转义所有文本节点，天然免疫注入。
+ * 【安全契约：绝不使用 dangerouslySetInnerHTML + 链接协议白名单】
+ * LLM 输出属于**不可信外部输入**。文本节点由 React 自动转义；`[text](url)` 链接必须经
+ * `sanitizeLinkUrl` 校验（严格白名单 `http:` / `https:` / `mailto:`，拦截控制字符与
+ * `javascript:` / `data:` / `vbscript:` / 相对路径），未通过校验的链接一律降级为纯文本。
  *
- * 【解析策略：逐行状态机 + 行内扫描】
- * 按行扫描识别块级元素（标题/引用/列表/表格/代码块），块内再按行内标记切分。
- *
- * 【本轮升级（实测缺陷自愈）】
- * 1. 新增 `InlineMarkdown` 组件——生成式 UI 卡片里的单段说明/证据条目
- *    只需行内渲染，不该套一层块级 `<div className="space-y-1.5">`；
- * 2. 标题支持 `#` ~ `####` 四级（此前只认 `##`/`###`，一级标题会裸露 `#`）；
- * 3. 行内支持 `*斜体*`（区分单星与双星）与「加粗内嵌行内代码」；
- * 4. 新增 GFM 表格解析与渲染（大模型最爱输出的形态）；
- * 5. 列表项允许前导空格（模型常输出 2~4 空格的子列表，
- *    此前这些行会掉进段落分支，把 `- ` 与 `2. ` 原样渲染出来）。
+ * 【流式增量缓存架构】
+ * 流式输出时每次文本追加若从头重解析全部块并对全部历史块做 `parseInline` + DOM 比对，
+ * 会形成 O(n²) 开销与主线程长任务。本实现维护 `IncrementalBlockCache`：
+ * 1. 仅在围栏闭合、空行、完整单行块（标题/分隔线）或完整表格结束等安全行尾边界推进 `closedLength`；
+ * 2. 后续追加命中 `closedPrefix` 时仅解析 `markdown.slice(closedLength)` 尾部未闭合片段；
+ * 3. 已闭合块保留原始 `Block` 对象引用，并由 `MemoMarkdownBlock`（`React.memo`）跳过重渲染；
+ * 4. 未闭合代码围栏与未闭合行内标记仍即时输出为尾部可见内容，保证流式首字与尾部文字不丢失。
  */
 
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import { Check, Copy } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
@@ -71,127 +72,334 @@ export interface InlineMarkdownProps {
 }
 
 /* ========================================================================== */
-/* 行内解析                                                                    */
+/* 行内解析与链接白名单                                                         */
 /* ========================================================================== */
 
 /** 行内片段类型 */
-type InlineKind = 'text' | 'bold' | 'italic' | 'code';
+type InlineKind = 'text' | 'bold' | 'italic' | 'code' | 'link';
 
 /** 行内片段 */
 interface InlineSegment {
   readonly kind: InlineKind;
   readonly text: string;
+  /** 经协议白名单校验的安全链接地址（仅 `kind === 'link'` 时存在） */
+  readonly href?: string;
   /**
-   * 加粗片段内部的子片段。
+   * 加粗或链接内部的子片段。
    *
-   * 【为何需要】实测模型会输出「**当前（`kubectl cordon` 建议暂缓）**」——
-   * 加粗内部还嵌着行内代码。若把整段粗体当纯文本直接渲染，
-   * 反引号就会裸露出来（这正是本轮要修的缺陷之一）。
-   * 因此加粗片段会递归解析内部，只允许 code / italic 子类型（禁止嵌套 bold，
-   * 避免 `**a **b** c**` 这类畸形输入造成无限递归）。
+   * 【为何需要】模型会输出「**当前（`kubectl cordon` 建议暂缓）**」或
+   * 「[`kubectl`](https://kubernetes.io)」，递归解析子片段可同时保留内嵌代码/斜体/加粗，
+   * 并通过 `allowBold` / `allowLink` 开关保证不会出现无限递归或嵌套 `<a>`。
    */
   readonly children?: readonly InlineSegment[];
 }
 
+/** 链接解析命中结果 */
+interface MatchedLink {
+  /** 链接显示文案 */
+  readonly label: string;
+  /** 通过安全白名单校验后的目标地址；不安全或非法时为 null */
+  readonly safeHref: string | null;
+  /** 整个 `[label](url)` 结束后的下一字符下标 */
+  readonly nextIndex: number;
+}
+
 /**
- * parseInlineNoBold —— 只解析「行内代码 + 斜体」，不解析加粗。
+ * sanitizeLinkUrl —— 严格校验 Markdown 链接协议白名单（仅允许 http / https / mailto）。
  *
- * 供加粗片段的内部内容使用：加粗内部再出现 `**` 属于畸形输入，
- * 在此层不再处理，从而保证递归一定会终止。
+ * 【设计意图】防御提示注入构造 `javascript:`、`data:`、`vbscript:`、`file:`、
+ * 控制字符混淆（如 `java\tscript:`）及协议相对跳转（`//evil.com`）。
+ * 【输入输出】输入原始 URL 字符串；仅当通过控制字符过滤、显式协议前缀与 `URL` 构造器校验时
+ * 返回规范化 `href`，否则返回 `null` 由调用方降级为纯文本。
+ *
+ * @param rawUrl 链接括号内的原始地址字符串
+ * @returns 安全的规范化 URL；未通过白名单则返回 null
+ */
+function sanitizeLinkUrl(rawUrl: string): string | null {
+  let candidate = rawUrl.trim();
+  if (candidate.startsWith('<') && candidate.endsWith('>') && candidate.length >= 2) {
+    candidate = candidate.slice(1, -1).trim();
+  }
+  if (candidate.length === 0) return null;
+  // 拦截任何 ASCII 控制字符（如 \t / \n / \r / \0），防止浏览器 URL 归一化绕过协议检查
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001F\u007F]/.test(candidate)) return null;
+  if (!/^(https?:\/\/|mailto:)/i.test(candidate)) return null;
+
+  try {
+    const parsed = new URL(candidate);
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol === 'http:' || protocol === 'https:') {
+      if (parsed.hostname.length === 0) return null;
+      return parsed.href;
+    }
+    if (protocol === 'mailto:') {
+      const recipient = candidate.slice('mailto:'.length).split('?')[0].trim();
+      if (recipient.length === 0 || !recipient.includes('@')) return null;
+      return parsed.href;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * matchLinkAt —— 从 `text[startIndex] === '['` 起匹配单行 `[label](url)`。
+ *
+ * 【核心逻辑】
+ * 1. 扫描 `[...]` 时感知行内反引号与成对中括号，避免 `[`...`]` 内出现 `]` 时提前截断；
+ * 2. 紧接 `(` 后按括号嵌套深度匹配 `)`，支持带括号的合法 URL（如维基百科词条）；
+ * 3. 剥离可选标题 `"title"` 后交由 `sanitizeLinkUrl` 校验；流式未闭合时返回 null。
+ *
+ * @param text 行内文本
+ * @param startIndex `[` 所在下标
+ * @returns 匹配结果；未闭合或不符合链接语法时返回 null
+ */
+function matchLinkAt(text: string, startIndex: number): MatchedLink | null {
+  if (text[startIndex] !== '[') return null;
+
+  let pos = startIndex + 1;
+  let bracketDepth = 1;
+  let inCode = false;
+  let closeBracket = -1;
+
+  while (pos < text.length) {
+    const ch = text[pos];
+    if (ch === '\n') return null;
+    if (ch === '`') {
+      inCode = !inCode;
+    } else if (!inCode) {
+      if (ch === '\\' && pos + 1 < text.length) {
+        pos += 2;
+        continue;
+      }
+      if (ch === '[') {
+        bracketDepth += 1;
+      } else if (ch === ']') {
+        bracketDepth -= 1;
+        if (bracketDepth === 0) {
+          closeBracket = pos;
+          break;
+        }
+      }
+    }
+    pos += 1;
+  }
+
+  if (closeBracket <= startIndex + 1) return null;
+  if (text[closeBracket + 1] !== '(') return null;
+
+  let urlCursor = closeBracket + 2;
+  let parenDepth = 1;
+  let closeParen = -1;
+
+  while (urlCursor < text.length) {
+    const ch = text[urlCursor];
+    if (ch === '\n') return null;
+    if (ch === '\\' && urlCursor + 1 < text.length) {
+      urlCursor += 2;
+      continue;
+    }
+    if (ch === '(') {
+      parenDepth += 1;
+    } else if (ch === ')') {
+      parenDepth -= 1;
+      if (parenDepth === 0) {
+        closeParen = urlCursor;
+        break;
+      }
+    }
+    urlCursor += 1;
+  }
+
+  if (closeParen === -1) return null;
+
+  const label = text.slice(startIndex + 1, closeBracket);
+  const rawInner = text.slice(closeBracket + 2, closeParen).trim();
+  const titleMatch = /^(\S+)\s+(?:"[^"]*"|'[^']*')$/.exec(rawInner);
+  const rawUrl = titleMatch !== null ? titleMatch[1] : rawInner;
+
+  return {
+    label,
+    safeHref: sanitizeLinkUrl(rawUrl),
+    nextIndex: closeParen + 1,
+  };
+}
+
+/**
+ * findClosingBold —— 从 `startIndex` 起查找闭合的 `**`，跳过成对行内反引号。
+ *
+ * @param text 待扫描文本
+ * @param startIndex 开标签 `**` 之后的起始下标
+ * @returns 闭合 `**` 的起始下标；未找到返回 -1
+ */
+function findClosingBold(text: string, startIndex: number): number {
+  let pos = startIndex;
+  while (pos < text.length - 1) {
+    if (text[pos] === '`') {
+      const codeEnd = text.indexOf('`', pos + 1);
+      if (codeEnd !== -1) {
+        pos = codeEnd + 1;
+        continue;
+      }
+    }
+    if (text[pos] === '*' && text[pos + 1] === '*' && pos > startIndex) {
+      return pos;
+    }
+    pos += 1;
+  }
+  return -1;
+}
+
+/**
+ * matchItalicAt —— 从 `text[startIndex] === '*'` 起匹配单行 `*italic*`。
+ *
+ * 要求内容首尾均非空白且不含嵌套 `*`（与原正则行为一致，避开 `2 * 3 * 4` 误判）。
+ *
+ * @param text 行内文本
+ * @param startIndex `*` 所在下标
+ * @returns 闭合 `*` 的下标；未匹配返回 -1
+ */
+function matchItalicAt(text: string, startIndex: number): number {
+  if (startIndex + 2 >= text.length) return -1;
+  const firstInner = text[startIndex + 1];
+  if (firstInner === '*' || /\s/.test(firstInner)) return -1;
+
+  for (let pos = startIndex + 2; pos < text.length; pos += 1) {
+    const ch = text[pos];
+    if (ch === '\n') return -1;
+    if (ch === '*') {
+      if (/\s/.test(text[pos - 1])) return -1;
+      return pos;
+    }
+  }
+  return -1;
+}
+
+/**
+ * parseInlineSegments —— 单遍状态机扫描行内标记（代码 / 加粗 / 链接 / 斜体）。
+ *
+ * 【优先级顺序】行内代码 `` `…` `` > 加粗 `**…**` > 链接 `[text](url)` > 斜体 `*…*`。
+ * 反引号内一切符号均视为字面量；未闭合的标记直接按纯文本输出，保证流式阅读不阻塞。
  *
  * @param text 待解析文本
- * @returns 片段数组
+ * @param allowBold 是否允许解析 `**加粗**`
+ * @param allowLink 是否允许解析 `[text](url)`
+ * @returns 行内片段数组
  */
-function parseInlineNoBold(text: string): InlineSegment[] {
+function parseInlineSegments(
+  text: string,
+  allowBold: boolean,
+  allowLink: boolean,
+): InlineSegment[] {
   const segments: InlineSegment[] = [];
-  /* code 优先于 italic：反引号里的 * 是字面量，不该被当成斜体标记 */
-  const pattern = /`([^`]+?)`|\*([^\s*](?:[^*\n]*[^\s*])?)\*/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null = pattern.exec(text);
+  let plainStart = 0;
+  let i = 0;
 
-  while (match !== null) {
-    if (match.index > lastIndex) {
-      segments.push({ kind: 'text', text: text.slice(lastIndex, match.index) });
+  const flushPlain = (endIndex: number): void => {
+    if (endIndex > plainStart) {
+      segments.push({ kind: 'text', text: text.slice(plainStart, endIndex) });
     }
-    if (match[1] !== undefined) {
-      segments.push({ kind: 'code', text: match[1] });
-    } else if (match[2] !== undefined) {
-      segments.push({ kind: 'italic', text: match[2] });
+  };
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    /* 1. 行内代码：优先级最高，反引号内保留字面量 */
+    if (ch === '`') {
+      const codeEnd = text.indexOf('`', i + 1);
+      if (codeEnd > i + 1) {
+        flushPlain(i);
+        segments.push({ kind: 'code', text: text.slice(i + 1, codeEnd) });
+        i = codeEnd + 1;
+        plainStart = i;
+        continue;
+      }
     }
-    lastIndex = match.index + match[0].length;
-    match = pattern.exec(text);
+
+    /* 2. 加粗：允许内部嵌套行内代码、链接与斜体，禁止嵌套加粗 */
+    if (allowBold && ch === '*' && text[i + 1] === '*') {
+      const boldEnd = findClosingBold(text, i + 2);
+      if (boldEnd > i + 2) {
+        const inner = text.slice(i + 2, boldEnd);
+        flushPlain(i);
+        segments.push({
+          kind: 'bold',
+          text: inner,
+          children: parseInlineSegments(inner, false, allowLink),
+        });
+        i = boldEnd + 2;
+        plainStart = i;
+        continue;
+      }
+    }
+
+    /* 3. 链接：严格白名单校验，未通过则降级为纯文本（不渲染 <a>） */
+    if (allowLink && ch === '[') {
+      const link = matchLinkAt(text, i);
+      if (link !== null) {
+        flushPlain(i);
+        const labelChildren = parseInlineSegments(link.label, allowBold, false);
+        if (link.safeHref !== null) {
+          segments.push({
+            kind: 'link',
+            text: link.label,
+            href: link.safeHref,
+            children: labelChildren,
+          });
+        } else {
+          /* 非白名单协议（如 javascript: / data:）降级为纯文本标签，剥离危险 URI */
+          for (const child of labelChildren) {
+            segments.push(child);
+          }
+        }
+        i = link.nextIndex;
+        plainStart = i;
+        continue;
+      }
+    }
+
+    /* 4. 斜体（单星号，跳过双星号起点） */
+    if (ch === '*' && text[i + 1] !== '*') {
+      const italicEnd = matchItalicAt(text, i);
+      if (italicEnd !== -1) {
+        flushPlain(i);
+        segments.push({ kind: 'italic', text: text.slice(i + 1, italicEnd) });
+        i = italicEnd + 1;
+        plainStart = i;
+        continue;
+      }
+    }
+
+    i += 1;
   }
 
-  if (lastIndex < text.length) {
-    segments.push({ kind: 'text', text: text.slice(lastIndex) });
-  }
+  flushPlain(text.length);
   return segments.length > 0 ? segments : [{ kind: 'text', text }];
 }
 
 /**
- * parseInline —— 把一行文本切分为「普通 / 加粗 / 斜体 / 行内代码」片段。
- *
- * 【核心逻辑】用一个组合正则一次性扫描三种标记，避免多次遍历：
- *   `\*\*(.+?)\*\*`        加粗（非贪婪，防止跨段误吞）
- *   `` `([^`]+?)` ``       行内代码
- *   `\*([^\s*]…)\*`        斜体（要求内容首尾非空白，避开 `2 * 3 * 4` 这类误判）
- *
- * 【为何加粗必须排在斜体之前】正则的交替分支是**从左到右**尝试的。
- * 若斜体在前，`**重点**` 会被拆成「空斜体 + 重点 + 空斜体」或直接错位；
- * 把双星放前面可保证 `**…**` 优先整体匹配。
- *
- * 【流式容错】流式输出时标记可能尚未闭合（如只收到 `**重点`）。
- * 由于正则要求成对出现，未闭合的标记会被当作普通文本渲染——
- * 这比"等闭合再显示"更好：用户能先看到内容，闭合后自动变样式。
+ * parseInline —— 把单行文本解析为行内片段（支持代码/加粗/链接/斜体）。
  *
  * @param line 单行文本
- * @returns 片段数组（按原文顺序）
+ * @returns 片段数组
  */
 function parseInline(line: string): InlineSegment[] {
-  const segments: InlineSegment[] = [];
-  /* 交替顺序：加粗 → 行内代码 → 斜体 */
-  const pattern = /\*\*([\s\S]+?)\*\*|`([^`]+?)`|\*([^\s*](?:[^*\n]*[^\s*])?)\*/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null = pattern.exec(line);
-
-  while (match !== null) {
-    /* 标记前的普通文本 */
-    if (match.index > lastIndex) {
-      segments.push({ kind: 'text', text: line.slice(lastIndex, match.index) });
-    }
-    if (match[1] !== undefined) {
-      /* 加粗：内部递归解析行内代码与斜体 */
-      const inner = match[1];
-      segments.push({ kind: 'bold', text: inner, children: parseInlineNoBold(inner) });
-    } else if (match[2] !== undefined) {
-      segments.push({ kind: 'code', text: match[2] });
-    } else if (match[3] !== undefined) {
-      segments.push({ kind: 'italic', text: match[3] });
-    }
-    lastIndex = match.index + match[0].length;
-    match = pattern.exec(line);
-  }
-
-  /* 末尾剩余普通文本 */
-  if (lastIndex < line.length) {
-    segments.push({ kind: 'text', text: line.slice(lastIndex) });
-  }
-
-  return segments.length > 0 ? segments : [{ kind: 'text', text: line }];
+  return parseInlineSegments(line, true, true);
 }
 
 /**
  * renderInline —— 把行内片段渲染为 React 节点。
  *
  * 【样式契约】
- * - bold   → 接近纯白的字体加重（`text-slate-50 font-semibold`），
- *            在深色背景上形成清晰强调但不刺眼；内部子片段继续按 code/italic 渲染；
- * - italic → 轻微倾斜 + 略亮的字色，不做夸张处理；
- * - code   → 深色胶囊 + 等宽 + 青色文字（K8s 实体名/命令的统一表达），
- *            与全站的 `.font-mono` 遥测数字语言一致。
+ * - bold   → `text-slate-50 font-semibold`，递归渲染内部子片段；
+ * - italic → 轻微倾斜 + `text-slate-200/90`；
+ * - code   → 深色等宽胶囊 + 青色字，配 `break-all` 防止长路径撑破气泡；
+ * - link   → `<a target="_blank" rel="noopener noreferrer">`，青色下划线 + 焦点环。
  *
  * @param segments 片段数组
- * @param keyPrefix 用于生成稳定 key 的前缀（避免 React 警告）
+ * @param keyPrefix 用于生成稳定 key 的前缀
  */
 function renderInline(segments: readonly InlineSegment[], keyPrefix: string): ReactNode[] {
   return segments.map((seg, i): ReactNode => {
@@ -214,21 +422,23 @@ function renderInline(segments: readonly InlineSegment[], keyPrefix: string): Re
       return (
         <code
           key={key}
-          /*
-           * 【为何需要 break-all】行内代码胶囊此前只设了等宽字体与底色，
-           * 没有断行规则。像 `oom_score_adj` 这类短标识符没问题，但遇到
-           * 长 base64、长 URL、完整文件路径（`/var/lib/kubelet/pods/...`）
-           * 时，这个 code 元素会以**最小内容宽度**撑开父容器，
-           * 在窄屏上直接把对话气泡顶出边界——页面级 scrollWidth 不会超，
-           * 但气泡内部会出现一条横向滚动条或文字被裁掉。
-           * break-all 允许在任意字符处断行，代价是极短标识符偶尔会从中间折行；
-           * 两个坏处相权，溢出比中间折行严重得多。
-           * 配合 break-words 兜底（长英文单词场景），保证任何输入都不溢出。
-           */
-          className="break-all rounded border border-white/[0.04] bg-slate-800/90 px-1 py-0.5 font-mono text-[0.92em] text-cyan-300"
+          className="max-w-full break-all [overflow-wrap:anywhere] rounded border border-white/[0.04] bg-slate-800/90 px-1 py-0.5 font-mono text-[0.92em] text-cyan-300"
         >
           {seg.text}
         </code>
+      );
+    }
+    if (seg.kind === 'link' && seg.href !== undefined) {
+      return (
+        <a
+          key={key}
+          href={seg.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="max-w-full [overflow-wrap:anywhere] rounded-sm text-cyan-300 underline decoration-cyan-400/50 underline-offset-2 transition-colors hover:text-cyan-200 hover:decoration-cyan-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/60"
+        >
+          {seg.children !== undefined ? renderInline(seg.children, `${key}-a`) : seg.text}
+        </a>
       );
     }
     return <Fragment key={key}>{seg.text}</Fragment>;
@@ -236,7 +446,7 @@ function renderInline(segments: readonly InlineSegment[], keyPrefix: string): Re
 }
 
 /* ========================================================================== */
-/* 块级解析                                                                    */
+/* 块级解析与流式增量缓存                                                      */
 /* ========================================================================== */
 
 /** 块类型 */
@@ -253,6 +463,9 @@ type BlockKind =
   | 'table'
   | 'p';
 
+/** 表格列对齐方式 */
+type TableAlignment = 'left' | 'center' | 'right';
+
 /** 块结构 */
 interface Block {
   readonly kind: BlockKind;
@@ -262,81 +475,189 @@ interface Block {
   readonly lang?: string;
   /** 列表项缩进层级（0 为顶层，1 为一级子项），与 lines 一一对应 */
   readonly depths?: readonly number[];
+  /** 引用块内部递归解析出的子块（支持嵌套引用、列表与多段） */
+  readonly children?: readonly Block[];
   /** 表格表头 */
   readonly headers?: readonly string[];
+  /** 表格列对齐 */
+  readonly alignments?: readonly TableAlignment[];
   /** 表格数据行 */
   readonly rows?: readonly (readonly string[])[];
 }
 
-/**
- * 表格分隔行判定。
- *
- * 形如 `| --- | :---: | ---: |`，只允许竖线、连字符、冒号与空白。
- * 这是 GFM 表格的必要条件：没有分隔行就只是一堆带竖线的普通文本。
- */
-const TABLE_SEPARATOR_PATTERN = /^\|?[\s:|-]+\|[\s:|-]+\|?$/;
+/** 增量块解析缓存结构 */
+interface IncrementalBlockCache {
+  /** 上次解析的完整源文本 */
+  readonly source: string;
+  /** 已永久闭合块的源文本前缀（始终落在完整 `\n` 边界且无未闭合围栏） */
+  readonly closedPrefix: string;
+  /** closedPrefix 字符长度 */
+  readonly closedLength: number;
+  /** 已闭合块列表（后续流式追加时保持对象引用不变） */
+  readonly closedBlocks: readonly Block[];
+  /** 本次完整块列表（closedBlocks + 尾部活跃块） */
+  readonly allBlocks: readonly Block[];
+}
+
+/** 单次块解析输出（含可安全闭合偏移） */
+interface ParseBlocksOutcome {
+  readonly blocks: Block[];
+  readonly closedCharOffset: number;
+  readonly closedBlockCount: number;
+}
+
+/** 引用递归最大嵌套深度（防止极端恶意连续 `>>>>...` 导致栈溢出） */
+const MAX_QUOTE_DEPTH = 4;
 
 /**
- * 拆表格行 —— 去掉首尾竖线后按竖线切分，逐格 trim。
+ * splitTableRow —— 拆表格行并支持转义竖线 `\|` 还原。
  *
- * @param line 形如 `| 节点 | CPU |` 的行
+ * 与 `src/utils/postMortemReport.ts` 的 `escapeTableCell` 对齐：遇到 `\|` 时
+ * 视作单元格字面量 `|` 而非列分隔符，其余未转义 `|` 切分后逐格 trim。
+ *
+ * @param line 形如 `| 节点 | CPU |` 或 `节点 | CPU` 的行
  * @returns 单元格数组
  */
 function splitTableRow(line: string): string[] {
   let trimmed = line.trim();
-  if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
-  if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
-  return trimmed.split('|').map((cell): string => cell.trim());
+  if (trimmed.startsWith('|')) {
+    trimmed = trimmed.slice(1);
+  }
+  if (trimmed.endsWith('|') && !trimmed.endsWith('\\|')) {
+    trimmed = trimmed.slice(0, -1);
+  }
+
+  const cells: string[] = [];
+  let current = '';
+  for (let i = 0; i < trimmed.length; i += 1) {
+    if (trimmed[i] === '\\' && i + 1 < trimmed.length && trimmed[i + 1] === '|') {
+      current += '|';
+      i += 1;
+    } else if (trimmed[i] === '|') {
+      cells.push(current.trim());
+      current = '';
+    } else {
+      current += trimmed[i];
+    }
+  }
+  cells.push(current.trim());
+  return cells;
 }
 
 /**
- * parseBlocks —— 把 Markdown 源文本解析为块级结构。
+ * parseTableSeparator —— 校验 GFM 表格分隔行并提取列对齐方式。
  *
- * 【状态机逻辑】逐行扫描并维护「当前块」：
- * - `# ` / `## ` / `### ` / `#### ` 开启标题块（从长到短匹配，防止 `####` 被 `#` 吞掉）；
- * - `> ` 连续行合并为引用块；
- * - `- ` / `* ` / `• ` 连续行合并为无序列表（允许前导空格做子列表）；
- * - `1. ` / `1)` / `1、` 连续行合并为有序列表（同样允许前导空格）；
- * - 连续 `| … |` 且第二行是分隔行 → 表格；
- * - `---` 分隔线；
- * - 其余非空行作为段落（连续行合并，保留换行语义为空格）；
- * - 空行结束当前块。
+ * 【修复缺陷】旧正则 `^\|?[\s:|-]+\|[\s:|-]+\|?$` 会误放行无连字符的 `|   |   |`，
+ * 同时拒绝单列表格 `| --- |` 与省略外侧竖线的 `--- | ---`。本函数逐列校验
+ * `/^:?-+:?$/`，同时支持单列/多列、有无外侧竖线及 `:---` / `:---:` / `---:` 对齐。
  *
- * 【为何合并连续段落行】Markdown 中单个换行不产生新段落。若逐行渲染，
- * 模型换行输出的长句会被切碎成一堆独立 `<p>`，行距过大、阅读断裂。
- *
- * @param source Markdown 源文本
- * @returns 块数组
+ * @param line 候选分隔行文本
+ * @returns 对齐数组；不符合分隔行格式则返回 null
  */
-function parseBlocks(source: string): Block[] {
+function parseTableSeparator(line: string): TableAlignment[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.includes('|')) return null;
+
+  const cells = splitTableRow(trimmed);
+  if (cells.length === 0) return null;
+
+  const alignments: TableAlignment[] = [];
+  for (const cell of cells) {
+    if (!/^:?-+:?$/.test(cell)) return null;
+    if (cell.startsWith(':') && cell.endsWith(':')) {
+      alignments.push('center');
+    } else if (cell.endsWith(':')) {
+      alignments.push('right');
+    } else {
+      alignments.push('left');
+    }
+  }
+  return alignments;
+}
+
+/**
+ * normalizeTableRow —— 把数据行列数对齐到表头列数，缺列补空串。
+ *
+ * @param cells 原始单元格
+ * @param columnCount 表头列数
+ * @returns 归一化后的行数据
+ */
+function normalizeTableRow(cells: readonly string[], columnCount: number): string[] {
+  if (cells.length === columnCount) return [...cells];
+  if (cells.length > columnCount) return cells.slice(0, columnCount);
+  const padded = [...cells];
+  while (padded.length < columnCount) {
+    padded.push('');
+  }
+  return padded;
+}
+
+/**
+ * parseBlocksCore —— 把 Markdown 源文本解析为块级结构，并计算安全闭合边界。
+ *
+ * 【状态机与闭合边界设计】
+ * 1. 逐行扫描并记录每行起止字符偏移（仅含完整 `\n` 的行允许作为闭合边界）；
+ * 2. 仅当 `quoteDepth === 0` 且 `fence === null && current === null`（例如空行、
+ *    已闭合围栏、已换行完结的标题/分隔线，或后继完整非表格行终结的表格）时推进
+ *    `closedCharOffset` 与 `closedBlockCount`；
+ * 3. 引用块把每行剥离首层 `>` 后递归交由 `parseBlocksCore(..., quoteDepth + 1)`
+ *    处理，原生支持 `> >` / `>>` 嵌套引用与引用内列表/多段；
+ * 4. 若到达末尾时围栏代码块仍未闭合且已有正文行，仍输出为 `codeblock` 块，
+ *    确保流式未闭合代码块及其后续文本即时可见。
+ *
+ * @param source 待解析 Markdown 文本
+ * @param quoteDepth 当前引用递归深度（顶层为 0）
+ * @returns 块数组及顶层安全闭合偏移
+ */
+function parseBlocksCore(source: string, quoteDepth = 0): ParseBlocksOutcome {
   const blocks: Block[] = [];
   const rawLines = source.split('\n');
 
-  /** 当前正在累积的块（null 表示无） */
-  let current: { kind: BlockKind; lines: string[]; depths: number[] } | null = null;
+  /* 计算每行的字符起始偏移，用于精确定位顶层可缓存闭合边界 */
+  const lineStarts: number[] = new Array<number>(rawLines.length);
+  let runningOffset = 0;
+  for (let i = 0; i < rawLines.length; i += 1) {
+    lineStarts[i] = runningOffset;
+    runningOffset += rawLines[i].length + 1;
+  }
 
-  /**
-   * 【围栏代码块状态】模型经常输出 ```bash … ``` 形式的命令块。
-   * 若不当成整体处理，围栏标记（```）会被当作普通文本渲染出来，
-   * 用户就会看到满屏反引号——这正是实测发现的 B4 缺陷。
-   * 这里用一个独立状态收集围栏内的所有行，**不做任何行内解析**
-   * （代码里的 * 和 ` 都是字面量，解析会破坏内容）。
-   */
+  let closedCharOffset = 0;
+  let closedBlockCount = 0;
+
+  let current: { kind: BlockKind; lines: string[]; depths: number[] } | null = null;
   let fence: { lang: string; lines: string[] } | null = null;
 
-  /** 收尾当前块并入列 */
+  const commitClosed = (blockCount: number, charOffset: number): void => {
+    if (quoteDepth !== 0) return;
+    if (charOffset > closedCharOffset) {
+      closedCharOffset = charOffset;
+      closedBlockCount = blockCount;
+    }
+  };
+
+  /** 收尾当前累积块并入列；若为引用块则递归解析嵌套子块 */
   const flush = (): void => {
     if (current !== null && current.lines.length > 0) {
-      blocks.push({
-        kind: current.kind,
-        lines: current.lines,
-        ...(current.kind === 'ul' || current.kind === 'ol' ? { depths: current.depths } : {}),
-      });
+      if (current.kind === 'quote') {
+        const innerSource = current.lines.join('\n');
+        const innerOutcome = parseBlocksCore(innerSource, quoteDepth + 1);
+        blocks.push({
+          kind: 'quote',
+          lines: current.lines,
+          children: innerOutcome.blocks,
+        });
+      } else {
+        blocks.push({
+          kind: current.kind,
+          lines: current.lines,
+          ...(current.kind === 'ul' || current.kind === 'ol' ? { depths: current.depths } : {}),
+        });
+      }
     }
     current = null;
   };
 
-  /** 追加一行到指定类型的块；若类型不同则先收尾 */
+  /** 追加一行到指定类型块；类型切换时先收尾上一块 */
   const push = (kind: BlockKind, text: string, depth = 0): void => {
     if (current === null || current.kind !== kind) {
       flush();
@@ -350,109 +671,152 @@ function parseBlocks(source: string): Block[] {
   for (let index = 0; index < rawLines.length; index += 1) {
     const rawLine = rawLines[index];
     const line = rawLine.trimEnd();
+    const trimmed = line.trim();
+    const hasTrailingNewline = index < rawLines.length - 1;
+    const afterLineOffset = lineStarts[index] + rawLine.length + 1;
 
-    /* ---- 围栏代码块：开启 / 结束 ---- */
-    const fenceMatch = /^```(.*)$/.exec(line.trim());
+    /* ---- 围栏代码块：开启 / 关闭 ---- */
+    const fenceMatch = /^```(.*)$/.exec(trimmed);
     if (fenceMatch !== null) {
       if (fence === null) {
-        /* 开启围栏：先结束上文块 */
         flush();
+        if (index > 0) {
+          commitClosed(blocks.length, lineStarts[index]);
+        }
         fence = { lang: fenceMatch[1].trim(), lines: [] };
       } else {
-        /* 关闭围栏：整体入列，内容原样保留 */
         blocks.push({ kind: 'codeblock', lines: fence.lines, lang: fence.lang });
         fence = null;
+        if (hasTrailingNewline) {
+          commitClosed(blocks.length, afterLineOffset);
+        }
       }
       continue;
     }
 
-    /* ---- 围栏内部：原样收集，跳过一切行内解析 ---- */
+    /* ---- 围栏内部：原样收集，跳过行内与块级解析 ---- */
     if (fence !== null) {
       fence.lines.push(rawLine);
       continue;
     }
 
-    /* ---- 空行：结束当前块 ---- */
-    if (line.trim().length === 0) {
+    /* ---- 空行：结束当前块并推进闭合边界 ---- */
+    if (trimmed.length === 0) {
       flush();
+      if (hasTrailingNewline) {
+        commitClosed(blocks.length, afterLineOffset);
+      }
       continue;
     }
 
     /* ---- 水平分隔线 ---- */
-    if (/^---+$/.test(line.trim())) {
+    if (/^---+$/.test(trimmed)) {
       flush();
       blocks.push({ kind: 'hr', lines: [] });
+      if (hasTrailingNewline) {
+        commitClosed(blocks.length, afterLineOffset);
+      }
       continue;
     }
 
-    /* ---- 表格：当前行以 | 开头，且下一行是分隔行 ---- */
-    if (line.trim().startsWith('|') && index + 1 < rawLines.length) {
-      const separator = rawLines[index + 1].trim();
-      if (separator.startsWith('|') && TABLE_SEPARATOR_PATTERN.test(separator)) {
-        flush();
+    /* ---- GFM 表格：含 | 且下一行通过分隔行校验且列数一致 ---- */
+    if (
+      trimmed.includes('|') &&
+      !/^(?:#{1,4}\s|>)/.test(trimmed) &&
+      index + 1 < rawLines.length
+    ) {
+      const separatorLine = rawLines[index + 1].trim();
+      const alignments = parseTableSeparator(separatorLine);
+      if (alignments !== null) {
         const headers = splitTableRow(line);
-        const rows: string[][] = [];
-        /* 跳过表头与分隔行，收集后续所有表格行 */
-        let cursor = index + 2;
-        while (cursor < rawLines.length && rawLines[cursor].trim().startsWith('|')) {
-          rows.push(splitTableRow(rawLines[cursor]));
-          cursor += 1;
+        if (headers.length === alignments.length) {
+          flush();
+          const headerHasOuterPipe = trimmed.startsWith('|');
+          const rows: string[][] = [];
+          let cursor = index + 2;
+          while (cursor < rawLines.length) {
+            const rowTrimmed = rawLines[cursor].trim();
+            if (
+              rowTrimmed.length === 0 ||
+              rowTrimmed.startsWith('```') ||
+              /^#{1,4}\s/.test(rowTrimmed) ||
+              /^---+$/.test(rowTrimmed) ||
+              rowTrimmed.startsWith('>')
+            ) {
+              break;
+            }
+            const isTableRow = headerHasOuterPipe
+              ? rowTrimmed.startsWith('|')
+              : rowTrimmed.includes('|');
+            if (!isTableRow) break;
+            rows.push(normalizeTableRow(splitTableRow(rawLines[cursor]), headers.length));
+            cursor += 1;
+          }
+          blocks.push({ kind: 'table', lines: [], headers, alignments, rows });
+          if (cursor < rawLines.length - 1) {
+            commitClosed(blocks.length, lineStarts[cursor]);
+          }
+          index = cursor - 1;
+          continue;
         }
-        blocks.push({ kind: 'table', lines: [], headers, rows });
-        /* 游标停在第一条非表格行之前（循环自增会跳过它，故回退一位） */
-        index = cursor - 1;
-        continue;
       }
     }
 
-    /* ---- 标题：从四级到一级依次尝试（长前缀优先，防止 # 吞掉 ####） ---- */
+    /* ---- 标题：从四级到一级匹配 ---- */
     const h4 = /^####\s+(.+)$/.exec(line);
     if (h4 !== null) {
       flush();
       blocks.push({ kind: 'h4', lines: [h4[1]] });
+      if (hasTrailingNewline) {
+        commitClosed(blocks.length, afterLineOffset);
+      }
       continue;
     }
     const h3 = /^###\s+(.+)$/.exec(line);
     if (h3 !== null) {
       flush();
       blocks.push({ kind: 'h3', lines: [h3[1]] });
+      if (hasTrailingNewline) {
+        commitClosed(blocks.length, afterLineOffset);
+      }
       continue;
     }
     const h2 = /^##\s+(.+)$/.exec(line);
     if (h2 !== null) {
       flush();
       blocks.push({ kind: 'h2', lines: [h2[1]] });
+      if (hasTrailingNewline) {
+        commitClosed(blocks.length, afterLineOffset);
+      }
       continue;
     }
     const h1 = /^#\s+(.+)$/.exec(line);
     if (h1 !== null) {
       flush();
       blocks.push({ kind: 'h1', lines: [h1[1]] });
+      if (hasTrailingNewline) {
+        commitClosed(blocks.length, afterLineOffset);
+      }
       continue;
     }
 
-    /* ---- 引用 ---- */
-    const quote = /^\s*>\s?(.*)$/.exec(line);
-    if (quote !== null) {
-      push('quote', quote[1]);
-      continue;
+    /* ---- 引用（受最大深度保护） ---- */
+    if (quoteDepth < MAX_QUOTE_DEPTH) {
+      const quote = /^\s*>\s?(.*)$/.exec(line);
+      if (quote !== null) {
+        push('quote', quote[1]);
+        continue;
+      }
     }
 
-    /**
-     * ---- 无序列表（允许前导空格） ----
-     *
-     * 【为何要接受前导空格】模型极爱输出两层子列表：
-     * `  - 子项 A`。旧正则 `^[-*]\s+` 锚定行首，带空格的子项匹配失败后
-     * 掉进段落分支，结果是界面上原样渲染出「- 子项 A」——比不缩进更糟。
-     * 这里把前导空白纳入匹配，并把缩进量换算成层级深度用于视觉缩进。
-     */
+    /* ---- 无序列表（允许前导缩进形成子列表） ---- */
     const ul = /^(\s*)[-*•]\s+(.+)$/.exec(line);
     if (ul !== null) {
       push('ul', ul[2], Math.floor(ul[1].length / 2));
       continue;
     }
 
-    /* ---- 有序列表（允许前导空格；支持 `1.` / `1)` / `1、`） ---- */
+    /* ---- 有序列表（允许前导缩进；支持 `1.` / `1)` / `1、`） ---- */
     const ol = /^(\s*)\d+[.)、]\s+(.+)$/.exec(line);
     if (ol !== null) {
       push('ol', ol[2], Math.floor(ol[1].length / 2));
@@ -460,45 +824,17 @@ function parseBlocks(source: string): Block[] {
     }
 
     /* ---- 普通段落 ---- */
-    push('p', line.trim());
+    push('p', trimmed);
   }
 
   flush();
 
-  /**
-   * 【流式容错】流中途结束时围栏可能尚未闭合（只收到开头的 ```）。
-   * 此时把已收集的内容作为一个代码块输出，而不是丢弃——
-   * 用户能先看到已到达的代码，闭合后样式才完整，不会出现空窗。
-   */
+  /* 流式容错：围栏未闭合时仍把已收集正文输出为代码块，避免后续文字消失 */
   if (fence !== null && fence.lines.length > 0) {
     blocks.push({ kind: 'codeblock', lines: fence.lines, lang: fence.lang });
   }
 
-  return blocks;
-}
-
-/* ========================================================================== */
-/* 行内渲染组件                                                                */
-/* ========================================================================== */
-
-/**
- * InlineMarkdown —— 单段文本的行内 Markdown 渲染（不产生块级元素）。
- *
- * 【为什么单独导出】生成式 UI 卡片里的 `paramDescription`、`impactScope`、
- * 证据链每一条 `evidence` 都是**单段文本**。若强行套 `MarkdownLite`
- * （最外层是 `<div className="space-y-1.5">`），会在卡片内部引入块级间距，
- * 把紧凑的卡片撑散。`InlineMarkdown` 只用 `<span>` 包裹，可以安全地嵌在
- * `<p>` / `<li>` / `<code>` 原来的位置。
- *
- * @param props 见 InlineMarkdownProps
- */
-export function InlineMarkdown({ text, className, highlightRunbookIds = false }: InlineMarkdownProps) {
-  const uid = useId();
-  const segments = useMemo((): InlineSegment[] => {
-    const parsed = parseInline(text);
-    return highlightRunbookIds ? promoteRunbookIds(parsed) : parsed;
-  }, [text, highlightRunbookIds]);
-  return <span className={className}>{renderInline(segments, `im-${uid}`)}</span>;
+  return { blocks, closedCharOffset, closedBlockCount };
 }
 
 /* ========================================================================== */
@@ -506,33 +842,23 @@ export function InlineMarkdown({ text, className, highlightRunbookIds = false }:
 /* ========================================================================== */
 
 /**
- * Runbook 编号识别正则。
- *
- * `RUNBOOK-K8S-042` / `RUNBOOK-K8S-061` 这类编号是知识库溯源的关键锚点，
- * 在推理链与系统回执里会以裸文本出现（由我方模板拼装，天然不带反引号）。
- * 把它提升为代码胶囊后，用户一眼就能定位"这条结论引自哪本手册"。
- *
- * 【字符类必须含数字】中段是 `K8S` 而非纯字母——若写成 `[A-Z]+`
- * 会匹配不到（`K` 之后是 `8`，回溯也失败），实测正是这里先踩了坑。
+ * Runbook 编号识别正则（支持含数字的段名如 `RUNBOOK-K8S-042`）。
  */
 const RUNBOOK_ID_PATTERN = /RUNBOOK-[A-Z0-9]+-\d+/g;
 
 /**
  * promoteRunbookIds —— 把 text 片段中出现的 Runbook 编号切分为 code 片段。
  *
- * 【为何在片段层做而不是再跑一遍正则解析】行内解析已经把文本切成
- * text / bold / code / italic 四类片段；若对整行再套一次高亮，
- * 会与已生成的 code 片段重复包围，产生嵌套胶囊。
- * 因此只对 `text` 类型片段做二次切分，其余片段原样保留。
+ * 仅对 `text` 节点切分，加粗与链接节点则递归处理其 `children`，
+ * 避免与既有的行内 code 胶囊产生嵌套。
  *
  * @param segments 行内片段数组
- * @returns 处理后的片段数组（text 中命中的编号变为 code）
+ * @returns 处理后的片段数组
  */
 function promoteRunbookIds(segments: readonly InlineSegment[]): InlineSegment[] {
   const result: InlineSegment[] = [];
 
   for (const segment of segments) {
-    /* 加粗/代码/斜体片段：内部若有加粗子片段也一并递归处理 */
     if (segment.kind !== 'text') {
       result.push(
         segment.children !== undefined
@@ -544,7 +870,6 @@ function promoteRunbookIds(segments: readonly InlineSegment[]): InlineSegment[] 
 
     const text = segment.text;
     const matches = [...text.matchAll(RUNBOOK_ID_PATTERN)];
-    /* 无命中：原样保留，避免把整段拆成无意义的单片段 */
     if (matches.length === 0) {
       result.push(segment);
       continue;
@@ -568,6 +893,34 @@ function promoteRunbookIds(segments: readonly InlineSegment[]): InlineSegment[] 
 }
 
 /* ========================================================================== */
+/* 行内渲染组件                                                                */
+/* ========================================================================== */
+
+/**
+ * InlineMarkdown —— 单段文本的行内 Markdown 渲染（不产生块级元素）。
+ *
+ * @param props 见 InlineMarkdownProps
+ */
+function InlineMarkdownComponent({
+  text,
+  className,
+  highlightRunbookIds = false,
+}: InlineMarkdownProps): ReactElement {
+  const uid = useId();
+  const segments = useMemo((): InlineSegment[] => {
+    const parsed = parseInline(text);
+    return highlightRunbookIds ? promoteRunbookIds(parsed) : parsed;
+  }, [text, highlightRunbookIds]);
+  return (
+    <span className={cn('min-w-0 max-w-full [overflow-wrap:anywhere]', className)}>
+      {renderInline(segments, `im-${uid}`)}
+    </span>
+  );
+}
+
+export const InlineMarkdown = memo(InlineMarkdownComponent);
+
+/* ========================================================================== */
 /* 代码块（含一键复制）                                                          */
 /* ========================================================================== */
 
@@ -577,25 +930,21 @@ const COPY_FEEDBACK_MS = 1500;
 /**
  * CodeBlock —— 围栏代码块渲染（等宽 + 深底 + 右上角一键复制）。
  *
- * 【为什么要复制按钮】AI 给出的 SRE 处置命令（`kubectl cordon`、
- * `kubectl top pod`、`journalctl -u kubelet`）本来就是**要被执行**的。
- * 让工程师手动拖选一段跨行代码，既慢又容易漏行或带上前导缩进——
- * 一个复制按钮直接消除了这类低级失误，这是排障工具的基本素养。
- *
- * 【状态机】idle →（点击）→ copied（绿色勾 + 「已复制」）→ 1500ms 后回到 idle。
- * 定时器在卸载时清理，避免在已卸载组件上 setState。
- *
- * 【剪贴板降级】`navigator.clipboard` 只在安全上下文（HTTPS / localhost）
- * 可用。不可用时回退到「临时 textarea + execCommand('copy')」的老办法，
- * 保证在内网 HTTP 部署下按钮依然有效，而不是静默失效。
+ * 支持 `navigator.clipboard` 安全上下文与 `textarea + execCommand('copy')` 内网 HTTP 降级，
+ * 并在组件卸载时清理反馈定时器。
  *
  * @param props code 代码正文；lang 语言标识（可为空）
  */
-function CodeBlock({ code, lang }: { readonly code: string; readonly lang?: string }) {
+const CodeBlock = memo(function CodeBlock({
+  code,
+  lang,
+}: {
+  readonly code: string;
+  readonly lang?: string;
+}): ReactElement {
   const [copied, setCopied] = useState<boolean>(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* 卸载清理：防止定时器在组件已销毁后触发 setState */
   useEffect((): (() => void) => {
     return (): void => {
       if (timerRef.current !== null) {
@@ -605,7 +954,6 @@ function CodeBlock({ code, lang }: { readonly code: string; readonly lang?: stri
     };
   }, []);
 
-  /** 把代码写入剪贴板（含非安全上下文降级） */
   const writeToClipboard = useCallback(async (text: string): Promise<boolean> => {
     try {
       if (typeof navigator !== 'undefined' && navigator.clipboard !== undefined) {
@@ -644,9 +992,8 @@ function CodeBlock({ code, lang }: { readonly code: string; readonly lang?: stri
   }, [code, writeToClipboard]);
 
   return (
-    <div className="my-1.5 overflow-hidden rounded border border-white/[0.05] bg-slate-950/80">
-      {/* 头部：左侧语言标识，右侧一键复制 */}
-      <div className="flex items-center justify-between gap-2 border-b border-white/[0.07] bg-slate-900/60 px-2 py-0.5">
+    <div className="my-1.5 min-w-0 max-w-full overflow-hidden rounded border border-white/[0.05] bg-slate-950/80">
+      <div className="flex min-w-0 items-center justify-between gap-2 border-b border-white/[0.07] bg-slate-900/60 px-2 py-0.5">
         <span className="min-w-0 truncate font-mono text-[10px] uppercase tracking-wider text-slate-500">
           {(lang ?? '').length > 0 ? lang : 'code'}
         </span>
@@ -670,242 +1017,311 @@ function CodeBlock({ code, lang }: { readonly code: string; readonly lang?: stri
           )}
         </button>
       </div>
-      <pre className="overflow-x-auto p-2 font-mono text-[11px] leading-relaxed text-slate-300">
+      <pre className="max-w-full overflow-x-auto p-2 font-mono text-[11px] leading-relaxed text-slate-300">
         <code>{code}</code>
       </pre>
     </div>
   );
-}
+});
+
+/* ========================================================================== */
+/* 单块记忆化渲染组件                                                            */
+/* ========================================================================== */
+
+/** 列对齐方式 → Tailwind 文本对齐类名映射 */
+const TABLE_ALIGN_CLASS: Readonly<Record<TableAlignment, string>> = {
+  left: 'text-left',
+  center: 'text-center',
+  right: 'text-right',
+};
+
+/**
+ * MarkdownBlockView —— 单个块级节点的记忆化渲染视图。
+ *
+ * 【性能意图】配合 `IncrementalBlockCache` 保持已闭合 `Block` 的对象引用不变，
+ * 流式输出时只有尾部未闭合块（通常仅 1~2 块）会随新字符重新渲染并运行 `parseInline`，
+ * 其余历史已闭合块在 `React.memo` 层直接命中跳过。
+ */
+const MemoMarkdownBlock = memo(function MarkdownBlockView({
+  block,
+  keyPrefix,
+  quoteDepth = 0,
+}: {
+  readonly block: Block;
+  readonly keyPrefix: string;
+  readonly quoteDepth?: number;
+}): ReactElement {
+  switch (block.kind) {
+    case 'h1':
+      return (
+        <h2 className="mt-3 flex min-w-0 max-w-full items-center gap-1.5 border-l-[3px] border-cyan-400 pl-2 text-sm font-bold text-slate-50 first:mt-0">
+          <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+            {renderInline(parseInline(block.lines[0]), `${keyPrefix}-h`)}
+          </span>
+        </h2>
+      );
+
+    case 'h2':
+      return (
+        <h3 className="mt-2 flex min-w-0 max-w-full items-center gap-1.5 border-l-2 border-cyan-400/70 pl-2 text-[13px] font-bold text-slate-100 first:mt-0">
+          <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+            {renderInline(parseInline(block.lines[0]), `${keyPrefix}-h`)}
+          </span>
+        </h3>
+      );
+
+    case 'h3':
+      return (
+        <h4 className="mt-1.5 min-w-0 max-w-full text-xs font-semibold text-slate-200 [overflow-wrap:anywhere] first:mt-0">
+          {renderInline(parseInline(block.lines[0]), `${keyPrefix}-h`)}
+        </h4>
+      );
+
+    case 'h4':
+      return (
+        <h5 className="mt-1 flex min-w-0 max-w-full items-center gap-1 font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-400 first:mt-0">
+          <span className="h-2.5 w-px shrink-0 bg-slate-500" aria-hidden />
+          <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+            {renderInline(parseInline(block.lines[0]), `${keyPrefix}-h`)}
+          </span>
+        </h5>
+      );
+
+    case 'quote': {
+      const childBlocks = block.children ?? [];
+      return (
+        <blockquote
+          className={cn(
+            'min-w-0 max-w-full rounded-r border-l-2 leading-relaxed [overflow-wrap:anywhere]',
+            quoteDepth === 0
+              ? 'border-amber-500/70 bg-amber-500/[0.07] px-2 py-1 text-body text-amber-200/90'
+              : 'my-1 border-amber-400/50 bg-amber-500/10 py-0.5 pl-2 pr-1.5 text-amber-100/90',
+          )}
+        >
+          {childBlocks.length > 0 ? (
+            <div className="min-w-0 max-w-full space-y-1">
+              {childBlocks.map((child, i): ReactElement => (
+                <MemoMarkdownBlock
+                  key={`${keyPrefix}-qc-${i}`}
+                  block={child}
+                  keyPrefix={`${keyPrefix}-qc-${i}`}
+                  quoteDepth={quoteDepth + 1}
+                />
+              ))}
+            </div>
+          ) : (
+            block.lines.map((line, i): ReactNode => (
+              <p key={`${keyPrefix}-q-${i}`} className="min-w-0 max-w-full [overflow-wrap:anywhere]">
+                {renderInline(parseInline(line), `${keyPrefix}-q-${i}`)}
+              </p>
+            ))
+          )}
+        </blockquote>
+      );
+    }
+
+    case 'ul':
+      return (
+        <ul className="min-w-0 max-w-full space-y-0.5">
+          {block.lines.map((line, i): ReactNode => {
+            const depth = block.depths?.[i] ?? 0;
+            return (
+              <li
+                key={`${keyPrefix}-li-${i}`}
+                className="relative min-w-0 max-w-full leading-relaxed [overflow-wrap:anywhere]"
+                style={{ paddingLeft: `${14 + depth * 12}px` }}
+              >
+                <span
+                  className={cn(
+                    'absolute top-[0.55em] h-1 w-1 rounded-full',
+                    depth > 0 ? 'bg-slate-500' : 'bg-cyan-400/70',
+                  )}
+                  style={{ left: `${4.5 + depth * 12}px` }}
+                  aria-hidden
+                />
+                {renderInline(parseInline(line), `${keyPrefix}-li-${i}`)}
+              </li>
+            );
+          })}
+        </ul>
+      );
+
+    case 'ol':
+      return (
+        <ol className="min-w-0 max-w-full space-y-0.5">
+          {block.lines.map((line, i): ReactNode => {
+            const depth = block.depths?.[i] ?? 0;
+            return (
+              <li
+                key={`${keyPrefix}-li-${i}`}
+                className="flex min-w-0 max-w-full gap-1.5 leading-relaxed"
+                style={{ paddingLeft: `${depth * 12}px` }}
+              >
+                <span className="shrink-0 font-mono text-[11px] font-bold tabular-nums text-cyan-400/80">
+                  {i + 1}.
+                </span>
+                <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                  {renderInline(parseInline(line), `${keyPrefix}-li-${i}`)}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+      );
+
+    case 'table':
+      return (
+        <div className="my-1.5 min-w-0 max-w-full overflow-x-auto rounded border border-white/[0.07] bg-slate-950/60">
+          <table className="min-w-full border-collapse text-left">
+            <thead>
+              <tr className="bg-slate-900/90">
+                {(block.headers ?? []).map((header, i): ReactNode => {
+                  const align = block.alignments?.[i] ?? 'left';
+                  return (
+                    <th
+                      key={`${keyPrefix}-th-${i}`}
+                      className={cn(
+                        'whitespace-nowrap border-b border-white/[0.07] px-2 py-1 font-mono text-[11px] font-bold text-slate-300',
+                        TABLE_ALIGN_CLASS[align],
+                      )}
+                    >
+                      {renderInline(parseInline(header), `${keyPrefix}-th-${i}`)}
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {(block.rows ?? []).map((row, rowIndex): ReactNode => (
+                <tr
+                  key={`${keyPrefix}-tr-${rowIndex}`}
+                  className="border-b border-white/[0.04] last:border-b-0"
+                >
+                  {row.map((cell, cellIndex): ReactNode => {
+                    const align = block.alignments?.[cellIndex] ?? 'left';
+                    return (
+                      <td
+                        key={`${keyPrefix}-td-${rowIndex}-${cellIndex}`}
+                        className={cn(
+                          'px-2 py-1 align-top text-[11px] leading-relaxed text-slate-300 [overflow-wrap:anywhere]',
+                          TABLE_ALIGN_CLASS[align],
+                        )}
+                      >
+                        {renderInline(
+                          parseInline(cell),
+                          `${keyPrefix}-td-${rowIndex}-${cellIndex}`,
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+
+    case 'hr':
+      return <hr className="my-2 border-white/[0.07]" />;
+
+    case 'codeblock':
+      return <CodeBlock code={block.lines.join('\n')} lang={block.lang} />;
+
+    default:
+      return (
+        <p className="min-w-0 max-w-full leading-relaxed [overflow-wrap:anywhere]">
+          {block.lines.map((line, i): ReactNode => (
+            <Fragment key={`${keyPrefix}-p-${i}`}>
+              {i > 0 ? ' ' : null}
+              {renderInline(parseInline(line), `${keyPrefix}-p-${i}`)}
+            </Fragment>
+          ))}
+        </p>
+      );
+  }
+});
 
 /* ========================================================================== */
 /* 组件主体                                                                    */
 /* ========================================================================== */
 
 /**
- * MarkdownLite —— 零依赖、XSS 安全的轻量 Markdown 渲染器。
+ * MarkdownLite —— 零依赖、XSS 安全的轻量增量 Markdown 渲染器。
  *
- * 支持：`#` ~ `####` 四级标题、`**加粗**`（可内嵌行内代码）、`*斜体*`、
- * `` `行内代码` ``、`> 引用`、有序/无序列表（含缩进子项）、GFM 表格、
- * `---` 分隔线，以及流式呼吸光标。
+ * 支持：`#` ~ `####` 四级标题、`**加粗**`、`*斜体*`、`` `行内代码` ``、
+ * `[text](url)` 白名单外链、`> 引用`（支持多层嵌套）、有序/无序列表、
+ * GFM 表格（含单列/对齐/转义竖线）、`---` 分隔线、围栏代码块及流式呼吸光标。
  *
  * @param props 见 MarkdownLiteProps
  */
-export default function MarkdownLite({
+function MarkdownLiteComponent({
   markdown,
   isStreaming = false,
   className,
-}: MarkdownLiteProps) {
-  /* 解析结果缓存：流式时 markdown 每次变化都会重算，这是必要的 */
-  const blocks = useMemo((): Block[] => parseBlocks(markdown), [markdown]);
+}: MarkdownLiteProps): ReactElement | null {
+  const blockCacheRef = useRef<IncrementalBlockCache | null>(null);
+
+  const blocks = useMemo((): readonly Block[] => {
+    const prev = blockCacheRef.current;
+    if (prev !== null && prev.source === markdown) {
+      return prev.allBlocks;
+    }
+
+    let baseClosedBlocks: readonly Block[] = [];
+    let tailStart = 0;
+
+    if (
+      prev !== null &&
+      prev.closedLength > 0 &&
+      markdown.length >= prev.closedLength &&
+      markdown.startsWith(prev.closedPrefix)
+    ) {
+      baseClosedBlocks = prev.closedBlocks;
+      tailStart = prev.closedLength;
+    }
+
+    const tail = tailStart === 0 ? markdown : markdown.slice(tailStart);
+    const parsed =
+      tail.length === 0
+        ? { blocks: [] as Block[], closedCharOffset: 0, closedBlockCount: 0 }
+        : parseBlocksCore(tail, 0);
+
+    const newlyClosed =
+      parsed.closedBlockCount > 0 ? parsed.blocks.slice(0, parsed.closedBlockCount) : [];
+    const nextClosedBlocks =
+      newlyClosed.length === 0 ? baseClosedBlocks : [...baseClosedBlocks, ...newlyClosed];
+    const nextClosedLength = tailStart + parsed.closedCharOffset;
+    const nextAllBlocks =
+      baseClosedBlocks.length === 0 ? parsed.blocks : [...baseClosedBlocks, ...parsed.blocks];
+
+    blockCacheRef.current = {
+      source: markdown,
+      closedPrefix: nextClosedLength === 0 ? '' : markdown.slice(0, nextClosedLength),
+      closedLength: nextClosedLength,
+      closedBlocks: nextClosedBlocks,
+      allBlocks: nextAllBlocks,
+    };
+
+    return nextAllBlocks;
+  }, [markdown]);
 
   if (markdown.trim().length === 0) {
     return null;
   }
 
   return (
-    <div className={cn('space-y-1.5 text-xs leading-relaxed text-slate-300', className)}>
-      {blocks.map((block, blockIndex): ReactNode => {
+    <div
+      className={cn(
+        'min-w-0 max-w-full space-y-1.5 text-xs leading-relaxed text-slate-300 [overflow-wrap:anywhere]',
+        className,
+      )}
+    >
+      {blocks.map((block, blockIndex): ReactElement => {
         const key = `b-${blockIndex}`;
-
-        switch (block.kind) {
-          /* ---- 一级标题：最重的章节锚点（左侧粗青条 + 更大字号） ---- */
-          case 'h1':
-            return (
-              <h2
-                key={key}
-                className="mt-3 flex items-center gap-1.5 border-l-[3px] border-cyan-400 pl-2 text-sm font-bold text-slate-50 first:mt-0"
-              >
-                {renderInline(parseInline(block.lines[0]), `${key}-h`)}
-              </h2>
-            );
-
-          /* ---- 二级标题：左侧青色竖线 + 加粗，形成章节锚点 ---- */
-          case 'h2':
-            return (
-              <h3
-                key={key}
-                className="mt-2 flex items-center gap-1.5 border-l-2 border-cyan-400/70 pl-2 text-[13px] font-bold text-slate-100 first:mt-0"
-              >
-                {renderInline(parseInline(block.lines[0]), `${key}-h`)}
-              </h3>
-            );
-
-          /* ---- 三级标题：更轻的层级 ---- */
-          case 'h3':
-            return (
-              <h4 key={key} className="mt-1.5 text-xs font-semibold text-slate-200 first:mt-0">
-                {renderInline(parseInline(block.lines[0]), `${key}-h`)}
-              </h4>
-            );
-
-          /**
-           * ---- 四级标题：最轻的一级 ----
-           * 用等宽小字 + 前缀细条表达"这是一个更细的段落标签"，
-           * 与三级标题形成明确的层级落差，而不是仅仅小 1px。
-           */
-          case 'h4':
-            return (
-              <h5
-                key={key}
-                className="mt-1 flex items-center gap-1 font-mono text-[11px] font-semibold uppercase tracking-wide text-slate-400 first:mt-0"
-              >
-                <span className="h-2.5 w-px shrink-0 bg-slate-500" aria-hidden />
-                {renderInline(parseInline(block.lines[0]), `${key}-h`)}
-              </h5>
-            );
-
-          /* ---- 引用块：琥珀色左描边 + 半透明底，用于告警摘要 ---- */
-          case 'quote':
-            return (
-              <blockquote
-                key={key}
-                className="rounded-r border-l-2 border-amber-500/70 bg-amber-500/[0.07] px-2 py-1 text-body leading-relaxed text-amber-200/90"
-              >
-                {block.lines.map((line, i): ReactNode => (
-                  <p key={`${key}-q-${i}`}>{renderInline(parseInline(line), `${key}-q-${i}`)}</p>
-                ))}
-              </blockquote>
-            );
-
-          /* ---- 无序列表（支持缩进子项） ---- */
-          case 'ul':
-            return (
-              <ul key={key} className="space-y-0.5">
-                {block.lines.map((line, i): ReactNode => {
-                  const depth = block.depths?.[i] ?? 0;
-                  return (
-                    <li
-                      key={`${key}-li-${i}`}
-                      className="relative leading-relaxed"
-                      style={{ paddingLeft: `${14 + depth * 12}px` }}
-                    >
-                      {/* 自定义圆点：默认 list-disc 在深色背景下偏暗 */}
-                      <span
-                        className={cn(
-                          'absolute top-[0.55em] h-1 w-1 rounded-full',
-                          depth > 0 ? 'bg-slate-500' : 'bg-cyan-400/70',
-                        )}
-                        style={{ left: `${4.5 + depth * 12}px` }}
-                        aria-hidden
-                      />
-                      {renderInline(parseInline(line), `${key}-li-${i}`)}
-                    </li>
-                  );
-                })}
-              </ul>
-            );
-
-          /* ---- 有序列表：保留模型给出的序号语义 ---- */
-          case 'ol':
-            return (
-              <ol key={key} className="space-y-0.5">
-                {block.lines.map((line, i): ReactNode => {
-                  const depth = block.depths?.[i] ?? 0;
-                  return (
-                    <li
-                      key={`${key}-li-${i}`}
-                      className="flex gap-1.5 leading-relaxed"
-                      style={{ paddingLeft: `${depth * 12}px` }}
-                    >
-                      <span className="shrink-0 font-mono text-[11px] font-bold tabular-nums text-cyan-400/80">
-                        {i + 1}.
-                      </span>
-                      <span className="min-w-0 flex-1">{renderInline(parseInline(line), `${key}-li-${i}`)}</span>
-                    </li>
-                  );
-                })}
-              </ol>
-            );
-
-          /**
-           * ---- GFM 表格 ----
-           *
-           * 【为何必须支持】大模型在 SRE 报告里极度偏爱表格（节点水位对比、
-           * 五问排查矩阵）。不支持时整张表会退化成段落，
-           * 用户看到的是一行行 `| 节点 | CPU |` 的裸竖线。
-           *
-           * 单元格内同样走 parseInline，因此 `**88.1%**` 与 `` `memory.max` ``
-           * 在表格里也能获得加粗与胶囊高亮，而不是裸露原始标记。
-           */
-          case 'table':
-            return (
-              <div
-                key={key}
-                /*
-                 * 【窄屏策略】外层保持 overflow-x-auto：表格天然可能比容器宽，
-                 * 强行压窄会把每一列都挤成竖排单字。宁可让用户横向滚动，
-                 * 也不要把表格压到不可读。
-                 *
-                 * 同时给 table 一个 min-w-full 而不是 w-full：
-                 * `w-full` 在内容更宽时会被内容顶开（浏览器对 table 的
-                 * 自动布局特性），导致容器虽然设了 overflow-x-auto 却
-                 * 看不到滚动条——因为容器自己也被撑宽了。
-                 * `min-w-full + w-auto` 才能让"容器窄于内容时出现滚动"生效。
-                 */
-                className="my-1.5 overflow-x-auto rounded border border-white/[0.07] bg-slate-950/60"
-              >
-                <table className="min-w-full border-collapse text-left">
-                  <thead>
-                    <tr className="bg-slate-900/90">
-                      {(block.headers ?? []).map((header, i): ReactNode => (
-                        <th
-                          key={`${key}-th-${i}`}
-                          /*
-                           * 表头保留 whitespace-nowrap：表头是短标签
-                           * （"编号" / "标题" / "匹配度"），换行会让表头变成
-                           * 两行高、破坏对齐。数据单元格则允许换行。
-                           */
-                          className="whitespace-nowrap border-b border-white/[0.07] px-2 py-1 font-mono text-[11px] font-bold text-slate-300"
-                        >
-                          {renderInline(parseInline(header), `${key}-th-${i}`)}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(block.rows ?? []).map((row, rowIndex): ReactNode => (
-                      <tr key={`${key}-tr-${rowIndex}`} className="border-b border-white/[0.04] last:border-b-0">
-                        {row.map((cell, cellIndex): ReactNode => (
-                          <td
-                            key={`${key}-td-${rowIndex}-${cellIndex}`}
-                            className="px-2 py-1 align-top text-[11px] leading-relaxed text-slate-300"
-                          >
-                            {renderInline(parseInline(cell), `${key}-td-${rowIndex}-${cellIndex}`)}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            );
-
-          /* ---- 分隔线 ---- */
-          case 'hr':
-            return <hr key={key} className="my-2 border-white/[0.07]" />;
-
-          /* ---- 围栏代码块：等宽 + 深底 + 一键复制 ---- */
-          case 'codeblock':
-            return (
-              <CodeBlock key={key} code={block.lines.join('\n')} lang={block.lang} />
-            );
-
-          /* ---- 普通段落 ---- */
-          default:
-            return (
-              <p key={key} className="leading-relaxed">
-                {block.lines.map((line, i): ReactNode => (
-                  <Fragment key={`${key}-p-${i}`}>
-                    {i > 0 ? ' ' : null}
-                    {renderInline(parseInline(line), `${key}-p-${i}`)}
-                  </Fragment>
-                ))}
-              </p>
-            );
-        }
+        return <MemoMarkdownBlock key={key} block={block} keyPrefix={key} />;
       })}
 
-      {/* ---- 流式呼吸光标：接在最后一个块之后，暗示"还在写" ---- */}
+      {/* 流式呼吸光标：接在最后一个块之后，暗示还在生成 */}
       {isStreaming ? (
         <span
           className="inline-block h-3 w-1 animate-glow-pulse rounded-sm bg-cyan-400 align-middle"
@@ -915,3 +1331,5 @@ export default function MarkdownLite({
     </div>
   );
 }
+
+export default memo(MarkdownLiteComponent);
