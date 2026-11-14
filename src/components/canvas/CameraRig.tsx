@@ -1,233 +1,306 @@
 'use client';
 
 /**
- * KubeVision AI — 相机运镜系统（CameraRig）
+ * KubeVision AI — R7 相机运镜与交互系统（CameraRig）
  *
- * 【设计意图】封装 OrbitControls 的自由观察 + 「选中实体 → 自动飞行特写」的
- * 导演级运镜，二者以瞬态 isAnimatingRef 布尔量仲裁，实现**防锁死**控制权交接：
- * 动画插值期间用户随时拖拽鼠标即可夺回控制权（onStart 立即终止动画），
- * 相机永远不会把用户锁在预设轨道上。
- *
- * 【60FPS 红线合规】（AGENTS.md 第 3 条）
- * - useFrame 内零 new：targetPosVec / targetLookVec 两个 THREE.Vector3
- *   经 useMemo 在组件挂载时一次性预分配，此后每帧仅 .set()/.lerp() 原地突变；
- * - useFrame 内零 useState / 零 React 重渲染：飞行目标存于 focusRef
- *   （可变 ref），动画开关存于 isAnimatingRef（瞬态布尔），
- *   组件仅在 selectedEntityId / selectedEntityType 变更时重渲染（低频）。
- *
- * 【插值数学：帧率无关指数阻尼】
- * 每帧以 α = 1 − e^(−k·Δt)（k = FLIGHT_DAMPING_RATE = 4）对
- * camera.position 与 controls.target 做 lerp：
- * - 帧率无关：60FPS 与 144FPS 下飞行时长一致（Δt 归一化）；
- * - 无过冲：指数衰减单调逼近目标，天然平滑减速（ease-out 手感）；
- * - Δt 钳制 0.1s：掉帧长间隔时限制单帧步长，防止相机瞬移穿越几何体。
- * 到达判定：camera.position.distanceTo(目标) < ARRIVAL_EPSILON(0.15)
- * 时吸附终点并置 isAnimatingRef = false，交还自由旋转控制权。
- *
- * 【控制权交接三通道】（任一触发即动画结束）
- * 1. 到达终点（距离 < 0.15）→ 吸附 + false；
- * 2. 用户拖拽（OrbitControls 'start' 事件）→ 立即 false（不吸附，
- *    相机停在当前插值位置，由用户接管——「打断即所得」的运镜手感）；
- * 3. 新的飞行指令（选中变更/视角预设）→ true 并刷新目标（覆盖旧飞行）。
+ * 【设计意图】
+ * 统一调度开场运镜、实体特写飞行、视角预设过渡与 OrbitControls 自由观察，
+ * 在 60FPS / 144FPS 高刷与移动端窄屏下均保持防锁死、帧率无关阻尼与零抖动手感：
+ * 1. **时间轴驱动三段式飞行**：标准飞行 `720ms`，采用 `cubic-bezier(0.56, 0, 0.08, 1)`
+ *    搭配 `sin(πp)^1.4` 绕飞包络（起手柔、中段果断、收尾轻粘）；
+ * 2. **180° 预设球面插值**：`overview <-> topdown` 自动切换为半径 / 极角 / 方位角
+ *    球面独立插值（`820ms`），杜绝穿越集群中心；
+ * 3. **控制权防锁死仲裁**：飞行期间令 `controls.enabled = false`（让 `drei` `useFrame(-1)`
+ *    不再触发 `controls.update()` 与之抢相机，本组件内 `useFrame` 不调用多余
+ *    `controls.update()`），通过捕获阶段指针/滚轮监听即时解锁并由用户接管；
+ * 4. **帧率无关阻尼与输入整形**：`damping = 1 - (1 - 0.065)^(dt * 60)`；
+ *    画布 `280ms / < 6px` 双击复位概览；滚轮 `deltaY` 限幅 `±40` 与触控板 `ctrlKey × 0.5`；
+ *    `prefers-reduced-motion` 下飞行压至 `180ms` 线性推进并暂停 `autoRotate`。
  */
 
-import { useEffect, useMemo, useRef, type ComponentRef } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
+import { OrbitControls } from '@react-three/drei';
+import * as THREE from 'three';
+
+import {
+  CAMERA_MOTION,
+  REDUCED_MOTION_AMPLITUDE,
+  computeDtDamping,
+  computeFlightArcEnvelope,
+  easeThreeStageFlight,
+  isReducedMotion,
+  subscribeReducedMotion,
+} from '@/constants/motion';
+import { useClusterStore } from '@/store/useClusterStore';
+import type { CameraFocus, ViewPresetKey } from '@/types/canvas';
+import type { SelectedEntityType } from '@/types/store';
 import {
   OPENING_CAMERA_POSITION,
   OPENING_FLIGHT_DAMPING,
   OPENING_FLIGHT_DURATION,
 } from '@/utils/bootUniform';
-import { isReducedMotion } from '@/constants/motion';
-import { OrbitControls } from '@react-three/drei';
-import * as THREE from 'three';
-
-import { useClusterStore } from '@/store/useClusterStore';
-import type { CameraFocus } from '@/types/canvas';
-import type { SelectedEntityType } from '@/types/store';
+import {
+  beginDebugFlightTrace,
+  endDebugFlightTrace,
+  incrementDblClickResetCount,
+  isCameraDebugEnabled,
+  pushDebugFlightSample,
+  updateDebugCameraState,
+} from '@/utils/cameraDebugBridge';
+import { publishFlightProgress, publishFlightStatus } from '@/utils/cameraFlightBus';
 import {
   OVERVIEW_CAMERA_POSITION,
   OVERVIEW_LOOK_AT,
   resolveCameraFocus,
   resolveViewPresetFocus,
 } from '@/utils/cameraFocus';
-import { subscribeViewPreset } from '@/utils/viewPresetBus';
+import { markDoubleClickResetTriggered } from '@/utils/canvasClickIntent';
+import { dispatchViewPreset, subscribeViewPreset } from '@/utils/viewPresetBus';
 
 /* ========================================================================== */
 /* 类型与常量                                                                  */
 /* ========================================================================== */
 
-/**
- * OrbitControls 实例类型：经 ComponentRef 从 drei 组件类型提取
- * （内部即 three-stdlib 的 OrbitControlsImpl），避免直接 import three-stdlib
- * ——它未被提升到根 node_modules（pnpm 隔离结构），但类型可经 drei 的
- * 声明文件正常解析。
- */
 type OrbitControlsImpl = ComponentRef<typeof OrbitControls>;
 
-/** 极角下限（弧度）：θ ≥ 0.2，防止相机翻越天顶产生万向节翻转 */
 const MIN_POLAR_ANGLE = 0.2;
-
-/** 极角上限（弧度）：θ ≤ π/2 − 0.05，防止相机穿入地面以下 */
 const MAX_POLAR_ANGLE = Math.PI / 2 - 0.04;
-
-/** 轨道最大距离：35 世界单位（全景鸟瞰 [0,14,22] 的模长 ≈ 26，留有余量） */
 const MAX_ORBIT_DISTANCE = 36;
-
-/** 轨道最小距离：0.8（防止滚轮推近时相机穿入 Pod/机架几何体内部） */
-const MIN_ORBIT_DISTANCE = 1.8;
-
-/** 阻尼系数（需求契约值）：0.05，OrbitControls 惯性旋转的松紧度 */
-const ORBIT_DAMPING_FACTOR = 0.065;
-
-/** 飞行指数阻尼率 k（1/秒）：越大飞行越快；4 ≈ 0.7 秒内完成 95% 行程 */
-const FLIGHT_DAMPING_RATE = 4;
-
-/** 到达判定阈值（需求契约值）：相机距目标机位 < 0.15 即吸附终点并结束动画 */
-const ARRIVAL_EPSILON = 0.15;
-
-/**
- * 单次飞行最长时间（秒）。
- *
- * 【为什么需要超时收敛】弧线绕飞 + 阻尼在极端机位（近地/远距）下可能长时间
- * 逼近不到 ARRIVAL_EPSILON；若永远不结束，isAnimatingRef 会与 autoRotate
- * 形成永久拉锯。超过该时长直接结束飞行并交还巡检，由当前真实位置接续。
- */
-const MAX_FLIGHT_DURATION = 3.2;
-
-/** 单帧 Δt 钳制上限（秒）：掉帧时限制插值步长，防相机瞬移穿模 */
 const MAX_FRAME_DELTA = 0.1;
 
-/* --------------------------------------------------------------------------
- * 弧线绕飞（Arc Avoidance）
- * -------------------------------------------------------------------------- */
-
-/**
- * 飞行进度推进速率（每秒，归一化域）。
- *
- * 【为何需要进度】直线阻尼插值只能得到一条**连接起点与终点的直线**：
- * 从环外飞向环内机架时，这条直线会直接穿过机架隔板、甚至穿过中央八面体水晶。
- * 引入归一化进度 p ∈ [0,1] 后，可在直线上叠加 sin(π·p) 包络的偏移，
- * 把轨迹弯成弧线——两端偏移为 0（起终点精确），中段最大（绕开障碍）。
- * 速率 1.6 ≈ 0.62 秒走完全程，比纯阻尼略慢，弧线才有"看得见的优雅"。
- */
-const FLIGHT_ARC_RATE = 1.6;
-
-/** 弧线抬升幅度：min(MAX, 飞行距离 × RATIO)——短途不抬太高，长途从容越过机架 */
 const FLIGHT_ARC_LIFT_MAX = 2.4;
 const FLIGHT_ARC_LIFT_RATIO = 0.16;
-
-/** 弧线切向偏摆幅度：让轨迹不只是"抬高"，而是真正侧向绕行 */
 const FLIGHT_ARC_SIDESTEP_MAX = 1.8;
 const FLIGHT_ARC_SIDESTEP_RATIO = 0.12;
+const ORBIT_PATROL_SPEED = 2.0;
+const SPHERICAL_AZIMUTH_THRESHOLD_RAD = Math.PI * 0.45;
 
 /**
- * 环绕巡检自转速度（OrbitControls autoRotateSpeed 单位：60FPS 下 2.0 = 30 秒/圈）。
- * 取 2.0：态势巡检的从容节奏，既能让观察者看清三机架轮转细节，
- * 又不至于慢到误以为功能未生效。
+ * clearOrbitResidualDelta —— 单次重置 OrbitControls 残余速度分量（仅在起飞结束/打断瞬间调用）。
+ *
+ * 【为什么仅在态变边界调用一次】飞行期间 `controls.enabled = false` 挂起了 `drei` 的
+ * `useFrame(-1)` 更新；恢复自由态前通过瞬间关闭阻尼执行一次 `update()` 清空残留的
+ * `sphericalDelta / panOffset`，避免起飞前的拖拽惯性在落地后突然窜出。
  */
-const ORBIT_PATROL_SPEED = 2.0;
+function clearOrbitResidualDelta(controls: OrbitControlsImpl): void {
+  const prevDamping = controls.enableDamping;
+  controls.enableDamping = false;
+  controls.update();
+  controls.enableDamping = prevDamping;
+}
 
 /* ========================================================================== */
 /* CameraRig 主体                                                              */
 /* ========================================================================== */
 
-/**
- * CameraRig —— OrbitControls + 选中实体自动运镜（R3F Canvas 内挂载）。
- *
- * 【订阅纪律】仅细粒度订阅 selectedEntityId / selectedEntityType 两个
- * 低频 UI 字段；遥测快照在 effect 内以 getState() 按需读取（不订阅），
- * 因此 1Hz 快照流**不会**触发本组件重渲染——相机逻辑与遥测频率完全解耦。
- */
 export default function CameraRig() {
-  /**
-   * 场景相机引用（用于在**起飞瞬间**快照当前机位，供弧线绕飞起算）。
-   *
-   * 【为何从 useThree 取而不在 useFrame 里用 state.camera】
-   * 两个飞行触发 effect 需要"此刻相机在哪"，而 effect 无法拿到 useFrame 的 state。
-   * useThree 的 camera 引用在整个 Canvas 生命周期内稳定，
-   * 不会引起额外重渲染（它只在 camera 对象被替换时变化）。
-   */
   const camera = useThree((s): THREE.Camera => s.camera);
+  const gl = useThree((s): THREE.WebGLRenderer => s.gl);
 
-  /* ---- Store 细粒度订阅（选中态两字段 + 巡检开关） ---- */
   const selectedEntityId = useClusterStore((s): string | null => s.selectedEntityId);
   const selectedEntityType = useClusterStore((s): SelectedEntityType | null => s.selectedEntityType);
   const isOrbitPatrolActive = useClusterStore((s): boolean => s.isOrbitPatrolActive);
 
-  /* ---- 瞬态运行期引用（零重渲染通道） ---- */
+  const [reducedMotion, setReducedMotion] = useState<boolean>(() => isReducedMotion());
+  const [isMobileViewport, setIsMobileViewport] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth < CAMERA_MOTION.mobileBreakpointPx : false,
+  );
+
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
-  /** 动画开关：true = 正在向 focusRef 目标插值飞行 */
   const isAnimatingRef = useRef<boolean>(false);
-  /** 当前飞行目标载荷（resolveCameraFocus 解算结果） */
+  const prevSelectionKeyRef = useRef<string>(
+    `${selectedEntityId ?? 'null'}|${selectedEntityType ?? 'null'}`,
+  );
+
   const focusRef = useRef<CameraFocus>({
     position: OVERVIEW_CAMERA_POSITION,
     lookAt: OVERVIEW_LOOK_AT,
   });
 
-  /**
-   * 预分配插值临时向量（AGENTS.md 第 3 条：useFrame 内禁止 new THREE.Vector3）。
-   * useMemo 空依赖 → 组件生命周期内仅分配一次，每帧 .set() 原地复用。
-   */
   const targetPosVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
   const targetLookVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
-
-  /* ---- 弧线绕飞预分配向量（useFrame 内零分配） ---- */
-  /** 本次飞行的起点（focus 变更时快照当前相机位置） */
   const flightStartVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
-  /** 起点 → 终点的单位方向 */
+  const flightStartLookVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
+  const currentLookVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
   const flightDirVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
-  /** 水平切向（垂直于飞行方向，用于侧向绕行） */
   const flightSideVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
-  /** 叠加弧线后的本帧期望机位 */
   const arcPointVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
-  /** 归一化飞行进度 [0,1] */
-  const flightProgressRef = useRef<number>(0);
-  /** 本次飞行已用时长（秒）：用于 MAX_FLIGHT_DURATION 超时收敛 */
-  const flightElapsedRef = useRef<number>(0);
 
-  /* R29 C：开场运镜（0–2.4s，与 uBoot 同步；reduced-motion 时直接落位） */
+  /* ---- 球面插值预分配对象（useFrame 内零堆分配） ---- */
+  const sphericalOffsetStartVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
+  const sphericalOffsetEndVec = useMemo((): THREE.Vector3 => new THREE.Vector3(), []);
+  const sphericalStart = useMemo((): THREE.Spherical => new THREE.Spherical(), []);
+  const sphericalEnd = useMemo((): THREE.Spherical => new THREE.Spherical(), []);
+  const sphericalCurr = useMemo((): THREE.Spherical => new THREE.Spherical(), []);
+
+  const flightDurationRef = useRef<number>(CAMERA_MOTION.flightDurationS);
+  const flightElapsedRef = useRef<number>(0);
+  const flightStartWallMsRef = useRef<number>(0);
+  const useSphericalFlightRef = useRef<boolean>(false);
+  const activePresetRef = useRef<ViewPresetKey | null>('overview');
+  const previousPresetRef = useRef<ViewPresetKey | null>('overview');
+  const flightKindRef = useRef<'preset' | 'entity' | null>(null);
+
   const openingProgressRef = useRef<number>(0);
   const openingDoneRef = useRef<boolean>(false);
 
-  /**
-   * disengagePatrolIfActive —— 若环绕巡检开启则自动解除（经 Store Action 回写）。
-   *
-   * 【冲突根因】autoRotate 在每次 controls.update() 中给相机施加绕 target 的
-   * 切向位移（speed 2.0 ≈ 0.09 单位/帧），而预设/选中飞行的指数阻尼 lerp
-   * 收敛率 α≈0.064/帧——二者同时生效会形成半径 ≈1.4 单位的「追逐平衡」，
-   * 永远无法满足 <0.15 的到达判定，飞行悬而不决。故契约定为：
-   * **程序化飞行优先，起飞即解除巡检**（用户拖拽让位同理，见 handleUserTakeover）。
-   * 解除经 setOrbitPatrolActive(false) 回写 Store：工具条按钮高亮同步熄灭、
-   * 终端留下审计行，状态与行为永不背离。
-   */
+  useEffect(() => {
+    setReducedMotion(isReducedMotion());
+    return subscribeReducedMotion((nextReduced) => {
+      setReducedMotion(nextReduced);
+      if (nextReduced) {
+        const store = useClusterStore.getState();
+        if (store.isOrbitPatrolActive) {
+          store.setOrbitPatrolActive(false, 'user');
+        }
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleResize = (): void => {
+      setIsMobileViewport(window.innerWidth < CAMERA_MOTION.mobileBreakpointPx);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
+
   const disengagePatrolIfActive = (): void => {
     const state = useClusterStore.getState();
-
-    /*
-     * ---- E 项：程序化锁生效时不解除 ----
-     *
-     * 【自愈的缺陷】导演阶段 4 收尾是「先 selectEntity(null) 再
-     * setOrbitPatrolActive(true)」。两者落在同一批更新里时，选中变化 effect
-     * 会调用本函数，把**刚开启**的巡检立刻关掉——表现为"巡检开了又被关"，
-     * 收尾的环绕仪式感直接消失。
-     *
-     * 现在：导演用 programmatic 开启的巡检带锁，本函数遇到锁直接返回。
-     * 用户自己开的巡检（无锁）仍可被聚焦/拖拽打断，原有交互语义不变。
-     */
     if (state.patrolLockedByProgram) return;
-
     if (state.isOrbitPatrolActive) {
       state.setOrbitPatrolActive(false, 'user');
     }
   };
 
-  /* ---- R29 C：挂载时把相机放到开场起点，由 useFrame 平滑推到 OVERVIEW ---- */
+  /**
+   * beginFlight —— 初始化一次程序化相机飞行（统一计算时长、起终点快照与球面模式）。
+   */
+  const beginFlight = (
+    nextFocus: CameraFocus,
+    kind: 'preset' | 'entity',
+    preset: ViewPresetKey | null,
+  ): void => {
+    const controls = controlsRef.current;
+    focusRef.current = nextFocus;
+    openingDoneRef.current = true;
+    flightStartVec.copy(camera.position);
+
+    if (controls !== null) {
+      flightStartLookVec.copy(controls.target);
+      controls.enabled = false;
+    } else {
+      flightStartLookVec.set(OVERVIEW_LOOK_AT[0], OVERVIEW_LOOK_AT[1], OVERVIEW_LOOK_AT[2]);
+    }
+
+    targetPosVec.set(nextFocus.position[0], nextFocus.position[1], nextFocus.position[2]);
+    targetLookVec.set(nextFocus.lookAt[0], nextFocus.lookAt[1], nextFocus.lookAt[2]);
+
+    /* 判定是否为 overview <-> topdown（或大幅方位角翻转）球面插值通道 */
+    let shouldUseSpherical = false;
+    if (kind === 'preset' && preset !== null) {
+      const prevPreset = previousPresetRef.current;
+      const isPresetFlip =
+        (prevPreset === 'overview' && preset === 'topdown') ||
+        (prevPreset === 'topdown' && preset === 'overview');
+
+      sphericalOffsetStartVec.subVectors(flightStartVec, flightStartLookVec);
+      sphericalOffsetEndVec.subVectors(targetPosVec, targetLookVec);
+      sphericalStart.setFromVector3(sphericalOffsetStartVec);
+      sphericalEnd.setFromVector3(sphericalOffsetEndVec);
+      const deltaAzimuth = Math.abs(
+        Math.atan2(
+          Math.sin(sphericalEnd.theta - sphericalStart.theta),
+          Math.cos(sphericalEnd.theta - sphericalStart.theta),
+        ),
+      );
+      shouldUseSpherical = isPresetFlip || deltaAzimuth >= SPHERICAL_AZIMUTH_THRESHOLD_RAD;
+      previousPresetRef.current = preset;
+    } else {
+      previousPresetRef.current = null;
+    }
+
+    const reducedNow = isReducedMotion();
+    const durationS = reducedNow
+      ? CAMERA_MOTION.reducedFlightDurationS
+      : shouldUseSpherical
+        ? CAMERA_MOTION.topdownSphericalDurationS
+        : CAMERA_MOTION.flightDurationS;
+
+    useSphericalFlightRef.current = shouldUseSpherical;
+    flightDurationRef.current = durationS;
+    flightElapsedRef.current = 0;
+    flightStartWallMsRef.current = performance.now();
+    activePresetRef.current = preset;
+    flightKindRef.current = kind;
+    isAnimatingRef.current = true;
+
+    publishFlightStatus({ isFlying: true, activePreset: preset, kind });
+    publishFlightProgress(0);
+
+    beginDebugFlightTrace(
+      shouldUseSpherical ? 'preset-spherical' : kind,
+      durationS * 1000,
+      [flightStartVec.x, flightStartVec.y, flightStartVec.z],
+      nextFocus.position,
+    );
+  };
+
+  /**
+   * abortFlightToUser —— 立即中止飞行/开场并恢复 OrbitControls 自由控制权。
+   */
+  const abortFlightToUser = (): void => {
+    const wasFlying = isAnimatingRef.current || !openingDoneRef.current;
+    if (!wasFlying) return;
+
+    isAnimatingRef.current = false;
+    openingDoneRef.current = true;
+
+    const controls = controlsRef.current;
+    if (controls !== null) {
+      controls.target.copy(currentLookVec);
+      controls.enabled = true;
+      camera.lookAt(controls.target);
+      clearOrbitResidualDelta(controls);
+    }
+
+    const store = useClusterStore.getState();
+    if (store.isOrbitPatrolActive) {
+      store.setOrbitPatrolActive(false, 'user');
+    }
+
+    publishFlightStatus({
+      isFlying: false,
+      activePreset: null,
+      kind: null,
+    });
+    publishFlightProgress(1);
+    endDebugFlightTrace(false, flightElapsedRef.current * 1000);
+  };
+
+  /* ---- 挂载开场运镜 ---- */
   useEffect((): void => {
+    currentLookVec.set(OVERVIEW_LOOK_AT[0], OVERVIEW_LOOK_AT[1], OVERVIEW_LOOK_AT[2]);
     if (isReducedMotion()) {
+      camera.position.set(
+        OVERVIEW_CAMERA_POSITION[0],
+        OVERVIEW_CAMERA_POSITION[1],
+        OVERVIEW_CAMERA_POSITION[2],
+      );
       openingDoneRef.current = true;
+      const controls = controlsRef.current;
+      if (controls !== null) {
+        controls.target.copy(currentLookVec);
+        controls.enabled = true;
+        clearOrbitResidualDelta(controls);
+      }
       return;
     }
+
     camera.position.set(
       OPENING_CAMERA_POSITION[0],
       OPENING_CAMERA_POSITION[1],
@@ -235,93 +308,159 @@ export default function CameraRig() {
     );
     const controls = controlsRef.current;
     if (controls !== null) {
-      controls.target.set(OVERVIEW_LOOK_AT[0], OVERVIEW_LOOK_AT[1], OVERVIEW_LOOK_AT[2]);
-      controls.update();
+      controls.target.copy(currentLookVec);
+      controls.enabled = false;
     }
-  }, [camera]);
+  }, [camera, currentLookVec]);
 
-  /* ---- 飞行触发通道 1：选中实体变更（含取消选中 → 全景鸟瞰） ---- */
+  /* ---- 飞行通道 1：选中实体变更（跳过首次挂载重复飞行） ---- */
   useEffect(() => {
-    /*
-     * 【只在进入聚焦时解除巡检】selectedEntityId === null 表示"回到全景"，
-     * 其语义是"不再聚焦某个实体"，而不是"停止自转"。用户从特写退回全景时
-     * 通常仍希望看到环绕巡检；更重要的是导演阶段 4 正是以 selectEntity(null)
-     * 收尾后再开巡检，无条件解除会把它刚开的巡检关掉。
-     */
+    const nextKey = `${selectedEntityId ?? 'null'}|${selectedEntityType ?? 'null'}`;
+    if (nextKey === prevSelectionKeyRef.current) {
+      return;
+    }
+    prevSelectionKeyRef.current = nextKey;
     if (selectedEntityId !== null) {
       disengagePatrolIfActive();
     }
-    // getState() 按需读取最新快照（不订阅：1Hz 快照流不触发本组件重渲染）
     const snapshot = useClusterStore.getState().snapshotSummary;
-    focusRef.current = resolveCameraFocus(selectedEntityId, selectedEntityType, snapshot);
-    /*
-     * 起点快照 + 进度归零：弧线绕飞依赖这两个量。
-     * 起点必须在**起飞瞬间**取相机真实位置（而非上一次的目标机位），
-     * 否则打断动画后再次点击会让弧线从错误的位置起算。
-     */
-    flightStartVec.copy(camera.position);
-    flightProgressRef.current = 0;
-    flightElapsedRef.current = 0;
-    isAnimatingRef.current = true;
-  }, [selectedEntityId, selectedEntityType, camera, flightStartVec]);
+    const nextFocus = resolveCameraFocus(selectedEntityId, selectedEntityType, snapshot);
+    beginFlight(nextFocus, 'entity', selectedEntityId === null ? 'overview' : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEntityId, selectedEntityType]);
 
-  /* ---- 飞行触发通道 2：外部视角预设（viewPresetBus 广播，UI 层零 three 依赖） ---- */
+  /* ---- 飞行通道 2：视角预设总线 ---- */
   useEffect(() => {
     return subscribeViewPreset((preset): void => {
       disengagePatrolIfActive();
-      // 穷举 ViewPresetKey（overview / topdown），机位解算收敛在 cameraFocus 纯函数层
-      focusRef.current = resolveViewPresetFocus(preset);
-      flightStartVec.copy(camera.position);
-      flightProgressRef.current = 0;
-      flightElapsedRef.current = 0;
-      isAnimatingRef.current = true;
+      const nextFocus = resolveViewPresetFocus(preset);
+      beginFlight(nextFocus, 'preset', preset);
     });
-  }, [camera, flightStartVec]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camera]);
 
-  /* ---- 控制权交接通道：用户拖拽 onStart → 立即终止动画（防锁死核心） ---- */
+  /* ---- 用户接管 + 滚轮缩放整形 + 280ms/<6px 双击复位 ---- */
   useEffect(() => {
+    const domElement = gl.domElement;
+    if (domElement === undefined || domElement === null) return undefined;
+
+    let pointerDownX = 0;
+    let pointerDownY = 0;
+    let pointerActive = false;
+    let lastTap: { x: number; y: number; timeMs: number } | null = null;
+    let restoreZoomFrame = false;
+
+    const handleCapturePointerDown = (event: PointerEvent): void => {
+      if (event.button === 0) {
+        pointerDownX = event.clientX;
+        pointerDownY = event.clientY;
+        pointerActive = true;
+      }
+      /* 用户按住画布准备拖拽时，若飞行仍在进行则立刻挂起飞行并释放 OrbitControls */
+      abortFlightToUser();
+    };
+
+    const handleCapturePointerUp = (event: PointerEvent): void => {
+      if (!pointerActive || event.button !== 0) return;
+      pointerActive = false;
+      const moveFromDown = Math.hypot(event.clientX - pointerDownX, event.clientY - pointerDownY);
+      if (moveFromDown >= CAMERA_MOTION.dblClickMaxMovePx) {
+        lastTap = null;
+        return;
+      }
+
+      const now = performance.now();
+      if (
+        lastTap !== null &&
+        now - lastTap.timeMs <= CAMERA_MOTION.dblClickWindowMs &&
+        Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < CAMERA_MOTION.dblClickMaxMovePx
+      ) {
+        lastTap = null;
+        markDoubleClickResetTriggered();
+        incrementDblClickResetCount();
+        prevSelectionKeyRef.current = 'null|null';
+        useClusterStore.getState().selectEntity(null);
+        dispatchViewPreset('overview');
+        return;
+      }
+
+      lastTap = { x: event.clientX, y: event.clientY, timeMs: now };
+    };
+
+    const handleCaptureTouchStart = (): void => {
+      abortFlightToUser();
+    };
+
+    const handleCaptureWheel = (event: WheelEvent): void => {
+      abortFlightToUser();
+      const controls = controlsRef.current;
+      if (controls === null) return;
+      const clampedAbs = Math.min(CAMERA_MOTION.wheelDeltaClamp, Math.abs(event.deltaY));
+      if (clampedAbs <= 0) return;
+      const ctrlScale = event.ctrlKey ? CAMERA_MOTION.wheelCtrlFactor : 1;
+      const modulated = Math.max(
+        0.06,
+        CAMERA_MOTION.zoomSpeed * (clampedAbs / CAMERA_MOTION.wheelDeltaClamp) * ctrlScale,
+      );
+      controls.zoomSpeed = modulated;
+      if (!restoreZoomFrame) {
+        restoreZoomFrame = true;
+        queueMicrotask(() => {
+          restoreZoomFrame = false;
+          if (controlsRef.current !== null) {
+            controlsRef.current.zoomSpeed = CAMERA_MOTION.zoomSpeed;
+          }
+        });
+      }
+    };
+
     const controls = controlsRef.current;
-    if (controls === null) return undefined;
-    const handleUserTakeover = (): void => {
-      // 打断即所得：相机停在当前插值位置，不吸附终点，由用户全权接管
-      isAnimatingRef.current = false;
-      /* 用户接管同时终止开场运镜，避免与之抢相机 */
-      openingDoneRef.current = true;
-      /*
-       * R69：用户手动接管拥有最高优先级，必须无条件解锁巡检。
-       * 不能复用 disengagePatrolIfActive()——导演 programmatic 锁会让它提前 return，
-       * 导致用户拖拽后 autoRotate 仍然开启、继续与手动镜头打架。
-       */
+    const handleControlsStart = (): void => {
       const store = useClusterStore.getState();
       if (store.isOrbitPatrolActive) {
         store.setOrbitPatrolActive(false, 'user');
       }
     };
-    controls.addEventListener('start', handleUserTakeover);
-    return (): void => {
-      controls.removeEventListener('start', handleUserTakeover);
-    };
-  }, []);
 
-  /* ---- 每帧插值（瞬态通道：零 setState / 零 new） ---- */
+    domElement.addEventListener('pointerdown', handleCapturePointerDown, { capture: true });
+    domElement.addEventListener('pointerup', handleCapturePointerUp, { capture: true });
+    domElement.addEventListener('touchstart', handleCaptureTouchStart, {
+      capture: true,
+      passive: true,
+    });
+    domElement.addEventListener('wheel', handleCaptureWheel, { capture: true, passive: true });
+    controls?.addEventListener('start', handleControlsStart);
+
+    return () => {
+      domElement.removeEventListener('pointerdown', handleCapturePointerDown, { capture: true });
+      domElement.removeEventListener('pointerup', handleCapturePointerUp, { capture: true });
+      domElement.removeEventListener('touchstart', handleCaptureTouchStart, { capture: true });
+      domElement.removeEventListener('wheel', handleCaptureWheel, { capture: true });
+      controls?.removeEventListener('start', handleControlsStart);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gl]);
+
+  /* ---- 主渲染前更新（priority -2：先于 drei OrbitControls useFrame(-1) 执行） ---- */
   useFrame((state, delta): void => {
-    /* ---- R29 C：开场运镜（0–2.4s），独立于选中/预设飞行 ---- */
+    const controls = controlsRef.current;
+    const clampedDelta = Math.min(Math.max(delta, 0), MAX_FRAME_DELTA);
+    const reducedNow = isReducedMotion();
+    const minDist = isMobileViewport
+      ? CAMERA_MOTION.mobileMinDistance
+      : CAMERA_MOTION.desktopMinDistance;
+    const enablePan = !isMobileViewport;
+
+    /* ---- 1. 开场运镜（仅非 reduced-motion 时执行，期间挂起 OrbitControls 自动更新） ---- */
     if (!openingDoneRef.current) {
-      const controlsForOpening = controlsRef.current;
-      /*
-       * R69：开场推镜期间强制挂起 autoRotate。
-       * 否则 OrbitControls 的水平切向位移会与开场阻尼插值互相拉扯，
-       * 相机永远到不了 OVERVIEW，openingDoneRef 也永远不置位。
-       */
-      if (controlsForOpening !== null && controlsForOpening.autoRotate !== false) {
-        controlsForOpening.autoRotate = false;
+      if (controls !== null && controls.enabled) {
+        controls.enabled = false;
       }
-      const dt = Math.min(delta, 0.1);
       openingProgressRef.current = Math.min(
         1,
-        openingProgressRef.current + dt / OPENING_FLIGHT_DURATION,
+        openingProgressRef.current + clampedDelta / OPENING_FLIGHT_DURATION,
       );
-      const alpha = 1 - Math.exp(-OPENING_FLIGHT_DAMPING * dt);
+      const alpha = 1 - Math.exp(-OPENING_FLIGHT_DAMPING * clampedDelta);
       targetPosVec.set(
         OVERVIEW_CAMERA_POSITION[0],
         OVERVIEW_CAMERA_POSITION[1],
@@ -329,166 +468,171 @@ export default function CameraRig() {
       );
       targetLookVec.set(OVERVIEW_LOOK_AT[0], OVERVIEW_LOOK_AT[1], OVERVIEW_LOOK_AT[2]);
       state.camera.position.lerp(targetPosVec, alpha);
-      if (controlsForOpening !== null) {
-        controlsForOpening.target.lerp(targetLookVec, alpha);
-        controlsForOpening.update();
-      }
+      currentLookVec.lerp(targetLookVec, alpha);
+      state.camera.lookAt(currentLookVec);
+
       if (
         openingProgressRef.current >= 1 ||
         state.camera.position.distanceTo(targetPosVec) < 0.05
       ) {
         state.camera.position.copy(targetPosVec);
-        if (controlsForOpening !== null) {
-          controlsForOpening.target.copy(targetLookVec);
-          controlsForOpening.update();
-        }
+        currentLookVec.copy(targetLookVec);
+        state.camera.lookAt(currentLookVec);
         openingDoneRef.current = true;
-        /* 开场完成：从 Store 的真实巡检状态恢复 autoRotate（而非硬编码 true） */
-        if (controlsForOpening !== null) {
-          controlsForOpening.autoRotate = useClusterStore.getState().isOrbitPatrolActive;
+        if (controls !== null) {
+          controls.target.copy(currentLookVec);
+          controls.enabled = true;
+          clearOrbitResidualDelta(controls);
         }
       }
     }
 
-    if (!isAnimatingRef.current) {
-      /* 自由态：autoRotate 始终以 Store 为唯一事实源（用户接管/导演开关都会回写） */
-      const freeControls = controlsRef.current;
-      if (freeControls !== null) {
-        const patrolActive = useClusterStore.getState().isOrbitPatrolActive;
-        if (freeControls.autoRotate !== patrolActive) {
-          freeControls.autoRotate = patrolActive;
-        }
+    /* ---- 2. 程序化飞行（720ms 三段式 / 820ms 球面 / <=200ms 减少动效） ---- */
+    if (isAnimatingRef.current) {
+      if (controls !== null && controls.enabled) {
+        controls.enabled = false;
       }
-      return;
-    }
 
-    const focus = focusRef.current;
-    const controls = controlsRef.current;
-    const clampedDelta = Math.min(delta, MAX_FRAME_DELTA);
-    /*
-     * R69：飞行插值期间每帧显式关闭 autoRotate。
-     * React 的 autoRotate prop 只在 Store 变化时重放；若飞行途中 Store 已为 true，
-     * 仅靠 prop 无法保证下一帧仍关闭，必须每帧命令式压制，抵达后再交还。
-     */
-    if (controls !== null && controls.autoRotate !== false) {
-      controls.autoRotate = false;
-    }
-    flightElapsedRef.current += clampedDelta;
-    // 帧率无关指数阻尼：α = 1 − e^(−k·Δt)
-    const alpha = 1 - Math.exp(-FLIGHT_DAMPING_RATE * clampedDelta);
+      const focus = focusRef.current;
+      targetPosVec.set(focus.position[0], focus.position[1], focus.position[2]);
+      targetLookVec.set(focus.lookAt[0], focus.lookAt[1], focus.lookAt[2]);
 
-    // 预分配向量原地装载目标（tuple → Vector3，零分配）
-    targetPosVec.set(focus.position[0], focus.position[1], focus.position[2]);
-    targetLookVec.set(focus.lookAt[0], focus.lookAt[1], focus.lookAt[2]);
+      const durationS = Math.max(0.05, flightDurationRef.current);
+      const wallElapsedMs = Math.max(0, performance.now() - flightStartWallMsRef.current);
+      flightElapsedRef.current = Math.min(durationS, wallElapsedMs / 1000);
+      const p = Math.min(1, flightElapsedRef.current / durationS);
+      const eased = easeThreeStageFlight(p, reducedNow);
 
-    /*
-     * ================= 弧线绕飞（Arc Avoidance）=================
-     *
-     * 【解决什么】旧实现直接对 targetPosVec 做阻尼 lerp：起点与终点之间
-     * 的轨迹是一条**直线**。从环外飞向环内机架特写位时，这条直线会从
-     * 机架背后斜穿过去——穿过隔板、穿过刀片，严重时穿过中央八面体水晶，
-     * 观感就是"镜头钻进模型里"。
-     *
-     * 【轨迹构造】设 p ∈ [0,1] 为飞行进度，start 为起飞瞬间的相机位置：
-     *   L(p) = start + (target − start)·p          直线点
-     *   w(p) = sin(π·p)                            包络：两端 0、中段 1
-     *   P(p) = L(p) + up·(lift·w) + side·(step·w)  弧线点
-     *
-     * - w 两端为 0 ⇒ 起终点精确不变，不会有"起飞一抖 / 到位一偏"；
-     * - up 抬高让镜头从障碍上方越过（抬升量按飞行距离缩放）；
-     * - side 取飞行方向的**水平垂线**，让轨迹真的侧向绕出去——
-     *   只抬高而不横移时，正俯冲的视角仍会切到水晶，横向分量是必要的。
-     *
-     * 【为何仍保留阻尼】相机向 P(p) 做指数阻尼而非直接 set：
-     * 掉帧或切后台时进度仍连续，机位变化依旧平滑，且与既有的
-     * 到达判定（距离 < 0.15 吸附）天然兼容。
-     */
-    flightProgressRef.current = Math.min(
-      1,
-      flightProgressRef.current + FLIGHT_ARC_RATE * clampedDelta,
-    );
-    const progress = flightProgressRef.current;
+      currentLookVec.lerpVectors(flightStartLookVec, targetLookVec, eased);
 
-    /* 飞行向量与距离（起飞点 → 目标） */
-    flightDirVec.subVectors(targetPosVec, flightStartVec);
-    const flightDistance = flightDirVec.length();
+      if (useSphericalFlightRef.current) {
+        sphericalOffsetStartVec.subVectors(flightStartVec, flightStartLookVec);
+        sphericalOffsetEndVec.subVectors(targetPosVec, targetLookVec);
+        sphericalStart.setFromVector3(sphericalOffsetStartVec);
+        sphericalEnd.setFromVector3(sphericalOffsetEndVec);
 
-    if (flightDistance > 0.001) {
-      /* 归一化方向；水平切向 = 世界 Y × 方向，恒垂直于飞行方向 */
-      flightDirVec.multiplyScalar(1 / flightDistance);
-      flightSideVec.set(0, 1, 0).cross(flightDirVec);
-      const sideLength = flightSideVec.length();
-      if (sideLength > 0.001) {
-        flightSideVec.multiplyScalar(1 / sideLength);
+        const deltaAzimuth = Math.atan2(
+          Math.sin(sphericalEnd.theta - sphericalStart.theta),
+          Math.cos(sphericalEnd.theta - sphericalStart.theta),
+        );
+        sphericalCurr.radius = THREE.MathUtils.lerp(sphericalStart.radius, sphericalEnd.radius, eased);
+        sphericalCurr.phi = THREE.MathUtils.clamp(
+          THREE.MathUtils.lerp(sphericalStart.phi, sphericalEnd.phi, eased),
+          MIN_POLAR_ANGLE,
+          MAX_POLAR_ANGLE,
+        );
+        sphericalCurr.theta = sphericalStart.theta + deltaAzimuth * eased;
+        sphericalOffsetStartVec.setFromSpherical(sphericalCurr);
+        state.camera.position.copy(currentLookVec).add(sphericalOffsetStartVec);
       } else {
-        /* 近乎纯竖直飞行时叉积退化为零向量：放弃侧摆，只保留抬升 */
-        flightSideVec.set(0, 0, 0);
+        flightDirVec.subVectors(targetPosVec, flightStartVec);
+        const flightDistance = flightDirVec.length();
+        arcPointVec.lerpVectors(flightStartVec, targetPosVec, eased);
+
+        if (flightDistance > 0.001 && !reducedNow) {
+          flightDirVec.multiplyScalar(1 / flightDistance);
+          flightSideVec.set(0, 1, 0).cross(flightDirVec);
+          const sideLen = flightSideVec.length();
+          if (sideLen > 0.001) {
+            flightSideVec.multiplyScalar(1 / sideLen);
+          } else {
+            flightSideVec.set(0, 0, 0);
+          }
+
+          const envelope = computeFlightArcEnvelope(p, false);
+          const lift =
+            Math.min(FLIGHT_ARC_LIFT_MAX, flightDistance * FLIGHT_ARC_LIFT_RATIO) * envelope;
+          const sideStep =
+            Math.min(FLIGHT_ARC_SIDESTEP_MAX, flightDistance * FLIGHT_ARC_SIDESTEP_RATIO) *
+            envelope;
+          arcPointVec.y += lift;
+          arcPointVec.addScaledVector(flightSideVec, sideStep);
+        }
+
+        state.camera.position.copy(arcPointVec);
       }
 
-      const envelope = Math.sin(Math.PI * progress);
-      const lift = Math.min(FLIGHT_ARC_LIFT_MAX, flightDistance * FLIGHT_ARC_LIFT_RATIO) * envelope;
-      const sideStep =
-        Math.min(FLIGHT_ARC_SIDESTEP_MAX, flightDistance * FLIGHT_ARC_SIDESTEP_RATIO) * envelope;
+      if (controls !== null) {
+        controls.target.copy(currentLookVec);
+      }
+      state.camera.lookAt(currentLookVec);
+      publishFlightProgress(p);
+      pushDebugFlightSample(
+        wallElapsedMs,
+        p,
+        state.camera.position.x,
+        state.camera.position.y,
+        state.camera.position.z,
+      );
 
-      arcPointVec.lerpVectors(flightStartVec, targetPosVec, progress);
-      arcPointVec.y += lift;
-      arcPointVec.addScaledVector(flightSideVec, sideStep);
-    } else {
-      arcPointVec.copy(targetPosVec);
-    }
-
-    state.camera.position.lerp(arcPointVec, alpha);
-    if (controls !== null) {
-      controls.target.lerp(targetLookVec, alpha);
-      // 手动 update 使本帧的 target 变更立即生效（drei 内部 update 在下一帧）
-      controls.update();
-    }
-
-    /*
-     * 抵达 / 超时收敛：两条路径都必须结束 isAnimatingRef 并交还 autoRotate。
-     *
-     * - 正常抵达：吸附终点与 lookAt，保证像素级精确；
-     * - 超时：不强行吸附（可能瞬移），只结束插值，让巡检从当前真实机位接续，
-     *   随后 OrbitControls 以当前相机位置为起点继续旋转。
-     */
-    const arrived = state.camera.position.distanceTo(targetPosVec) < ARRIVAL_EPSILON;
-    const timedOut = flightElapsedRef.current > MAX_FLIGHT_DURATION;
-    if (arrived || timedOut) {
-      if (arrived) {
+      if (p >= 1) {
         state.camera.position.copy(targetPosVec);
+        currentLookVec.copy(targetLookVec);
         if (controls !== null) {
           controls.target.copy(targetLookVec);
-          controls.update();
+          controls.enabled = true;
+          clearOrbitResidualDelta(controls);
         }
+        state.camera.lookAt(targetLookVec);
+        isAnimatingRef.current = false;
+        publishFlightProgress(1);
+        publishFlightStatus({
+          isFlying: false,
+          activePreset: activePresetRef.current,
+          kind: flightKindRef.current,
+        });
+        endDebugFlightTrace(true, wallElapsedMs);
       }
-      isAnimatingRef.current = false;
-      flightProgressRef.current = 1;
-      if (controls !== null) {
-        controls.autoRotate = useClusterStore.getState().isOrbitPatrolActive;
+    } else if (openingDoneRef.current && controls !== null) {
+      /* ---- 3. 自由态：由 drei OrbitControls useFrame(-1) 统一 update，此处仅同步 dt 阻尼与开关 ---- */
+      if (!controls.enabled) {
+        controls.enabled = true;
+      }
+      controls.dampingFactor = computeDtDamping(clampedDelta, CAMERA_MOTION.orbitBaseDamping);
+      const patrolActive = !reducedNow && useClusterStore.getState().isOrbitPatrolActive;
+      if (controls.autoRotate !== patrolActive) {
+        controls.autoRotate = patrolActive;
       }
     }
-  });
+
+    if (isCameraDebugEnabled()) {
+      const lookTarget = controls?.target ?? currentLookVec;
+      updateDebugCameraState({
+        position: [state.camera.position.x, state.camera.position.y, state.camera.position.z],
+        target: [lookTarget.x, lookTarget.y, lookTarget.z],
+        dampingFactor: controls?.dampingFactor ?? CAMERA_MOTION.orbitBaseDamping,
+        isAnimating: isAnimatingRef.current,
+        autoRotate: controls?.autoRotate ?? false,
+        reducedMotion: reducedNow,
+        minDistance: minDist,
+        enablePan,
+        zoomSpeed: controls?.zoomSpeed ?? CAMERA_MOTION.zoomSpeed,
+        wheelDeltaClamp: CAMERA_MOTION.wheelDeltaClamp,
+        breathAmplitudeScale: reducedNow ? REDUCED_MOTION_AMPLITUDE : 1,
+      });
+    }
+  }, -2);
+
+  const effectiveAutoRotate = !reducedMotion && isOrbitPatrolActive;
+  const minOrbitDistance = isMobileViewport
+    ? CAMERA_MOTION.mobileMinDistance
+    : CAMERA_MOTION.desktopMinDistance;
 
   return (
     <OrbitControls
       ref={controlsRef}
       makeDefault
       enableDamping
-      dampingFactor={ORBIT_DAMPING_FACTOR}
+      dampingFactor={CAMERA_MOTION.orbitBaseDamping}
       minPolarAngle={MIN_POLAR_ANGLE}
       maxPolarAngle={MAX_POLAR_ANGLE}
-      minDistance={MIN_ORBIT_DISTANCE}
+      minDistance={minOrbitDistance}
       maxDistance={MAX_ORBIT_DISTANCE}
-      // 平移限制在水平面小范围，防止用户把场景拖出视野后「迷路」
-      enablePan
+      enablePan={!isMobileViewport}
       panSpeed={0.6}
       rotateSpeed={0.75}
-      zoomSpeed={0.85}
-      /* 环绕巡检：声明式绑定 Store 开关（严禁命令式戳 ref）。
-       * autoRotateSpeed 2.0 ≈ 30 秒/圈——态势巡检的从容节奏，
-       * 且 drei 的 useFrame(-1) 持续 update 保证 damping 与 autoRotate 共存稳定。
-       * 用户拖拽时经 'start' 监听自动关闭（见 handleUserTakeover）。 */
-      autoRotate={isOrbitPatrolActive}
+      zoomSpeed={CAMERA_MOTION.zoomSpeed}
+      autoRotate={effectiveAutoRotate}
       autoRotateSpeed={ORBIT_PATROL_SPEED}
     />
   );

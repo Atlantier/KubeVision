@@ -223,12 +223,17 @@ export default function SplitPaneResizer({
    */
   const handlePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>): void => {
-      /* 只响应主键（避免右键菜单 / 中键滚动触发拖拽） */
+      /* 只响应主键（避免右键菜单 / 中键滚动触发拖拽）；同时阻断向底层 Canvas OrbitControls 渗透 */
       if (event.button !== 0) return;
       event.preventDefault();
+      event.stopPropagation();
 
       /* 指针捕获：鼠标移出手柄后仍能收到事件 */
-      event.currentTarget.setPointerCapture(event.pointerId);
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        /* 合成事件/脚本派发无有效 pointerId 时忽略捕获异常 */
+      }
 
       setDragging(true);
       onDragStateChangeRef.current?.(true);
@@ -333,14 +338,23 @@ export default function SplitPaneResizer({
       tabIndex={0}
       /* ---- 交互 ---- */
       onPointerDown={handlePointerDown}
+      onTouchStart={(event): void => {
+        event.stopPropagation();
+      }}
       onDoubleClick={handleDoubleClick}
       onKeyDown={handleKeyDown}
-      /* ---- 视觉：2.5 宽（10px）的命中区，内含 1px 导轨线 + 居中胶囊抓手 ---- */
+      /* ---- 视觉：2.5 宽（10px）的布局占据区 + 左右各 ±8px 防穿透命中护城河 ---- */
       className={cn(
-        'group relative flex w-2.5 shrink-0 cursor-col-resize touch-none select-none items-center justify-center',
+        'group relative z-30 flex w-2.5 shrink-0 cursor-col-resize touch-none select-none items-center justify-center',
         'outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70',
       )}
     >
+      {/* 左右 ±8px 透明防渗透区：边缘误触直接进入分栏命中区，阻断 OrbitControls 误旋转 */}
+      <span
+        aria-hidden
+        data-testid="split-resizer-guard"
+        className="absolute inset-y-0 -left-[8px] -right-[8px] cursor-col-resize touch-none"
+      />
       {/*
        * 导轨线：常态几乎不可见（white/6%），悬停/拖拽时转为青色激光。
        *

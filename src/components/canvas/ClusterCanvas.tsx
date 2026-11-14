@@ -20,7 +20,16 @@
  * 永不遮挡 Copilot 抽屉（z-30+）与顶层 Modal（z-50）（AGENTS.md 第 6 条）。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  Profiler,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ProfilerOnRenderCallback,
+  type ReactNode,
+} from 'react';
 import { Canvas, useFrame, useThree, type RootState } from '@react-three/fiber';
 import { ContactShadows, Grid, MeshReflectorMaterial, PerformanceMonitor, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
@@ -30,16 +39,34 @@ import { Bloom, DepthOfField, EffectComposer, FXAA, Noise, ToneMapping, Vignette
 import type { DepthOfFieldEffect } from 'postprocessing';
 import { ToneMappingMode } from 'postprocessing';
 
+import {
+  REDUCED_MOTION_AMPLITUDE,
+  isReducedMotion,
+  subscribeReducedMotion,
+} from '@/constants/motion';
 import { useClusterStore } from '@/store/useClusterStore';
 import CyberMatrixRain3D from '@/components/canvas/CyberMatrixRain3D';
 import ProceduralPbrEnvironment from '@/components/canvas/ProceduralPbrEnvironment';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { getRecentFrames } from '@/utils/snapshotRingBuffer';
-import { MASTER_POSITION, getRackTransform } from '@/utils/spatialLayout';
+import {
+  BASE_PAD_CLEARANCE,
+  MASTER_POSITION,
+  POD_BOX_HEIGHT,
+  POD_BOX_SIZE,
+  getPodWorldTransform,
+  getRackTransform,
+} from '@/utils/spatialLayout';
+import {
+  incrementSceneCommitCount,
+  refreshCameraDebugFlag,
+  registerCameraDebugProvider,
+} from '@/utils/cameraDebugBridge';
+import { cancelPendingSelectionFlight } from '@/utils/canvasClickIntent';
 import { useInViewPause } from '@/hooks/useInViewPause';
 import { dispatchViewPreset, subscribeViewPreset } from '@/utils/viewPresetBus';
 import { flushViewportCapture, registerFrameCapture, requestViewportCapture } from '@/utils/viewportCapture';
-import type { WorkerNodeEntity } from '@/types/cluster';
+import { NODE_ID_BY_RACK, type WorkerNodeEntity } from '@/types/cluster';
 import type { ViewPresetKey } from '@/types/canvas';
 import type { SelectedEntityType } from '@/types/store';
 
@@ -54,8 +81,14 @@ import ReturnStream3D from '@/components/canvas/ReturnStream3D';
 import RackGroundReflection from '@/components/canvas/RackGroundReflection';
 import BootController from '@/components/canvas/BootController';
 import { validateGlowBudget } from '@/constants/glowBudget';
+import {
+  RENDER_BUDGET_SAMPLE_INTERVAL_MS,
+  checkAndWarnRenderBudget,
+  type RenderBudgetEvaluation,
+} from '@/constants/renderBudget';
+import { getMergeGeometryStats, markStaticMergePhaseReady } from '@/utils/mergeStaticGeometries';
 import GlowDebugOverlay from '@/components/canvas/GlowDebugOverlay';
-import { useQualityStore } from '@/store/useQualityStore';
+import { isCompactViewport, isDemoMode, useQualityStore } from '@/store/useQualityStore';
 import { useQualityGovernor } from '@/hooks/useQualityGovernor';
 import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
 import ClusterTopologyFloor3D from '@/components/canvas/ClusterTopologyFloor3D';
@@ -571,8 +604,174 @@ function GlowBudgetProbe(): null {
   return null;
 }
 
+/**
+ * RenderBudgetProbe —— 开发期 2s 渲染预算巡检探针（R5 进阶）。
+ *
+ * 【设计意图】周期性读取瞬态轨 glStats.drawCalls / drawCallsReflection，
+ * 对比当前质量档位预算（T3<=200 / T2<=140 / T1<=90 / T0<=50），
+ * 超出时仅输出 console.warn（绝不触发 UI 报错或重渲染）。
+ */
+function RenderBudgetProbe(): null {
+  useEffect((): (() => void) | undefined => {
+    if (process.env.NODE_ENV === 'production') return undefined;
+    markStaticMergePhaseReady();
+    const timer = window.setInterval((): void => {
+      try {
+        const tier = useQualityStore.getState().tier;
+        const { drawCalls, drawCallsReflection } = telemetryTransientRef.glStats;
+        checkAndWarnRenderBudget(tier, drawCalls, drawCallsReflection);
+      } catch (error: unknown) {
+        console.warn('[renderBudget] 巡检异常，已隔离（不影响渲染）:', error);
+      }
+    }, RENDER_BUDGET_SAMPLE_INTERVAL_MS);
+    return (): void => window.clearInterval(timer);
+  }, []);
+
+  return null;
+}
+
+function CameraDebugBridge(): null {
+  const camera = useThree((s): THREE.Camera => s.camera);
+  const gl = useThree((s): THREE.WebGLRenderer => s.gl);
+
+  useEffect((): (() => void) | undefined => {
+    if (!refreshCameraDebugFlag()) return undefined;
+    const cornerVec = new THREE.Vector3();
+    const centerVec = new THREE.Vector3();
+    registerCameraDebugProvider({
+      getSelectedPodBoxProjection: () => {
+        const store = useClusterStore.getState();
+        if (store.selectedEntityType !== 'pod' || store.selectedEntityId === null) {
+          return null;
+        }
+        const summary = store.snapshotSummary;
+        const targetPod = summary?.pods.find((pod) => pod.id === store.selectedEntityId);
+        if (targetPod === undefined) return null;
+
+        const worldTf = getPodWorldTransform(targetPod.rackIndex, targetPod.slotIndex);
+        const restOffsetY = -POD_BOX_HEIGHT / 2 + BASE_PAD_CLEARANCE + POD_BOX_SIZE[1] / 2;
+        const centerX = worldTf.position[0];
+        const centerY = worldTf.position[1] + restOffsetY;
+        const centerZ = worldTf.position[2];
+        const cosY = Math.cos(worldTf.rotationY);
+        const sinY = Math.sin(worldTf.rotationY);
+        const hx = POD_BOX_SIZE[0] * 0.5;
+        const hy = POD_BOX_SIZE[1] * 0.5;
+        const hz = POD_BOX_SIZE[2] * 0.5;
+
+        camera.updateMatrixWorld();
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+        for (const sx of [-1, 1]) {
+          for (const sy of [-1, 1]) {
+            for (const sz of [-1, 1]) {
+              const lx = sx * hx;
+              const ly = sy * hy;
+              const lz = sz * hz;
+              cornerVec.set(
+                centerX + lx * cosY + lz * sinY,
+                centerY + ly,
+                centerZ - lx * sinY + lz * cosY,
+              );
+              cornerVec.project(camera);
+              minX = Math.min(minX, cornerVec.x);
+              maxX = Math.max(maxX, cornerVec.x);
+              minY = Math.min(minY, cornerVec.y);
+              maxY = Math.max(maxY, cornerVec.y);
+            }
+          }
+        }
+        centerVec.set(centerX, centerY, centerZ);
+        const rect = gl.domElement.getBoundingClientRect();
+        return {
+          entityId: targetPod.id,
+          widthPct: Number((((maxX - minX) / 2) * 100).toFixed(2)),
+          heightPct: Number((((maxY - minY) / 2) * 100).toFixed(2)),
+          canvasWidth: Math.round(rect.width),
+          canvasHeight: Math.round(rect.height),
+          distanceToTarget: Number(camera.position.distanceTo(centerVec).toFixed(3)),
+        };
+      },
+      getProbeAnchors: () => {
+        camera.updateMatrixWorld();
+        const rect = gl.domElement.getBoundingClientRect();
+        const projectPoint = (wx: number, wy: number, wz: number): { x: number; y: number } => {
+          cornerVec.set(wx, wy, wz).project(camera);
+          return {
+            x: Number((rect.left + (cornerVec.x * 0.5 + 0.5) * rect.width).toFixed(1)),
+            y: Number((rect.top + (-cornerVec.y * 0.5 + 0.5) * rect.height).toFixed(1)),
+          };
+        };
+
+        const masterScreen = projectPoint(MASTER_POSITION[0], MASTER_POSITION[1] + 0.12, MASTER_POSITION[2]);
+        const summary = useClusterStore.getState().snapshotSummary;
+
+        let nearestRackIndex = 0;
+        let nearestRackDist = Infinity;
+        for (let r = 0; r < 3; r += 1) {
+          const rTf = getRackTransform(r);
+          centerVec.set(rTf.position[0], 2.2, rTf.position[2]);
+          const dist = camera.position.distanceTo(centerVec);
+          if (dist < nearestRackDist) {
+            nearestRackDist = dist;
+            nearestRackIndex = r;
+          }
+        }
+        const frontRack = getRackTransform(nearestRackIndex);
+        const rackScreen = projectPoint(frontRack.position[0], 4.46, frontRack.position[2]);
+
+        let podAnchor: { x: number; y: number; id: string; rackId: string } | null = null;
+        if (summary !== null) {
+          const restOffsetY = -POD_BOX_HEIGHT / 2 + BASE_PAD_CLEARANCE + POD_BOX_SIZE[1] / 2;
+          let bestDist = Infinity;
+          for (const pod of summary.pods) {
+            if (pod.rackIndex !== nearestRackIndex) continue;
+            if ((pod.slotIndex % 4) >= 2) continue;
+            const pTf = getPodWorldTransform(pod.rackIndex, pod.slotIndex);
+            centerVec.set(pTf.position[0], pTf.position[1] + restOffsetY, pTf.position[2]);
+            const d = camera.position.distanceTo(centerVec);
+            if (d < bestDist) {
+              bestDist = d;
+              const pScreen = projectPoint(centerVec.x, centerVec.y, centerVec.z);
+              podAnchor = {
+                x: pScreen.x,
+                y: pScreen.y,
+                id: pod.id,
+                rackId: NODE_ID_BY_RACK[pod.rackIndex],
+              };
+            }
+          }
+        }
+
+        return {
+          master: { x: masterScreen.x, y: masterScreen.y, id: 'master-control-plane' },
+          rack: { x: rackScreen.x, y: rackScreen.y, id: NODE_ID_BY_RACK[nearestRackIndex] },
+          pod: podAnchor,
+        };
+      },
+    });
+    return undefined;
+  }, [camera, gl]);
+
+  return null;
+}
+
+const handleSceneProfilerRender: ProfilerOnRenderCallback = (): void => {
+  incrementSceneCommitCount();
+};
+
 export default function ClusterCanvas() {
   /* ---- Store 细粒度订阅（工具条受控状态四元组） ---- */
+  const [reducedMotion, setReducedMotion] = useState<boolean>(() => isReducedMotion());
+
+  useEffect(() => {
+    setReducedMotion(isReducedMotion());
+    refreshCameraDebugFlag();
+    return subscribeReducedMotion(setReducedMotion);
+  }, []);
+  const motionScale = reducedMotion ? REDUCED_MOTION_AMPLITUDE : 1;
   const selectEntity = useClusterStore(
     (s): ((entityId: string | null, entityType?: SelectedEntityType | null) => void) => s.selectEntity,
   );
@@ -724,25 +923,49 @@ export default function ClusterCanvas() {
   /** R5 第6步：渲染器引用（供档位切换时同步 toneMapping，不依赖 onCreated 一次性设置） */
   const glRef = useRef<THREE.WebGLRenderer | null>(null);
 
-  /* R29 F：质量档位（非持久化）+ 自动治理（2Hz 采样、带迟滞与冷却） */
+  /* R29 F + R8 小屏降载：质量档位（非持久化）+ 自动治理（2Hz 采样、带迟滞与冷却） */
   const qualityTier = useQualityStore((state): number => state.tier);
+  const qualityAuto = useQualityStore((state): boolean => state.auto);
+  const viewportConstrained = useQualityStore((state): boolean => state.viewportConstrained);
+  const setViewportConstrained = useQualityStore(
+    (state): ((constrained: boolean) => void) => state.setViewportConstrained,
+  );
   useQualityGovernor();
 
+  /* 监听视口尺寸变化，在 auto && !isDemoMode() 时触发小屏降载但不重建 <Canvas> */
+  useEffect((): (() => void) => {
+    const syncViewportConstraint = (): void => {
+      if (typeof window === 'undefined') return;
+      setViewportConstrained(isCompactViewport(window.innerWidth, window.innerHeight));
+    };
+    syncViewportConstraint();
+    window.addEventListener('resize', syncViewportConstraint);
+    const el = containerRef.current;
+    const ro =
+      typeof ResizeObserver !== 'undefined' && el !== null
+        ? new ResizeObserver(syncViewportConstraint)
+        : null;
+    if (ro !== null && el !== null) ro.observe(el);
+    return (): void => {
+      window.removeEventListener('resize', syncViewportConstraint);
+      ro?.disconnect();
+    };
+  }, [setViewportConstrained]);
+
+  const isViewportAutoLow =
+    !envCaps.software && qualityAuto && viewportConstrained && !isDemoMode();
+  const effectiveTier = (
+    isViewportAutoLow ? Math.min(qualityTier, 1) : qualityTier
+  ) as 0 | 1 | 2 | 3;
+
   /*
-   * R30：质量档位 → 渲染开关（手动 ?quality= 或治理器自动）。
-   * 【R5 第2步·方案A】真反射（MeshReflectorMaterial 整场景再渲染）只在最高档 T3 开启；
-   *   T2/T1/T0 改用已有的 RackGroundReflection 假反射带（成本仅 3 draw，省掉整场景重渲染）。
-   * 【R5 第5步】后处理效果全部从 TIER_EFFECT_MATRIX 按 qualityTier 同源推导；
-   *   阴影固定（不再随档位运行期切换，避免材质重编译），见 Canvas shadows 属性。
-   * 降档顺序（先反射 → 再 Bloom/DoF → 最后后处理全关）：
-   *   T3：全开（含真反射 + DoF）；T2：关真反射→假反射带、关 DoF、FXAA；
-   *   T1：Bloom 降级；T0：后处理全关。
-   * 【R01】只改开关与参数，绝不改 DPR / RenderTarget 尺寸。
+   * R30：质量档位 → 渲染开关（手动 ?quality= 或治理器自动 + R8 小屏自动降载）。
+   * 小屏降载时停用重粒子 Sparkles / 矩阵雨与高成本真反射（保留核心拓扑、故障着色与截图能力）。
    */
-  const qualityPost = postEnabled && qualityTier > 0;
-  const qualityReflector = reflectorEnabled && qualityTier >= 3;
+  const qualityPost = postEnabled && effectiveTier > 0;
+  const qualityReflector = reflectorEnabled && effectiveTier >= 3;
   /** R5 第5步：当前档位对应的后处理效果组合（单一事实源） */
-  const tierEffects: TierEffects = TIER_EFFECT_MATRIX[(qualityTier as 0 | 1 | 2 | 3)];
+  const tierEffects: TierEffects = TIER_EFFECT_MATRIX[effectiveTier];
 
   /**
    * R24 追问 3：把"当前渲染路径 + 原因"写入瞬态轨。
@@ -751,34 +974,31 @@ export default function ClusterCanvas() {
    * 评委因此能直接看到是否发生降级、为什么降级，而不是靠猜。
    */
   useEffect((): void => {
-    const tier = !qualityPost ? 'T0' : RENDER_TIER;
+    const tierLabel = !qualityPost
+      ? 'T0'
+      : (`T${effectiveTier}` as 'T3' | 'T2' | 'T1' | 'T0');
     const reason = envCaps.software
       ? '软件光栅化（WebGL2 + half-float + renderer 探测命中）：后处理与反射均关闭'
       : !envCaps.webgl2
         ? 'WebGL2 不可用：降级为兜底路径'
         : !envCaps.halfFloat
           ? '缺少 EXT_color_buffer_half_float：HDR 后处理 RT 不可用'
-          : postEnabled
-            ? `Composer 路径（${RENDER_QUALITY_TIER} 档，${RENDER_TIER}）`
-            : '兜底路径：运行时关闭后处理链';
-    telemetryTransientRef.glStats.renderTier = tier;
+          : isViewportAutoLow
+            ? '小屏视口自动降载：精简粒子/矩阵雨与高成本反射，保留拓扑、故障告警与截图能力'
+            : postEnabled
+              ? `Composer 路径（${RENDER_QUALITY_TIER} 档，${tierLabel}）`
+              : '兜底路径：运行时关闭后处理链';
+    telemetryTransientRef.glStats.renderTier = tierLabel;
     telemetryTransientRef.glStats.renderReason = reason;
-  }, [qualityPost, postEnabled, envCaps, qualityTier]);
+  }, [qualityPost, postEnabled, envCaps, effectiveTier, isViewportAutoLow]);
 
   /**
-   * R5 第7步：tier ≤ 1 时把 DPR 锁到区间下限（只降不升）。
-   *
-   * 低档本就为弱 GPU 设计，DPR 直接压到 floor（1x 屏 0.75、2x 屏 1）换流畅；
-   * 之后档位回升也不回弹——回升意味着又一次 RT 重建，且"刚降就升"会在临界点抖动。
-   *
-   * 【软件光栅化例外】SwiftShader 的 FPS 天然极低，治理器会把档位降到 ≤1，
-   * 但它只用于无 GPU 的 CI/截图环境，DPR 压到 0.75 只会让证据图变糊而无收益，
-   * 因此软渲染保持既有的 DPR=1.0 锁（L8），不参与低档 0.75 锁。
+   * R5 第7步：effectiveTier ≤ 1 时把 DPR 锁到区间下限（只降不升）。
    */
   useEffect((): void => {
     if (envCaps.software) return;
-    if (qualityTier <= 1) setAdaptiveDpr(dprBounds.floor);
-  }, [qualityTier, dprBounds.floor, envCaps.software]);
+    if (effectiveTier <= 1) setAdaptiveDpr(dprBounds.floor);
+  }, [effectiveTier, dprBounds.floor, envCaps.software]);
 
   /**
    * L11：渲染路径一致性对比钩子（仅开发构建暴露）。
@@ -800,6 +1020,13 @@ export default function ClusterCanvas() {
       /* R5：档位切换取证（renderer.info.programs 是否随降档重编译） */
       setQualityTier: (tier: 0 | 1 | 2 | 3): void => useQualityStore.getState().setTier(tier, 'hud'),
       getQualityTier: (): number => useQualityStore.getState().tier,
+      /* R5 进阶：静态几何合批调用统计 + 渲染预算实时检查 */
+      getMergeStats: () => getMergeGeometryStats(),
+      checkBudget: (): RenderBudgetEvaluation => {
+        const tier = useQualityStore.getState().tier;
+        const { drawCalls, drawCallsReflection } = telemetryTransientRef.glStats;
+        return checkAndWarnRenderBudget(tier, drawCalls, drawCallsReflection);
+      },
       /* R5：按需截图取证（preserveDrawingBuffer 已关闭，只能同帧读取） */
       capture: (options: { mime: 'image/jpeg' | 'image/png'; quality?: number }): Promise<string | null> =>
         requestViewportCapture(options),
@@ -868,7 +1095,7 @@ export default function ClusterCanvas() {
     return (): void => {
       clearTimeout(timer);
     };
-  }, [qualityPost, postEnabled, qualityReflector, qualityTier]);
+  }, [qualityPost, postEnabled, qualityReflector, effectiveTier]);
 
 
   /**
@@ -1008,7 +1235,9 @@ export default function ClusterCanvas() {
     postEffectChildren.push(<FXAA key="fxaa" />);
   }
   if (tierEffects.vignette) {
-    postEffectChildren.push(<Vignette key="vignette" eskil={false} offset={0.22} darkness={0.28} />);
+    /* R6-4：为什么是 offset=0.3、darkness=0.12：Canvas 外层已有 DOM 径向暗角，后处理若维持 0.22/0.28
+       会双重压暗四角跌破中心亮度的 75%；放宽到 0.3/0.12 后仅做轻量边角收敛，四角相对中心亮度 ≥ 75%。 */
+    postEffectChildren.push(<Vignette key="vignette" eskil={false} offset={0.3} darkness={0.12} />);
   }
   postEffectChildren.push(<Noise key="noise" opacity={0.03} />);
 
@@ -1257,6 +1486,7 @@ export default function ClusterCanvas() {
 
         }}
         onPointerMissed={(): void => {
+          cancelPendingSelectionFlight();
           selectEntity(null);
         }}
       >
@@ -1283,6 +1513,9 @@ export default function ClusterCanvas() {
         {/* R66：开发期发光预算巡检（调用侧 try/catch，失败不阻断渲染） */}
         <GlowBudgetProbe />
 
+        {/* R5 进阶：开发期每 2s 渲染预算巡检（超预算仅 console.warn，无 UI 报错） */}
+        <RenderBudgetProbe />
+
         {/* ---- R24：自适应曝光驱动（≤4Hz 估计亮度、每帧阻尼插值） ---- */}
         <ExposureDriver effectRef={exposureEffectRef} />
 
@@ -1307,7 +1540,9 @@ export default function ClusterCanvas() {
          *   轮廓光 0.45：只勾背光侧金属棱角；
          *   中心点光 6.5 / distance 22：控制平面附近局部提亮，不再照亮整片地面。
          */}
-        <ambientLight intensity={0.28} color="#94a3b8" />
+        {/* R6-5：为什么是 0.36（原 0.28）：在黑曜石底座 color=#060d1a 与 ExposureDriver 曝光下限 0.85 协同下，
+            0.36 抬升背光冷暗面可辨度（保证非加色地面显式非黑），又不会把机架压成灰白 */}
+        <ambientLight intensity={0.36} color="#94a3b8" />
         <hemisphereLight args={['#38bdf8', '#020617', 0.45]} />
         <directionalLight
           castShadow
@@ -1395,16 +1630,20 @@ export default function ClusterCanvas() {
         >
           {/* R25：地面圆盘半径 32 → 22；边缘由 GroundHorizonFade 在 r∈[13,22] 吞没 */}
           <circleGeometry args={[22, 96]} />
+          {/* R6-5：为什么是 color=#060d1a / blur=[256,256] / mixBlur=0.65：
+              - color #030712 → #060d1a：抬升黑曜石漫反射冷蓝底，彻底摆脱非加色地面近似纯黑；
+              - blur [360,120] → [256,256]：改为等向适中模糊，消除纵向拉丝并降低模糊散射带宽；
+              - mixBlur 0.9 → 0.65：保留机架与晶核的清晰倒影轮廓，避免整片地面发灰发蒙（T3 真反射必须保留）。 */}
           <MeshReflectorMaterial
-            blur={[360, 120]}
+            blur={[256, 256]}
             resolution={512}
-            mixBlur={0.9}
+            mixBlur={0.65}
             mixStrength={0.42}
             roughness={0.72}
             depthScale={1.1}
             minDepthThreshold={0.4}
             maxDepthThreshold={1.4}
-            color="#030712"
+            color="#060d1a"
             metalness={0.45}
             mirror={0.28}
             /*
@@ -1413,7 +1652,7 @@ export default function ClusterCanvas() {
              * 8 根 3.2x HDR 灯带）；金属地面若继续采样 envMap，会把白棚
              * 直接反射成相机左下方（worker-beta 脚下）的一片惨白高光。
              * envMapIntensity=0 后地面只显示真实的 3D 集群倒影（tDiffuseBlur）
-             * 与 #030712 黑曜石底色。
+             * 与 #060d1a 黑曜石底色。
              */
             envMapIntensity={0}
           />
@@ -1452,11 +1691,27 @@ export default function ClusterCanvas() {
           第一层贴地环绕（粗亮、快）复刻光圈周围飞散的星尘；
           第二层中空光束区（细小、慢、绿）表现能量逸散。
           两层尺度/速度/颜色都不同，才有"近亮远淡"的景深层次。 */}
-        {decorativeEnabled ? (
-          <Sparkles count={140} scale={[24, 2.5, 24]} size={1.6} speed={0.35} color="#38bdf8" position={[0, 1.2, 0]} opacity={0.75} />
+        {decorativeEnabled && !isViewportAutoLow ? (
+          <Sparkles
+            count={140}
+            scale={[24, 2.5, 24]}
+            size={1.6}
+            speed={0.35 * motionScale}
+            color="#38bdf8"
+            position={[0, 1.2, 0]}
+            opacity={0.75 * motionScale}
+          />
         ) : null}
-        {decorativeEnabled ? (
-          <Sparkles count={90} scale={[22, 10, 22]} size={1.1} speed={0.2} color="#10b981" position={[0, 5.0, 0]} opacity={0.45} />
+        {decorativeEnabled && !isViewportAutoLow ? (
+          <Sparkles
+            count={90}
+            scale={[22, 10, 22]}
+            size={1.1}
+            speed={0.2 * motionScale}
+            color="#10b981"
+            position={[0, 5.0, 0]}
+            opacity={0.45 * motionScale}
+          />
         ) : null}
 
         {/*
@@ -1472,7 +1727,7 @@ export default function ClusterCanvas() {
          * 【不透明度】着色器末端统一乘 uOpacity（常态 0.075 / 故障态 0.115），
          * 保证它永远是氛围层而不是与主体争视觉权重的第二主角。
          */}
-        {decorativeEnabled ? <CyberMatrixRain3D /> : null}
+        {decorativeEnabled && !isViewportAutoLow ? <CyberMatrixRain3D /> : null}
 
         {/*
          * ---- 程序化 PBR 环境反射（零外链 HDR）----
@@ -1485,47 +1740,50 @@ export default function ClusterCanvas() {
          */}
         <ProceduralPbrEnvironment />
 
-        {/* ---- MASTER 控制平面全息模型（锚定 [0,2.5,0]，可点击选中 → 鸟瞰复位） ---- */}
-        <MasterNode3D />
+        <Profiler id="kv-3d-scene" onRender={handleSceneProfilerRender}>
+          {/* ---- MASTER 控制平面全息模型（锚定 [0,2.5,0]，可点击选中 → 鸟瞰复位） ---- */}
+          <MasterNode3D />
 
-        {/* ---- 三台 Worker 机架程序化模型（磨砂装甲/托盘隔板/霓虹导光柱/全息铭牌；
-           位姿由 getRackTransform(node.rackIndex) 解算，与 Pod 槽位坐标同源） ---- */}
-        {nodes.map((node): ReactNode => (
-          <WorkerRack3D key={node.id} node={node} />
-        ))}
+          {/* ---- 三台 Worker 机架程序化模型（磨砂装甲/托盘隔板/霓虹导光柱/全息铭牌；
+             位姿由 getRackTransform(node.rackIndex) 解算，与 Pod 槽位坐标同源） ---- */}
+          {nodes.map((node): ReactNode => (
+            <WorkerRack3D key={node.id} node={node} />
+          ))}
 
-        {/* ---- Pod 容器实例渲染器（单 Draw Call InstancedMesh ×48 容量；
-           每帧从瞬态池读取状态/CPU 负载驱动四态动画，落座隔板插槽零穿模） ---- */}
-        <PodInstancedMesh />
+          {/* ---- Pod 容器实例渲染器（单 Draw Call InstancedMesh ×48 容量；
+             每帧从瞬态池读取状态/CPU 负载驱动四态动画，落座隔板插槽零穿模） ---- */}
+          <PodInstancedMesh />
 
-        {/* ---- 地面拓扑星环：主轨道 + 控制平面内环 + 三道径向电路 ----
-           让机架"站在轨道上"而非漂浮在无限网格里（蓝图 §1.6）。
-           故障机架对应的那道径向电路会切为绯红，形成空间级告警。 */}
-        <ClusterTopologyFloor3D />
+          {/* ---- 地面拓扑星环：主轨道 + 控制平面内环 + 三道径向电路 ----
+             让机架"站在轨道上"而非漂浮在无限网格里（蓝图 §1.6）。
+             故障机架对应的那道径向电路会切为绯红，形成空间级告警。 */}
+          <ClusterTopologyFloor3D />
 
-        {/* ---- 集群网络通信流（MASTER→三机架拱形贝塞尔光缆 + 54 个流动数据包；
-           吞吐驱动推进速率，故障车道切换警示红并断续卡顿） ---- */}
-        <NetworkStream3D />
-        {/* R28：回程粒子（机架→控制平面，淡蓝；Pod 异常时缺失，传达"响应回不来"） */}
-        <ReturnStream3D />
-        {/* R25：三条弧线起点的 0.15s 汇聚光斑（能量从晶体赤道抽出，而非插在空中） */}
-        <ArcStartGlow3D />
+          {/* ---- 集群网络通信流（MASTER→三机架拱形贝塞尔光缆 + 54 个流动数据包；
+             吞吐驱动推进速率，故障车道切换警示红并断续卡顿） ---- */}
+          <NetworkStream3D />
+          {/* R28：回程粒子（机架→控制平面，淡蓝；Pod 异常时缺失，传达"响应回不来"） */}
+          <ReturnStream3D />
+          {/* R25：三条弧线起点的 0.15s 汇聚光斑（能量从晶体赤道抽出，而非插在空中） */}
+          <ArcStartGlow3D />
 
-        {/* R28：低档位（无镜面反射）时的机架底部近场反射带，替代真实反射 pass */}
-        {qualityReflector ? null : <RackGroundReflection />}
+          {/* R28：低档位（无镜面反射）时的机架底部近场反射带，替代真实反射 pass */}
+          {qualityReflector ? null : <RackGroundReflection />}
 
-        {/* ---- 机架故障警示涟漪（仅故障机架激活：崩溃 Pod 或节点非 Ready；
-           自定义 ShaderMaterial 三环由内向外扩散，加色混合贴地辉光） ---- */}
-        <ErrorRippleRing />
+          {/* ---- 机架故障警示涟漪（仅故障机架激活：崩溃 Pod 或节点非 Ready；
+             自定义 ShaderMaterial 三环由内向外扩散，加色混合贴地辉光） ---- */}
+          <ErrorRippleRing />
 
-        {/* ---- 选中 Pod 的空间锁定光环（审查报告 §2.4）----
-           机架与 Master 各有自己的选中视觉，但单个 Pod 此前完全没有——
-           推近特写后同层 4 个方块挤在画面中心，用户分不清探针面板指的是哪颗。
-           该标记绘制包围框 + 刻度环 + 指示杆，与巡检面板形成「数据 <-> 空间」指认闭环。 */}
-        <SelectionBeacon3D />
+          {/* ---- 选中 Pod 的空间锁定光环（审查报告 §2.4）----
+             机架与 Master 各有自己的选中视觉，但单个 Pod 此前完全没有——
+             推近特写后同层 4 个方块挤在画面中心，用户分不清探针面板指的是哪颗。
+             该标记绘制包围框 + 刻度环 + 指示杆，与巡检面板形成「数据 <-> 空间」指认闭环。 */}
+          <SelectionBeacon3D />
 
-        {/* ---- 相机运镜系统 ---- */}
-        <CameraRig />
+          {/* ---- 相机运镜系统 & 诊断桥 ---- */}
+          <CameraRig />
+          <CameraDebugBridge />
+        </Profiler>
 
         {/*
          * ---- 后处理：Bloom 泛光 + Vignette 暗角 ----
@@ -1570,7 +1828,7 @@ export default function ClusterCanvas() {
          */}
         {qualityPost ? (
           <EffectComposer
-            key={`composer-${canvasRemountKey}-${qualityTier}`}
+            key={`composer-${canvasRemountKey}-${effectiveTier}`}
             multisampling={tierEffects.multisampling}
             frameBufferType={HalfFloatType}
           >
@@ -1654,10 +1912,14 @@ export default function ClusterCanvas() {
        *
        * 【层级与穿透】pointer-events-none + z-[1]：
        * 在 Canvas（z-0）之上、巡检 HUD / 抽屉（z-20 起）之下，绝不拦截指针。
+       *
+       * 【R6-4 / Q3 为什么是 0.20】保留 DOM 边界柔化层不删除，同时将其角落最大透明度从 0.42
+       * 收敛到 0.20；与后处理 Vignette(offset=0.3, darkness=0.12) 叠加后，四角 120×120
+       * 平均亮度留存由 ~55% 抬升至 ≥ 80%（满足 ≥ 75% 契约且保留边角微渐隐过渡）。
        */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 z-[1] bg-[radial-gradient(circle_at_center,transparent_62%,rgba(2,6,23,0.42)_100%)]"
+        className="pointer-events-none absolute inset-0 z-[1] bg-[radial-gradient(circle_at_center,transparent_62%,rgba(2,6,23,0.20)_100%)]"
       />
 
       {/* ---- 左上角实体巡检 HUD（DOM 层浮层，非 R3F 场景内）：
