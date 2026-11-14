@@ -1,6 +1,6 @@
 # AI 质量评测（20 问 · RAG vs 裸模型）
 
-> 由 'node scripts/eval-ai-quality.mjs' 调用本地网关生成于 2026-11-10T13:22:20.581Z。
+> 由 'node scripts/eval-ai-quality.mjs' 调用本地网关生成于 2026-11-14T07:20:32.706Z。
 > 每条问句跑两次：默认（RAG）与 'disableRag:true'（裸模型），共 40 次调用。
 > 有效配对：**20/20**；引擎非 llm 的配对数：0。
 
@@ -8,37 +8,37 @@
 
 | 指标 | RAG | 裸模型 | 差值 |
 |---|---|---|---|
-| 关键词正确率 | 91.7% | 91.7% | -0.0pp |
-| 引用命中率 | 95.0% | 50.0% | 45.0pp |
+| 关键词正确率 | 80.0% | 78.3% | 1.7pp |
+| 引用命中率 | 65.0% | 0.0% | 65.0pp |
 | 动作合理性（期望动作题） | 100.0% | 100.0% | — |
-| 平均 TTFT | 8033ms | 9534ms | — |
-| 平均总时长 | 21307ms | 22808ms | — |
-| 平均 tokens（prompt/completion） | 9180 / 3250 | 7242 / 3415 | — |
+| 平均 TTFT | 756ms | 651ms | — |
+| 平均总时长 | 7885ms | 8158ms | — |
+| 平均 tokens（prompt/completion） | 5559 / 1243 | 4823 / 1313 | — |
 
 ## 逐题
 
 | # | 问句 | RAG 正确率 | RAG 引用 | RAG 动作 | 裸模型正确率 | 裸模型引用 | 裸模型动作 |
 |---|---|---|---|---|---|---|---|
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
-| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |
+| q01 | worker-beta 出现 OOMKilled，根因可能是什么？ | 100.0% | 1 | true | 100.0% | 0 | true |
+| q02 | CrashLoopBackOff 应该怎么排查？ | 33.3% | 2 | null | 66.7% | 0 | null |
+| q03 | 节点 CPU 饱和导致调度阻塞，给出处置建议 | 100.0% | 2 | true | 66.7% | 0 | true |
+| q04 | NetworkPartition 网络分区如何定位？ | 100.0% | 2 | null | 66.7% | 0 | null |
+| q05 | 容器 DNS 解析失败怎么处理？ | 100.0% | 2 | true | 100.0% | 0 | true |
+| q06 | 镜像拉取失败 ImagePullBackOff 怎么排查？ | 100.0% | 2 | null | 100.0% | 0 | null |
+| q07 | Pod 一直 Pending 可能是什么原因？ | 66.7% | 1 | null | 66.7% | 0 | null |
+| q08 | etcd 健康度怎么检查？ | 100.0% | 1 | null | 100.0% | 0 | null |
+| q09 | APIServer 出现 429 限流怎么处理？ | 100.0% | 0 | null | 66.7% | 0 | null |
+| q10 | VXLAN 隧道丢包与 MTU 错配如何诊断？ | 66.7% | 2 | null | 100.0% | 0 | null |
+| q11 | 当前集群整体健康情况怎么样？ | 100.0% | 0 | null | 100.0% | 0 | null |
+| q12 | 稳态下是否需要扩容？ | 66.7% | 0 | null | 100.0% | 0 | null |
+| q13 | 针对当前 OOM 故障，建议执行什么自愈动作？ | 66.7% | 1 | true | 100.0% | 0 | true |
+| q14 | 你现在能做什么？ | 33.3% | 0 | null | 33.3% | 0 | null |
+| q15 | 解释一下 RAG 检索在你的诊断中起什么作用 | 100.0% | 0 | null | 66.7% | 0 | null |
+| q16 | 为什么集群健康分下降了？ | 66.7% | 1 | null | 66.7% | 0 | null |
+| q17 | 如何避免 Pod 再次 OOM？ | 100.0% | 2 | true | 100.0% | 0 | true |
+| q18 | 对节点执行 drain 有什么风险？ | 100.0% | 0 | null | 100.0% | 0 | null |
+| q19 | 怎么验证一次自愈操作是否成功？ | 33.3% | 0 | null | 33.3% | 0 | null |
+| q20 | 给我演示一次完整的故障排查与自愈流程 | 66.7% | 1 | true | 33.3% | 0 | true |
 
 ## 口径与限制
 

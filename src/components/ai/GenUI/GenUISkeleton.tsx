@@ -18,6 +18,7 @@
  * animate-pulse（Tailwind 内置）营造加载呼吸感。
  */
 
+import { memo } from 'react';
 import { motion } from 'framer-motion';
 import { Plug, Wrench } from 'lucide-react';
 
@@ -26,10 +27,11 @@ import type { GenUISkeletonProps } from '@/types/ai';
 
 /**
  * GenUISkeleton —— 工具调用进行中的占位骨架屏。
+ * 使用 React.memo 避免对话流逐字追加时重复渲染流光动画节点。
  *
  * @param props 见 GenUISkeletonProps（toolName / mcpUri / className）
  */
-export default function GenUISkeleton({ toolName, mcpUri, className }: GenUISkeletonProps) {
+function GenUISkeletonImpl({ toolName, mcpUri, className }: GenUISkeletonProps) {
   return (
     <div
       className={cn(
@@ -88,3 +90,6 @@ export default function GenUISkeleton({ toolName, mcpUri, className }: GenUISkel
     </div>
   );
 }
+
+const GenUISkeleton = memo(GenUISkeletonImpl);
+export default GenUISkeleton;

@@ -291,7 +291,7 @@ async function main() {
 ${rows
   .map(
     (row) =>
-      '| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |',
+      `| ${row.id} | ${row.question} | ${pct(row.rag.correctness)} | ${row.rag.citations} | ${String(row.rag.actionValid)} | ${pct(row.bare.correctness)} | ${row.bare.citations} | ${String(row.bare.actionValid)} |`,
   )
   .join('\n')}
 

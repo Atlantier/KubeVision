@@ -15,13 +15,14 @@
 /* RAG 知识库                                                                  */
 /* ========================================================================== */
 
+import { z } from 'zod';
 import type { RagSignalBreakdown } from '@/utils/ragSignals';
 
 /**
  * RagRunbookDoc —— SRE Runbook 知识库检索切片。
  *
  * 【RAG 流转】文档库 → Transformers.js 端侧 Embedding 向量化 →
- * sreRagEngine.ts 余弦相似度 Top-K 检索 → similarityScore 回填 →
+ * sreRagEngine.ts 三路混合检索 + RRF 融合 + Sigmoid 校准 → similarityScore（展示置信度）回填 →
  * 注入 LLM system prompt / RootCauseAlertProps.ragReferences 展示。
  * similarityScore 可选：入库态文档尚无检索语境，仅检索命中后回填。
  */
@@ -38,7 +39,10 @@ export interface RagRunbookDoc {
   readonly symptom: string;
   /** 处置步骤有序列表（Copilot 行动建议的直接素材） */
   readonly remediationSteps: string[];
-  /** 余弦相似度得分。@range [0, 1]，仅检索命中后回填，1 为完全相似 */
+  /**
+   * 最终校准置信度得分（并非原始余弦相似度；字段名 similarityScore 为兼容既有限定而保留）。
+   * 由三路混合得分经 RRF 融合与 Sigmoid 校准生成，@range [0, 1]，仅检索命中后回填。
+   */
   readonly similarityScore?: number;
   /**
    * 故障特征词袋（检索通道二：关键词/子串命中）。
@@ -102,7 +106,7 @@ export interface RagRunbookDoc {
     readonly contextBoost: number;
     /** 倒数秩融合分 RRF，[0,1]（已是融合后的终值口径） */
     readonly rrfScore: number;
-    /** 原始融合分（C5：排序依据，未被舍入/校准污染） */
+    /** 原始融合分（排序与校准输入，未被 Sigmoid 校准与界面舍入污染） */
     readonly fusedScore?: number;
     /** R44：词法余弦（原 vectorScore 的新名字；保留 vectorScore 作为兼容字段） */
     readonly lexicalCosine?: number;
@@ -110,6 +114,12 @@ export interface RagRunbookDoc {
     readonly semanticScore?: number;
     /** R44：本次检索是否真正使用了句向量路（false 表示模型/查询向量未就绪） */
     readonly semanticAvailable?: boolean;
+    /** R10：有效候选池规模 C（至少命中一路非零信号的文档数） */
+    readonly candidatePoolSize?: number;
+    /** R10：知识库总文档数 N */
+    readonly corpusSize?: number;
+    /** R10：候选池规模平滑缩放因子 (0, 1]，抑制极小候选池 RRF 虚高 */
+    readonly poolFactor?: number;
   };
 
   /**
@@ -125,6 +135,41 @@ export interface RagRunbookDoc {
   readonly customCreatedAt?: string;
 }
 
+const ragScoreBreakdownSchema = z
+  .object({
+    vectorScore: z.number().finite(),
+    bm25Score: z.number().finite(),
+    contextBoost: z.number().finite(),
+    rrfScore: z.number().finite(),
+    fusedScore: z.number().finite().optional(),
+    lexicalCosine: z.number().finite().optional(),
+    semanticScore: z.number().finite().optional(),
+    semanticAvailable: z.boolean().optional(),
+    candidatePoolSize: z.number().int().min(0).optional(),
+    corpusSize: z.number().int().min(0).optional(),
+    poolFactor: z.number().finite().min(0).max(1).optional(),
+  })
+  .readonly();
+
+const ragRunbookDocSchema: z.ZodType<RagRunbookDoc> = z
+  .object({
+    id: z.string().min(1),
+    title: z.string().min(1),
+    category: z.string(),
+    tags: z.array(z.string()),
+    symptom: z.string(),
+    remediationSteps: z.array(z.string()),
+    similarityScore: z.number().finite().min(0).max(1).optional(),
+    featureVocabulary: z.array(z.string()),
+    rootCauseMechanism: z.string(),
+    relatedChaos: z.array(z.string()).readonly().optional(),
+    matchedTerms: z.array(z.string()).optional(),
+    scoreBreakdown: ragScoreBreakdownSchema.optional(),
+    isCustom: z.boolean().optional(),
+    customCreatedAt: z.string().optional(),
+  })
+  .readonly();
+
 /* ========================================================================== */
 /* Agent 推理链                                                                */
 /* ========================================================================== */
@@ -137,15 +182,18 @@ export interface RagRunbookDoc {
  * - MCP_TOOL_INVOKE    → MCP 协议工具调用
  * - SAFETY_GUARD       → 高危动作安全护栏审查
  */
-export type AgentReasoningPhase =
-  | 'INTENT_PLANNING'
-  | 'MULTIMODAL_VISION'
-  | 'RAG_RETRIEVAL'
-  | 'MCP_TOOL_INVOKE'
-  | 'SAFETY_GUARD';
+export const agentReasoningPhaseSchema = z.enum([
+  'INTENT_PLANNING',
+  'MULTIMODAL_VISION',
+  'RAG_RETRIEVAL',
+  'MCP_TOOL_INVOKE',
+  'SAFETY_GUARD',
+]);
+
+export type AgentReasoningPhase = z.infer<typeof agentReasoningPhaseSchema>;
 
 /**
- * AgentReasoningStep —— Agent 单步思考过程（Copilot 抽屉时间轴渲染单元）。
+ * agentReasoningStepSchema —— 单步思考过程 Zod 校验与单一事实源。
  *
  * 【设计意图】LLM 推理过程以结构化步骤流式下发（而非裸文本），
  * 前端逐步追加渲染「思考链」时间轴；mcpUri 仅在 MCP_TOOL_INVOKE
@@ -153,89 +201,118 @@ export type AgentReasoningPhase =
  * （如 'mcp://k8s-cluster/tools/renderPodMetrics'）。
  * latencyMs 用于每步耗时观测，暴露 Agent 性能瓶颈。
  */
-export interface AgentReasoningStep {
-  /** 步骤序号（从 0 开始单调递增，时间轴排序键） */
-  readonly stepIndex: number;
-  /** 所属推理阶段（五态泳道） */
-  readonly phase: AgentReasoningPhase;
-  /** 步骤标题（短文案，如 '解析用户意图' / '检索 OOM 处置手册'） */
-  readonly title: string;
-  /** 步骤详情（完整思考叙述，支持多行） */
-  readonly detail: string;
-  /** MCP 工具端点 URI（仅 MCP_TOOL_INVOKE 阶段，形如 'mcp://k8s-cluster/tools/renderPodMetrics'） */
-  readonly mcpUri?: string;
-  /** 本步骤耗时（毫秒） */
-  readonly latencyMs: number;
-  /**
-   * R35：该步骤是否为"模拟编排值"（仅引擎 B 的编排相位为 true）。
-   *
-   * 【为什么需要】引擎 B（simulator）的耗时是编排节拍，不是真实推理耗时；
-   * 前端必须能区分"实测"与"模拟节拍"，不得把编排值当实测值展示。
-   */
-  readonly sim?: boolean;
-}
+export const agentReasoningStepSchema = z
+  .object({
+    /** 步骤序号（从 0 开始单调递增，时间轴排序键） */
+    stepIndex: z.number().finite(),
+    /** 所属推理阶段（五态泳道） */
+    phase: agentReasoningPhaseSchema,
+    /** 步骤标题（短文案，如 '解析用户意图' / '检索 OOM 处置手册'） */
+    title: z.string(),
+    /** 步骤详情（完整思考叙述，支持多行） */
+    detail: z.string(),
+    /** MCP 工具端点 URI（仅 MCP_TOOL_INVOKE 阶段，形如 'mcp://k8s-cluster/tools/renderPodMetrics'） */
+    mcpUri: z.string().optional(),
+    /** 本步骤耗时（毫秒） */
+    latencyMs: z.number().finite(),
+    /**
+     * R35：该步骤是否为"模拟编排值"（仅引擎 B 的编排相位为 true）。
+     *
+     * 【为什么需要】引擎 B（simulator）的耗时是编排节拍，不是真实推理耗时；
+     * 前端必须能区分"实测"与"模拟节拍"，不得把编排值当实测值展示。
+     */
+    sim: z.boolean().optional(),
+  })
+  .readonly();
+
+/**
+ * AgentReasoningStep —— Agent 单步思考过程（由 agentReasoningStepSchema 推导）。
+ */
+export type AgentReasoningStep = z.infer<typeof agentReasoningStepSchema>;
+
+/**
+ * agentThoughtChainStepsSchema —— 思考链步骤数组运行时校验与只读契约。
+ */
+export const agentThoughtChainStepsSchema = z.array(agentReasoningStepSchema).readonly();
+
+export type AgentThoughtChainSteps = z.infer<typeof agentThoughtChainStepsSchema>;
 
 /* ========================================================================== */
 /* 生成式 UI 卡片载荷（LLM tool-call 参数 → 前端组件 Props 同构）               */
 /* ========================================================================== */
 
 /**
- * PodMetricsCardProps —— Pod 指标卡片（生成式 UI）。
+ * podMetricsCardSchema —— Pod 指标卡片（生成式 UI）Zod 单一事实源。
  *
  * 【触发】LLM 调用 renderPodMetrics 工具，tool-result 事件的 args
- * 即本接口实例，前端据此动态挂载指标卡组件到对话流。
+ * 即本载荷实例，前端据此校验并挂载指标卡组件到对话流。
  */
-export interface PodMetricsCardProps {
-  /** 目标 Pod ID（PodEntity.id 弱引用） */
-  readonly podId: string;
-  /** Pod 展示名 */
-  readonly podName: string;
-  /** 所属命名空间 */
-  readonly namespace: string;
-  /** 当前 CPU 使用率百分比。@range [0, 100] */
-  readonly cpuUsage: number;
-  /** 当前内存使用率百分比。@range [0, 100] */
-  readonly memoryUsage: number;
-  /** 累计重启次数 */
-  readonly restarts: number;
-  /** 最近 6 个时间点的 CPU 历史序列（与 PodEntity.cpuHistory 同构）。@range 每项 [0, 100]，长度恒为 6 */
-  readonly cpuHistory: number[];
-  /** 最近 6 个时间点的内存历史序列（与 PodEntity.memHistory 同构）。@range 每项 [0, 100]，长度恒为 6 */
-  readonly memHistory: number[];
-}
+export const podMetricsCardSchema = z
+  .object({
+    /** 目标 Pod ID（PodEntity.id 弱引用） */
+    podId: z.string().min(1),
+    /** Pod 展示名 */
+    podName: z.string().min(1),
+    /** 所属命名空间 */
+    namespace: z.string().min(1),
+    /** 当前 CPU 使用率百分比。@range [0, 100] */
+    cpuUsage: z.number().finite().min(0).max(100),
+    /** 当前内存使用率百分比。@range [0, 100] */
+    memoryUsage: z.number().finite().min(0).max(100),
+    /** 累计重启次数 */
+    restarts: z.number().int().min(0),
+    /** 最近 6 个时间点的 CPU 历史序列（与 PodEntity.cpuHistory 同构）。@range 每项 [0, 100] */
+    cpuHistory: z.array(z.number().finite().min(0).max(100)),
+    /** 最近 6 个时间点的内存历史序列（与 PodEntity.memHistory 同构）。@range 每项 [0, 100] */
+    memHistory: z.array(z.number().finite().min(0).max(100)),
+  })
+  .readonly();
+
+/** PodMetricsCardProps —— Pod 指标卡片 Props（由 podMetricsCardSchema 推导） */
+export type PodMetricsCardProps = z.infer<typeof podMetricsCardSchema>;
 
 /**
- * RootCauseAlertProps —— 根因分析告警卡（生成式 UI，Copilot 最高价值卡片）。
+ * rootCauseAlertSchema —— 根因分析告警卡（生成式 UI）Zod 单一事实源。
  *
- * 【触发】LLM 完成 RAG 检索 + 多信号关联后调用 reportRootCause 工具下发。
- * confidence 为模型自评置信度，驱动卡片可信度进度条渲染；
- * evidenceChain 为调用链证据（时间有序），ragReferences 为命中的知识库切片
- * （含 similarityScore），二者共同构成「可解释性答辩」的完整证据链。
+ * 【触发】LLM 完成 RAG 检索 + 多信号关联后调用 renderRootCauseAnalysis 工具下发。
+ * confidence 驱动卡片置信度进度条渲染；evidenceChain 与 ragReferences
+ * 共同构成可解释性证据链。
  */
-export interface RootCauseAlertProps {
-  /** 故障等级：P0 致命 / P1 严重 / P2 警告（与 AlertLevel 同域） */
-  readonly severity: 'P0' | 'P1' | 'P2';
-  /** 故障标题（一句话定性，如 'checkout 服务内存泄漏引发 OOM 雪崩'） */
-  readonly title: string;
-  /** 根因置信度。@range [0, 1]，模型自评 */
-  readonly confidence: number;
-  /** 根因摘要（完整分析叙述） */
-  readonly rootCauseSummary: string;
-  /** 调用链证据数组（时间有序，如 '16:02:11 node-worker-a-02 内存水位 94%'） */
-  readonly evidenceChain: string[];
-  /** 影响范围描述（波及的服务/命名空间/用户面） */
-  readonly impactScope: string;
-  /** 命中的 RAG 知识库引用（含 similarityScore，按得分降序） */
-  readonly ragReferences: RagRunbookDoc[];
-}
+export const rootCauseAlertSchema = z
+  .object({
+    /** 故障等级：P0 致命 / P1 严重 / P2 警告（与 AlertLevel 同域） */
+    severity: z.enum(['P0', 'P1', 'P2']),
+    /** 故障标题（一句话定性，如 'checkout 服务内存泄漏引发 OOM 雪崩'） */
+    title: z.string().min(1),
+    /** 根因置信度。@range [0, 1]，受 grounding 证据上限约束 */
+    confidence: z.number().finite().min(0).max(1),
+    /** 根因摘要（完整分析叙述） */
+    rootCauseSummary: z.string().min(1),
+    /** 调用链证据数组（时间有序，如 '16:02:11 node-worker-a-02 内存水位 94%'） */
+    evidenceChain: z.array(z.string()),
+    /** 影响范围描述（波及的服务/命名空间/用户面） */
+    impactScope: z.string(),
+    /** 命中的 RAG 知识库引用（含校准置信度 similarityScore，按得分降序） */
+    ragReferences: z.array(ragRunbookDocSchema),
+  })
+  .readonly();
+
+/** RootCauseAlertProps —— 根因分析告警卡 Props（由 rootCauseAlertSchema 推导） */
+export type RootCauseAlertProps = z.infer<typeof rootCauseAlertSchema>;
 
 /**
- * 高危运维动作三态模型（MCP 工具白名单，动作即工具名）：
+ * remediationActionTypeSchema —— 高危运维动作三态枚举（MCP 工具白名单）。
  * - restart_pod       → 重启 Pod（中危）
  * - scale_deployment  → 扩缩容 Deployment（中危）
  * - drain_node        → 驱逐节点（高危，触发 SAFETY_GUARD 二次确认）
  */
-export type RemediationActionType = 'restart_pod' | 'scale_deployment' | 'drain_node';
+export const remediationActionTypeSchema = z.enum([
+  'restart_pod',
+  'scale_deployment',
+  'drain_node',
+]);
+
+export type RemediationActionType = z.infer<typeof remediationActionTypeSchema>;
 
 /**
  * IntentKind —— 用户请求的四档意图分类（意图路由器的输出）。
@@ -260,6 +337,32 @@ export type IntentKind =
   | 'FAULT_DIAGNOSIS_AND_HEAL';
 
 /**
+ * actionConfirmPayloadSchema —— 动作确认卡核心可序列化载荷 Zod 单一事实源（R10）。
+ *
+ * 【为什么剥离回调】`onActionExecuted` 是前端组件回调，不走 NDJSON 线缆；
+ * 把可序列化字段收口到此 schema，`ActionConfirmProps` 继承并附加可选回调，
+ * 服务端生成与客户端 `safeParse` 共用同一结构而无需任何 `as ActionConfirmProps`。
+ */
+export const actionConfirmPayloadSchema = z
+  .object({
+    /** 动作类型（MCP 工具白名单三态） */
+    actionType: remediationActionTypeSchema,
+    /** 目标实体 ID（PodEntity.id / Deployment 名 / WorkerNodeEntity.id） */
+    targetId: z.string().min(1),
+    /** 目标实体展示名 */
+    targetName: z.string().min(1),
+    /** 参数说明（人类可读，如 '副本数 3 → 6，预计增量内存 12Gi'） */
+    paramDescription: z.string(),
+    /** MCP 协议端点（形如 'mcp://k8s-cluster/tools/restartPod'） */
+    mcpEndpoint: z.string().min(1),
+    /** 高危动作标识（true → rose-500 警示样式 + 强制二次确认） */
+    isHighRisk: z.boolean(),
+  })
+  .readonly();
+
+export type ActionConfirmPayload = z.infer<typeof actionConfirmPayloadSchema>;
+
+/**
  * ActionConfirmProps —— 动作确认卡（生成式 UI，人在回路安全闸门）。
  *
  * 【触发】LLM 决定执行运维动作时**不直接执行**，而是下发本卡片等待
@@ -267,19 +370,7 @@ export type IntentKind =
  * 调用 MCP 工具执行。isHighRisk 为 true 时卡片渲染 rose-500 高危样式
  * 并强制勾选确认框，与 SAFETY_GUARD 推理阶段联动。
  */
-export interface ActionConfirmProps {
-  /** 动作类型（MCP 工具白名单三态） */
-  readonly actionType: RemediationActionType;
-  /** 目标实体 ID（PodEntity.id / Deployment 名 / WorkerNodeEntity.id） */
-  readonly targetId: string;
-  /** 目标实体展示名 */
-  readonly targetName: string;
-  /** 参数说明（人类可读，如 '副本数 3 → 6，预计增量内存 12Gi'） */
-  readonly paramDescription: string;
-  /** MCP 协议端点（形如 'mcp://k8s-cluster/tools/restartPod'） */
-  readonly mcpEndpoint: string;
-  /** 高危动作标识（true → rose-500 警示样式 + 强制二次确认） */
-  readonly isHighRisk: boolean;
+export interface ActionConfirmProps extends ActionConfirmPayload {
   /**
    * 动作执行完成回调（可选）。
    *
@@ -500,12 +591,16 @@ export interface ChatStreamDoneEvent {
  * 【兼容约定】旧前端忽略未知 type（向前兼容），因此新增 reset 不破坏既有消费端；
  * 既有事件的结构与语义一律不变（不重构协议）。
  */
+export type ChatStreamResetReason = 'new-round' | 'engine-fallback' | 'schema-guard';
+
 export interface ChatStreamResetEvent {
   readonly type: 'reset';
   /** 本次请求的 id（与 done/error 同源，便于对号） */
   readonly requestId: string;
-  /** 复位原因（人类可读，便于排查；缺省 'new-round'） */
-  readonly reason?: string;
+  /** 复位原因（缺省 'new-round'） */
+  readonly reason?: ChatStreamResetReason;
+  /** 可选温和提示文案（前端仅渲染为横幅提示，不混入回答正文） */
+  readonly note?: string;
 }
 
 /**
@@ -570,7 +665,7 @@ export type ChatStreamEvent =
  */
 export interface AgentThoughtChainProps {
   /** 推理步骤序列（按 stepIndex 升序；组件内部会再排序防御） */
-  readonly steps: readonly AgentReasoningStep[];
+  readonly steps: AgentThoughtChainSteps;
   /** 是否处于流式接收中（true → 展示「思考中」脉冲点与进行中的光标） */
   readonly isStreaming?: boolean;
   /** 初始是否展开，默认 false（折叠态） */
@@ -834,6 +929,8 @@ export interface CopilotMessage {
   readonly errorCategory?: ChatErrorCategory;
   /** 服务端请求 id（A9：错误提示与日志对号） */
   readonly requestId?: string;
+  /** R10-B：引擎容灾/守卫复位提示文案（横幅展示，不写入回答正文） */
+  readonly resetNotice?: string;
   /**
    * 是否为"收尾不完整"消息（R2 收尾三态之一）。
    *

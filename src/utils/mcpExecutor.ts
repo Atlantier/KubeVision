@@ -89,20 +89,58 @@ export const RPC_INTERNAL_ERROR = -32603;
  * @param args 工具参数
  * @returns 执行回执（含 executionId / kubectlCommand / auditDigest / mode 等）
  */
+const MCP_EXECUTE_TIMEOUT_MS = 10_000;
+
+/**
+ * 调用本地 /api/mcp/execute 端点执行受白名单约束的运维动作。
+ *
+ * 【超时与中文错误归一化】默认附带 10s AbortController 超时守卫，避免服务端挂起
+ * 拖垮 JSON-RPC 调度；统一抛出清晰中文错误，方便上层展示与定位。
+ */
 export async function callExecuteEndpoint(
   origin: string,
   toolName: McpToolName,
   args: Readonly<Record<string, unknown>>,
 ): Promise<unknown> {
-  const response = await fetch(`${origin}/api/mcp/execute`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ actionType: toolName, ...args, targetId: args.targetId ?? args.targetName }),
-    cache: 'no-store',
-  });
-  const payload: unknown = await response.json();
-  if (!response.ok) {
-    throw new Error(`execute endpoint ${response.status}: ${JSON.stringify(payload)}`);
+  const controller = new AbortController();
+  const timer = setTimeout((): void => controller.abort(), MCP_EXECUTE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${origin}/api/mcp/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ actionType: toolName, ...args, targetId: args.targetId ?? args.targetName }),
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const errorMessage =
+        typeof payload === 'object' &&
+        payload !== null &&
+        'error' in payload &&
+        typeof payload.error === 'object' &&
+        payload.error !== null &&
+        'message' in payload.error &&
+        typeof payload.error.message === 'string'
+          ? payload.error.message
+          : JSON.stringify(payload);
+      throw new Error(`MCP 执行端点返回异常（HTTP ${response.status}）：${errorMessage}`);
+    }
+    return payload;
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('调用 MCP 执行端点超时（超过 10s 未响应），请稍后核实集群实际状态');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  return payload;
 }

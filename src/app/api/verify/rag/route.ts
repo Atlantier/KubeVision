@@ -70,6 +70,10 @@ export async function POST(request: Request): Promise<Response> {
       topId: top?.id ?? null,
       score: top?.similarityScore ?? 0,
       count: hits.length,
+      fusedScore: top?.scoreBreakdown?.fusedScore ?? null,
+      rrfScore: top?.scoreBreakdown?.rrfScore ?? null,
+      candidatePoolSize: top?.scoreBreakdown?.candidatePoolSize ?? 0,
+      poolFactor: top?.scoreBreakdown?.poolFactor ?? null,
     };
   });
 

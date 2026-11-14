@@ -84,10 +84,13 @@ const doneEventSchema = z.object({
   requestId: z.string(),
   engine: z.enum(['llm', 'simulator']),
 });
+const resetReasonSchema = z.enum(['new-round', 'engine-fallback', 'schema-guard']);
+
 const resetEventSchema = z.object({
   type: z.literal('reset'),
   requestId: z.string(),
-  reason: z.string().optional(),
+  reason: resetReasonSchema.optional(),
+  note: z.string().optional(),
 });
 const spanEventSchema = z.object({
   type: z.literal('span'),

@@ -137,7 +137,8 @@ export function annotateUngrounded(
  * @returns 钳制后的置信度
  */
 export function clampConfidence(hasObservation: boolean, runbookHits: number): number {
-  if (hasObservation && runbookHits > 0) return 0.92;
-  if (hasObservation || runbookHits > 0) return 0.6;
+  const validHits = Number.isFinite(runbookHits) && runbookHits > 0;
+  if (hasObservation && validHits) return 0.92;
+  if (hasObservation || validHits) return 0.6;
   return 0.4;
 }

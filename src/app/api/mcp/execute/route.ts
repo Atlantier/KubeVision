@@ -76,6 +76,44 @@ interface McpExecuteRequest {
   /** 期望副本数（仅 scale_deployment 使用；回执命令与实际 PATCH 必须一致） */
   readonly replicas?: unknown;
   readonly clusterMode?: unknown;
+  /** R10-D：客户端幂等查询键（前端超时后通过 GET 只读对账，绝不重复触发写操作） */
+  readonly clientRequestId?: unknown;
+}
+
+/** R10-D：近期执行回执内存账本上限（FIFO 淘汰，防止长期运行内存增长） */
+const EXECUTION_LEDGER_MAX_ENTRIES = 128;
+
+interface ExecutionLedgerRecord {
+  readonly status: 'pending' | 'succeeded' | 'failed';
+  readonly updatedAt: number;
+  readonly receipt?: SharedMcpExecuteReceipt;
+  readonly errorMessage?: string;
+  readonly httpStatus?: number | null;
+}
+
+const executionLedger = new Map<string, ExecutionLedgerRecord>();
+
+/**
+ * recordExecutionStatus —— 登记 MCP 执行状态到有界内存账本。
+ *
+ * 【设计意图】前端 ActionConfirm 在 12s 超时后会切换为不确定态并提供「重新查询」，
+ * 通过 clientRequestId / traceId 只读回查服务端是否已落盘回执，避免盲目二次执行造成重复变更。
+ */
+function recordExecutionStatus(
+  keys: readonly (string | undefined)[],
+  record: ExecutionLedgerRecord,
+): void {
+  for (const key of keys) {
+    if (key === undefined || key.trim().length === 0) continue;
+    const normalized = key.trim();
+    if (executionLedger.has(normalized)) {
+      executionLedger.delete(normalized);
+    } else if (executionLedger.size >= EXECUTION_LEDGER_MAX_ENTRIES) {
+      const oldestKey = executionLedger.keys().next().value;
+      if (oldestKey !== undefined) executionLedger.delete(oldestKey);
+    }
+    executionLedger.set(normalized, record);
+  }
 }
 
 
@@ -200,7 +238,7 @@ class K8sHttpError extends Error {
   readonly httpStatus: number;
 
   constructor(httpStatus: number, action: string) {
-    super(`K8s ${action} returned HTTP ${httpStatus}`);
+    super(`Kubernetes API ${action} 返回 HTTP ${httpStatus}`);
     this.name = 'K8sHttpError';
     this.httpStatus = httpStatus;
   }
@@ -258,6 +296,11 @@ async function callK8sApi(
       cache: 'no-store',
     });
     return { status: response.status, text: await response.text() };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Kubernetes API 请求超时（超过 ${K8S_REQUEST_TIMEOUT_MS}ms 未响应）`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -324,8 +367,8 @@ async function executeAgainstRealCluster(
      * 409 同理（冲突/禁止删除）必须如实上报。
      * 只有 2xx 才是"API Server 已受理"。
      */
-    if (status >= 200 && status < 300) return 'pod deletion accepted by API server';
-    throw new K8sHttpError(status, `DELETE pod/${targetName} in namespace ${namespace}`);
+    if (status >= 200 && status < 300) return 'API Server 已受理 Pod 删除请求';
+    throw new K8sHttpError(status, `删除 Pod ${targetName}（namespace=${namespace}）`);
   }
 
   if (actionType === 'scale_deployment') {
@@ -338,8 +381,8 @@ async function executeAgainstRealCluster(
       'PATCH',
       patch,
     );
-    if (status >= 200 && status < 300) return `deployment scale patched to replicas=${replicas}`;
-    throw new K8sHttpError(status, `PATCH scale deployment/${targetName} in namespace ${namespace}`);
+    if (status >= 200 && status < 300) return `已通过 PATCH 调整 Deployment 副本数为 replicas=${replicas}`;
+    throw new K8sHttpError(status, `扩缩容 Deployment ${targetName}（namespace=${namespace}）`);
   }
 
   /**
@@ -354,8 +397,8 @@ async function executeAgainstRealCluster(
     'PATCH',
     patch,
   );
-  if (status >= 200 && status < 300) return 'node cordoned (eviction not performed)';
-  throw new K8sHttpError(status, `PATCH node/${targetId} cordon`);
+  if (status >= 200 && status < 300) return '节点已设置为不可调度（Cordon，未驱逐存量 Pod）';
+  throw new K8sHttpError(status, `隔离节点 ${targetId}（Cordon）`);
 }
 
 /**
@@ -372,21 +415,24 @@ export async function POST(request: NextRequest): Promise<Response> {
   let body: McpExecuteRequest;
   /* R43：调用方 traceId（可选，不参与 sha256 摘要）；函数级作用域，回执组装时可用 */
   let traceId: string | undefined;
+  let clientRequestId: string | undefined;
   try {
     const parsed: unknown = await request.json();
-    traceId =
-      parsed !== null && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>).traceId === 'string'
-        ? ((parsed as Record<string, unknown>).traceId as string)
-        : undefined;
-    if (typeof parsed !== 'object' || parsed === null) {
-      throw new Error('body is not an object');
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('请求体不是合法对象');
     }
-    body = parsed as McpExecuteRequest;
+    const record: McpExecuteRequest & { readonly traceId?: unknown } = parsed;
+    traceId = typeof record.traceId === 'string' && record.traceId.trim().length > 0 ? record.traceId.trim() : undefined;
+    clientRequestId =
+      typeof record.clientRequestId === 'string' && record.clientRequestId.trim().length > 0
+        ? record.clientRequestId.trim()
+        : undefined;
+    body = record;
   } catch {
     const failure: JsonRpcFailure = {
       jsonrpc: '2.0',
       id: rpcId,
-      error: { code: RPC_INVALID_PARAMS, message: 'Request body must be valid JSON object' },
+      error: { code: RPC_INVALID_PARAMS, message: '请求体必须为合法的 JSON 对象' },
     };
     return Response.json(failure, { status: 400 });
   }
@@ -404,13 +450,20 @@ export async function POST(request: NextRequest): Promise<Response> {
       : undefined;
 
   if (actionType === undefined) {
+    const message = `actionType 必须为白名单动作之一：${MCP_TOOL_WHITELIST.join(', ')}`;
+    recordExecutionStatus([clientRequestId, traceId], {
+      status: 'failed',
+      updatedAt: Date.now(),
+      errorMessage: message,
+      httpStatus: 400,
+    });
     const failure: JsonRpcFailure = {
       jsonrpc: '2.0',
       id: rpcId,
       error: {
         code: RPC_INVALID_PARAMS,
-        message: `actionType must be one of: ${MCP_TOOL_WHITELIST.join(', ')}`,
-        data: typeof rawAction === 'string' ? `received: ${rawAction}` : 'received non-string',
+        message,
+        data: typeof rawAction === 'string' ? `实际收到：${rawAction}` : '实际收到非字符串参数',
       },
     };
     return Response.json(failure, { status: 400 });
@@ -418,10 +471,17 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   const rawTargetId = body.targetId;
   if (typeof rawTargetId !== 'string' || rawTargetId.trim().length === 0) {
+    const message = 'targetId 必须为非空字符串';
+    recordExecutionStatus([clientRequestId, traceId], {
+      status: 'failed',
+      updatedAt: Date.now(),
+      errorMessage: message,
+      httpStatus: 400,
+    });
     const failure: JsonRpcFailure = {
       jsonrpc: '2.0',
       id: rpcId,
-      error: { code: RPC_INVALID_PARAMS, message: 'targetId must be a non-empty string' },
+      error: { code: RPC_INVALID_PARAMS, message },
     };
     return Response.json(failure, { status: 400 });
   }
@@ -456,17 +516,30 @@ export async function POST(request: NextRequest): Promise<Response> {
   /* ---- 2. 执行（真实集群优先，未配置则模拟时序） ---- */
   const config = readEnvClusterConfig();
   if (config !== null && actionType === 'restart_pod' && namespace === null) {
+    const message = '真实集群模式下必须提供 namespace 参数';
+    recordExecutionStatus([clientRequestId, traceId], {
+      status: 'failed',
+      updatedAt: Date.now(),
+      errorMessage: message,
+      httpStatus: 400,
+    });
     const failure: JsonRpcFailure = {
       jsonrpc: '2.0',
       id: rpcId,
       error: {
         code: RPC_INVALID_PARAMS,
-        message: 'namespace is required when executing against a live cluster',
-        data: { detail: 'request.namespace missing; refusing to assume "default"', httpStatus: null },
+        message,
+        data: { detail: '请求缺少 namespace，拒绝默认使用 "default"', httpStatus: null },
       },
     };
     return Response.json(failure, { status: 400 });
   }
+
+  recordExecutionStatus([clientRequestId, traceId], {
+    status: 'pending',
+    updatedAt: Date.now(),
+  });
+
   const effectiveNamespace = namespace ?? 'default';
   let mode: ExecutionMode = 'simulated';
   let note: string;
@@ -482,7 +555,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         effectiveNamespace,
         replicas,
       );
-      note = `Applied to live cluster via Kubernetes REST API: ${detail}`;
+      note = `已通过 Kubernetes REST API 下发至真实集群：${detail}`;
     } catch (error) {
       /**
        * 【真实集群失败时绝不伪装成功】这是本端点最重要的一条纪律。
@@ -492,6 +565,12 @@ export async function POST(request: NextRequest): Promise<Response> {
        */
       const message = error instanceof Error ? error.message : String(error);
       const httpStatus = error instanceof K8sHttpError ? error.httpStatus : null;
+      recordExecutionStatus([clientRequestId, traceId], {
+        status: 'failed',
+        updatedAt: Date.now(),
+        errorMessage: `Kubernetes API 执行失败：${message.slice(0, 240)}`,
+        httpStatus,
+      });
       /*
        * 【B2：非 2xx 一律 JSON-RPC error(-32603)，并标注 httpStatus】
        * 上游 4xx 时响应码用 502（网关/上游错误），上游 5xx 用 500；
@@ -502,7 +581,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         id: rpcId,
         error: {
           code: RPC_INTERNAL_ERROR,
-          message: 'Kubernetes API execution failed',
+          message: 'Kubernetes API 执行失败',
           data: { detail: message.slice(0, 300), httpStatus },
         },
       };
@@ -515,7 +594,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     await new Promise<void>((resolve): void => {
       setTimeout(resolve, SIMULATED_RECONCILE_MS);
     });
-    note = 'Simulated controller reconciliation (K8S_API_SERVER not configured)';
+    note = '控制器模拟自愈已执行（未配置 K8S_API_SERVER）';
   }
 
   /* ---- 3. 组装回执 ---- */
@@ -545,24 +624,59 @@ export async function POST(request: NextRequest): Promise<Response> {
     ...(traceId === undefined ? {} : { traceId }),
     mode,
     note: `${note} (clusterMode=${clusterMode}, namespace=${effectiveNamespace}${
-      requestedNamespace === null ? ' [assumed in simulated mode]' : ''
+      requestedNamespace === null ? ' [模拟模式默认推测]' : ''
     })`,
   };
+
+  recordExecutionStatus([clientRequestId, traceId, executionId], {
+    status: 'succeeded',
+    updatedAt: Date.now(),
+    receipt,
+  });
 
   const success: JsonRpcSuccess = { jsonrpc: '2.0', id: rpcId, result: receipt };
   return Response.json(success, { status: 200 });
 }
 
 /**
- * GET —— 能力发现端点（MCP 的 tools/list 语义）。
+ * GET —— 能力发现与只读状态查询端点（MCP tools/list + R10-D 超时后结果回查）。
  *
- * 【为何提供】MCP 客户端接入前需要知道这个服务提供哪些工具。
- * 返回白名单及其描述，让本端点成为可被标准 MCP 工具链发现的真实服务，
- * 而不只是一个内部用的 POST 接口。
+ * 【为何复用 GET】无查询参数时保持既有 tools/list 语义完全不变；
+ * 当传入 `?clientRequestId=...` / `?traceId=...` / `?executionId=...` 时，
+ * 只读返回内存账本里的最近执行状态（pending/succeeded/failed/unknown），
+ * 让前端在 12s 超时后点击「重新查询」可核对回执而不重复写集群。
  *
- * @returns 工具清单
+ * @param request Request 对象（支持 ?clientRequestId / ?traceId / ?executionId 只读状态回查）
+ * @returns 工具清单或指定执行的只读状态
  */
-export function GET(): Response {
+export function GET(request: Request): Response {
+  const url = new URL(request.url, 'http://localhost');
+  const lookupKey =
+    url.searchParams.get('clientRequestId')?.trim() ??
+    url.searchParams.get('traceId')?.trim() ??
+    url.searchParams.get('executionId')?.trim() ??
+    '';
+  if (lookupKey.length > 0) {
+    const entry = executionLedger.get(lookupKey);
+    if (entry === undefined) {
+      return Response.json({
+        jsonrpc: '2.0',
+        result: { found: false, status: 'unknown' as const },
+      });
+    }
+    return Response.json({
+      jsonrpc: '2.0',
+      result: {
+        found: true,
+        status: entry.status,
+        updatedAt: entry.updatedAt,
+        ...(entry.receipt === undefined ? {} : { receipt: entry.receipt }),
+        ...(entry.errorMessage === undefined ? {} : { errorMessage: entry.errorMessage }),
+        ...(entry.httpStatus === undefined ? {} : { httpStatus: entry.httpStatus }),
+      },
+    });
+  }
+
   const tools = MCP_TOOL_WHITELIST.map((name): { name: string; uri: string; command: string } => ({
     name,
     uri: `mcp://k8s-cluster/tools/${name}`,

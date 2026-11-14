@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-10T13:22:20.580Z",
+  "generatedAt": "2026-11-14T07:20:32.705Z",
   "base": "http://127.0.0.1:3000",
   "questions": 20,
   "validRuns": 20,
@@ -7,25 +7,25 @@
   "summary": {
     "rag": {
       "count": 20,
-      "correctness": 0.9166666666666666,
-      "citationRate": 0.95,
+      "correctness": 0.7999999999999999,
+      "citationRate": 0.65,
       "actionRate": 1,
       "avgDowngraded": 0,
-      "avgTotalMs": 21306.6,
-      "avgTtftMs": 8032.5025,
-      "avgPromptTokens": 9179.85,
-      "avgCompletionTokens": 3250.4
+      "avgTotalMs": 7884.95,
+      "avgTtftMs": 756.0844999999998,
+      "avgPromptTokens": 5558.75,
+      "avgCompletionTokens": 1242.95
     },
     "bare": {
       "count": 20,
-      "correctness": 0.9166666666666667,
-      "citationRate": 0.5,
+      "correctness": 0.7833333333333334,
+      "citationRate": 0,
       "actionRate": 1,
       "avgDowngraded": 0,
-      "avgTotalMs": 22808.25,
-      "avgTtftMs": 9534.245,
-      "avgPromptTokens": 7241.9,
-      "avgCompletionTokens": 3414.85
+      "avgTotalMs": 8157.5,
+      "avgTtftMs": 650.5794999999999,
+      "avgPromptTokens": 4822.95,
+      "avgCompletionTokens": 1313.4
     }
   },
   "rows": [
@@ -38,15 +38,15 @@
         "keywordsHit": 2,
         "keywordsTotal": 2,
         "correctness": 1,
-        "citations": 2,
+        "citations": 1,
         "citationHit": true,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 4368.68,
-        "totalMs": 19643,
-        "promptTokens": 8724,
-        "completionTokens": 3075,
-        "elapsedMs": 19666
+        "ttftMs": 607.94,
+        "totalMs": 9562,
+        "promptTokens": 7065,
+        "completionTokens": 1770,
+        "elapsedMs": 10077
       },
       "bare": {
         "engine": "llm",
@@ -57,11 +57,11 @@
         "citationHit": false,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 4877.65,
-        "totalMs": 18309,
-        "promptTokens": 6849,
-        "completionTokens": 2866,
-        "elapsedMs": 18321
+        "ttftMs": 735.26,
+        "totalMs": 12565,
+        "promptTokens": 6176,
+        "completionTokens": 1821,
+        "elapsedMs": 12577
       }
     },
     {
@@ -70,33 +70,33 @@
       "expectsAction": false,
       "rag": {
         "engine": "llm",
-        "keywordsHit": 3,
+        "keywordsHit": 1,
         "keywordsTotal": 3,
-        "correctness": 1,
+        "correctness": 0.3333333333333333,
         "citations": 2,
         "citationHit": true,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 8107.01,
-        "totalMs": 23839,
-        "promptTokens": 8691,
-        "completionTokens": 3758,
-        "elapsedMs": 23850
+        "ttftMs": 726.03,
+        "totalMs": 11713,
+        "promptTokens": 7720,
+        "completionTokens": 1950,
+        "elapsedMs": 11723
       },
       "bare": {
         "engine": "llm",
-        "keywordsHit": 3,
+        "keywordsHit": 2,
         "keywordsTotal": 3,
-        "correctness": 1,
-        "citations": 2,
-        "citationHit": true,
+        "correctness": 0.6666666666666666,
+        "citations": 0,
+        "citationHit": false,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 5811.71,
-        "totalMs": 21665,
-        "promptTokens": 10794,
-        "completionTokens": 3548,
-        "elapsedMs": 21674
+        "ttftMs": 667.78,
+        "totalMs": 10146,
+        "promptTokens": 6137,
+        "completionTokens": 1813,
+        "elapsedMs": 10157
       }
     },
     {
@@ -112,26 +112,26 @@
         "citationHit": true,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 10950.45,
-        "totalMs": 32142,
-        "promptTokens": 13344,
-        "completionTokens": 4804,
-        "elapsedMs": 32152
+        "ttftMs": 873.57,
+        "totalMs": 9948,
+        "promptTokens": 7621,
+        "completionTokens": 1673,
+        "elapsedMs": 9959
       },
       "bare": {
         "engine": "llm",
-        "keywordsHit": 3,
+        "keywordsHit": 2,
         "keywordsTotal": 3,
-        "correctness": 1,
+        "correctness": 0.6666666666666666,
         "citations": 0,
         "citationHit": false,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 10756.04,
-        "totalMs": 27732,
-        "promptTokens": 7161,
-        "completionTokens": 4044,
-        "elapsedMs": 27744
+        "ttftMs": 1103.36,
+        "totalMs": 12283,
+        "promptTokens": 6133,
+        "completionTokens": 2102,
+        "elapsedMs": 12294
       }
     },
     {
@@ -147,26 +147,26 @@
         "citationHit": true,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 9996.35,
-        "totalMs": 27914,
-        "promptTokens": 13768,
-        "completionTokens": 4087,
-        "elapsedMs": 27925
+        "ttftMs": 728.36,
+        "totalMs": 9853,
+        "promptTokens": 7691,
+        "completionTokens": 1675,
+        "elapsedMs": 9864
       },
       "bare": {
         "engine": "llm",
-        "keywordsHit": 3,
+        "keywordsHit": 2,
         "keywordsTotal": 3,
-        "correctness": 1,
-        "citations": 3,
-        "citationHit": true,
+        "correctness": 0.6666666666666666,
+        "citations": 0,
+        "citationHit": false,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 11112.42,
-        "totalMs": 29690,
-        "promptTokens": 10228,
-        "completionTokens": 4274,
-        "elapsedMs": 29700
+        "ttftMs": 773.5,
+        "totalMs": 10788,
+        "promptTokens": 6206,
+        "completionTokens": 1804,
+        "elapsedMs": 10797
       }
     },
     {
@@ -182,26 +182,26 @@
         "citationHit": true,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 5913.03,
-        "totalMs": 18955,
-        "promptTokens": 8358,
-        "completionTokens": 3106,
-        "elapsedMs": 18965
+        "ttftMs": 714.02,
+        "totalMs": 11278,
+        "promptTokens": 7629,
+        "completionTokens": 1807,
+        "elapsedMs": 11288
       },
       "bare": {
         "engine": "llm",
         "keywordsHit": 2,
         "keywordsTotal": 2,
         "correctness": 1,
-        "citations": 2,
-        "citationHit": true,
+        "citations": 0,
+        "citationHit": false,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 12367.01,
-        "totalMs": 30590,
-        "promptTokens": 7492,
-        "completionTokens": 5018,
-        "elapsedMs": 30600
+        "ttftMs": 588.61,
+        "totalMs": 10615,
+        "promptTokens": 6078,
+        "completionTokens": 1873,
+        "elapsedMs": 10624
       }
     },
     {
@@ -217,11 +217,11 @@
         "citationHit": true,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 5758.13,
-        "totalMs": 20864,
-        "promptTokens": 12763,
-        "completionTokens": 3215,
-        "elapsedMs": 20873
+        "ttftMs": 741.86,
+        "totalMs": 10346,
+        "promptTokens": 7423,
+        "completionTokens": 1624,
+        "elapsedMs": 10356
       },
       "bare": {
         "engine": "llm",
@@ -232,11 +232,11 @@
         "citationHit": false,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 13124.19,
-        "totalMs": 30413,
-        "promptTokens": 7160,
-        "completionTokens": 4431,
-        "elapsedMs": 30423
+        "ttftMs": 726.9,
+        "totalMs": 10456,
+        "promptTokens": 5925,
+        "completionTokens": 1909,
+        "elapsedMs": 10463
       }
     },
     {
@@ -245,33 +245,33 @@
       "expectsAction": false,
       "rag": {
         "engine": "llm",
-        "keywordsHit": 3,
+        "keywordsHit": 2,
         "keywordsTotal": 3,
-        "correctness": 1,
-        "citations": 2,
+        "correctness": 0.6666666666666666,
+        "citations": 1,
         "citationHit": true,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 7610.31,
-        "totalMs": 20867,
-        "promptTokens": 11092,
-        "completionTokens": 3215,
-        "elapsedMs": 20876
+        "ttftMs": 656.1,
+        "totalMs": 9407,
+        "promptTokens": 6943,
+        "completionTokens": 1745,
+        "elapsedMs": 9415
       },
       "bare": {
         "engine": "llm",
-        "keywordsHit": 3,
+        "keywordsHit": 2,
         "keywordsTotal": 3,
-        "correctness": 1,
-        "citations": 2,
-        "citationHit": true,
+        "correctness": 0.6666666666666666,
+        "citations": 0,
+        "citationHit": false,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 13750.18,
-        "totalMs": 28731,
-        "promptTokens": 8996,
-        "completionTokens": 4602,
-        "elapsedMs": 28741
+        "ttftMs": 733.87,
+        "totalMs": 11061,
+        "promptTokens": 6001,
+        "completionTokens": 1899,
+        "elapsedMs": 11071
       }
     },
     {
@@ -287,11 +287,11 @@
         "citationHit": true,
         "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 4355.38,
-        "totalMs": 18248,
-        "promptTokens": 7688,
-        "completionTokens": 2628,
-        "elapsedMs": 18263
+        "ttftMs": 1146.7,
+        "totalMs": 4498,
+        "promptTokens": 3505,
+        "completionTokens": 556,
+        "elapsedMs": 4513
       },
       "bare": {
         "engine": "llm",
@@ -302,11 +302,11 @@
         "citationHit": false,
         "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 4504.33,
-        "totalMs": 13799,
-        "promptTokens": 3692,
-        "completionTokens": 1828,
-        "elapsedMs": 13808
+        "ttftMs": 624.92,
+        "totalMs": 4501,
+        "promptTokens": 3046,
+        "completionTokens": 649,
+        "elapsedMs": 4512
       }
     },
     {
@@ -318,30 +318,30 @@
         "keywordsHit": 3,
         "keywordsTotal": 3,
         "correctness": 1,
-        "citations": 1,
-        "citationHit": true,
-        "actionCards": 0,
-        "actionValid": null,
-        "ttftMs": 7967.13,
-        "totalMs": 15195,
-        "promptTokens": 5292,
-        "completionTokens": 2119,
-        "elapsedMs": 15204
-      },
-      "bare": {
-        "engine": "llm",
-        "keywordsHit": 3,
-        "keywordsTotal": 3,
-        "correctness": 1,
         "citations": 0,
         "citationHit": false,
         "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 5458.29,
-        "totalMs": 15313,
-        "promptTokens": 3244,
-        "completionTokens": 2227,
-        "elapsedMs": 15321
+        "ttftMs": 667.98,
+        "totalMs": 4369,
+        "promptTokens": 3983,
+        "completionTokens": 667,
+        "elapsedMs": 4378
+      },
+      "bare": {
+        "engine": "llm",
+        "keywordsHit": 2,
+        "keywordsTotal": 3,
+        "correctness": 0.6666666666666666,
+        "citations": 0,
+        "citationHit": false,
+        "actionCards": 0,
+        "actionValid": null,
+        "ttftMs": 873.75,
+        "totalMs": 5356,
+        "promptTokens": 2980,
+        "completionTokens": 633,
+        "elapsedMs": 5366
       }
     },
     {
@@ -350,33 +350,33 @@
       "expectsAction": false,
       "rag": {
         "engine": "llm",
-        "keywordsHit": 3,
+        "keywordsHit": 2,
         "keywordsTotal": 3,
-        "correctness": 1,
+        "correctness": 0.6666666666666666,
         "citations": 2,
         "citationHit": true,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 5389.58,
-        "totalMs": 21138,
-        "promptTokens": 14233,
-        "completionTokens": 3475,
-        "elapsedMs": 21149
+        "ttftMs": 942.86,
+        "totalMs": 10317,
+        "promptTokens": 7464,
+        "completionTokens": 1596,
+        "elapsedMs": 10326
       },
       "bare": {
         "engine": "llm",
         "keywordsHit": 3,
         "keywordsTotal": 3,
         "correctness": 1,
-        "citations": 4,
-        "citationHit": true,
+        "citations": 0,
+        "citationHit": false,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 10231.24,
-        "totalMs": 23579,
-        "promptTokens": 9763,
-        "completionTokens": 3803,
-        "elapsedMs": 23588
+        "ttftMs": 518.3,
+        "totalMs": 11277,
+        "promptTokens": 6102,
+        "completionTokens": 1698,
+        "elapsedMs": 11286
       }
     },
     {
@@ -388,15 +388,15 @@
         "keywordsHit": 3,
         "keywordsTotal": 3,
         "correctness": 1,
-        "citations": 1,
-        "citationHit": true,
+        "citations": 0,
+        "citationHit": false,
         "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 4669.26,
-        "totalMs": 8664,
-        "promptTokens": 4872,
-        "completionTokens": 1222,
-        "elapsedMs": 8672
+        "ttftMs": 701.49,
+        "totalMs": 4459,
+        "promptTokens": 2909,
+        "completionTokens": 567,
+        "elapsedMs": 4469
       },
       "bare": {
         "engine": "llm",
@@ -407,11 +407,11 @@
         "citationHit": false,
         "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 3807.03,
-        "totalMs": 7580,
-        "promptTokens": 3173,
-        "completionTokens": 877,
-        "elapsedMs": 7589
+        "ttftMs": 416.98,
+        "totalMs": 3167,
+        "promptTokens": 2845,
+        "completionTokens": 431,
+        "elapsedMs": 3176
       }
     },
     {
@@ -420,33 +420,33 @@
       "expectsAction": false,
       "rag": {
         "engine": "llm",
-        "keywordsHit": 3,
+        "keywordsHit": 2,
         "keywordsTotal": 3,
-        "correctness": 1,
-        "citations": 2,
-        "citationHit": true,
-        "actionCards": 1,
+        "correctness": 0.6666666666666666,
+        "citations": 0,
+        "citationHit": false,
+        "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 17956.14,
-        "totalMs": 30421,
-        "promptTokens": 9030,
-        "completionTokens": 4498,
-        "elapsedMs": 30431
+        "ttftMs": 669.05,
+        "totalMs": 4308,
+        "promptTokens": 2876,
+        "completionTokens": 533,
+        "elapsedMs": 4318
       },
       "bare": {
         "engine": "llm",
         "keywordsHit": 3,
         "keywordsTotal": 3,
         "correctness": 1,
-        "citations": 4,
-        "citationHit": true,
-        "actionCards": 1,
+        "citations": 0,
+        "citationHit": false,
+        "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 18653.44,
-        "totalMs": 31315,
-        "promptTokens": 9219,
-        "completionTokens": 4580,
-        "elapsedMs": 31324
+        "ttftMs": 465.22,
+        "totalMs": 3523,
+        "promptTokens": 2884,
+        "completionTokens": 508,
+        "elapsedMs": 3531
       }
     },
     {
@@ -455,18 +455,18 @@
       "expectsAction": true,
       "rag": {
         "engine": "llm",
-        "keywordsHit": 3,
+        "keywordsHit": 2,
         "keywordsTotal": 3,
-        "correctness": 1,
-        "citations": 2,
+        "correctness": 0.6666666666666666,
+        "citations": 1,
         "citationHit": true,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 3857.84,
-        "totalMs": 15651,
-        "promptTokens": 8257,
-        "completionTokens": 2817,
-        "elapsedMs": 15660
+        "ttftMs": 931.72,
+        "totalMs": 10963,
+        "promptTokens": 6957,
+        "completionTokens": 1790,
+        "elapsedMs": 10972
       },
       "bare": {
         "engine": "llm",
@@ -477,11 +477,11 @@
         "citationHit": false,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 5523.81,
-        "totalMs": 18577,
-        "promptTokens": 6674,
-        "completionTokens": 2766,
-        "elapsedMs": 18586
+        "ttftMs": 609.58,
+        "totalMs": 8747,
+        "promptTokens": 5966,
+        "completionTokens": 1512,
+        "elapsedMs": 8756
       }
     },
     {
@@ -497,11 +497,11 @@
         "citationHit": false,
         "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 4663.04,
-        "totalMs": 8225,
-        "promptTokens": 1358,
-        "completionTokens": 1023,
-        "elapsedMs": 8233
+        "ttftMs": 720.14,
+        "totalMs": 4267,
+        "promptTokens": 2887,
+        "completionTokens": 505,
+        "elapsedMs": 4277
       },
       "bare": {
         "engine": "llm",
@@ -512,11 +512,11 @@
         "citationHit": false,
         "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 6434.78,
-        "totalMs": 9642,
-        "promptTokens": 1358,
-        "completionTokens": 1280,
-        "elapsedMs": 9651
+        "ttftMs": 755.51,
+        "totalMs": 4238,
+        "promptTokens": 2928,
+        "completionTokens": 543,
+        "elapsedMs": 4247
       }
     },
     {
@@ -525,33 +525,33 @@
       "expectsAction": false,
       "rag": {
         "engine": "llm",
-        "keywordsHit": 2,
-        "keywordsTotal": 3,
-        "correctness": 0.6666666666666666,
-        "citations": 3,
-        "citationHit": true,
-        "actionCards": 1,
-        "actionValid": null,
-        "ttftMs": 16829.65,
-        "totalMs": 27300,
-        "promptTokens": 9285,
-        "completionTokens": 4220,
-        "elapsedMs": 27310
-      },
-      "bare": {
-        "engine": "llm",
         "keywordsHit": 3,
         "keywordsTotal": 3,
         "correctness": 1,
         "citations": 0,
         "citationHit": false,
-        "actionCards": 1,
+        "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 3543.77,
-        "totalMs": 10759,
-        "promptTokens": 2183,
-        "completionTokens": 1273,
-        "elapsedMs": 10767
+        "ttftMs": 782.01,
+        "totalMs": 3351,
+        "promptTokens": 2928,
+        "completionTokens": 492,
+        "elapsedMs": 3360
+      },
+      "bare": {
+        "engine": "llm",
+        "keywordsHit": 2,
+        "keywordsTotal": 3,
+        "correctness": 0.6666666666666666,
+        "citations": 0,
+        "citationHit": false,
+        "actionCards": 0,
+        "actionValid": null,
+        "ttftMs": 509.61,
+        "totalMs": 3526,
+        "promptTokens": 2900,
+        "completionTokens": 464,
+        "elapsedMs": 3534
       }
     },
     {
@@ -563,15 +563,15 @@
         "keywordsHit": 2,
         "keywordsTotal": 3,
         "correctness": 0.6666666666666666,
-        "citations": 2,
+        "citations": 1,
         "citationHit": true,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 5256.48,
-        "totalMs": 19922,
-        "promptTokens": 8654,
-        "completionTokens": 3454,
-        "elapsedMs": 19932
+        "ttftMs": 680.28,
+        "totalMs": 11103,
+        "promptTokens": 6886,
+        "completionTokens": 1699,
+        "elapsedMs": 11112
       },
       "bare": {
         "engine": "llm",
@@ -582,11 +582,11 @@
         "citationHit": false,
         "actionCards": 1,
         "actionValid": null,
-        "ttftMs": 5910.63,
-        "totalMs": 17618,
-        "promptTokens": 6641,
-        "completionTokens": 2942,
-        "elapsedMs": 17628
+        "ttftMs": 721.15,
+        "totalMs": 10580,
+        "promptTokens": 6044,
+        "completionTokens": 2006,
+        "elapsedMs": 10589
       }
     },
     {
@@ -602,26 +602,26 @@
         "citationHit": true,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 4397.42,
-        "totalMs": 20733,
-        "promptTokens": 8455,
-        "completionTokens": 2911,
-        "elapsedMs": 20743
+        "ttftMs": 663.07,
+        "totalMs": 9635,
+        "promptTokens": 7490,
+        "completionTokens": 1640,
+        "elapsedMs": 9644
       },
       "bare": {
         "engine": "llm",
         "keywordsHit": 3,
         "keywordsTotal": 3,
         "correctness": 1,
-        "citations": 3,
-        "citationHit": true,
+        "citations": 0,
+        "citationHit": false,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 13033.37,
-        "totalMs": 32876,
-        "promptTokens": 11201,
-        "completionTokens": 4798,
-        "elapsedMs": 32884
+        "ttftMs": 584.56,
+        "totalMs": 12352,
+        "promptTokens": 6179,
+        "completionTokens": 1802,
+        "elapsedMs": 12360
       }
     },
     {
@@ -633,30 +633,30 @@
         "keywordsHit": 3,
         "keywordsTotal": 3,
         "correctness": 1,
-        "citations": 3,
-        "citationHit": true,
-        "actionCards": 1,
+        "citations": 0,
+        "citationHit": false,
+        "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 22580.38,
-        "totalMs": 36017,
-        "promptTokens": 9420,
-        "completionTokens": 5310,
-        "elapsedMs": 36027
+        "ttftMs": 719.39,
+        "totalMs": 2656,
+        "promptTokens": 1240,
+        "completionTokens": 293,
+        "elapsedMs": 2666
       },
       "bare": {
         "engine": "llm",
         "keywordsHit": 3,
         "keywordsTotal": 3,
         "correctness": 1,
-        "citations": 3,
-        "citationHit": true,
-        "actionCards": 1,
+        "citations": 0,
+        "citationHit": false,
+        "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 15247.42,
-        "totalMs": 29522,
-        "promptTokens": 9316,
-        "completionTokens": 4443,
-        "elapsedMs": 29532
+        "ttftMs": 649.14,
+        "totalMs": 5511,
+        "promptTokens": 2984,
+        "completionTokens": 706,
+        "elapsedMs": 5526
       }
     },
     {
@@ -665,33 +665,33 @@
       "expectsAction": false,
       "rag": {
         "engine": "llm",
-        "keywordsHit": 3,
+        "keywordsHit": 1,
         "keywordsTotal": 3,
-        "correctness": 1,
-        "citations": 2,
-        "citationHit": true,
-        "actionCards": 1,
+        "correctness": 0.3333333333333333,
+        "citations": 0,
+        "citationHit": false,
+        "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 7778.62,
-        "totalMs": 20736,
-        "promptTokens": 7921,
-        "completionTokens": 3522,
-        "elapsedMs": 20746
+        "ttftMs": 671.54,
+        "totalMs": 4471,
+        "promptTokens": 2965,
+        "completionTokens": 563,
+        "elapsedMs": 4480
       },
       "bare": {
         "engine": "llm",
-        "keywordsHit": 2,
+        "keywordsHit": 1,
         "keywordsTotal": 3,
-        "correctness": 0.6666666666666666,
-        "citations": 1,
-        "citationHit": true,
-        "actionCards": 1,
+        "correctness": 0.3333333333333333,
+        "citations": 0,
+        "citationHit": false,
+        "actionCards": 0,
         "actionValid": null,
-        "ttftMs": 20104.81,
-        "totalMs": 35498,
-        "promptTokens": 9490,
-        "completionTokens": 5265,
-        "elapsedMs": 35510
+        "ttftMs": 505.84,
+        "totalMs": 4237,
+        "promptTokens": 2996,
+        "completionTokens": 585,
+        "elapsedMs": 4247
       }
     },
     {
@@ -703,30 +703,30 @@
         "keywordsHit": 2,
         "keywordsTotal": 3,
         "correctness": 0.6666666666666666,
-        "citations": 3,
+        "citations": 1,
         "citationHit": true,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 2245.17,
-        "totalMs": 19658,
-        "promptTokens": 12392,
-        "completionTokens": 2549,
-        "elapsedMs": 19668
+        "ttftMs": 777.58,
+        "totalMs": 11195,
+        "promptTokens": 6993,
+        "completionTokens": 1714,
+        "elapsedMs": 11206
       },
       "bare": {
         "engine": "llm",
-        "keywordsHit": 2,
+        "keywordsHit": 1,
         "keywordsTotal": 3,
-        "correctness": 0.6666666666666666,
-        "citations": 3,
-        "citationHit": true,
+        "correctness": 0.3333333333333333,
+        "citations": 0,
+        "citationHit": false,
         "actionCards": 1,
         "actionValid": true,
-        "ttftMs": 6432.78,
-        "totalMs": 22957,
-        "promptTokens": 10204,
-        "completionTokens": 3432,
-        "elapsedMs": 22966
+        "ttftMs": 447.75,
+        "totalMs": 8221,
+        "promptTokens": 5949,
+        "completionTokens": 1510,
+        "elapsedMs": 8231
       }
     }
   ]

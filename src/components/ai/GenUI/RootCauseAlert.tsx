@@ -18,7 +18,7 @@
  * P1 amber-400、P2 cyan-400，与全局告警色体系严格一致。
  */
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertOctagon,
@@ -114,17 +114,26 @@ function RetrievalSignalBar({
   return (
     <div className="px-2.5 pb-2">
       <div className="rounded border border-white/[0.07] bg-slate-950/40 p-1.5">
-        {/* ---- 标题行：标题 + 融合终值 ---- */}
-        <div className="flex items-center gap-1.5">
+        {/* ---- 标题行：标题 + 融合终值 / 原始 RRF / 候选池缩放 ---- */}
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
           <Layers className="h-2.5 w-2.5 shrink-0 text-slate-500" aria-hidden />
           <span className="min-w-0 flex-1 truncate font-mono text-[10px] uppercase tracking-wider text-slate-500">
             三路检索信号贡献
           </span>
           <span
             className="shrink-0 font-mono text-[10px] tabular-nums text-slate-400"
-            title="RRF 倒数秩融合分（融合终值，未经置信度校准）"
+            title={
+              breakdown.candidatePoolSize !== null &&
+              breakdown.corpusSize !== null &&
+              breakdown.poolFactor !== null
+                ? `融合终值 Fused ${formatScore(breakdown.fusedScore)} · 原始 RRF ${formatScore(breakdown.rrfScore)} · 候选池 ${breakdown.candidatePoolSize}/${breakdown.corpusSize}（折减 ×${breakdown.poolFactor.toFixed(2)}）`
+                : `融合终值 Fused ${formatScore(breakdown.fusedScore)} · 原始 RRF ${formatScore(breakdown.rrfScore)}`
+            }
           >
-            RRF {formatScore(breakdown.fusedScore)}
+            Fused {formatScore(breakdown.fusedScore)} · RRF {formatScore(breakdown.rrfScore)}
+            {breakdown.candidatePoolSize !== null && breakdown.corpusSize !== null
+              ? ` · 池 ${breakdown.candidatePoolSize}/${breakdown.corpusSize}`
+              : ''}
           </span>
         </div>
 
@@ -214,7 +223,7 @@ function RetrievalSignalBar({
  *
  * @param props 见 RootCauseAlertProps（severity/title/confidence/rootCauseSummary/evidenceChain/impactScope/ragReferences）
  */
-export default function RootCauseAlert({
+function RootCauseAlertImpl({
   severity,
   title,
   confidence,
@@ -609,9 +618,9 @@ export default function RootCauseAlert({
                             {similarityPct !== null ? (
                               <span
                                 className="ml-auto shrink-0 font-mono text-[11px] font-bold tabular-nums text-emerald-400"
-                                title={`校准置信度 ${doc.similarityScore?.toFixed(4)}`}
+                                title={`三路融合经 RRF 与 Sigmoid 校准后的置信度 ${doc.similarityScore?.toFixed(4)}`}
                               >
-                                匹配度 {similarityPct.toFixed(1)}%
+                                置信度 {similarityPct.toFixed(1)}%
                               </span>
                             ) : null}
                             {isExpanded ? (
@@ -744,3 +753,6 @@ export default function RootCauseAlert({
     </div>
   );
 }
+
+const RootCauseAlert = memo(RootCauseAlertImpl);
+export default RootCauseAlert;

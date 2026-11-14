@@ -284,7 +284,7 @@ export const TELEMETRY_SCHEMA_VERSION = 3;
 const SEED_TIMESTAMP_MS: number = Date.UTC(2026, 10, 5, 8, 0, 0);
 
 /** 机架索引 → Worker 节点 ID 映射表（与 spatialLayout.ts 的三机架环形拓扑一一对应） */
-const NODE_ID_BY_RACK: readonly [string, string, string] = [
+export const NODE_ID_BY_RACK: readonly [string, string, string] = [
   'node-worker-alpha',
   'node-worker-beta',
   'node-worker-gamma',

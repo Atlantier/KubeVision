@@ -18,7 +18,7 @@
  *    具体动作描述，信息密度与可信度都更高。
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   BrainCircuit,
@@ -34,7 +34,7 @@ import {
 import { cn } from '@/utils/cn';
 import { InlineMarkdown } from '@/components/ai/MarkdownLite';
 import { formatScore, formatSharePercent } from '@/utils/ragSignals';
-import type { AgentReasoningPhase, AgentThoughtChainProps } from '@/types/ai';
+import type { AgentReasoningPhase, AgentReasoningStep, AgentThoughtChainProps } from '@/types/ai';
 
 /* ========================================================================== */
 /* 阶段视觉映射表                                                               */
@@ -103,11 +103,11 @@ const PHASE_DOT: Readonly<Record<AgentReasoningPhase, string>> = {
  * 也是对推理链本身的可信度背书（如果文案与实际阶段不符，用户会立刻察觉）。
  */
 const PHASE_STREAMING_HINT: Readonly<Record<AgentReasoningPhase, string>> = {
-  INTENT_PLANNING: '正在分析集群上下文...',
-  MULTIMODAL_VISION: '正在解析 3D 视口快照的空间异常特征...',
-  RAG_RETRIEVAL: '正在比对 SRE 权威排障手册...',
-  MCP_TOOL_INVOKE: '正在调用 MCP 协议工具并生成交互卡片...',
-  SAFETY_GUARD: '正在执行安全护栏校验...',
+  INTENT_PLANNING: '正在分析集群上下文…',
+  MULTIMODAL_VISION: '正在解析 3D 视口快照的空间异常特征…',
+  RAG_RETRIEVAL: '正在比对 SRE 权威排障手册…',
+  MCP_TOOL_INVOKE: '正在调用 MCP 协议工具并生成交互卡片…',
+  SAFETY_GUARD: '正在执行安全护栏校验…',
 };
 
 /* ========================================================================== */
@@ -116,10 +116,11 @@ const PHASE_STREAMING_HINT: Readonly<Record<AgentReasoningPhase, string>> = {
 
 /**
  * AgentThoughtChain —— 可折叠的 AI 思考链时间轴。
+ * 使用 React.memo 隔绝父级流式文本更新造成的历史消息重渲染。
  *
  * @param props 见 AgentThoughtChainProps（steps / isStreaming / defaultExpanded / className）
  */
-export default function AgentThoughtChain({
+function AgentThoughtChainImpl({
   steps,
   isStreaming = false,
   defaultExpanded = false,
@@ -153,9 +154,16 @@ export default function AgentThoughtChain({
    * useMemo 依赖 steps 引用——流式追加时引用变化才重算，展开切换不重算。
    */
   const ordered = useMemo(() => {
-    const sorted = [...steps].sort((a, b): number => a.stepIndex - b.stepIndex);
+    const safeSteps: readonly AgentReasoningStep[] = Array.isArray(steps) ? steps : [];
+    const sorted = [...safeSteps].sort(
+      (a, b): number =>
+        (Number.isFinite(a.stepIndex) ? a.stepIndex : 0) -
+        (Number.isFinite(b.stepIndex) ? b.stepIndex : 0),
+    );
     let total = 0;
-    for (const step of sorted) total += step.latencyMs;
+    for (const step of sorted) {
+      total += Number.isFinite(step.latencyMs) ? step.latencyMs : 0;
+    }
     return { sorted, total };
   }, [steps]);
 
@@ -371,8 +379,8 @@ export default function AgentThoughtChain({
                             {formatSharePercent(ragBreakdown.calibratedScore)}
                           </span>
                         </div>
-                        {/* 三路微型百分比 */}
-                        <div className="mt-0.5 flex items-center gap-2">
+                        {/* 三路微型百分比与融合终值/原始 RRF/候选池 */}
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
                           {ragBreakdown.signals.map((signal) => (
                             <span
                               key={`legend-${signal.key}`}
@@ -387,8 +395,21 @@ export default function AgentThoughtChain({
                               {formatSharePercent(signal.share)}
                             </span>
                           ))}
-                          <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-slate-500">
-                            RRF {formatScore(ragBreakdown.fusedScore)}
+                          <span
+                            className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-slate-500"
+                            title={
+                              ragBreakdown.candidatePoolSize !== null &&
+                              ragBreakdown.corpusSize !== null &&
+                              ragBreakdown.poolFactor !== null
+                                ? `融合终值 Fused ${formatScore(ragBreakdown.fusedScore)} · 原始 RRF ${formatScore(ragBreakdown.rrfScore)} · 候选池 ${ragBreakdown.candidatePoolSize}/${ragBreakdown.corpusSize}（×${ragBreakdown.poolFactor.toFixed(2)}）`
+                                : `融合终值 Fused ${formatScore(ragBreakdown.fusedScore)} · 原始 RRF ${formatScore(ragBreakdown.rrfScore)}`
+                            }
+                          >
+                            Fused {formatScore(ragBreakdown.fusedScore)} · RRF {formatScore(ragBreakdown.rrfScore)}
+                            {ragBreakdown.candidatePoolSize !== null &&
+                            ragBreakdown.corpusSize !== null
+                              ? ` · 池 ${ragBreakdown.candidatePoolSize}/${ragBreakdown.corpusSize}`
+                              : ''}
                           </span>
                         </div>
                       </div>
@@ -427,3 +448,6 @@ export default function AgentThoughtChain({
     </div>
   );
 }
+
+const AgentThoughtChain = memo(AgentThoughtChainImpl);
+export default AgentThoughtChain;

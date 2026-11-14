@@ -168,3 +168,117 @@
 | R5-5 | dpr 低档锁仅在真实 GPU 生效；SwiftShader 治理器降档时保持 DPR=1（证据截图清晰度优先） | **MITIGATED** | 软渲染仅 CI/截图环境，FPS 无证据价值；锁 floor 会让证据图变糊无收益 | 「低档 dpr 锁面向真机演示；软渲染环境按 L8 惯例单独锁 1.0。」 | 前端 | 持续 |
 | R5-6 | dev-only 调试把手新增 setQualityTier/capture（L11 handle），仅开发构建暴露 | **MITIGATED** | 与既有 setPost/setReflector 同一 dev-only effect；生产构建 DCE 掉调试钩子（handleCanvasCreated 同款边界） | 「取证把手只在 dev 构建存在，生产零调试面。」 | 前端 | 关闭 |
 | R5-7 | 手册第8步「删 linewidth 动画死代码」前提错误：实际是活的 fat-line 动画（5623e2f 误删，下一提交恢复） | **CLOSED** | 源码证据：drei Edges→Line→`LineSegments2`+`LineMaterial`（three-stdlib），linewidth 为屏幕空间像素宽度真实生效；删除会丢失选中呼吸线宽 1.6→3.4px 视觉（违反「不降可视信息量」红线）；已恢复并与 a4aa114 逐字对齐（仅注释记录保留理由） | 「第8步该项按实际依赖版本复核后不成立，未删——手册的『死代码』判定基于 LineBasicMaterial 的 1px 限制，不适用 fat-line。」 | 前端 | 关闭 |
+
+---
+
+## R5 进阶 · 零视觉削减静态合批 + 预算护栏与 T1–T5 实测台账（2026-11-13）
+
+> 遵循「禁止擅自删除视觉元素」「不得新增 `frustumCulled=false`」「`mergeGeometries` 不得在稳态每帧调用」契约完成 R5 进阶。新增 `src/utils/mergeStaticGeometries.ts`（模块加载期合批并重算包围球）、`src/constants/renderBudget.ts`（`T3<=200/T2<=140/T1<=90/T0<=50` 与 8% 反射占比预算）及 `ClusterCanvas.tsx` `<RenderBudgetProbe />`（开发期 2s 采样 `console.warn`，零 UI 报错弹窗）。
+
+| 改动点 | 改前（R5 main） | 改后（R5 进阶实测） | 证据 |
+|---|---|---|---|
+| ① 零视觉削减静态合批（`MasterNode3D` + `WorkerRack3D`） | 场景可见对象 292；T0 兜底 401；T3 425（反射关）/ 802（反射开） | 8 处模块期 `mergeGeometries` 合并 102 个静态同材质子件（刻度齿 24→1、水平导轨 24→3、层板 12→3、灯眉 24→3、侧网 6→3、线束 12→3、顶冠刻线 12→3、导光柱 12→3）：可见对象 292→188；T0 401→**285**；T3 **309.6**（反射关）/ **583**（反射开）；`benchmark` 中位 **288**（`meshes 151`） | `pnpm probe:r5-advanced`（`docs/summit/r5-advanced-probe.json`）+ `pnpm benchmark:consistency` ×2 |
+| ② 渲染预算守卫 `src/constants/renderBudget.ts` | 无档位 draw call 预算与 2s 采样告警 | 固化 `RENDER_DRAW_CALL_BUDGET`（200/140/90/50）与 `RENDER_REFLECTION_RATIO_BUDGET`（8%），dev 2s 采样超标仅 `console.warn` | `RenderBudgetProbe` + 60s 探针采集到 68 条 `[renderBudget]` warn，`pageErrors=0`、`uiErrorBanner=0` |
+| ③ 反作弊三条自证 | — | ① `frustumCulled===false` 维持基线 28（新增 **0**）；② `initCalls=8`、`mergedParts=102`，60s 稳态 `runtimeCalls=0`；③ 未静默删减任何视觉装饰，仅提出独立待决策清单 | `pnpm probe:r5-advanced` + `ClusterCanvas` `getMergeStats()` |
+
+**R5 进阶 T1–T5 实测结果（SwiftShader 1920×1080，`?quality=high&demo=1`）**：
+- **T1**：T3 开 Composer + 反射 `total=583` = `main 316 + reflection 267`（HUD 三数 `[583, 316, 267]` 完全一致；反射关 `309.6`）。
+- **T2**：T3 静止 3s 均值 **583**（反射开，反射占比 **45.8%**）/ **309.6**（反射关）> 200（未达标，见下方 R5-8 如实记录与待决策视觉削减表）。
+- **T3**：T3 **309** → T2 **299.8** → T1 **294** → T0 **285** 单调不增 ✓；反射关口径 `T0/T3 = 92.2%`（>25%，见 R5-8）。
+- **T4**：连续 45 帧 rAF 帧间隔 `p50=476.8ms / p95=506.8ms / p99=513.4ms`，**`p99/p50 = 1.08 ≤ 2.0` ✓**（SwiftShader 软渲染绝对帧耗时非真机指标）。
+- **T5**：60s 稳态 `JSHeapUsedSize` `39.68MB → 39.88MB`，**`+0.20MB < 5MB` ✓**（`nodesΔ=0`、`listenersΔ=0`）。
+
+| # | 事项 | 状态 | 原因（证据） | 兜底话术 | 负责人 | 截止 |
+|---|---|---|---|---|---|---|
+| R5-8 | 不删减视觉元素条件下 T2 (`<=200`, 反射 `<=8%`) 与 T3 (`T0<=T3×25%`) 极限指标未达成 | **OPEN / 待决策** | 实测已将主场景从 401 压至 285（-28.9%）；剩余缺口集中于 `MasterNode3D` `transmission={0.72}` 触发的整场景透射二次渲染、T3 真反射虚拟相机再渲染（267 draw）及机架 `<Edges>` 独立组件 | 「在不丢失任何视觉细节与线框高亮前提下主场景压至 285 draw call；≤200 与 ≤8% 反射占比受限于透射与反射机制，若授权可按独立清单再降 ~120+441 draw call。」 | 前端 | R6/用户确认 |
+
+---
+
+## R5 单项再优化（去 transmission 保 T3 真反射）+ R6 · 3D 场景观感重制（2026-11-13 · main 完成）
+
+> 口令「1、保留 T3 真实反射，用半透明 Fresnel 替代 MasterNode3D transmission={0.72}；2、完成 R6 main」。所有数值来自本轮真实命令输出（`probe:r5-advanced`、`probe-r6.mjs` 真机 d3d11、双遍 `benchmark:consistency`、`verify` 与 `check-style-contract`）。
+
+| 改动点 | 改前（实测） | 改后（实测） | 证据 |
+|---|---|---|---|
+| ① 去 `transmission={0.72}` 保 T3 真反射（`MasterNode3D`） | `MeshPhysicalMaterial(transmission=0.72)` 触发 `_transmissionRenderTarget` 二次渲染：T3 开反射 **583 = 316 + 267**；T0 285；benchmark 中位 **288** | 自定义半透明 Fresnel `ShaderMaterial`（`withNanGuard` + `KV_DEBUG_NAN_DEFINES` + `uEmphasis` 平滑阻尼）保留 T3 真实反射：T3 **466 = 256 + 210**（省 60 主/57 反射/合计 -117 draw）；T3 关反射 **253.6**；T0 **229**；benchmark 中位 **229**（T4 p99/p50=1.08；T5 60s +1.97MB < 5MB） | `pnpm probe:r5-advanced`（`docs/summit/r5-advanced-probe.json`）+ `pnpm benchmark:consistency` ×2（5/5） |
+| ② R6-1 屏心糊字清理（`MasterNode3D`） | 3 层 DOM 徽章（`SYS.CORE` / `HoloMicroRuler` / 左右翼线）无 `distanceFactor` | 单行「控制平面 · API Server」（`leading-[1.15]` + `font-medium` + `bg-slate-950/60` + `data-kv-label="master"`），删 `SYS.CORE`/`HoloMicroRuler`/装饰线；正心 ±5% 重叠=`false` | `probe-r6.mjs`（`masterRect: 544.6..678.6 × 627.3..642.4`，正心 y[486,594] 0 重叠） |
+| ③ R6-2/3 铭牌规格表与吃雾（`src/constants/hud.ts`） | 三组件 `distanceFactor` 各异（无/17/12），无 clamp，近景放大到 55px 遮挡底层 Pod，不吃雾 | 新建 `HUD_LABEL_SPEC`（`MASTER_LABEL df=26 [10,14]` / `RACK_LABEL df=22 [10,18]` / `POD_HOVER_LABEL df=12 [10,14]`）+ CSS `clamp`；`applyHtmlFogAttenuation` 在 `useFrame` 零分配写入 `opacity`（<18:1 / 18..48→0.45 / >48:0）与 `saturate` + `objectScale` 同源逆缩放护栏；修 `WorkerRack3D` 内联 `background: 'transparent'` 导致白糊 | 真机 d3d11 实测：`1920` 全景 span 高 `15.11/16.97/13.79/13.01px`；`1366` `13.57/14.26/11.58/10.93px`；特写 `worker-alpha` `55.1→16.96px`；`dist=36.06` 雾 0.854/0.569/0.539；`dist=64.56` 全归 0 |
+| ④ R6-4/5 暗角与地面照明基线（`ClusterCanvas` / `ExposureDriver` / `glowBudget`） | Post Vignette `0.28 / offset 0.22`；地面 `#030712` + `blur[360,120]` + `mixBlur 0.9`；ambient `0.28`；`ground budget=0.55` | Vignette 调至 `darkness 0.12 / offset 0.3`（保留 DOM 暗角层）；`MeshReflectorMaterial` `#060d1a` + `[256,256]` + `mixBlur 0.65`；`ambientLight 0.36` 协同 `EXPOSURE_MIN=0.85`；`glowBudget.ground = 0.62`（注释「承认现状非达标」） | `probe-r6.mjs` 地面非加色采样本色 RGB `[10.26, 31.29, 43.39]`（无纯黑死缝）+ 截图视觉审阅通过 |
+| ⑤ R6-6 去 Pod「荧光棒感」+ 双路径色相一致（`PodInstancedMesh`） | 强高饱绿偶发高光溢出；Composer vs 兜底 `NeutralToneMapping` 色偏未补偿 | 基色保持 `#ffffff` + `toneMapped={false}`；健康态线性混入 8% `#a7f3d0`（`#47d69e`，emissiveIntensity `1.0→0.85` -15%）；`injectCrystalShader` 加 `uEmissiveScale` 与 `kvApplyParityToneMapping`（`uFallbackParity`）对齐两条路径 | 真机 `d3d11` `?quality=high`(Composer) vs `low` vs `off`(兜底 Neutral)：绿 Pod 色相角 `161.96° / 161.81° / 161.88°`，差值 **`0.15°` / `0.08°`**（< 6° 门槛） |
+| ⑥ R6-7 清理死分支（`CrystalOptics` / `RackGroundReflection` / `ClusterTopologyFloor3D`） | `CrystalOptics` 不可达 `recovering` 分支与同分支三元；另两处同分支三元 `uniforms:uniforms` / `1:1` | 移除不可达慢恢复分支与失效三元，保留真实告警颜色；同步清理 `RackGroundReflection` / `ClusterTopologyFloor3D` 冗余三元并补充「为什么是这个值」中文注释 | `pnpm typecheck` 0 错、`pnpm lint` 0 错、`pnpm build` 产物正常 |
+
+**本轮汇总验证（均在最后一次源码编辑后重跑）**：`check-style-contract` 全通（含生产 CSS **218/218** 全生成、0 缺失）· `typecheck` ✓ · `lint` ✓ · `lint:glsl` 0 HIGH ✓ · `check:layering` ✓ · `check:dead-exports` +0 ✓ · `pnpm build` ✓（First Load JS `178 kB`）· `strictmode:audit` **6/6** ✓ · `benchmark:consistency` **5/5** ✓（meshes 151 / instanced 27 / instancedTotal 1017 / triangles 206050 / Draw Calls 中位 **229**）· `probe:r5-advanced`（`total=466`, `p99/p50=1.08`, 60s `+1.97MB`）· `verify` **34/35**（唯一失败为既定转 R14 的「文档数字一致性」）。
+
+| # | 事项 | 状态 | 原因（证据） | 兜底话术 | 负责人 | 截止 |
+|---|---|---|---|---|---|---|
+| R6-1 | `Q1–Q6` 量化自动回归与 `<Html>` 字面量守卫已于 R6 进阶落地 | **CLOSED** | 已落地 `scripts/probe-r6-advanced.mjs`（`pnpm probe:r6-advanced`）、`scripts/shot.mjs` `labelBounds` 写入 `meta.json` 及 `scripts/check-layering.mjs` `canvas-html-spec` 规则，真机 `d3d11` 对比 `17c6536` 全项通过（见下方 R6 进阶台账） | 「R6 main 与进阶门禁均已完成，Q1–Q6 有真实改前/改后实机截帧与像素对比证据。」 | 前端 | 已关闭 |
+| R6-2 | `POD_HOVER_LABEL` 悬停卡片未单拍截图取证 | **MITIGATED** | 悬停标签复用同一 `HUD_LABEL_SPEC` + `applyHtmlFogAttenuation` 缩放/吃雾管线并通过 `canvas-html-spec` 守卫与构建检查，但 `probe-r6-advanced.mjs` 未触发鼠标悬停截帧 | 「悬停卡复用同源规格表与缩放护栏，R7 相机与 hover 零 commit 专项将补齐自动悬停采样。」 | 前端 | R7 |
+| R6-3 | 四角暗角亮度比已通过 Q3 同景深平场校准实测收敛（67.56% → 86.33%） | **CLOSED** | 保持 DOM `radial-gradient` 边角柔化层不删，将最大边缘透明度自 `0.42` 收敛至 `0.20`，与后处理 `Vignette(offset=0.3, darkness=0.12)` 协同后于 `camera.layers.set(31)` 同景深平场测得四角留存 `86.33% >= 75%`（中心亮度 `103.05→102.99` 零作弊调暗） | 「通过双层暗角协同收敛将四角留存从 67.56% 提至 86.33%，中心亮度未动且保留边缘渐隐接缝过渡。」 | 前端 | 已关闭 |
+
+---
+
+## R6 进阶 · 量化视觉回归与分层守卫闭合（2026-11-13）
+
+> 对照目标：`before = HEAD 17c6536`（worktree `:3001`）vs `after`（当前工作区 `:3000`），真实 GPU `NVIDIA GeForce RTX 5070 Laptop GPU (Direct3D11)`，统一 `1920×1080 @ ?quality=high&demo=1`（Q6 同时采 `low` 与 `off`）。报告与截图：`docs/summit/r6-advanced-probe.json`、`docs/summit/shots/r6-{before,after}/`、`docs/summit/shots/r6-advanced/{before,after}/`。
+
+| 指标 | before (`17c6536`) | after（工作区） | delta | 证据与口径说明 |
+|---|---|---|---|---|
+| **Q1 屏心无字** | 页中心 DOM=0 / 多笔画条带=0；Canvas 中心 DOM=0（Master 三行玻璃墙 `[418..791, 601..635]` 横压前景轨道） | 页中心 DOM=0 / 多笔画条带=0；Canvas 中心 DOM=0（收敛为单行 `[544.6..678.6, 627.3..642.4]` 15.11px 胶囊） | Master 占屏面积 `-83.6%`，中心 ±5% 保持 **0** 遮挡 | `probe-r6-advanced` 排除了页中心 `[912..1008,486..594]` 内单根连续 3D 地板斜线；左 65% 分栏下 Master 位于 Canvas 中心而非页中心 |
+| **Q2 铭牌尺码 & `shot.mjs`** | 全景 `[10.00, 21.11]`px；`pod-closeup` `worker-alpha` **49.24px** | 全景 **`[13.01, 16.97]`px** `⊆ [10,18]`；特写 `worker-alpha` **`16.96px`** `⊆ [10,22]` | 全景上限 `-4.14px`；特写 **`-32.28px`**（-65.6%） | `shot.mjs` 写入 `r6-after/meta.json` `labelBounds`；`check-layering.mjs` 新增 `canvas-html-spec` 阻断 `distanceFactor` 字面量（负向拦截已验证） |
+| **Q3 四角亮度** | 平场中心 `103.054` / 四角均值 `69.624`（**`67.56%`** < 75%） | 平场中心 `102.986` / 四角均值 `88.909`（**`86.33%`** >= 75%） | **`+18.77 pt`**（中心亮度 Δ `-0.07`，无调暗作弊） | `ClusterCanvas.tsx` DOM `radial-gradient` `0.42→0.20`；平场以 `camera.layers.set(31)` + `#64748b` 同链路穿过 EffectComposer Vignette 与 DOM 层 |
+| **Q4 地面暗部非纯黑** | 1483 像素 `luma<1` = **`0%`**，均值 RGB `[7.71, 19.03, 28.87]` | 1488 像素 `luma<1` = **`0%`**，均值 RGB **`[8.33, 21.59, 34.09]`** | `B` 通道抬升 `+5.22`，纯黑比维持 `0% < 5%` | `probe-r6-advanced.json` `Q4_groundDarkNoBlack`（ROI `[756..930, 818..899]`） |
+| **Q5 反射无方向拖影** | `worker-gamma` 地面倒影区 `Ey/Ex = 1.000` / `Ex/Ey = 1.000` | `worker-gamma` 地面倒影区 **`Ey/Ex = 1.009`** / **`Ex/Ey = 0.991`** `<= 1.5` | `+0.009`（两轴近 1:1 各向同性） | ROI `[202..339, 564..676]` 避开中央发射雷达环；若直接框选 `worker-beta` 附近外圈水平雷达环则为 `1.87`（属环线几何边界，非 `MeshReflectorMaterial` 拉丝） |
+| **Q6 语义色相一致** | `high 162.27°` / `low 162.54°` / `off 159.97°`（差 `0.27°` / `2.30°`） | `high 161.73°` / `low 161.79°` / `off 161.68°`（差 **`0.06°`** / **`0.05°`**） | `high vs off` 色差 **`-2.25°`**（远优于 `<6°`） | `PodInstancedMesh` 与 `injectCrystalShader` 双路径中性色映射（`pod-closeup-{high,low,off}.png`） |
+
+**诚实记录仍存视觉待改进项（R6 时点）**：
+1. `overview` `1920×1080` 下右侧 `worker-beta` 铭牌右端（`left: 1100.6`, 卡片右缘贴近 `1253` 视口边界）有轻微右侧裁切风险；`worker-alpha` 铭牌（`top: 980.8`）距底部事件回显条较近。
+2. `pod-closeup` 特写中，受地面主环与底部高光照射，机架最底两层健康 Pod 顶面白色镜面反光面积高于中上层。
+3. 发光预算（`[glowBudget]` `core=16.28 / ground=11.89 / outer=11.38`）与 `R5-8` T3 draw call（474 vs 200 预算）仍保留既有 dev warn，留待后续决策/R7 调优。
+4. `POD_HOVER_LABEL` 已通过 `canvas-html-spec` 静态合约与共享管线验证，但尚未补充自动化鼠标 hover 截帧实拍（记入 `R6-2` 转 R7，已在 R7 `probe:camera` H4 完成运行期验证并关闭）。
+
+---
+
+## R7 · 相机运动学、特写构图与交互确定性（2026-11-14 · main + 进阶完成）
+
+> 以 `pnpm probe:camera`（真机 D3D11 WebGL + `.verify-artifacts/r7-camera-report.json`）作为运行期验收真值源，覆盖 `H1`–`H7` 运镜曲线、特写屏占比、`dt` 归一化阻尼、零重排 hover 与 `prefers-reduced-motion` 降敏，并关闭转入项 `R6-2`。
+
+| 检查项 / 事项 | 实测数据与行为 | 证据 |
+|---|---|---|
+| `H1` Pod 特写构图与宿主语境 | `1920×1080`（画布 `1245×1014`）投影 `16.25% × 16.5%`、`distanceToTarget=5.545`；`1280`（画布 `822×734`）投影 `17.8% × 16.5%`；宿主 `rackEdgeCount=11`、`railEmissiveMax=0.35`、`isHighlightedForPod=true`、`breadcrumbText="集群 / 机架 rack-0 / 槽位 slot-12"` | `pnpm probe:camera` |
+| `H2` 720ms / 820ms 运镜配额与忙态指示 | Entity 目标 `720ms` 实测 `720.1ms`（`177` 样本，`m25=0.1475 / m50=0.7687 / last15=239.1ms`）；Preset 目标 `820ms` 实测 `820ms`（`206` 样本，`m25=0.1836 / m50=0.8891 / last15=380.4ms`）；相对 `180ms` 线性菜单切换中段加速度比 `5.21`；飞行中 `aria-busy="true"`、`dashOffsetMidFlight="79.95"`，到位后恢复 `null` | `pnpm probe:camera` |
+| `H3` `dt` 归一化阻尼多帧率收敛一致性 | 原生帧率收口角度 `0.6698 rad` vs 30fps 节流收口角度 `0.6914 rad`，跨帧率残差 `residualPct=3.22% < 8%`（`nativeEffectiveDampingFactor=0.0156` / `throttled30FpsEffectiveDampingFactor=0.11715`） | `pnpm probe:camera` |
+| `H4`（关闭 `R6-2`）零重排 Hover + 按下边框 + 抬手延迟 | `hoverCommitCount=0`；`frame0PodCursor="pointer"` / `frame0RackCursor="pointer"`；90ms 缩放平滑上升（Pod `0.68 -> 0.9102`、Rack `0.8777`）；`pressedBorderActive=true`、`animatingWhileHeld=false`、`animatingAt25MsAfterUp=false`、`animatingAfterDelay=true` | `pnpm probe:camera` |
+| `H5` 双击复位时间/位移窗（280ms / 6px） | 超时慢击 `resetAfterSlow=0`、超位移拖拽 `resetAfterFar=0`、合规双击 `resetAfterValid=1` 且 `distToOverview=0` | `pnpm probe:camera` |
+| `H6` `SplitPaneResizer` ±8px 保护区防误转 | 保护区测试点 `{x: 1248.6, y: 564, width: 26}` 内拖拽 `moatCamDelta=0` | `pnpm probe:camera` |
+| `H7` `prefers-reduced-motion` 降敏 | `reducedMotion=true`、`autoRotate=false`、`breathAmplitudeScale=0.25`；巡检按钮 `disabled=true`（`reason="reduced-motion"`）；切镜实测 `181.3ms <= 200ms` | `pnpm probe:camera` |
+| `ERR` 运行期异常闸门 | `console/page error count = 0` | `pnpm probe:camera` |
+
+---
+
+## R8 · 外壳信息架构与多端响应式适配（2026-11-14 · main + 进阶完成）
+
+> 完成 R8 main 架构收敛与 R8 进阶六视口 + 五类极端边界探针验收。所有实测均在末次源码及探针脚本修改后复跑通过。
+
+| 改动点 | 关键机制与问题修复 | 证据 |
+|---|---|---|
+| ① Z 轴与 Esc 栈契约（`src/constants/zIndex.ts`、`CommandPalette.tsx`、各 Modal） | 统一 `Z_INDEX_LAYER` / `Z_CLASS` 常量；重型模态框（RAG `z=50` / Chaos `z=50`）Store 互斥切换；`CommandPalette` 位于 `z=60` 之上；两段 `Esc` 先关 Palette 再关 Chaos；Canvas 内部浮层使用 `Z_CLASS.CANVAS_FLOATING` 不遮挡弹窗 | `pnpm probe:r8`（75/75）、`pnpm probe:escape`（11/11）、`pnpm probe:keyboard`（15/15） |
+| ② `TopBar` 与底部浮层避让（`TopBar.tsx`、`ViewportToolbar.tsx`、`StartupStatusCapsule.tsx`、`TerminalEcho.tsx`） | 移动端顶栏 `h-14`（桌面 `md:h-12`），所有顶栏交互控件 `< md` 满足 `min-h-[44px] min-w-[44px]` 且顶级按钮稳定 `<= 7`（实测 `6` 个）；`< lg` 下将 `ViewportToolbar`、`TerminalEcho` 上移至 `bottom-[4.75rem]`、将 `StartupStatusCapsule` 与 `DemoReplayTimeline` 上移至 `bottom-[9.25rem]`，彻底避让移动端底部视图切换器；`TerminalEcho` `< 768px` 默认折叠且按钮高度 `>= 44px` | `pnpm probe:r8`（`360×740`..`1920×1080` + 宽度 `1080/1180/1260` 零溢出/零越界/零重叠） |
+| ③ 移动端双屏切换、软键盘与 `inert` 隔离（`ShellLayout.tsx`） | 修复 `MobileViewSwitcher` 缺失 `bottom-3` 导致遮挡顶栏的实拍缺陷；`keyboardOpen` 结合 `maxHeightRef` 基线与 `isTextInputFocused`（`focusout` 走 `requestAnimationFrame`）自动隐藏底部切换器并失焦恢复；切屏保留同一 `Canvas` DOM 节点与 Copilot 草稿，非激活面板启用 `inert` 隔离 | `pnpm probe:r8`（E1 软键盘 + 切屏不变量 + 隐私审计零溢出） |
+| ④ 巡检 HUD 折叠、Bottom Sheet 换行与 PerfHUD 层级（`NodeInspectHUD.tsx`、`ChaosControlModal.tsx`、`PerfTelemetryHUD.tsx`） | `NodeInspectHUD` `< md` 默认折叠次级波形与元数据网格，提供 `展开指标详情` / `收起指标详情`（`min-h-[44px]`）与 `44×44` 按钮并将次级文本提亮为 `text-slate-400`；移除 `ChaosControlModal` 副标题 `&nbsp;` 修复 `390×844` 贴底 Bottom Sheet 与关闭键碰撞；`PerfTelemetryHUD` 保持 Tier1（健康/管线）在 Tier2（FPS + `60/40/0` 刻度）之上，并订阅 `viewportConstrained` 展示 `小屏视口自动降载（画质上限 T1）` | `pnpm probe:r8`（Bottom Sheet / PerfHUD / 移动端巡检 E2E + `docs/evidence/r8-*.png`）、`pnpm check:a11y`（133 文件 0 命中） |
+| ⑤ R8 进阶多端探针与全量回归（`scripts/probe-r8-layout.mjs`、`package.json`） | 新增 `pnpm probe:r8` 脚本，覆盖 6 视口、E1 软键盘、E2 `viewport-fit=cover` 安全区、E3 横屏 `844×390`、E4 200% 缩放 `960×540 @2x`、E5 PWA `standalone`、全流程 E2E；同期复跑全量路演与端到端门禁 | `pnpm probe:r8`（`PASS 75 · FAIL 0`）、`node scripts/verify.mjs --full`（`verify-demo` `22/22`；`verify` `35/36`，唯一失败 `文档数字一致性` 按计划留待 R14）、`pnpm evidence:final` |
+
+| # | 事项 | 状态 | 原因（证据） | 兜底话术 | 负责人 | 截止 |
+|---|---|---|---|---|---|---|
+| R8-1 | `verify --full` 中 `文档数字一致性` 检查未通过（35/36 唯一失败项） | **DEFERRED（按计划）** | 该项校验 `README.md`/白皮书/PPT HTML 中的展示数字与代码口径一致，按 `HANDOVER.md` 与手册规划统一在 R14 终稿对齐；代码功能、Style 合约（`14/14`、`221/221`）、`verify-demo`（`22/22`）及 `probe:r8`（`75/75`）全部通过 | 「唯一失败的 `文档数字一致性` 属于 R14 宣讲材料数字对齐范围，核心前端构建、A11y、Style 合约、3D 运镜与多端布局探针均 100% 通过。」 | 前端 | R14 |
+
+---
+
+## R9–R10 · 验收闭环记录（2026-11-14）
+
+> R9（副驾流式丝滑）与 R10（AI 可靠性与可信度）均已完成 `main + 进阶` 全部源码改造及末次编辑后的全量运行时探针/评测验证；除 R10 暂停点已落地部分外，本轮续作追加解决了 `CopilotDrawer` 平滑回底竞态（`N2c`）、真实种子 Pod 对齐（`F3`）、EOF 半截 JSON 不误判 `failed`（`F4`）、`createThinkingOptOutFetch` 低延迟开关与只读工具裁剪（`F5d`）及 `eval-ai-quality.mjs` 明细表行模板插值修复。
+
+| # | 事项 | 状态 | 改动→证据→验收判据 | 兜底话术 | 负责人 | 截止 |
+|---|---|---|---|---|---|---|
+| R9 | 副驾流式丝滑与 ActionConfirm 目标级隔离（`main + 进阶`） | **DONE（16/16 PASS）** | 改前基线（`.verify-artifacts/phase1-baseline.json`，3141 字/210 chunk/6 历史气泡）：`rootCommits=538`、`MessageBubble=1718`（历史 `1290`）、`longtask=65`（max `293ms`）、`CLS=0.00095`。改动：`MarkdownLite.tsx`（闭块增量缓存/`React.memo`/N5 未闭合围栏与表格/`[text](url)` 外链白名单与危险协议纯文本降级/N6 长串折行）；`AgentTracePanel.tsx`；`CopilotDrawer.tsx` + `ShellLayout.tsx`（rAF 批刷、`120px` 停靠、`>30` 虚拟化与尾气泡独立挂载、修复 `N2c` `ResizeObserver` 打断平滑滚动与保护窗竞态、`N1` abort 复位、`>3000` 字抗溢出）。末次编辑后 `node scripts/probe-stream-perf.mjs`（`d3d11`）：**16/16 PASS**（`rootCommits=152`、总 bubble 渲染 `75`/`appTotal=77`、历史 `0`、`longtask=0`、`CLS=0.00071`、`N2c dist=0 & hidden`、`N3` DOM `12`/滚顶 `min=11`/历史 `0`、`0` 错误） | 「R9 在 `d3d11` 下总 Bubble 提交降幅 95.5%、历史零重渲染、长任务清零、N1–N6 全绿。」 | 前端 | 已闭环 |
+| R10 | AI 可靠性、Schema 防线、MCP 超时与 RAG 校准（`main + 进阶`） | **DONE（12/12 + RAG + 20 题全绿）** | 改前 TTFT 基线（20 题 `apt-goto/deepseek-flash`）：`serverTtftMs p50=5605.66ms`、`p95=10596.7ms`。改动：`src/types/ai.ts`（四卡 Zod schema，零 `as *Props` 强转）；`chatStreamConsumer.ts` + `CopilotDrawer.tsx`（`{type:'reset'}` 免疫、EOF 未闭合 JSON 残行标 `incomplete` 而非 `failed`）；`chat/route.ts`（并行 `enginePromise`、`clearReasoningTimers()`、只读内联去冗余工具与 `maxSteps=2`、`STEADY_CONCEPTUAL_PATTERN` 稳态分流、异步 `tool-result` 定时器、`createThinkingOptOutFetch()` 禁用隐式长思考含 400/422 无感回退）；`mcp/execute/route.ts` + `ActionConfirm.tsx`（12s 超时 + `GET ?clientRequestId=` 只读复查）；`sreRagEngine.ts` + `RagKnowledgeModal.tsx`（`fusedScore` vs `rrfScore` 分离与重复校准修复）。末次源码修改后 `node scripts/probe-r10-reliability.mjs` **12/12 PASS**（`F1–F4` 含真实 socket drop `F1-Server`、TTFT `p50=685.39ms` Δ`-4920.27ms` / `p95=840.23ms` Δ`-9756.47ms`、Simulator `p50=33.39ms`）；`eval:rag` 49 用例确定性 PASS（三路 `R@1 94.4%`、`R@3 100.0%`、错别字 `R@1 91.7%`、误拒 `0.0%`）；`eval:ai-quality` 20/20 真实 LLM 零回落（RAG 正确率 `80.0%` vs 裸模型 `78.3%`、引用率 `65.0%` vs `0.0%`、动作合理性 `100.0%`） | 「R10 端到端容灾/超时/Schema 隔离/UTF-8 截断 12 项实测全绿，真实 LLM TTFT P50 降至 685ms（-87.8%），三路 RAG R@3 100% 且零误拒。」 | 全栈 / AI | 已闭环 |
+| R10-1 | `apt-goto/deepseek-flash` 上闭思考参数回退路径与随机问句波动边界 | **KNOWN RISK（已设环境开关与回退）** | `createThinkingOptOutFetch()` 默认注入 `thinking: { type: 'disabled' }`；若换用不支持该字段的标准 OpenAI 端点，首次请求会经历 1 次 400/422 检测后再以原请求体自动重试（增耗 ~1 RTT），且可通过 `AI_DISABLE_THINKING=false` 关闭；另 `eval:ai-quality` Q02/Q14/Q19 受 400/700 字篇幅与模型表述影响存在 33% 关键词覆盖波动，但不触发免责声明或非法动作 | 「可用 `AI_DISABLE_THINKING=false` 一键关闭思考拦截，且不支持 `thinking` 字段的上游网关会自动 400/422 回退原请求。」 | AI / 后端 | 按需切换 |

@@ -41,7 +41,10 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState } from 'react';
+import { Z_CLASS } from '@/constants/zIndex';
+import { useFocusReturn, useSheetSwipeClose } from '@/hooks/useModalSheetBehavior';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { createPortal } from 'react-dom';
 import { AnimatePresence,
@@ -468,6 +471,10 @@ export default function RagKnowledgeModal({
     });
   }, [open]);
 
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  useFocusReturn(open, closeBtnRef);
+  const swipe = useSheetSwipeClose(onClose);
+
   /*
    * 【C1】Esc 统一由页面级分级退出栈处理：本组件只注册一层，
    * 不再向 window 挂自己的 keydown（旧实现多个弹层会同时抢 Esc）。
@@ -645,7 +652,10 @@ export default function RagKnowledgeModal({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.18, ease: 'easeOut' }}
-        className="fixed inset-0 z-50 flex items-center justify-center p-3 kv-overlay sm:p-4"
+        className={cn(
+          'fixed inset-0 flex items-end justify-center p-0 kv-overlay md:items-center md:p-4',
+          Z_CLASS.MODAL,
+        )}
         role="dialog"
         aria-modal="true"
         aria-label="SRE 领域知识库"
@@ -658,19 +668,31 @@ export default function RagKnowledgeModal({
           className="absolute inset-0 cursor-default"
         />
 
-        {/* ============ 主面板：深空毛玻璃 ============ */}
+        {/* ============ 主面板：深空毛玻璃（移动端 90dvh Bottom Sheet） ============ */}
         <motion.div
           initial={{ opacity: 0, scale: 0.96, y: 14 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
+          animate={{ opacity: 1, scale: 1, y: swipe.dragOffsetY }}
           exit={{ opacity: 0, scale: 0.96, y: 14 }}
           transition={{ type: 'spring', stiffness: 320, damping: 30 }}
-          className="relative flex h-[80vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl kv-panel shadow-modal"
+          className="relative flex h-[90dvh] max-h-[90dvh] w-full max-w-6xl flex-col overflow-hidden rounded-t-2xl rounded-b-none kv-panel shadow-modal md:h-[80vh] md:rounded-xl"
         >
           {/* ---- 顶部主题流光细线 ---- */}
           <div
             className="h-px w-full shrink-0 bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent"
             aria-hidden
           />
+
+          {/* ---- 移动端 Bottom Sheet 下拉把手 ---- */}
+          <div
+            className="flex shrink-0 cursor-grab touch-none justify-center pb-1 pt-2.5 md:hidden"
+            onPointerDown={swipe.handlePointerDown}
+            onPointerMove={swipe.handlePointerMove}
+            onPointerUp={swipe.handlePointerUp}
+            onPointerCancel={swipe.handlePointerCancel}
+            aria-hidden
+          >
+            <span className="h-1 w-10 rounded-full bg-white/25" />
+          </div>
 
           {/* ============ 标题栏 ============ */}
           <header className="flex shrink-0 items-center gap-3 border-b border-white/[0.07] px-4 py-3 sm:px-5">
@@ -682,7 +704,7 @@ export default function RagKnowledgeModal({
               <h2 className="truncate text-sm font-semibold tracking-wide text-slate-100">
                 SRE 领域知识库
               </h2>
-              <p className="mt-0.5 truncate font-mono text-[10px] tracking-[0.16em] text-slate-500">
+              <p className="mt-0.5 truncate font-mono text-[10px] tracking-[0.16em] text-slate-400">
                 sre runbook corpus · hybrid retrieval sandbox
               </p>
             </div>
@@ -700,17 +722,18 @@ export default function RagKnowledgeModal({
             </div>
 
             <button
+              ref={closeBtnRef}
               type="button"
               onClick={(): void => onClose()}
               aria-label="关闭知识库弹窗"
-              className="shrink-0 rounded-md border border-white/[0.07] p-1.5 text-slate-500 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95"
+              className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-md border border-white/[0.07] p-1.5 text-slate-400 transition-colors hover:border-rose-500/50 hover:bg-rose-500/10 hover:text-rose-300 active:scale-95 md:min-h-0 md:min-w-0"
             >
               <X className="h-4 w-4" aria-hidden />
             </button>
           </header>
 
           {/* ============ 主体：沙盒 / 列表+详情 / 新增表单 ============ */}
-          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3 sm:p-4">
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 kv-safe-bottom sm:p-4 lg:overflow-hidden">
             {/* ---------------- C. 顶部实时混合检索沙盒 ---------------- */}
             <section
               aria-label="实时混合检索沙盒"
@@ -751,7 +774,7 @@ export default function RagKnowledgeModal({
                     未命中任何 Runbook（查询缺乏区分度）
                   </p>
                 ) : (
-                  <ul className="grid max-h-[184px] grid-cols-1 gap-2 overflow-y-auto pr-1 md:grid-cols-3">
+                  <ul className="grid max-h-[212px] grid-cols-1 gap-2 overflow-y-auto pr-1 md:grid-cols-3">
                     {retrievalResults.map((doc: RagRunbookDoc): React.ReactElement => {
                       const breakdown = doc.scoreBreakdown;
                       return (
@@ -776,9 +799,9 @@ export default function RagKnowledgeModal({
                                 'shrink-0 rounded border px-1.5 py-px font-mono text-[10px] tabular-nums',
                                 confidenceToneClass(doc.similarityScore),
                               )}
-                              title="置信度：三路证据经 RRF 融合与 Sigmoid 校准后的展示值"
+                              title="置信度（calibrateConfidence 输出）：基于 Vector / BM25 / Context 混合检索经 RRF 与 Sigmoid 校准后的最终可信度，非原始余弦相似度"
                             >
-                              {formatPercent(doc.similarityScore)}
+                              置信度 {formatPercent(doc.similarityScore)}
                             </span>
                           </div>
 
@@ -807,6 +830,33 @@ export default function RagKnowledgeModal({
                             />
                           </div>
 
+                          {/* 次级详情：融合终值 / RRF 排名一致性 / 候选池规模归一化 */}
+                          {breakdown !== undefined ? (
+                            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 border-t border-white/[0.06] pt-1.5 font-mono text-[10px] tabular-nums text-slate-400">
+                              <span title="候选池归一化与证据门控后的综合融合分（未经 Sigmoid 校准）">
+                                Fused{' '}
+                                <span className="text-slate-200">
+                                  {(breakdown.fusedScore ?? breakdown.rrfScore).toFixed(3)}
+                                </span>
+                              </span>
+                              <span title="RRF 倒数秩排名一致性（1.000 仅代表各路排名一致，不代表得分满分）">
+                                RRF <span className="text-slate-300">{breakdown.rrfScore.toFixed(3)}</span>
+                              </span>
+                              {breakdown.candidatePoolSize !== undefined &&
+                              breakdown.corpusSize !== undefined ? (
+                                <span
+                                  className="ml-auto text-slate-500"
+                                  title="候选池归一化：进入 RRF 排序的候选数 / 总语料数及规模折减系数"
+                                >
+                                  池 {breakdown.candidatePoolSize}/{breakdown.corpusSize}
+                                  {breakdown.poolFactor !== undefined
+                                    ? ` · ×${breakdown.poolFactor.toFixed(2)}`
+                                    : ''}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
+
                           {/* 命中特征词（高区分度术语，按 IDF 降序） */}
                           {doc.matchedTerms !== undefined && doc.matchedTerms.length > 0 ? (
                             <div className="mt-2 flex flex-wrap gap-1">
@@ -829,9 +879,9 @@ export default function RagKnowledgeModal({
             </section>
 
             {/* ---------------- A + B. 语料列表 与 详情 ---------------- */}
-            <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
-              {/* ---- A. 左侧语料列表（桌面 280px 固定宽，移动端定高横置） ---- */}
-              <aside className="flex h-[190px] min-h-0 w-full shrink-0 flex-col rounded-lg border border-white/[0.07] bg-slate-900/50 lg:h-auto lg:w-[280px]">
+            <div className="flex min-h-[240px] flex-1 flex-col gap-3 lg:min-h-0 lg:flex-row">
+              {/* ---- A. 左侧语料列表（桌面 280px 固定宽，移动端钳位高度） ---- */}
+              <aside className="flex h-[170px] min-h-0 w-full shrink-0 flex-col rounded-lg border border-white/[0.07] bg-slate-900/50 lg:h-auto lg:w-[280px]">
                 <div className="flex shrink-0 items-center justify-between border-b border-white/[0.07] px-3 py-2">
                   <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-500">
                     corpus index

@@ -81,10 +81,18 @@ export interface RagSignalBreakdown {
   readonly available: boolean;
   /** 三路信号（bm25 / dense / topology），按 share 降序便于阅读 */
   readonly signals: readonly RagSignal[];
-  /** RRF 融合终值 [0,1]（rdd 分，非校准后的 confidence） */
+  /** 多路融合终值 [0,1]（经候选池与证据门控归一化后的 fused 分，未做 Sigmoid 校准） */
   readonly fusedScore: number;
-  /** 校准后的置信度 [0,1]（顶层相似度，若无则退回 fusedScore） */
+  /** 原始 RRF 倒数秩排名一致性分 [0,1]（仅反映各路名次是否一致，不反映绝对证据强弱） */
+  readonly rrfScore: number;
+  /** 校准后的置信度 [0,1]（顶层相似度 similarityScore，若无则退回 fusedScore） */
   readonly calibratedScore: number;
+  /** 进入 RRF 排序池的候选文档数 C（缺失时为 null） */
+  readonly candidatePoolSize: number | null;
+  /** 本次检索总语料篇数 N（缺失时为 null） */
+  readonly corpusSize: number | null;
+  /** 候选池规模折减系数 min(1, C / min(N, 4))（缺失时为 null） */
+  readonly poolFactor: number | null;
   /** 命中手册的主标识（用于标题，如 RUNBOOK-K8S-042） */
   readonly topDocId: string | null;
   /** 主导信号（share 最大的那一路） */
@@ -183,7 +191,11 @@ export function buildRagSignalBreakdown(docs: readonly RagRunbookDoc[]): RagSign
       available: false,
       signals: [],
       fusedScore: 0,
+      rrfScore: 0,
       calibratedScore: 0,
+      candidatePoolSize: null,
+      corpusSize: null,
+      poolFactor: null,
       topDocId: docs[0]?.id ?? null,
       dominantKey: null,
       rrfIsRankPerfect: false,
@@ -244,11 +256,34 @@ export function buildRagSignalBreakdown(docs: readonly RagRunbookDoc[]): RagSign
     }
   }
 
+  const rrfScore = clamp01(breakdown.rrfScore);
+  const fusedScore = clamp01(breakdown.fusedScore ?? breakdown.rrfScore);
+  const calibratedScore = clamp01(
+    topDoc.similarityScore ?? breakdown.fusedScore ?? breakdown.rrfScore,
+  );
+  const candidatePoolSize =
+    typeof breakdown.candidatePoolSize === 'number' &&
+    Number.isFinite(breakdown.candidatePoolSize)
+      ? breakdown.candidatePoolSize
+      : null;
+  const corpusSize =
+    typeof breakdown.corpusSize === 'number' && Number.isFinite(breakdown.corpusSize)
+      ? breakdown.corpusSize
+      : null;
+  const poolFactor =
+    typeof breakdown.poolFactor === 'number' && Number.isFinite(breakdown.poolFactor)
+      ? clamp01(breakdown.poolFactor)
+      : null;
+
   return {
     available: true,
     signals,
-    fusedScore: clamp01(breakdown.rrfScore),
-    calibratedScore: clamp01(topDoc.similarityScore ?? breakdown.rrfScore),
+    fusedScore,
+    rrfScore,
+    calibratedScore,
+    candidatePoolSize,
+    corpusSize,
+    poolFactor,
     topDocId: topDoc.id,
     dominantKey,
     /**

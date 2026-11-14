@@ -71,7 +71,9 @@ export async function POST(request: Request): Promise<Response> {
   try {
     body = await request.json();
   } catch {
-    return Response.json(rpcError(null, RPC_PARSE_ERROR, 'Parse error'), { status: 200 });
+    return Response.json(rpcError(null, RPC_PARSE_ERROR, 'JSON 解析失败：请求体不是合法的 JSON 格式'), {
+      status: 200,
+    });
   }
 
   /* 通知（无 id）：本端点无状态副作用，直接 202 */
@@ -80,16 +82,22 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return Response.json(rpcError(null, RPC_INVALID_REQUEST, 'Invalid Request'), { status: 200 });
+    return Response.json(rpcError(null, RPC_INVALID_REQUEST, '无效的 JSON-RPC 请求：请求体必须为 JSON 对象'), {
+      status: 200,
+    });
   }
 
   const requestObject = body as Record<string, unknown>;
   const id = requestObject.id;
   if (!isValidId(id)) {
-    return Response.json(rpcError(null, RPC_INVALID_REQUEST, 'Invalid Request'), { status: 200 });
+    return Response.json(rpcError(null, RPC_INVALID_REQUEST, '无效的 JSON-RPC 请求：缺少合法的 id 字段'), {
+      status: 200,
+    });
   }
   if (typeof requestObject.method !== 'string') {
-    return Response.json(rpcError(id, RPC_INVALID_REQUEST, 'Invalid Request'), { status: 200 });
+    return Response.json(rpcError(id, RPC_INVALID_REQUEST, '无效的 JSON-RPC 请求：method 必须为字符串'), {
+      status: 200,
+    });
   }
 
   const method = requestObject.method;
@@ -122,7 +130,10 @@ export async function POST(request: Request): Promise<Response> {
       const name = params.name;
       const args = params.arguments;
       if (typeof name !== 'string' || !MCP_TOOL_NAMES.includes(name as McpToolName)) {
-        return Response.json(rpcError(id, RPC_INVALID_PARAMS, 'Unknown tool'), { status: 200 });
+        return Response.json(
+          rpcError(id, RPC_INVALID_PARAMS, `未知 MCP 工具：${typeof name === 'string' ? name : '非字符串'}`),
+          { status: 200 },
+        );
       }
       if (args !== null && typeof args === 'object' && !Array.isArray(args)) {
         const origin = new URL(request.url).origin;
@@ -135,13 +146,15 @@ export async function POST(request: Request): Promise<Response> {
           { status: 200 },
         );
       }
-      return Response.json(rpcError(id, RPC_INVALID_PARAMS, 'arguments must be an object'), { status: 200 });
+      return Response.json(rpcError(id, RPC_INVALID_PARAMS, 'tools/call 的 arguments 参数必须为对象'), {
+        status: 200,
+      });
     }
 
-    return Response.json(rpcError(id, RPC_METHOD_NOT_FOUND, `Method not found: ${method}`), { status: 200 });
+    return Response.json(rpcError(id, RPC_METHOD_NOT_FOUND, `未找到 JSON-RPC 方法：${method}`), { status: 200 });
   } catch (error) {
     return Response.json(
-      rpcError(id, RPC_INTERNAL_ERROR, error instanceof Error ? error.message : 'Internal error'),
+      rpcError(id, RPC_INTERNAL_ERROR, error instanceof Error ? error.message : 'MCP 服务内部执行错误'),
       { status: 200 },
     );
   }

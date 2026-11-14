@@ -296,6 +296,34 @@ test('截断流：去 done + 末尾无换行 + 中文被切断 → 不丢尾、�
   assert.equal(calls.patches[0].incomplete, true);
 });
 
+test('截断流：去 done + UTF-8 跨分片 + 末尾半截未闭合 JSON 残行 → 不乱码、判定 incomplete（不误判 failed）', () => {
+  const head = JSON.stringify({ type: 'text', content: '正在诊断内核触发 OOMKilled 机制' }) + '\n';
+  const [partA, partB] = splitInsideChinese(head, '诊');
+  const halfJson = new Uint8Array(Buffer.from('{"type":"text","content":"半截未换行', 'utf8'));
+
+  const { session, calls } = makeSession();
+  const got = [];
+  const parser = consumer.createNdjsonLineParser({
+    onEvent: (event) => got.push(event),
+    onMalformedLine: (_line, meta) => {
+      if (meta?.atEof !== true) session.markParseError();
+    },
+    validate: schema.isChatStreamEvent,
+  });
+
+  parser.push(partA);
+  parser.push(partB);
+  parser.push(halfJson);
+  parser.flush();
+
+  assert.equal(got.length, 1);
+  assert.equal(got[0].content, '正在诊断内核触发 OOMKilled 机制');
+  assert.equal(session.resolveState(), 'incomplete');
+  session.finalize('incomplete');
+  assert.equal(calls.patches[0].incomplete, true);
+  assert.equal(calls.patches[0].failed, undefined);
+});
+
 test('完整流（含 done + 末尾换行）：解析 normal 并立即 finalize', () => {
   const ndjson =
     [

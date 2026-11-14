@@ -1,5 +1,5 @@
 {
-  "at": "2026-11-12T08:50:45.476Z",
+  "at": "2026-11-14T07:29:31.017Z",
   "fixture": "docs/summit/artifacts/r17-stream-fixture.jsonl",
   "runs": 20,
   "expect": {

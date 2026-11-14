@@ -89,6 +89,21 @@ const rows = [
   `| lexical-only（消融） | ${pct(modes.lexicalOnly.recallAt1)} | ${pct(modes.lexicalOnly.recallAt3)} | ${fixed(modes.lexicalOnly.mrrAt5)} | ${fixed(modes.lexicalOnly.ndcgAt5)} |`,
 ];
 
+const typoSplit = first.byKind?.typo;
+const nonTypoSplit = first.byKind?.nonTypoSingle;
+const splitRows =
+  typoSplit && nonTypoSplit
+    ? [
+        '',
+        '## 1b. 分层指标（非错别字 vs 错别字）',
+        '',
+        '| 子集 | 两路 R@1 | 三路 R@1 | 两路 R@3 | 三路 R@3 | 两路 MRR@5 | 三路 MRR@5 |',
+        '|---|---|---|---|---|---|---|',
+        `| 非错别字单目标（口语+混杂） | ${pct(nonTypoSplit.twoWayRrf.recallAt1)} | ${pct(nonTypoSplit.threeWayRrf.recallAt1)} | ${pct(nonTypoSplit.twoWayRrf.recallAt3)} | ${pct(nonTypoSplit.threeWayRrf.recallAt3)} | ${fixed(nonTypoSplit.twoWayRrf.mrrAt5)} | ${fixed(nonTypoSplit.threeWayRrf.mrrAt5)} |`,
+        `| 错别字（差异化自然错拼） | ${pct(typoSplit.twoWayRrf.recallAt1)} | ${pct(typoSplit.threeWayRrf.recallAt1)} | ${pct(typoSplit.twoWayRrf.recallAt3)} | ${pct(typoSplit.threeWayRrf.recallAt3)} | ${fixed(typoSplit.twoWayRrf.mrrAt5)} | ${fixed(typoSplit.threeWayRrf.mrrAt5)} |`,
+      ].join('\n')
+    : '';
+
 const md = `# RAG 检索评测（R42 · Phase 2）
 
 > 由 \`node scripts/eval-rag.mjs\` 调用 \`/api/dev/rag-eval\` 真实运行生成。
@@ -107,13 +122,14 @@ ${rows.join('\n')}
 | 检索延迟 P50 / P95（两路） | ${fixed(first.latencyMs.twoWay.p50, 2)}ms / ${fixed(first.latencyMs.twoWay.p95, 2)}ms | 记录用 |
 | 检索延迟 P50 / P95（三路） | ${fixed(first.latencyMs.threeWay.p50, 2)}ms / ${fixed(first.latencyMs.threeWay.p95, 2)}ms | 记录用 |
 | 三路查询向量 | ${first.threeWay.available ? '已加载 ' + first.threeWay.queryVectors + ' 条' : '未采集（先运行 build-eval-query-embeddings）'} | — |
+${splitRows}
 
 ## 2. 置信度校准（R09）
 
-| 口径 | 平均置信度 |
+| 口径 | 平均分 |
 |---|---|
-| 原始（未校准） | ${fixed(first.calibration.meanRaw)} |
-| \`calibrateConfidence\` 后 | ${fixed(first.calibration.meanCalibrated)} |
+| 原始融合终值（\`fusedScore\`，未校准） | ${fixed(first.calibration.meanRaw)} |
+| 校准置信度（\`calibrateConfidence\` 输出） | ${fixed(first.calibration.meanCalibrated)} |
 
 > ${first.calibration.note}
 
@@ -122,27 +138,25 @@ ${rows.join('\n')}
 | 类别 | 条数 |
 |---|---|
 | 中文口语（colloquial） | ${first.cases.filter((c) => c.kind === 'colloquial').length} |
-| 漏写/错别字（typo） | ${first.cases.filter((c) => c.kind === 'typo').length} |
+| 漏写/错别字（typo，差异化症状词） | ${first.cases.filter((c) => c.kind === 'typo').length} |
 | 中英混杂（mixed） | ${first.cases.filter((c) => c.kind === 'mixed').length} |
 | 负例（negative）：寒暄/无关/跨域 | ${first.cases.filter((c) => c.kind === 'negative').length} |
 | 多文档（multi，分级 2/1） | ${first.cases.filter((c) => c.kind === 'multi').length} |
 
 ## 4. 说明与未验证项
 
-> **消融一致性观察**：本次 bm25-only / lexical-only / 两路 RRF 的 Recall 与 MRR 完全相同。
-> 这说明在 49 条用例上，三者的**最终排序一致**——消融是对引擎返回候选池的排序层重排，
-> 而该候选池已被语义证据闸门裁剪；排序字段（bm25Score/vectorScore）在本批用例上的
-> 相对顺序与 fused 相同。不能据此断言"某一路没有贡献"，需回传逐条 breakdown 做 diff 才能定位。
-> 这是评测口径的已知局限，不是通过性证明。
+> **消融口径说明**：\`bm25-only\` 与 \`lexical-only\` 是基于引擎已通过语义证据闸门与候选池约束的候选集重排，
+> 不等价于彻底关闭对应检索通道。需结合逐条 \`scoreBreakdown\` 与分类型（非错别字 vs 错别字）指标共同评估。
 
 ## 5. 补充验收项
 
 1. 消融的 bm25-only / lexical-only 是用引擎返回的 \`scoreBreakdown\` **重排同一批候选**，
    不是"关闭某一路后的检索池"，因此是排序层消融，不等价于完整关闭该路；
-2. **R09 校准只影响置信度数值、不影响名次**；本仓库无法在同一构建里复现旧校准系数，
-   故报告 ON/OFF 平均置信度，而不是伪造"校准前后排名差"；
-3. 口语/错别字用例由语料 tag 与标题**机械生成**，覆盖面有限；
-4. 负例拒答依赖引擎的语义证据闸门阈值，阈值调整会使该指标变化（当前实现见 sreRagEngine）。
+2. **R09 校准只影响置信度数值、不影响名次**；\`meanRaw\` 来自引擎候选池归一化融合分 \`fusedScore\`，
+   \`meanCalibrated\` 来自 \`similarityScore\`（\`calibrateConfidence\` 输出，无二次重复校准）；
+3. 错别字（typo）用例采用贴近各自故障语义的差异化自然提问（已移除共享「报错怎么排查」后缀），
+   真实考验三路 MiniLM 语义向量的拼写容错收益；
+4. 负例拒答依赖引擎的语义证据闸门与候选池归一化阈值（当前实现见 sreRagEngine）。
 `;
 
 mkdirSync(join(ROOT, 'docs'), { recursive: true });
@@ -162,6 +176,11 @@ console.log(`  bm25-only: R@1 ${pct(modes.bm25Only.recallAt1)} · R@3 ${pct(mode
 console.log(`  lexical  : R@1 ${pct(modes.lexicalOnly.recallAt1)} · R@3 ${pct(modes.lexicalOnly.recallAt3)} · MRR ${fixed(modes.lexicalOnly.mrrAt5)}`);
 console.log(`  负例拒答 两路 ${pct(first.negativeRejectionRate.twoWay)} · 三路 ${pct(first.negativeRejectionRate.threeWay)}`);
 console.log(`  误拒率   两路 ${pct(first.falseRejectRate.twoWay)} · 三路 ${pct(first.falseRejectRate.threeWay)}（目标 <5%）`);
+if (nonTypoSplit && typoSplit) {
+  console.log(
+    `  分层 R@1 : 非错别字 两路 ${pct(nonTypoSplit.twoWayRrf.recallAt1)} · 三路 ${pct(nonTypoSplit.threeWayRrf.recallAt1)} | 错别字 两路 ${pct(typoSplit.twoWayRrf.recallAt1)} · 三路 ${pct(typoSplit.threeWayRrf.recallAt1)}`,
+  );
+}
 console.log(`  延迟      两路 P95 ${fixed(first.latencyMs.twoWay.p95, 2)}ms · 三路 P95 ${fixed(first.latencyMs.threeWay.p95, 2)}ms`);
 console.log('  报告: docs/rag-eval.md / docs/rag-eval.json');
 

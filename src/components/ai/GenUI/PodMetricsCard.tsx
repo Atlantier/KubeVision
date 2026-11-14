@@ -20,7 +20,7 @@
  * 与 PodEntity 的 cpuHistory/memHistory 同构（长度恒为 6）。
  */
 
-import { useCallback, useId, useMemo } from 'react';
+import { memo, useCallback, useId, useMemo } from 'react';
 import { Activity, Cpu, MemoryStick, RefreshCw, Server } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
@@ -65,25 +65,44 @@ function watermarkTextClass(value: number): string {
 }
 
 /**
- * buildAreaPath —— 把 6 点序列转换为闭合面积路径（用于渐变填充）。
+ * buildAreaPath —— 把点序列转换为闭合面积路径（用于渐变填充）。
  *
  * 【核心数学】值域 [0,100] 线性映射到 SVG 高度：
  *   y = H − PAD − (v/100)·(H − 2·PAD)
  * 横轴等距分布：x_i = i·W/(n−1)。
- * 路径 = 折线 + 右下角 + 左下角，闭合形成填充区域。
+ * 【防御性边界】拦截非数组、空数组、NaN/Infinity 与单点序列，防止 SVG Path 拼接出现 `NaN` 或非法 `L  L` 语法。
  *
+ * @param values 0~100 百分比采样点序列
  * @returns 折线点串与闭合路径串
  */
 function buildAreaPath(values: readonly number[]): { readonly line: string; readonly area: string } {
-  const count = values.length;
+  if (!Array.isArray(values) || values.length === 0) {
+    return { line: '', area: '' };
+  }
+
+  const finiteValues = values.filter(
+    (v): v is number => typeof v === 'number' && Number.isFinite(v),
+  );
+  const count = finiteValues.length;
   if (count === 0) return { line: '', area: '' };
 
   const usableHeight = CHART_HEIGHT - CHART_PAD_Y * 2;
-  const stepX = count > 1 ? CHART_WIDTH / (count - 1) : CHART_WIDTH;
 
+  if (count === 1) {
+    const value = Math.max(0, Math.min(100, finiteValues[0]));
+    const y = CHART_HEIGHT - CHART_PAD_Y - (value / 100) * usableHeight;
+    const yStr = y.toFixed(2);
+    const wStr = CHART_WIDTH.toFixed(2);
+    return {
+      line: `0.00,${yStr} ${wStr},${yStr}`,
+      area: `M 0.00,${yStr} L ${wStr},${yStr} L ${wStr},${CHART_HEIGHT} L 0,${CHART_HEIGHT} Z`,
+    };
+  }
+
+  const stepX = CHART_WIDTH / (count - 1);
   const points: string[] = [];
   for (let i = 0; i < count; i++) {
-    const value = Math.max(0, Math.min(100, values[i]));
+    const value = Math.max(0, Math.min(100, finiteValues[i]));
     const x = i * stepX;
     const y = CHART_HEIGHT - CHART_PAD_Y - (value / 100) * usableHeight;
     points.push(`${x.toFixed(2)},${y.toFixed(2)}`);
@@ -99,10 +118,11 @@ function buildAreaPath(values: readonly number[]): { readonly line: string; read
 
 /**
  * PodMetricsCard —— Pod/节点实时指标卡（生成式 UI）。
+ * 使用 React.memo 避免对话流逐字追加时历史卡片重复绘制 SVG。
  *
  * @param props 见 PodMetricsCardProps（podId/podName/namespace/cpuUsage/memoryUsage/restarts/cpuHistory/memHistory）
  */
-export default function PodMetricsCard({
+function PodMetricsCardImpl({
   podId,
   podName,
   namespace,
@@ -115,6 +135,10 @@ export default function PodMetricsCard({
   /* 唯一渐变 id：SVG id 是文档全局命名空间，多卡片必须避免串色 */
   const rawId = useId();
   const gradientBase = `kv-podmetric-${rawId.replace(/:/g, '')}`;
+
+  const safeCpu = Number.isFinite(cpuUsage) ? Math.max(0, Math.min(100, cpuUsage)) : 0;
+  const safeMemory = Number.isFinite(memoryUsage) ? Math.max(0, Math.min(100, memoryUsage)) : 0;
+  const safeRestarts = Number.isFinite(restarts) ? Math.max(0, Math.round(restarts)) : 0;
 
   const selectEntity = useClusterStore(
     (s): ((entityId: string | null, entityType?: SelectedEntityType | null) => void) => s.selectEntity,
@@ -156,8 +180,8 @@ export default function PodMetricsCard({
             <span className="truncate">{namespace}</span>
             <span className="text-slate-500">·</span>
             <RefreshCw className="h-2.5 w-2.5 shrink-0" aria-hidden />
-            <span className={cn('tabular-nums', restarts > 0 ? 'text-amber-400' : 'text-slate-500')}>
-              {restarts} 次重启
+            <span className={cn('tabular-nums', safeRestarts > 0 ? 'text-amber-400' : 'text-slate-500')}>
+              {safeRestarts} 次重启
             </span>
           </p>
         </div>
@@ -184,21 +208,21 @@ export default function PodMetricsCard({
             <div
               className="h-full rounded-full transition-[width] duration-500 ease-out"
               style={{
-                width: `${Math.max(0, Math.min(100, cpuUsage))}%`,
+                width: `${safeCpu}%`,
                 backgroundImage:
-                  cpuUsage >= HIGH_WATERMARK
+                  safeCpu >= HIGH_WATERMARK
                     ? 'linear-gradient(90deg, #f59e0b 0%, #f43f5e 100%)'
                     : `linear-gradient(90deg, ${CPU_COLOR}80 0%, ${CPU_COLOR} 100%)`,
               }}
               role="progressbar"
-              aria-valuenow={Math.round(cpuUsage)}
+              aria-valuenow={Math.round(safeCpu)}
               aria-valuemin={0}
               aria-valuemax={100}
               aria-label="CPU 使用率"
             />
           </div>
-          <span className={cn('w-10 shrink-0 text-right font-mono text-[10px] font-bold tabular-nums', watermarkTextClass(cpuUsage))}>
-            {cpuUsage.toFixed(1)}%
+          <span className={cn('w-10 shrink-0 text-right font-mono text-[10px] font-bold tabular-nums', watermarkTextClass(safeCpu))}>
+            {safeCpu.toFixed(1)}%
           </span>
         </div>
 
@@ -210,21 +234,21 @@ export default function PodMetricsCard({
             <div
               className="h-full rounded-full transition-[width] duration-500 ease-out"
               style={{
-                width: `${Math.max(0, Math.min(100, memoryUsage))}%`,
+                width: `${safeMemory}%`,
                 backgroundImage:
-                  memoryUsage >= HIGH_WATERMARK
+                  safeMemory >= HIGH_WATERMARK
                     ? 'linear-gradient(90deg, #f59e0b 0%, #f43f5e 100%)'
                     : `linear-gradient(90deg, ${MEM_COLOR}80 0%, ${MEM_COLOR} 100%)`,
               }}
               role="progressbar"
-              aria-valuenow={Math.round(memoryUsage)}
+              aria-valuenow={Math.round(safeMemory)}
               aria-valuemin={0}
               aria-valuemax={100}
               aria-label="内存使用率"
             />
           </div>
-          <span className={cn('w-10 shrink-0 text-right font-mono text-[10px] font-bold tabular-nums', watermarkTextClass(memoryUsage))}>
-            {memoryUsage.toFixed(1)}%
+          <span className={cn('w-10 shrink-0 text-right font-mono text-[10px] font-bold tabular-nums', watermarkTextClass(safeMemory))}>
+            {safeMemory.toFixed(1)}%
           </span>
         </div>
       </div>
@@ -237,7 +261,7 @@ export default function PodMetricsCard({
           height={CHART_HEIGHT}
           preserveAspectRatio="none"
           role="img"
-          aria-label={`CPU 与内存近 6 周期走势，当前 CPU ${cpuUsage.toFixed(1)}%、内存 ${memoryUsage.toFixed(1)}%`}
+          aria-label={`CPU 与内存近 6 周期走势，当前 CPU ${safeCpu.toFixed(1)}%、内存 ${safeMemory.toFixed(1)}%`}
           className="overflow-visible"
         >
           <defs>
@@ -264,32 +288,40 @@ export default function PodMetricsCard({
                 stroke="#1e293b"
                 strokeWidth={0.5}
                 strokeDasharray="2 3"
-      />
+              />
             );
           })}
 
           {/* MEM 面积 + 折线（先画，压在 CPU 下方） */}
-          <path d={memGeom.area} fill={`url(#${gradientBase}-mem)`} stroke="none" />
-          <polyline
-            points={memGeom.line}
-            fill="none"
-            stroke={MEM_COLOR}
-            strokeWidth={1.3}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            opacity={0.9}
-          />
+          {memGeom.area !== '' ? (
+            <path d={memGeom.area} fill={`url(#${gradientBase}-mem)`} stroke="none" />
+          ) : null}
+          {memGeom.line !== '' ? (
+            <polyline
+              points={memGeom.line}
+              fill="none"
+              stroke={MEM_COLOR}
+              strokeWidth={1.3}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={0.9}
+            />
+          ) : null}
 
           {/* CPU 面积 + 折线（后画，视觉上更靠前强调） */}
-          <path d={cpuGeom.area} fill={`url(#${gradientBase}-cpu)`} stroke="none" />
-          <polyline
-            points={cpuGeom.line}
-            fill="none"
-            stroke={CPU_COLOR}
-            strokeWidth={1.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
+          {cpuGeom.area !== '' ? (
+            <path d={cpuGeom.area} fill={`url(#${gradientBase}-cpu)`} stroke="none" />
+          ) : null}
+          {cpuGeom.line !== '' ? (
+            <polyline
+              points={cpuGeom.line}
+              fill="none"
+              stroke={CPU_COLOR}
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          ) : null}
         </svg>
       </div>
 
@@ -310,3 +342,6 @@ export default function PodMetricsCard({
     </div>
   );
 }
+
+const PodMetricsCard = memo(PodMetricsCardImpl);
+export default PodMetricsCard;

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-13T11:25:08.516Z",
+  "generatedAt": "2026-11-13T12:59:18.120Z",
   "environment": {
     "os": "win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM",
     "node": "v24.16.0",
@@ -11,35 +11,35 @@
   "rendering": {
     "fps": {
       "count": 20,
-      "mean": 2.05,
-      "median": 2,
-      "p95": 5,
+      "mean": 4.85,
+      "median": 5,
+      "p95": 8,
       "min": 1,
-      "max": 5
+      "max": 8
     },
     "frameTimeMs": {
       "count": 20,
-      "mean": 658.11,
-      "median": 507,
-      "p95": 1621.8,
-      "min": 192.2,
-      "max": 1621.8
+      "mean": 237.73,
+      "median": 192.3,
+      "p95": 829.5,
+      "min": 132.9,
+      "max": 829.5
     },
     "drawCalls": {
       "count": 20,
-      "mean": 400.1,
-      "median": 401,
-      "p95": 401,
-      "min": 398,
-      "max": 401
+      "mean": 230.35,
+      "median": 229,
+      "p95": 232,
+      "min": 229,
+      "max": 232
     },
     "drawCallsMain": {
       "count": 20,
-      "mean": 400.1,
-      "median": 401,
-      "p95": 401,
-      "min": 398,
-      "max": 401
+      "mean": 230.35,
+      "median": 229,
+      "p95": 232,
+      "min": 229,
+      "max": 232
     },
     "drawCallsReflection": {
       "count": 20,
@@ -51,11 +51,11 @@
     },
     "triangles": {
       "count": 20,
-      "mean": 225513.2,
-      "median": 225542,
-      "p95": 225542,
-      "min": 225446,
-      "max": 225542
+      "mean": 206093.2,
+      "median": 206050,
+      "p95": 206146,
+      "min": 206050,
+      "max": 206146
     },
     "sampleCount": 20,
     "dprSettled": 1,
@@ -67,12 +67,12 @@
     }
   },
   "batching": {
-    "meshes": 255,
+    "meshes": 151,
     "instanced": 27,
     "instancedTotal": 1017,
     "points": 3,
     "lines": 4,
-    "drawCalls": 398
+    "drawCalls": 229
   },
   "edgeInference": {
     "runtime": "builtin (fallback)",
@@ -80,23 +80,23 @@
     "model": "Xenova/all-MiniLM-L6-v2",
     "fallback": true,
     "latencyMs": {
-      "count": 21,
-      "mean": 0.09,
-      "median": 0.1,
+      "count": 15,
+      "mean": 0.05,
+      "median": 0.05,
       "p95": 0.1,
       "min": 0,
       "max": 0.1
     },
-    "sampleCount": 21
+    "sampleCount": 15
   },
   "rag": {
     "latencyMs": {
       "count": 20,
-      "mean": 10.04,
-      "median": 9.72,
-      "p95": 14.37,
-      "min": 8.06,
-      "max": 14.37
+      "mean": 8.05,
+      "median": 7.79,
+      "p95": 11.87,
+      "min": 6.32,
+      "max": 11.87
     },
     "sampleCount": 20
   },
@@ -104,13 +104,13 @@
     "batchSize": 100,
     "latencyMs": {
       "count": 5,
-      "mean": 8.48,
-      "median": 8.49,
-      "p95": 9.2,
-      "min": 7.84,
-      "max": 9.2
+      "mean": 8.17,
+      "median": 8.16,
+      "p95": 9.04,
+      "min": 7.52,
+      "max": 9.04
     },
-    "throughputPerSec": 11792
+    "throughputPerSec": 12237
   },
   "bundle": {
     "routes": [

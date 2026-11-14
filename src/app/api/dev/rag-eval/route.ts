@@ -16,7 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { NextResponse } from 'next/server';
-import { SRE_RUNBOOK_CORPUS, calibrateConfidence, retrieveSreRunbooks } from '@/utils/sreRagEngine';
+import { SRE_RUNBOOK_CORPUS, retrieveSreRunbooks } from '@/utils/sreRagEngine';
 import { buildRagEvalSet, type RagEvalCase } from '@/utils/ragEvalSet';
 
 export const dynamic = 'force-dynamic';
@@ -208,7 +208,12 @@ function evaluate(queryVectors: ReadonlyMap<string, Float32Array> | null): unkno
     const latencyThreeMs = performance.now() - threeStarted;
 
     const firstHit = docsThree.find((doc) => testCase.expectedIds.includes(doc.id));
-    const rawConfidence = firstHit?.similarityScore ?? null;
+    /*
+     * rawConfidence 取引擎归一化后的融合分 fusedScore（校准前），
+     * calibratedConfidence 直接取引擎回填的 similarityScore（避免再次调用 calibrateConfidence 造成二次校准）。
+     */
+    const rawConfidence = firstHit?.scoreBreakdown?.fusedScore ?? null;
+    const calibratedConfidence = firstHit?.similarityScore ?? null;
     results.push({
       id: testCase.id,
       kind: testCase.kind,
@@ -221,7 +226,7 @@ function evaluate(queryVectors: ReadonlyMap<string, Float32Array> | null): unkno
       latencyTwoMs,
       latencyThreeMs,
       rawConfidence,
-      calibratedConfidence: rawConfidence === null ? null : calibrateConfidence(rawConfidence),
+      calibratedConfidence,
     });
   }
 
@@ -233,6 +238,17 @@ function evaluate(queryVectors: ReadonlyMap<string, Float32Array> | null): unkno
   const three = metricsFor(positive, single, (item) => item.fusedThreeIds);
   const bm25 = metricsFor(positive, single, (item) => item.bm25Ids);
   const lexical = metricsFor(positive, single, (item) => item.lexicalIds);
+
+  const slicePair = (subsetPos: readonly CaseResult[], subsetSingle: readonly CaseResult[]) => ({
+    count: subsetPos.length,
+    twoWayRrf: metricsFor(subsetPos, subsetSingle, (item) => item.fusedTwoIds),
+    threeWayRrf: metricsFor(subsetPos, subsetSingle, (item) => item.fusedThreeIds),
+  });
+  const colloquialCases = single.filter((item) => item.kind === 'colloquial');
+  const typoCases = single.filter((item) => item.kind === 'typo');
+  const mixedCases = single.filter((item) => item.kind === 'mixed');
+  const nonTypoSingleCases = single.filter((item) => item.kind !== 'typo');
+  const multiCases = positive.filter((item) => item.kind === 'multi');
 
   const mean = (values: readonly number[]): number =>
     values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -266,6 +282,13 @@ function evaluate(queryVectors: ReadonlyMap<string, Float32Array> | null): unkno
       bm25Only: bm25,
       lexicalOnly: lexical,
     },
+    byKind: {
+      colloquial: slicePair(colloquialCases, colloquialCases),
+      typo: slicePair(typoCases, typoCases),
+      mixed: slicePair(mixedCases, mixedCases),
+      nonTypoSingle: slicePair(nonTypoSingleCases, nonTypoSingleCases),
+      multi: slicePair(multiCases, []),
+    },
     negativeRejectionRate: {
       twoWay: rejection((item) => item.fusedTwoIds),
       threeWay: rejection((item) => item.fusedThreeIds),
@@ -291,7 +314,7 @@ function evaluate(queryVectors: ReadonlyMap<string, Float32Array> | null): unkno
     calibration: {
       meanRaw: mean(confidences),
       meanCalibrated: mean(calibrated),
-      note: '校准只改变置信度数值、不改变排序名次；R09 前后系数无法在同一次构建复现，故报告 ON/OFF 均值而非伪造排名差',
+      note: 'meanRaw 取未经 Sigmoid 校准的融合终值 fusedScore，meanCalibrated 取引擎输出的 similarityScore（无二次重复校准；校准只映射置信度数值、不改变排名顺序）',
     },
     cases: results.map((item) => ({
       id: item.id,

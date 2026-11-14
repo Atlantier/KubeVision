@@ -62,6 +62,32 @@ function typoize(word: string): string {
  *
  * @returns 评测用例数组（12×3 正例 + 8 负例 + 5 多文档）
  */
+/**
+ * 各权威 Runbook 的自然错别字查询模板（替代旧版统一的「... 报错怎么排查」模板）。
+ *
+ * 【为何弃用统一模板】旧模板在全部 12 条错别字用例末尾拼入相同后缀「报错怎么排查」，
+ * 导致 2-way 引擎在英文关键词因拼写错误而失灵时，仅凭「排查」二字即可在固定子集上
+ * 拿到虚高的 Recall@3。现改用贴近各自故障语境的差异化真实口语 + typoize 错拼词，
+ * 既消除共享模板泄漏，又真实检验三路 MiniLM 语义向量对拼写噪声的容错收益。
+ */
+const DOMAIN_TYPO_QUERIES: Readonly<Record<string, string>> = {
+  'RUNBOOK-K8S-042': `容器触发 ${typoize('oomkilled')} 内存限制被强杀重启`,
+  'RUNBOOK-K8S-043': `业务副本持续处于 ${typoize('crashloopbackoff')} 探针反复失败`,
+  'RUNBOOK-K8S-051': `工作节点 CPU 发生 ${typoize('throttling')} 调度阻塞延时升高`,
+  'RUNBOOK-K8S-052': `高水位节点依据 ${typoize('qos')} 分级机制触发资源驱逐`,
+  'RUNBOOK-K8S-061': `跨节点 ${typoize('network')} 分区导致插件转发与连通中断`,
+  'RUNBOOK-K8S-062': `隧道链路 ${typoize('vxlan')} 封装丢包与分片延时毛刺`,
+  'RUNBOOK-K8S-071': `新建 Pod 状态停在 ${typoize('pending')} 调度队列无法绑定`,
+  'RUNBOOK-K8S-081': `集群容器域名解析 ${typoize('coredns')} 返回超时或解析失败`,
+  'RUNBOOK-K8S-091': `节点从私有仓库拉取 ${typoize('image')} 提示认证异常失败`,
+  'RUNBOOK-K8S-101': `控制平面 ${typoize('etcd')} 成员心跳失联引发选主延迟`,
+  'SRE-RB-011': `API 入口队列 ${typoize('apiserver')} 限流堆积返回 429 拒载`,
+  'SRE-RB-012': `私有仓库 ${typoize('harbor')} 拉取镜像触发 ${typoize('imagepullbackoff')} 证书或凭据失效`,
+};
+
+/**
+ * buildRagEvalSet —— 构造完整 49 条评测集（12×3 + 5 多文档 + 8 负例）。
+ */
 export function buildRagEvalSet(): RagEvalCase[] {
   const cases: RagEvalCase[] = [];
   const docs = SRE_RUNBOOK_CORPUS;
@@ -80,11 +106,13 @@ export function buildRagEvalSet(): RagEvalCase[] {
       expectedIds: [doc.id],
     });
 
-    /* 错别字（英文术语变体） */
+    /* 错别字（差异化故障症状 + 英文术语错拼变体，消除共享后缀泄漏） */
+    const typoQuery =
+      DOMAIN_TYPO_QUERIES[doc.id] ?? `${shortTitle} 发生 ${typoize(primaryTag)} 指标异常波动`;
     cases.push({
       id: `c${index + 1}-typo`,
       kind: 'typo',
-      query: `${typoize(primaryTag)} 报错怎么排查`,
+      query: typoQuery,
       expectedIds: [doc.id],
     });
 

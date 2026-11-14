@@ -42,19 +42,21 @@ import { createTrace, elapsedMs, endSpan, startSpan, type AgentTrace, type Ended
 import { annotateUngrounded, clampConfidence } from '@/utils/grounding';
 import { z } from 'zod';
 
-import type {
-  ActionConfirmProps,
-  ChatMessage,
-  ChatRequestBody,
-  PixelFeatures,
-  ChatStreamEvent,
-  ClusterContext,
-  ClusterFaultSnapshot,
-  IntentKind,
-  PodMetricsCardProps,
-  RagRunbookDoc,
-  RemediationActionType,
-  RootCauseAlertProps,
+import {
+  podMetricsCardSchema,
+  rootCauseAlertSchema,
+  type ActionConfirmProps,
+  type ChatMessage,
+  type ChatRequestBody,
+  type PixelFeatures,
+  type ChatStreamEvent,
+  type ClusterContext,
+  type ClusterFaultSnapshot,
+  type IntentKind,
+  type PodMetricsCardProps,
+  type RagRunbookDoc,
+  type RemediationActionType,
+  type RootCauseAlertProps,
 } from '@/types/ai';
 import type { ChaosScenario } from '@/types/cluster';
 import { retrieveSreRunbooks } from '@/utils/sreRagEngine';
@@ -129,8 +131,325 @@ const SIM_LATENCY = {
   mcp: 124,
 } as const;
 
+/** 仿真器首次文本前微等待（<=80ms，确保步骤 1 先于首字且 TTFT 显著低于 100ms） */
+const SIM_PRE_TEXT_DELAY_MS = 28;
+
 /** RAG 检索返回条数 */
 const RAG_TOP_K = 2;
+
+/* ========================================================================== */
+/* R10-F 输出规范守卫（简体中文 / 禁免责套话 / 字数上限 / 建议动作收尾）          */
+/* ========================================================================== */
+
+const BANNED_OUTPUT_PREFIXES: readonly string[] = [
+  '作为',
+  '我是',
+  '我仅是',
+  '仅供',
+  '免责',
+  '以上分析',
+  '以上内容',
+  '以上建议',
+  '不构成',
+  '不能替代',
+  'As an AI',
+  'as an AI',
+  'As a ',
+];
+
+/**
+ * resolveCharBudget —— 按意图计算回答正文的最大字符预算（R10-F）。
+ *
+ * @param intent 当前对话意图
+ * @returns 深度排障（FAULT_DIAGNOSIS_AND_HEAL）700 字，其余场景 400 字
+ */
+function resolveCharBudget(intent: IntentKind): number {
+  return intent === 'FAULT_DIAGNOSIS_AND_HEAL' ? 700 : 400;
+}
+
+/**
+ * defaultActionSuffix —— 生成确定性的末行「建议动作：…」收尾文案。
+ *
+ * 【设计意图】当模型提前收尾或因篇幅裁剪未包含末行行动指令时，
+ * 按当前意图与真实上下文补齐一句可立即执行的下一步动作。
+ */
+function defaultActionSuffix(intent: IntentKind, ctx: ClusterContext): string {
+  if (intent === 'GREETING_OR_CHITCHAT') {
+    return '建议动作：点击顶栏「故障演练」注入场景，或直接输入问题（如「排查内存溢出」）。';
+  }
+  if (intent === 'STEADY_HEALTH_CHECK' || intent === 'TARGETED_INSPECTION') {
+    return '建议动作：当前集群与目标处于稳态，保持观测即可，必要时可通过「故障演练」验证自愈闭环。';
+  }
+  const worst = ctx.faultyPods[0];
+  if (worst !== undefined) {
+    return `建议动作：核对 ${worst.name} 指标与根因卡后，点击下方自愈动作卡二次确认执行。`;
+  }
+  return '建议动作：结合实时遥测与根因卡证据确认故障范围，再执行对应自愈动作。';
+}
+
+/**
+ * stripBannedOutputPhrases —— 剔除 AI 身份自称、免责声明与套话，保留真实技术结论。
+ */
+function stripBannedOutputPhrases(raw: string): string {
+  return raw
+    .replace(/作为(?:一名|一个|资深)?(?:AI|人工智能|大语言模型|大模型|(?:智能)?助手)[，,、：:\s]*/gi, '')
+    .replace(/我(?:仅)?是(?:一个)?(?:AI|人工智能|大语言模型|大模型|智能\u52a9手)[^。！？\n]*[。！？]?/gi, '')
+    .replace(/(?:以上|本)?(?:分析|内容|建议|回复)?仅供参考[^。！？\n]*[。！？]?/g, '')
+    .replace(/免责声明[：:][^\n]*/g, '')
+    .replace(/(?:不构成|不能替代)(?:任何)?(?:生产)?(?:操作)?(?:建议|决策|保证)[^。！？\n]*[。！？]?/g, '')
+    .replace(/As an AI(?: language model| assistant)?[^.\n]*[.\n]?/gi, '')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * endsWithSuggestedAction —— 判断文本最后一行是否已合规以「建议动作：」收尾。
+ */
+function hasSuggestedActionEnding(text: string): boolean {
+  const lines = text
+    .trim()
+    .split('\n')
+    .map((line): string => line.trim())
+    .filter((line): boolean => line.length > 0);
+  if (lines.length === 0) return false;
+  const last = lines[lines.length - 1];
+  return /^建议动作[：:]\s*\S+/.test(last);
+}
+
+/**
+ * normalizeActionColon —— 将末行半角 `建议动作:` 统一规范为全角 `建议动作：`。
+ */
+function normalizeActionEnding(text: string): string {
+  return text.replace(/(^|\n)建议动作:\s*/g, '$1建议动作：').trim();
+}
+
+/**
+ * truncateCleanly —— 按最大长度在最近句末边界安全截断文本，避免生硬半句。
+ */
+function truncateCleanly(text: string, maxLen: number): string {
+  if (maxLen <= 0) return '';
+  if (text.length <= maxLen) return text;
+  const slice = text.slice(0, maxLen);
+  const lastBreak = Math.max(
+    slice.lastIndexOf('\n'),
+    slice.lastIndexOf('。'),
+    slice.lastIndexOf('！'),
+    slice.lastIndexOf('？'),
+    slice.lastIndexOf('；'),
+  );
+  const cutoff = lastBreak >= Math.floor(maxLen * 0.55) ? lastBreak + 1 : maxLen;
+  return slice.slice(0, cutoff).trimEnd();
+}
+
+/**
+ * enforceOutputConstraints —— 对完整正文执行 R10-F 四重硬约束后处理。
+ *
+ * 【输入输出】输入原始报告、字符预算（400/700）与兜底建议动作；
+ * 输出清除套话、严格 <= maxChars 且末行以 `建议动作：…` 收尾的简体中文文本。
+ */
+function enforceOutputConstraints(rawText: string, maxChars: number, actionSuffix: string): string {
+  const normalizedAction = normalizeActionEnding(actionSuffix);
+  const cleaned = normalizeActionEnding(stripBannedOutputPhrases(rawText));
+
+  if (cleaned.length <= maxChars && hasSuggestedActionEnding(cleaned)) {
+    return cleaned;
+  }
+
+  /* 提取已有合规建议动作（若模型或模板已写出且能放进预算则保留其具体动作） */
+  const lines = cleaned.split('\n');
+  let customAction: string | null = null;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const trimmed = lines[i].trim();
+    if (trimmed.length === 0) continue;
+    if (/^建议动作[：:]\s*\S+/.test(trimmed)) {
+      customAction = trimmed.replace(/^建议动作:\s*/, '建议动作：');
+      lines.splice(i, 1);
+    }
+    break;
+  }
+
+  const chosenAction =
+    customAction !== null && customAction.length <= Math.min(120, Math.floor(maxChars * 0.45))
+      ? customAction
+      : normalizedAction;
+
+  const bodySource = lines.join('\n').trim();
+  if (bodySource.length === 0) {
+    return truncateCleanly(chosenAction, maxChars);
+  }
+
+  const bodyBudget = maxChars - chosenAction.length - 2;
+  if (bodyBudget <= 12) {
+    return truncateCleanly(chosenAction, maxChars);
+  }
+  const clippedBody = truncateCleanly(bodySource, bodyBudget);
+  return clippedBody.length > 0 ? `${clippedBody}\n\n${chosenAction}` : truncateCleanly(chosenAction, maxChars);
+}
+
+/**
+ * trailingBannedPrefixLength —— 计算缓冲区尾部是否命中禁用词前缀，用于零延迟滑窗放行。
+ */
+function trailingBannedPrefixLength(text: string): number {
+  const tailWindow = text.slice(-16);
+  for (let len = Math.min(16, tailWindow.length); len >= 1; len -= 1) {
+    const suffix = tailWindow.slice(tailWindow.length - len);
+    const lowerSuffix = suffix.toLowerCase();
+    for (const prefix of BANNED_OUTPUT_PREFIXES) {
+      if (prefix.toLowerCase().startsWith(lowerSuffix)) {
+        return len;
+      }
+    }
+  }
+  return 0;
+}
+
+/**
+ * containsOpenBannedClause —— 判断当前挂起串里是否已出现禁用词且尚未遇到句末边界。
+ */
+function containsOpenBannedClause(text: string): boolean {
+  const lower = text.toLowerCase();
+  for (const prefix of BANNED_OUTPUT_PREFIXES) {
+    const idx = lower.indexOf(prefix.toLowerCase());
+    if (idx !== -1) {
+      const rest = text.slice(idx);
+      if (!/[。！？\n]/.test(rest)) return true;
+    }
+  }
+  return false;
+}
+
+interface StreamTextGuard {
+  readonly push: (delta: string) => void;
+  readonly flush: () => void;
+}
+
+/**
+ * createStreamTextGuard —— 零 TTFT 损耗的流式文本守卫。
+ *
+ * 【工作原理】正常技术 token 直接透传发出，仅当末尾命中「作为/我是/仅供/免责」
+ * 前缀时短暂缓冲至句末并剔除套话；当已输出字数接近上限（预留末行建议动作空间）
+ * 时将余下分片收口在 `flush()` 统一截断并补全 `建议动作：…`。
+ */
+function createStreamTextGuard(params: {
+  readonly maxChars: number;
+  readonly actionSuffix: string;
+  readonly onEmitText: (content: string) => void;
+}): StreamTextGuard {
+  const { maxChars, actionSuffix, onEmitText } = params;
+  const safeAction = normalizeActionEnding(actionSuffix);
+  const reserveForTail = Math.min(maxChars - 16, safeAction.length + 24);
+  const safeEmitLimit = Math.max(0, maxChars - reserveForTail);
+
+  let pending = '';
+  let emittedText = '';
+  let tailOverflow = '';
+
+  const emitImmediate = (chunk: string): void => {
+    if (chunk.length === 0) return;
+    const room = safeEmitLimit - emittedText.length;
+    if (room <= 0) {
+      if (tailOverflow.length < maxChars) {
+        tailOverflow += chunk.slice(0, maxChars - tailOverflow.length);
+      }
+      return;
+    }
+    const immediate = chunk.slice(0, room);
+    const overflow = chunk.slice(room);
+    if (immediate.length > 0) {
+      emittedText += immediate;
+      onEmitText(immediate);
+    }
+    if (overflow.length > 0 && tailOverflow.length < maxChars) {
+      tailOverflow += overflow.slice(0, maxChars - tailOverflow.length);
+    }
+  };
+
+  return {
+    push(delta: string): void {
+      if (delta.length === 0) return;
+      if (emittedText.length >= safeEmitLimit) {
+        if (tailOverflow.length < maxChars) {
+          tailOverflow += delta.slice(0, maxChars - tailOverflow.length);
+        }
+        return;
+      }
+
+      pending += delta;
+      /* 若正在等待疑似禁句的句末标点且长度未超 72，先等一帧到句末 */
+      if (containsOpenBannedClause(pending) && pending.length < 72) {
+        return;
+      }
+
+      const holdLen = trailingBannedPrefixLength(pending);
+      const releasable = holdLen > 0 ? pending.slice(0, pending.length - holdLen) : pending;
+      pending = holdLen > 0 ? pending.slice(pending.length - holdLen) : '';
+      if (releasable.length > 0) {
+        emitImmediate(stripBannedOutputPhrases(releasable));
+      }
+    },
+
+    flush(): void {
+      const remaining = stripBannedOutputPhrases(`${pending}${tailOverflow}`);
+      pending = '';
+      tailOverflow = '';
+
+      if (emittedText.length === 0) {
+        if (remaining.trim().length === 0) return;
+        const enforced = enforceOutputConstraints(remaining, maxChars, safeAction);
+        if (enforced.length > 0) {
+          emittedText += enforced;
+          onEmitText(enforced);
+        }
+        return;
+      }
+
+      const fullRaw = normalizeActionEnding(`${emittedText}${remaining}`);
+      if (fullRaw.length <= maxChars && hasSuggestedActionEnding(fullRaw)) {
+        const suffixDelta = fullRaw.slice(emittedText.length);
+        if (suffixDelta.length > 0) {
+          emittedText += suffixDelta;
+          onEmitText(suffixDelta);
+        }
+        return;
+      }
+
+      const lines = remaining.split('\n');
+      let customAction: string | null = null;
+      for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const trimmed = lines[i].trim();
+        if (trimmed.length === 0) continue;
+        if (/^建议动作[：:]\s*\S+/.test(trimmed)) {
+          customAction = trimmed.replace(/^建议动作:\s*/, '建议动作：');
+          lines.splice(i, 1);
+        }
+        break;
+      }
+
+      const chosenAction =
+        customAction !== null && emittedText.length + 2 + customAction.length <= maxChars
+          ? customAction
+          : safeAction;
+
+      const bodyRoom = maxChars - emittedText.length - chosenAction.length - 2;
+      if (bodyRoom > 0) {
+        const cleanBodyTail = normalizeActionEnding(lines.join('\n')).trimEnd();
+        const clippedTail = truncateCleanly(cleanBodyTail, bodyRoom);
+        if (clippedTail.length > 0) {
+          emittedText += clippedTail;
+          onEmitText(clippedTail);
+        }
+      }
+
+      if (!hasSuggestedActionEnding(emittedText)) {
+        const finalAction = truncateCleanly(chosenAction, Math.max(0, maxChars - emittedText.length - 2));
+        if (finalAction.length > 0) {
+          const patch = emittedText.endsWith('\n') ? `\n${finalAction}` : `\n\n${finalAction}`;
+          emittedText += patch;
+          onEmitText(patch);
+        }
+      }
+    },
+  };
+}
 
 /* ========================================================================== */
 /* 引擎 B 的目标解析与数据绑定（三张卡片的唯一数据源）                              */
@@ -618,6 +937,21 @@ function isClusterFullyHealthy(ctx: ClusterContext): boolean {
  * @param hasImage    是否附带 3D 视口快照
  * @returns 四档意图之一
  */
+/**
+ * 稳态概念/机制/评估类提问正则：集群完全健康时，若用户在询问原理、风险、
+ * 前置检查或是否需要操作（而非下达立即重启/驱逐指令），应保持稳态路径，
+ * 避免误触发 FAULT 诊断流并减少无效的工具链路开销。
+ */
+const STEADY_CONCEPTUAL_PATTERN =
+  /(什么作用|什么风险|哪些风险|有何风险|前置检查|怎么验证|如何验证|是否成功|需要.{0,8}吗|是否需要|要不要|起什么作用|原理|机制|解释|对比|区别)/;
+
+/**
+ * 集群健康状态下仍需强制进入自愈流程的显式命令前缀：
+ * 只有带“立即/马上/帮我/执行”等动作祈使且无风险问询语义时，才升级为自愈流。
+ */
+const EXPLICIT_IMPERATIVE_ACTION_PATTERN =
+  /(?:马上|立即|立刻|帮我|请对)\s*(?:重启|驱逐|扩容|缩容|drain|restart|scale)/i;
+
 function classifyUserIntent(
   userMessage: string,
   ctx: ClusterContext,
@@ -633,16 +967,24 @@ function classifyUserIntent(
 
   const healthy = isClusterFullyHealthy(ctx);
 
-  /* ---- 3. 用户明确下达自愈/运维动作指令 ---- */
-  if (containsAnyKeyword(text, HEAL_ACTION_KEYWORDS)) return 'FAULT_DIAGNOSIS_AND_HEAL';
-
-  /* ---- 4. 集群存在任何异常 → 主动排查 ---- */
+  /* ---- 3. 集群存在任何异常 → 最高优先级主动排查 ---- */
   if (!healthy) return 'FAULT_DIAGNOSIS_AND_HEAL';
 
-  /* ---- 5. 全绿但用户明确要求诊断（风险推演） ---- */
-  if (containsAnyKeyword(text, DIAGNOSIS_KEYWORDS)) return 'FAULT_DIAGNOSIS_AND_HEAL';
+  /* ---- 4. 全绿但属于概念/风险/验证问询（非立即动作命令） → 稳态巡检 ---- */
+  const isConceptualInSteady =
+    STEADY_CONCEPTUAL_PATTERN.test(text) && !EXPLICIT_IMPERATIVE_ACTION_PATTERN.test(text);
 
-  /* ---- 6. 全绿 + 点名实体 + 问指标 → 定向巡检 ---- */
+  /* ---- 5. 全绿且用户明确下达自愈/运维动作指令 ---- */
+  if (!isConceptualInSteady && containsAnyKeyword(text, HEAL_ACTION_KEYWORDS)) {
+    return 'FAULT_DIAGNOSIS_AND_HEAL';
+  }
+
+  /* ---- 6. 全绿且用户明确要求风险排查/故障诊断（非纯原理咨询） ---- */
+  if (!isConceptualInSteady && containsAnyKeyword(text, DIAGNOSIS_KEYWORDS)) {
+    return 'FAULT_DIAGNOSIS_AND_HEAL';
+  }
+
+  /* ---- 7. 全绿 + 点名实体 + 问指标 → 定向巡检 ---- */
   const mentionsEntity =
     (ctx.selectedEntityId !== null && text.includes(ctx.selectedEntityId)) ||
     /[a-z][a-z0-9-]{3,}/i.test(text) ||
@@ -651,7 +993,7 @@ function classifyUserIntent(
     return 'TARGETED_INSPECTION';
   }
 
-  /* ---- 7. 其余全绿场景（问状态 / 一般技术问题） ---- */
+  /* ---- 8. 其余全绿场景（问状态 / 一般技术问题） ---- */
   void STATUS_QUERY_KEYWORDS;
   return 'STEADY_HEALTH_CHECK';
 }
@@ -736,7 +1078,7 @@ function buildSystemPrompt(
             const sim = doc.similarityScore === undefined ? 'n/a' : `${(doc.similarityScore * 100).toFixed(1)}%`;
             const steps = doc.remediationSteps.map((s, i): string => `      ${i + 1}. ${s}`).join('\n');
             return [
-              `  ▸ [${doc.id}] ${doc.title}  (Similarity: ${sim})`,
+              `  ▸ [${doc.id}] ${doc.title}  (置信度: ${sim})`,
               `    症状：${doc.symptom}`,
               `    根因机制：${doc.rootCauseMechanism}`,
               `    标准处置步骤：`,
@@ -745,8 +1087,17 @@ function buildSystemPrompt(
           })
           .join('\n\n');
 
+  const maxChars = resolveCharBudget(intent);
+
   return [
     '你是 KubeVision AI 的资深云原生 SRE 专家。你的回答必须具体、可执行、有据可依。',
+    '',
+    '【硬性输出规范（违反将触发系统拦截）】',
+    '  1. 语言规范：全程使用简体中文作答，仅保留必要英文技术术语（如 Pod ID、Runbook 编号、OOMKilled、cgroup、kubectl 命令）。',
+    '  2. 禁用套话：严禁自称“作为 AI / 人工智能 / 大模型”，严禁输出“仅供参考 / 免责声明”等免责或身份套话，直接给工程判断。',
+    `  3. 篇幅与结构：采用“结论先行 + 精简短列表”，总字数严格不超过 ${maxChars} 字。`,
+    '  4. 强制收尾：回答最后一行必须以“建议动作：”开头，给出 1 条具体可执行的下一步指令。',
+    '  5. 首字优先：必须先直接输出正文首句结论，再按需调用渲染工具；下方已提供的集群态势、节点水位与知识库手册即为最新数据，禁止在输出正文前调用任何工具重复查询。',
     '',
     '【当前集群实时态势】',
     `  集群健康分：${ctx.clusterHealthScore}/100`,
@@ -780,7 +1131,7 @@ function buildSystemPrompt(
         ]
       : []),
     '',
-    '【知识库检索结果（请优先引用这些手册条款作为依据）】',
+    '【知识库检索结果（已按混合融合校准置信度排序，请优先引用手册编号；不要自行编造额外检索分数）】',
     runbookLines,
     '',
     hasImage
@@ -822,13 +1173,13 @@ function buildIntentDirective(
         '  本次会话未检索知识库手册，也未挂载任何运维工具。',
         '',
         '【回答要求】',
-        '  1. 用一句简短、专业、有温度的话回应问候（不要套用排障模板）。',
-        '  2. 紧接着给出一条**一句话集群健康摘要**，必须引用下面的真实数据：',
+        '  1. 用简体中文简短直接回应（禁用“作为 AI / 仅供参考”等套话），给出核心能力与当前集群状态。',
+        '  2. 引用下面的真实数据给出一句话集群健康摘要：',
         `     当前集群健康度 ${ctx.clusterHealthScore}/100，` +
           `${ctx.nodes.length} 台计算节点（${healthyNodes} 台就绪）与 ${ctx.totalQps.toLocaleString('en-US')} req/s 入口流量均处于稳态。`,
-        '  3. 然后引导用户：可以点击顶栏「故障演练」注入场景，或直接询问具体运维问题。',
-        '  4. 总长度控制在 120 字以内，**不要**使用标题、列表、表格等重排版。',
-        '  5. **严禁**调用任何工具，**严禁**输出根因分析或处置建议。',
+        '  3. 仅使用简洁短句或短列表，总字数严格控制在 160 字以内（不超过 400 字上限）。',
+        '  4. 最后一行必须以“建议动作：”开头，引导点击「故障演练」或提出具体排障问题。',
+        '  5. **严禁**调用任何工具，**严禁**输出根因分析或虚构故障。',
       ];
 
     /* ==================== 2. 稳态巡检 ==================== */
@@ -839,15 +1190,15 @@ function buildIntentDirective(
         '  本次**仅挂载** `renderPodMetrics` 一个工具，用于展示核心服务的实时健康指标。',
         '',
         '【执行顺序】',
-        '  第 1 步：用 Markdown 给出简明的稳态巡检结论（健康分、节点水位、Pod 分布），不少于 80 字。',
+        '  第 1 步：采用“结论先行 + 精简短列表”输出稳态巡检结论（健康分、节点水位、Pod 分布），总字数严格不超过 400 字。',
         '  第 2 步：调用 **一次** `renderPodMetrics`，展示被指定目标的实时指标趋势。',
-        '  第 3 步：一两句话收尾，说明当前无异常需要处置。',
+        '  第 3 步：最后一行以“建议动作：”收尾，说明当前稳态无需人工变更及下一步可验证路径。',
         '',
         '【严禁事项】',
         '  · **严禁**调用 `renderRootCauseAnalysis`——集群无故障，虚构根因会误导用户。',
         '  · **严禁**调用 `proposeRemediationAction`——没有任何故障需要自愈，',
         '    此时弹出高危「驱逐节点」确认卡属于严重的产品事故。',
-        '  · 不要凭空声称存在异常；若确实发现水位偏高，如实描述但不下故障结论。',
+        '  · 不要凭空声称存在异常，禁用“作为 AI / 仅供参考”套话。',
         runbooks.length === 0
           ? '  · 本次未命中任何故障手册（稳态下无异常特征词），不要引用 Runbook 编号。'
           : '  · 若确需引用，仅可引用上面列出的手册编号。',
@@ -860,12 +1211,12 @@ function buildIntentDirective(
         '  用户点名查看某个健康实体的实时指标，本次**仅挂载** `renderPodMetrics`。',
         '',
         '【执行顺序】',
-        '  第 1 步：用一小段文字说明该实体当前水位与趋势判断（不少于 60 字）。',
+        '  第 1 步：以“结论先行 + 精简短列表”说明该实体当前水位与趋势判断，总字数严格不超过 400 字，最后一行以“建议动作：”收尾。',
         '  第 2 步：调用 **一次** `renderPodMetrics` 渲染其指标卡。',
         '',
         '【严禁事项】',
         '  · 严禁调用 `renderRootCauseAnalysis` 与 `proposeRemediationAction`；',
-        '  · 该实体处于健康态，不要虚构故障、不要给出重启/驱逐建议。',
+        '  · 该实体处于健康态，不要虚构故障、不要给出重启/驱逐建议，禁用免责套话。',
       ];
 
     /* ==================== 4. 故障诊断与自愈 ==================== */
@@ -880,12 +1231,12 @@ function buildIntentDirective(
         '  · proposeRemediationAction：给出自愈动作建议时调用（不会自动执行，需用户二次确认）。',
         '',
         '【执行顺序（必须完整执行，不可提前结束）】',
-        '  第 1 步：先用 Markdown 输出诊断正文（结论 → 根因机制 → 处置建议），不少于 150 字。',
+        '  第 1 步：先输出简体中文精炼诊断（结论先行 → 核心证据/机制短列表 → 处置要点），总字数严格控制在 700 字以内，禁用“作为 AI / 仅供参考”套话，最后一行必须以“建议动作：”结尾。',
         '  第 2 步：正文写完后，**必须依次调用以下三个工具，一个都不能少**：',
         '          ① renderPodMetrics       （渲染指标卡）',
         '          ② renderRootCauseAnalysis（渲染根因卡）',
         '          ③ proposeRemediationAction（渲染自愈动作卡）',
-        '  第 3 步：三张卡片全部调用完毕后，用一两句话总结结束。',
+        '  第 3 步：三张卡片全部调用完毕后，确保正文末行已是“建议动作：…”。',
         '',
         '  【强制约束】',
         '  · 禁止跳过正文直接调用工具；',
@@ -913,12 +1264,12 @@ function buildIntentDirective(
         '  · 其余一切情况**禁止**使用 `drain_node`。',
         '',
         '【回答要求】',
-        '  1. 使用 Markdown，结构清晰（结论 → 证据 → 处置建议）。',
-        '  2. 明确引用命中的 Runbook 编号。',
-        '  3. 不要臆造未在上下文中出现的 Pod 或指标。',
-        '  4. 正文必须包含具体技术细节（如 cgroup memory.max、Exit Code 137、oom_score 等）。',
+        '  1. 全程简体中文，“结论先行 + 短列表”，严格 ≤ 700 字（最后一行以 `建议动作：` 开头）。',
+        '  2. 明确引用命中的 Runbook 编号，不引用裸分数以外的未证实数字。',
+        '  3. 不要臆造未在上下文中出现的 Pod 或指标，严禁 AI 自称与免责套话。',
+        '  4. 精简包含关键内核/运行时细节（如 `memory.max`、`Exit Code 137`、`oom_score`）。',
         hasImage
-          ? '  5. 结合附带的 3D 视口快照，指出空间布局上的异常特征。'
+          ? '  5. 结合附带的 3D 视口快照，一句话点明空间布局异常特征。'
           : '  5. 本次未附带视口快照，仅依据遥测与知识库作答。',
       ];
   }
@@ -983,7 +1334,7 @@ function buildSimulatorReport(
   const primaryLabel =
     primary === undefined
       ? '知识库未命中'
-      : `${primary.id} · ${primary.title}（Similarity: ${((primary.similarityScore ?? 0) * 100).toFixed(1)}%）`;
+      : `${primary.id} · ${primary.title}（置信度：${((primary.similarityScore ?? 0) * 100).toFixed(1)}%）`;
 
   const worst = ctx.faultyPods.length > 0 ? ctx.faultyPods[0] : null;
   const chaosLabel =
@@ -992,63 +1343,46 @@ function buildSimulatorReport(
   const lines: string[] = [];
 
   lines.push('## 诊断结论');
-  lines.push('');
   if (worst !== null) {
     const sev = ctx.clusterHealthScore < 60 ? 'P0' : ctx.clusterHealthScore < 85 ? 'P1' : 'P2';
     lines.push(
-      `**${sev} · ${worst.name} 触发 ${worst.status}，集群健康分 ${ctx.clusterHealthScore}/100**`,
+      `- **${sev} · ${worst.name} 触发 ${worst.status}**（健康分 ${ctx.clusterHealthScore}/100）`,
     );
-    lines.push('');
     lines.push(
-      `目标 Pod \`${worst.name}\`（命名空间 \`${worst.namespace}\`，宿主节点 \`${worst.nodeId}\`）` +
-        `当前 CPU ${worst.cpuUsage.toFixed(1)}%、内存 ${worst.memoryUsage.toFixed(1)}%、` +
-        `累计重启 ${worst.restarts} 次，已进入 ${worst.status} 状态。`,
+      `- 目标 Pod \`${worst.name}\`（\`${worst.namespace}\` · 节点 \`${worst.nodeId}\`）：CPU ${worst.cpuUsage.toFixed(1)}% / 内存 ${worst.memoryUsage.toFixed(1)}%，累计重启 ${worst.restarts} 次。`,
     );
   } else {
-    lines.push(`**集群当前健康（健康分 ${ctx.clusterHealthScore}/100），未检测到异常 Pod**`);
-    lines.push('');
-    lines.push(`当前演练场景为 ${chaosLabel}。建议保持观察，或注入混沌场景验证自愈闭环。`);
-  }
-
-  lines.push('');
-  lines.push('## 根因分析');
-  lines.push('');
-  if (primary !== undefined) {
-    lines.push(`依据 **${primaryLabel}**：`);
-    lines.push('');
-    lines.push(`> ${primary.rootCauseMechanism}`);
-  } else {
-    lines.push('未在知识库中检索到匹配手册，以下依据通用 K8s 排障经验推断：');
-    lines.push('');
-    lines.push('> 容器异常退出通常由资源超限、依赖不可达或探针配置不当引起。');
-  }
-
-  if (hasImage) {
-    lines.push('');
-    lines.push('## 多模态空间观察');
-    lines.push('');
-    const rackHint =
-      worst !== null ? `异常 Pod 所在的 \`${worst.nodeId}\` 机架` : '当前选中的机架';
     lines.push(
-      `结合 3D 视口快照，${rackHint}区域的实例渲染呈现告警态，` +
-        `机架底部扩散波纹环已激活，与遥测数据的时间窗口吻合，` +
-        `可排除纯渲染层误报——故障在数据面与呈现面是一致的。`,
+      `- **集群整体健康**（健康分 ${ctx.clusterHealthScore}/100 · 场景 ${chaosLabel}），未检测到异常 Pod。`,
     );
   }
 
   lines.push('');
-  lines.push('## 处置建议');
-  lines.push('');
+  lines.push('## 根因与处置要点');
   if (primary !== undefined) {
-    primary.remediationSteps.slice(0, 4).forEach((step, index): void => {
+    lines.push(`- 检索依据：**${primaryLabel}**`);
+    lines.push(`- 机理摘要：${primary.rootCauseMechanism}`);
+    primary.remediationSteps.slice(0, 3).forEach((step, index): void => {
       lines.push(`${index + 1}. ${step}`);
     });
   } else {
-    lines.push('1. 确认 Pod 事件与上一次容器日志');
-    lines.push('2. 检查资源配置与依赖服务可达性');
+    lines.push('- 未命中匹配手册，建议优先排查资源配额、节点水位与依赖连通性：');
+    lines.push('1. 核实 Pod 事件（`kubectl describe`）与容器前序日志（`--previous`）');
+    lines.push('2. 检查工作负载 Limit 与依赖服务健康状态');
   }
+
+  if (hasImage) {
+    const rackHint =
+      worst !== null ? `\`${worst.nodeId}\` 机架` : '当前聚焦机架';
+    lines.push(`- 视口空间观测：3D 快照中 ${rackHint} 告警状态与遥测时间窗一致。`);
+  }
+
   lines.push('');
-  lines.push('> 建议先执行「隔离并重启实例」验证是否为瞬时故障；若复发则按手册深入根因。');
+  if (worst !== null) {
+    lines.push(`建议动作：确认下方 \`${worst.name}\` 指标与根因证据后，点击自愈动作卡二次确认恢复。`);
+  } else {
+    lines.push('建议动作：当前稳态无需人工变更，可通过顶栏「故障演练」验证自愈链路。');
+  }
 
   return lines.join('\n');
 }
@@ -1086,6 +1420,66 @@ const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'searchRunbooks',
   'getRecentEvents',
 ]);
+
+/**
+ * createThinkingOptOutFetch —— 为推理增强型 OpenAI 兼容网关自动关闭隐式思维链，降低首字延迟。
+ *
+ * 【设计意图】部分兼容网关默认在输出首个可见 `text-delta` 前生成长段隐藏
+ * `reasoning_content`（实测耗时 2~7s，且 Vercel AI SDK v3 不会将其转发为正文分片）。
+ * 当请求发往 `/chat/completions` 且未显式关闭（`AI_DISABLE_THINKING !== 'false'`）时，
+ * 注入 `thinking: { type: 'disabled' }`；若上游返回 400/422 且错误信息提及 `thinking`，
+ * 立即用原始请求体无感重试一次，保证与所有 OpenAI 兼容服务端零侵入互通。
+ *
+ * @returns 符合 `typeof fetch` 契约的请求函数
+ */
+function createThinkingOptOutFetch(): typeof fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (
+      process.env.AI_DISABLE_THINKING === 'false' ||
+      init?.body === undefined ||
+      typeof init.body !== 'string'
+    ) {
+      return await fetch(input, init);
+    }
+
+    const urlStr =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (!urlStr.includes('/chat/completions')) {
+      return await fetch(input, init);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(init.body);
+    } catch {
+      return await fetch(input, init);
+    }
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed) ||
+      'thinking' in parsed
+    ) {
+      return await fetch(input, init);
+    }
+
+    const patchedInit: RequestInit = {
+      ...init,
+      body: JSON.stringify({ ...parsed, thinking: { type: 'disabled' } }),
+    };
+    const response = await fetch(input, patchedInit);
+    if ((response.status === 400 || response.status === 422) && !(init.signal?.aborted ?? false)) {
+      const errorText = await response
+        .clone()
+        .text()
+        .catch((): string => '');
+      if (/thinking/i.test(errorText)) {
+        return await fetch(input, init);
+      }
+    }
+    return response;
+  };
+}
 
 async function streamWithLLM(params: {
   readonly apiKey: string;
@@ -1135,11 +1529,32 @@ async function streamWithLLM(params: {
   readonly trace: AgentTrace;
   /** R43：AI SDK usage 回调（tokens 由上游按 env 单价换算成本） */
   readonly onUsage?: (usage: { promptTokens?: number; completionTokens?: number }) => void;
-}): Promise<boolean> {
-  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, allowedTools, onFirstToolCall, emit, signal, ledger, trace, onUsage } = params;
+}): Promise<'ok' | 'llm-failed' | 'schema-guard'> {
+  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, runbooks, knownEntities, clusterContext, intent, allowedTools, onFirstToolCall, emit, signal, ledger, trace, onUsage } = params;
+
+  const pendingToolResultTimers = new Set<ReturnType<typeof setTimeout>>();
+  const pendingToolResolvers = new Set<() => void>();
+  let streamAbortedOrFailed = false;
+
+  const clearPendingToolTimers = (): void => {
+    streamAbortedOrFailed = true;
+    for (const timer of pendingToolResultTimers) {
+      clearTimeout(timer);
+    }
+    pendingToolResultTimers.clear();
+    for (const resolveFn of pendingToolResolvers) {
+      resolveFn();
+    }
+    pendingToolResolvers.clear();
+  };
+
+  const onAbortPendingTools = (): void => {
+    clearPendingToolTimers();
+  };
+  signal.addEventListener('abort', onAbortPendingTools, { once: true });
 
   try {
-    const provider = createOpenAI({ apiKey, baseURL });
+    const provider = createOpenAI({ apiKey, baseURL, fetch: createThinkingOptOutFetch() });
     const model = provider(modelName);
 
     /**
@@ -1268,80 +1683,11 @@ async function streamWithLLM(params: {
           }
         : {}),
       /*
-       * R48：只读数据工具（真 execute，结果回灌模型继续推理；不渲染卡片）。
-       * 写入动作永远不交给模型直接执行 —— proposeRemediationAction 只产出卡片，
-       * 真正的 MCP 写操作仍由用户在 ActionConfirm 里二次确认。
+       * 【R10-A TTFT 优化】异常 Pod 明细、节点水位、入口 QPS 与命中 Runbook 已全部
+       * 精确内联至 System Prompt，不再向模型额外挂载只读数据工具（getPodMetrics /
+       * searchRunbooks / getRecentEvents），消除冗余工具 JSON Schema 与无意义的第 1 轮回查往返；
+       * 写入动作仍仅通过 proposeRemediationAction 渲染卡片并由用户在 ActionConfirm 二次确认。
        */
-      ...(allowedTools.length > 0
-        ? {
-            getPodMetrics: tool({
-              description: '读取指定 Pod 的实时指标（只读数据工具，不渲染卡片）',
-              parameters: z.object({
-                podId: z.string().describe('Pod id 或名称'),
-              }),
-              execute: async (args: { podId: string }): Promise<string> => {
-                const pod =
-                  clusterContext.faultyPods.find(
-                    (candidate): boolean => candidate.id === args.podId || candidate.name === args.podId,
-                  ) ??
-                  (clusterContext.selectedPodSnapshot !== undefined &&
-                  (clusterContext.selectedPodSnapshot.id === args.podId ||
-                    clusterContext.selectedPodSnapshot.name === args.podId)
-                    ? clusterContext.selectedPodSnapshot
-                    : null);
-                if (pod === null) {
-                  return JSON.stringify({ error: 'pod not found in observation context', podId: args.podId });
-                }
-                return JSON.stringify({
-                  podId: pod.id,
-                  name: pod.name,
-                  status: pod.status,
-                  cpu: pod.cpuUsage,
-                  mem: pod.memoryUsage,
-                  restarts: pod.restarts,
-                  nodeId: pod.nodeId,
-                });
-              },
-            }),
-            searchRunbooks: tool({
-              description: '检索 SRE 知识库（只读数据工具，不渲染卡片）',
-              parameters: z.object({
-                query: z.string().min(1).max(200).describe('检索语句'),
-                topK: z.number().min(1).max(5).optional().describe('返回条数，默认 3'),
-              }),
-              execute: async (args: { query: string; topK?: number }): Promise<string> => {
-                const hits = retrieveSreRunbooks(
-                  args.query,
-                  normalizeChaos(clusterContext.activeChaos),
-                  clusterContext.faultyPods.map((pod): string => pod.name),
-                  Math.max(1, Math.min(5, args.topK ?? 3)),
-                );
-                return JSON.stringify(
-                  hits.map((hit) => ({ id: hit.id, title: hit.title, score: hit.similarityScore ?? null })),
-                );
-              },
-            }),
-            getRecentEvents: tool({
-              description: '读取最近事件（节点/ Pod 状态变化与集群健康，只读数据工具）',
-              parameters: z.object({
-                limit: z.number().min(1).max(10).optional().describe('最多条数，默认 5'),
-              }),
-              execute: async (args: { limit?: number }): Promise<string> => {
-                const events: string[] = [];
-                for (const node of clusterContext.nodes) {
-                  if (node.status !== 'Ready') events.push('node ' + node.name + ' ' + node.status);
-                }
-                for (const pod of clusterContext.faultyPods) {
-                  events.push('pod ' + pod.name + ' ' + pod.status + ' restarts=' + pod.restarts);
-                }
-                events.push(
-                  'cluster health ' + clusterContext.clusterHealthScore + '/100 chaos=' + clusterContext.activeChaos,
-                );
-                return JSON.stringify(events.slice(0, Math.max(1, Math.min(10, args.limit ?? 5))));
-              },
-            }),
-          }
-        : {}),
     };
 
     const result = await streamText({
@@ -1350,8 +1696,8 @@ async function streamWithLLM(params: {
       messages: messagesForModel,
       temperature: Number(process.env.AI_TEMPERATURE ?? '0.3'),
       maxRetries: Number(process.env.AI_MAX_RETRIES ?? '2'),
-      /* R48：最多 3 个 LLM 步骤（只读工具可连续回灌），写操作永不自动执行 */
-      maxSteps: 3,
+      /* R10-A：只读内联后至多需 2 步（首轮正文+卡片，或首步工具→次步正文） */
+      maxSteps: 2,
       onStepFinish: (step): void => {
         /* 步骤结果由 fullStream 消费；这里只记录 span 便于排查，不改协议 */
         void step;
@@ -1366,16 +1712,27 @@ async function streamWithLLM(params: {
     const firstTokenSpan = startSpan(trace, 'llm-first-token');
     let firstTokenEnded = false;
 
+    /* R10-F：零 TTFT 损耗流式文本守卫 + Schema-Guard 拦截计数 */
+    const textGuard = createStreamTextGuard({
+      maxChars: resolveCharBudget(intent),
+      actionSuffix: defaultActionSuffix(intent, clusterContext),
+      onEmitText: (content: string): void => {
+        emit({ type: 'text', content });
+      },
+    });
+    let schemaGuardRejectedCount = 0;
+    const pendingToolResultPromises: Promise<void>[] = [];
+
     /* ---- 遍历 fullStream 逐帧转发 ---- */
     for await (const part of result.fullStream) {
-      if (signal.aborted) return true;
+      if (signal.aborted) return 'ok';
 
       if (part.type === 'text-delta') {
         if (!firstTokenEnded) {
           firstTokenEnded = true;
           emit({ type: 'span', ...endSpan(firstTokenSpan, { status: 'ok' }) });
         }
-        emit({ type: 'text', content: part.textDelta });
+        textGuard.push(part.textDelta);
         continue;
       }
 
@@ -1438,47 +1795,81 @@ async function streamWithLLM(params: {
           }
         }
 
-        /* R47 grounding：根因卡置信度不得超过证据强度（观测 + RAG 命中） */
+        /* R47 / R10-E grounding：根因卡置信度不得超过可证伪观测证据与有效 RAG 命中 */
         if (finalPayload !== null && toolName === 'renderRootCauseAnalysis') {
-          const card = finalPayload as RootCauseAlertProps;
-          const hasObservation = clusterContext.faultyPods.length > 0 || clusterContext.nodes.length > 0;
-          const cap = clampConfidence(hasObservation, runbooks.length);
-          if (card.confidence > cap) {
-            finalPayload = { ...card, confidence: cap };
+          const parsedRoot = rootCauseAlertSchema.safeParse(finalPayload);
+          if (!parsedRoot.success) {
+            finalPayload = null;
+          } else {
+            const obsTarget = resolveSimulatorTarget(clusterContext, false);
+            const hasAnomalousNode = clusterContext.nodes.some(
+              (n): boolean => n.status !== 'Ready' || n.cpuUsage >= 85 || n.memUsage >= 85,
+            );
+            const hasObservation =
+              clusterContext.faultyPods.length > 0 ||
+              obsTarget.pod !== null ||
+              obsTarget.node !== null ||
+              hasAnomalousNode;
+            const verifiedRunbookHits = runbooks.filter(
+              (doc): boolean => typeof doc.id === 'string' && doc.id.trim().length > 0,
+            ).length;
+            const cap = clampConfidence(hasObservation, verifiedRunbookHits);
+            finalPayload =
+              parsedRoot.data.confidence > cap
+                ? { ...parsedRoot.data, confidence: cap }
+                : parsedRoot.data;
           }
         }
 
         /*
-         * 【无载荷 ⇒ 不发 tool-start】宁可少一张卡，也绝不留悬空骨架。
-         * 未登记到 emittedToolNames，因此流尾的补全会再尝试补齐，
-         * 两条路径互斥不会重复。
+         * 【无载荷 ⇒ 不发 tool-start，也不泄露 [ SCHEMA-GUARD ] 文本】
+         * 仅记录 error span 与拒收计数；若本轮允许的工具全被 Schema-Guard 拦截，
+         * 将在流尾返回 'schema-guard'，由上层发 { type: 'reset', reason: 'schema-guard' } 切换引擎 B。
          */
         if (finalPayload === null) {
+          schemaGuardRejectedCount += 1;
           emit({
-            type: 'text',
-            content: `\n\n> [ SCHEMA-GUARD ] 工具 \`${toolName}\` 缺少可用的真实数据，本轮不渲染该卡片。\n\n`,
+            type: 'span',
+            ...endSpan(toolSpan, {
+              status: 'error',
+              attrs: { tool: toolName, reason: 'schema-guard' },
+            }),
           });
           continue;
         }
 
-        /* 载荷就绪 → 依次发 start 与 result，中间保留骨架可见延迟 */
+        /* 载荷就绪 → 立即发 start，并异步调度 tool-result（保留骨架可见延迟，但绝不阻塞 fullStream 拉取后续文本或 Step 2） */
+        const confirmedPayload = finalPayload;
         emit({ type: 'tool-start', toolCallId, toolName, mcpUri });
         recordToolStart(ledger, toolCallId, toolName);
         emittedToolNames.add(toolName);
 
-        await sleep(TOOL_RESULT_DELAY_MS_A, signal);
-
-        emit({
-          type: 'tool-result',
-          toolCallId,
-          toolName,
-          args: finalPayload,
+        const settledPromise = new Promise<void>((resolve): void => {
+          const resolveOnce = (): void => {
+            pendingToolResolvers.delete(resolveOnce);
+            resolve();
+          };
+          pendingToolResolvers.add(resolveOnce);
+          const timer = setTimeout((): void => {
+            pendingToolResultTimers.delete(timer);
+            if (!streamAbortedOrFailed && !signal.aborted) {
+              emit({
+                type: 'tool-result',
+                toolCallId,
+                toolName,
+                args: confirmedPayload,
+              });
+              recordToolResult(ledger, toolCallId, true);
+              emit({
+                type: 'span',
+                ...endSpan(toolSpan, { status: 'ok', attrs: { tool: toolName } }),
+              });
+            }
+            resolveOnce();
+          }, TOOL_RESULT_DELAY_MS_A);
+          pendingToolResultTimers.add(timer);
         });
-        recordToolResult(ledger, toolCallId, true);
-        emit({
-          type: 'span',
-          ...endSpan(toolSpan, { status: 'ok', attrs: { tool: toolName } }),
-        });
+        pendingToolResultPromises.push(settledPromise);
         continue;
       }
 
@@ -1488,10 +1879,18 @@ async function streamWithLLM(params: {
       }
     }
 
+    if (allowedTools.length > 0 && emittedToolNames.size === 0 && schemaGuardRejectedCount > 0) {
+      clearPendingToolTimers();
+      return 'schema-guard';
+    }
+
+    textGuard.flush();
+    await Promise.all(pendingToolResultPromises);
+
     /*
      * ---- 服务端补全（模型漏调工具时的兜底）----
      *
-     * 【为何放在流结束、返回 true 之前】此刻正文已完整吐完、模型决策已定，
+     * 【为何放在流结束、返回 true 之前】此刻正文与异步 tool-result 已全部落盘，
      * 补卡不会打断正文的流式节奏；且只有确认引擎 A 成功（未抛错、未中断）
      * 才补——若走 catch 回落引擎 B，引擎 B 自身就会产出完整三卡。
      */
@@ -1515,11 +1914,15 @@ async function streamWithLLM(params: {
       ledger,
     });
 
-    return true;
+    return 'ok';
   } catch (error) {
+    clearPendingToolTimers();
     /* 任何异常（401 / 404 / 网络 / 模型不支持工具调用）→ 交回调用方回落 */
     console.error('[kubevision][chat] engine A failed, falling back to simulator:', error);
-    return false;
+    return 'llm-failed';
+  } finally {
+    clearPendingToolTimers();
+    signal.removeEventListener('abort', onAbortPendingTools);
   }
 }
 
@@ -1792,12 +2195,13 @@ function validateToolArgs(
 
     /* ---- 情形 A：成功映射回真实实体 → 采用真实 ID ---- */
     if (resolvedId !== null) {
-      return {
+      const checked = podMetricsCardSchema.safeParse({
         ...parsed.data,
         podId: resolvedId,
         /* 名称也一并校正：模型可能只把 ID 记对、名字记错，或反之 */
         podName: knownEntities.find((e): boolean => e.id === resolvedId)?.name ?? parsed.data.podName,
-      } as PodMetricsCardProps;
+      });
+      return checked.success ? checked.data : null;
     }
 
     /**
@@ -1811,11 +2215,12 @@ function validateToolArgs(
     if (isInvalidPlaceholderId(parsed.data.podId)) {
       const fallback = knownEntities[0];
       if (fallback === undefined) return null;
-      return {
+      const checked = podMetricsCardSchema.safeParse({
         ...parsed.data,
         podId: fallback.id,
         podName: fallback.name,
-      } as PodMetricsCardProps;
+      });
+      return checked.success ? checked.data : null;
     }
 
     /**
@@ -1823,7 +2228,8 @@ function validateToolArgs(
      * 可能是本次上下文未纳入 knownEntities 的健康实体（模型信息来自历史对话）。
      * 保留模型原值，但**已确认它不是占位符**，因此不会产生 'n/a' 卡片。
      */
-    return { ...parsed.data } as PodMetricsCardProps;
+    const checked = podMetricsCardSchema.safeParse(parsed.data);
+    return checked.success ? checked.data : null;
   }
   if (toolName === 'renderRootCauseAnalysis') {
     const parsed = rootCauseSchema.safeParse(rawArgs);
@@ -1834,7 +2240,11 @@ function validateToolArgs(
      * 这样前端「RAG 检索增强知识库溯源」区展示的就是**实际命中**的手册，
      * 而不是模型杜撰的引用——溯源的公信力完全取决于这一点。
      */
-    return { ...parsed.data, ragReferences: [...runbooks] } as RootCauseAlertProps;
+    const checked = rootCauseAlertSchema.safeParse({
+      ...parsed.data,
+      ragReferences: [...runbooks],
+    });
+    return checked.success ? checked.data : null;
   }
   if (toolName === 'proposeRemediationAction') {
     const parsed = remediationSchema.safeParse(rawArgs);
@@ -2026,14 +2436,27 @@ function buildRootCauseArgs(
   evidenceChain.push(`集群健康分 ${ctx.clusterHealthScore}/100，活跃场景 ${ctx.activeChaos}`);
   if (runbooks[0] !== undefined) {
     evidenceChain.push(
-      `知识库命中 ${runbooks[0].id}（Similarity ${((runbooks[0].similarityScore ?? 0) * 100).toFixed(1)}%）`,
+      `知识库命中 ${runbooks[0].id}（置信度 ${((runbooks[0].similarityScore ?? 0) * 100).toFixed(1)}%）`,
     );
   }
+
+  const strictObs = resolveSimulatorTarget(ctx, false);
+  const hasAnomalousNode = ctx.nodes.some(
+    (n): boolean => n.status !== 'Ready' || n.cpuUsage >= 85 || n.memUsage >= 85,
+  );
+  const hasObservation =
+    ctx.faultyPods.length > 0 ||
+    strictObs.pod !== null ||
+    strictObs.node !== null ||
+    hasAnomalousNode;
+  const verifiedRunbookHits = runbooks.filter(
+    (doc): boolean => typeof doc.id === 'string' && doc.id.trim().length > 0,
+  ).length;
 
   return {
     severity,
     title,
-    confidence: clampConfidence(target !== null || nodeTarget !== null, runbooks.length),
+    confidence: clampConfidence(hasObservation, verifiedRunbookHits),
     rootCauseSummary:
       runbooks[0] !== undefined
         ? `${runbooks[0].rootCauseMechanism}`
@@ -2266,7 +2689,7 @@ async function streamWithSimulator(params: {
    * 找到出处；找不到的当场标注 [未证实]，并在报告末尾给出汇总。
    */
   const grounded = annotateUngrounded(combinedReport, ctx, runbooks);
-  const report =
+  const groundedReport =
     grounded.unverified.length === 0
       ? grounded.text
       : grounded.text +
@@ -2274,8 +2697,17 @@ async function streamWithSimulator(params: {
           '',
           '> grounding：' + grounded.unverified.length + ' 处实体/数字未在观测或知识库中找到出处，已标注 [未证实]。',
         ].join('\n');
+  const report = enforceOutputConstraints(
+    groundedReport,
+    resolveCharBudget(intent),
+    defaultActionSuffix(intent, ctx),
+  );
 
-  /* ---- 2. 打字机推文本（按块推送，避免逐字符造成过多帧） ---- */
+  /* ---- 2. R10-A 最小首字预缓冲（28ms <= 80ms，保证 INTENT_PLANNING 先行再输出首段文本） ---- */
+  await sleep(SIM_PRE_TEXT_DELAY_MS, signal);
+  if (signal.aborted) return;
+
+  /* ---- 3. 打字机推文本（按块推送，避免逐字符造成过多帧） ---- */
   const cps = Math.max(10, Number(process.env.SIM_TYPING_CPS ?? String(DEFAULT_TYPING_CPS)));
   const CHUNK_SIZE = 6;
   const delayPerChunk = Math.max(8, Math.round((CHUNK_SIZE / cps) * 1000));
@@ -2400,15 +2832,11 @@ function buildGreetingReport(ctx: ClusterContext): string {
   const healthyNodes = ctx.nodes.filter((n): boolean => n.status === 'Ready').length;
   const allReady = healthyNodes === ctx.nodes.length;
   return [
-    '你好，我是 KubeVision 的 SRE 智能副驾。',
+    `当前集群健康度 **${ctx.clusterHealthScore}/100**，${allReady ? `${ctx.nodes.length} 台节点全部就绪` : `${healthyNodes}/${ctx.nodes.length} 台节点就绪`}，入口流量约 **${ctx.totalQps.toLocaleString('en-US')} req/s**。`,
+    '- 故障演练：支持一键注入 OOM 风暴 / CPU 尖峰 / 网络丢包场景。',
+    '- 实时排障：可直接提问「排查内存溢出」「分析节点负载」「评估网络吞吐」。',
     '',
-    allReady
-      ? `当前集群健康度 **${ctx.clusterHealthScore}/100**，${ctx.nodes.length} 台计算节点全部就绪，入口流量约 **${ctx.totalQps.toLocaleString('en-US')} req/s**，整体处于稳态运行。`
-      : `当前集群健康度 **${ctx.clusterHealthScore}/100**，${ctx.nodes.length} 台计算节点中 ${healthyNodes} 台就绪，建议关注未就绪节点的水位。`,
-    '',
-    '你可以：',
-    '- 点击顶栏 **「故障演练」** 注入 OOM 风暴 / CPU 尖峰 / 网络丢包等场景；',
-    '- 或直接提问，例如「排查内存溢出」「分析节点负载」「评估网络吞吐」。',
+    '建议动作：点击顶栏「故障演练」注入场景，或直接输入问题（如「排查内存溢出」）。',
   ].join('\n');
 }
 
@@ -2808,10 +3236,20 @@ export async function POST(request: Request): Promise<Response> {
   const engineAtResponseTime: 'llm' | 'simulator' = useLLM ? 'llm' : 'simulator';
   let isClosed = false;
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+  /* R10-A：托管推理节拍定时器，确保 await/abort/cancel/finally 全路径清零不泄漏 */
+  const reasoningTimers = new Set<ReturnType<typeof setTimeout>>();
+
+  const clearReasoningTimers = (): void => {
+    for (const timer of reasoningTimers) {
+      clearTimeout(timer);
+    }
+    reasoningTimers.clear();
+  };
 
   const safeClose = (): void => {
     if (isClosed) return;
     isClosed = true;
+    clearReasoningTimers();
     if (controllerRef !== null) {
       try {
         controllerRef.close();
@@ -2828,6 +3266,10 @@ export async function POST(request: Request): Promise<Response> {
 
       /** 第一个 token 到达时刻（TTFT 只计正文 token） */
       let firstEventAt: number | null = null;
+      /** R10-A：记录当前轮是否已输出首段正文，用于约束首字前至多 1 步思考 */
+      let firstTextEmitted = false;
+      /** R10-A：首段正文到达后的节拍排干回调（按需挂载，触发后立即置空） */
+      let onFirstTextEmit: (() => void) | null = null;
       /** R2 · 开发期产侧协议断言累积器（生产构建为 false 时恒空） */
       const emittedForAssert: ChatStreamEvent[] = [];
       /** R43：AI SDK usage 容器（缺省时 trace-summary 不填 token/成本） */
@@ -2842,13 +3284,22 @@ export async function POST(request: Request): Promise<Response> {
         if (isClosed) return;
         /* 开发期产侧协议断言用的事件累积（生产构建 SEVERE_ASSERT 为 false，不产生开销） */
         if (SEVERE_ASSERT) emittedForAssert.push(event);
-        if (firstEventAt === null && event.type === 'text') {
-          firstEventAt = performance.now();
+        const triggersFirstText = !firstTextEmitted && event.type === 'text';
+        if (triggersFirstText) {
+          firstTextEmitted = true;
+          if (firstEventAt === null) {
+            firstEventAt = performance.now();
+          }
         }
         try {
           controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
         } catch {
           isClosed = true;
+        }
+        if (triggersFirstText && onFirstTextEmit !== null) {
+          const cb = onFirstTextEmit;
+          onFirstTextEmit = null;
+          cb();
         }
       };
 
@@ -2874,30 +3325,26 @@ export async function POST(request: Request): Promise<Response> {
       }
 
       const signal = request.signal;
+      const onSignalAbort = (): void => {
+        clearReasoningTimers();
+      };
+      signal.addEventListener('abort', onSignalAbort, { once: true });
 
       try {
         /**
-         * ============ 推理链：按意图与阶段渐进推送 ============
+         * ============ R10-A 推理链与引擎并发点火（TTFT -1.2s 优化） ============
          *
-         * 【旧实现的三个问题】
-         * 1. **一次性连发**：四条步骤在 `start()` 开头同步推完（每条只 sleep 160ms），
-         *    用户看到的是"思考链瞬间全部出现"，不像推理，更像一段预先写好的文案；
-         * 2. **千篇一律**：不论用户说什么，永远是「意图规划 →（可选）视觉 →
-         *    RAG → MCP」四步，寒暄也是这套；
-         * 3. **MCP 步骤内容造假**：`mcpUri` 写死成 renderPodMetrics，
-         *    即便本次实际调用的是 proposeRemediationAction。
-         *
-         * 【现在的做法】
-         * - 步骤 1 立即发出，随后**真实等待 280ms**（让用户看见"开始思考"）；
-         * - 有截图才发视觉步骤，等待 320ms；
-         * - 需要检索时才执行并发出 RAG 步骤，等待 300ms；
-         * - **MCP 步骤改为按需触发**：只有当模型/仿真器真正发起第一个工具调用时，
-         *   才由 `ensureMcpStep` 推送，且 mcpUri 写入**本次真实工具名**。
-         *   寒暄路径永不推送该步骤（因为根本没有工具调用）。
+         * 【设计意图】旧实现在调用大模型/仿真器前串行 sleep(280+320+300+300)，
+         * 导致首字额外空等 ~1.2s。现改为：
+         *   1. 在 t=0ms 仅同步发出首步 INTENT_PLANNING（首字前至多 1 步思考）；
+         *   2. 立即点火启动 enginePromise（不 await 后续推理步骤定时器）；
+         *   3. 后续推理节拍（视觉 / 稳态遥测 / RAG）通过 setTimeout 并发竞争：
+         *      - 仿真器仅需 SIM_PRE_TEXT_DELAY_MS(28ms <= 80ms) 即发出首字；
+         *      - 若主模型 TTFT 较慢（尚未 emit 首字），节拍回调自动挂起至首字后渐进补齐；
+         *   4. `await enginePromise` 返回后立即 clearReasoningTimers() 并补齐未发出的步骤。
          */
         let stepIndex = 0;
 
-        /* ---------- 步骤 1：意图规划（立即发出） ---------- */
         const intentTitleByKind: Readonly<Record<IntentKind, string>> = {
           GREETING_OR_CHITCHAT: '识别对话意图：日常交互与助手能力引导',
           STEADY_HEALTH_CHECK: '解析全集群稳态巡检意图',
@@ -2925,154 +3372,261 @@ export async function POST(request: Request): Promise<Response> {
             (lastUserMessage.length > 0 ? `用户原话：${lastUserMessage.slice(0, 120)}` : ''),
         };
 
-        emit({
-          type: 'reasoning',
-          step: {
-            stepIndex: stepIndex++,
-            phase: 'INTENT_PLANNING',
-            title: intentTitleByKind[intent],
-            detail: intentDetailByKind[intent],
-            latencyMs: SIM_LATENCY.intent,
-          },
-        });
-        await sleep(280, signal);
-
-        /* ---------- 步骤 2（条件）：多模态视觉 ---------- */
-        if (hasImage) {
-          /**
-           * 【体积展示】Base64 相对原始二进制的膨胀系数约 4/3，故乘 0.75 还原。
-           * 小于 1 KB 时改用字节表述——直接 Math.round 到 KB 会显示「约 0 KB」，
-           * 那是会让用户怀疑截图没有被正确接收的错误文案（实测发现）。
-           */
-          const approxBytes = Math.round(viewportImage.length * 0.75);
-          const sizeLabel =
-            approxBytes >= 1024
-              ? `约 ${(approxBytes / 1024).toFixed(1)} KB Base64`
-              : `约 ${approxBytes} 字节 Base64`;
-          emit({
-            type: 'reasoning',
-            step: {
-              stepIndex: stepIndex++,
-              phase: 'MULTIMODAL_VISION',
-              title: '解析 3D WebGL 拓扑快照空间异常特征',
-              detail:
-                `接收到视口快照（${sizeLabel}），执行空间布局分析：` +
-                '校验机架实例着色（翠绿/琥珀/鲜红分布）、地面警示波纹环激活范围、' +
-                '以及异常机架与遥测数据的空间一致性。',
-              latencyMs: SIM_LATENCY.vision,
-            },
-          });
-          await sleep(320, signal);
-        }
-
-        /* ---------- 步骤 3（条件）：稳态遥测扫描（仅稳态巡检） ---------- */
-        if (intent === 'STEADY_HEALTH_CHECK') {
-          const nodeLines = clusterContext.nodes
-            .map(
-              (n): string =>
-                `${n.name} ${n.status} · CPU ${n.cpuUsage.toFixed(1)}% / MEM ${n.memUsage.toFixed(1)}%`,
-            )
-            .join('；');
+        const emitIntentPlanningStep = (sim: boolean): void => {
           emit({
             type: 'reasoning',
             step: {
               stepIndex: stepIndex++,
               phase: 'INTENT_PLANNING',
-              title: `扫描 ${clusterContext.nodes.length} 个计算节点的实时遥测水位`,
-              detail:
-                `逐节点比对水位阈值（CPU/内存均 < 85% 视为健康）：${nodeLines}。` +
-                `入口 QPS ${clusterContext.totalQps.toLocaleString('en-US')} req/s，未发现越限节点。`,
-              latencyMs: SIM_LATENCY.rag,
-            },
-          });
-          await sleep(300, signal);
-        }
-
-        /* ---------- 步骤 4（条件）：RAG 检索 ---------- */
-        if (intent !== 'GREETING_OR_CHITCHAT') {
-          const ragDetail =
-            runbooks.length === 0
-              ? intent === 'STEADY_HEALTH_CHECK'
-                ? '当前集群无异常特征词，混合检索（词频余弦 + 关键词 + 上下文先验）' +
-                  '全部低于相关性阈值 0.08，**跳过故障手册召回**——不编造无关手册。'
-                : '混合检索（词频余弦 + 关键词 + 故障上下文先验）未命中达标手册，' +
-                  '本次不引用知识库，结论依据实时遥测得出。'
-              : `混合检索命中 ${runbooks.length} 条知识切片：\n` +
-                runbooks
-                  .map(
-                    (doc): string =>
-                      `· ${doc.id} — ${doc.title}\n  Similarity: ${((doc.similarityScore ?? 0) * 100).toFixed(1)}%`,
-                  )
-                  .join('\n');
-
-          const shouldEmitRag =
-            intent === 'FAULT_DIAGNOSIS_AND_HEAL' ||
-            intent === 'STEADY_HEALTH_CHECK' ||
-            runbooks.length > 0;
-
-          if (shouldEmitRag) {
-            emit({
-              type: 'reasoning',
-              step: {
-                stepIndex: stepIndex++,
-                phase: 'RAG_RETRIEVAL',
-                title: '检索 SRE 知识库并计算余弦相似度',
-                detail: ragDetail,
-                latencyMs: SIM_LATENCY.rag,
-              },
-            });
-            await sleep(300, signal);
-          }
-        }
-
-        /**
-         * ---------- 步骤 5（按需实时触发）：MCP 工具路由 ----------
-         *
-         * 【为何做成回调而非直接 emit】此刻还不知道本次会调用哪个工具：
-         * 引擎 A 要等到模型真的发起 tool-call，引擎 B 要等到准备下发第一张卡。
-         * 因此把"推送这条步骤"包装成幂等回调，由真正发生调用的那一方触发，
-         * 并把**实际工具名**写进 mcpUri——不再永远写死 renderPodMetrics。
-         */
-        let mcpStepEmitted = false;
-        const ensureMcpStep = (toolName: string): void => {
-          if (mcpStepEmitted) return;
-          mcpStepEmitted = true;
-          const toolLabelByUri: Readonly<Record<string, string>> = {
-            renderPodMetrics: '指标渲染工具（只读）',
-            renderRootCauseAnalysis: '根因分析渲染工具（只读）',
-            proposeRemediationAction: '自愈动作提议工具（写操作，需二次确认）',
-          };
-          emit({
-            type: 'reasoning',
-            step: {
-              stepIndex: stepIndex++,
-              phase: 'MCP_TOOL_INVOKE',
-              title: `路由至 MCP 工具链 · ${toolLabelByUri[toolName] ?? toolName}`,
-              detail:
-                `本次实际调用 \`${toolName}\`，经 MCP 协议路由至 ` +
-                `mcp://k8s-cluster/tools/${toolName}。` +
-                '所有生产写操作（自愈动作）均不会自动执行，需用户在卡片上二次确认。',
-              mcpUri: `mcp://k8s-cluster/tools/${toolName}`,
-              latencyMs: SIM_LATENCY.mcp,
+              title: intentTitleByKind[intent],
+              detail: intentDetailByKind[intent],
+              latencyMs: SIM_LATENCY.intent,
+              ...(sim ? { sim: true } : {}),
             },
           });
         };
 
-        /* ============ 引擎执行 ============ */
-        /*
-         * ---- 请求级 requestId 与工具调用账本 ----
+        interface ScheduledBeat {
+          emitted: boolean;
+          readonly emitNow: (sim: boolean) => void;
+        }
+
+        const buildPostIntentBeats = (): ScheduledBeat[] => {
+          const beats: ScheduledBeat[] = [];
+
+          if (hasImage) {
+            const approxBytes = Math.round(viewportImage.length * 0.75);
+            const sizeLabel =
+              approxBytes >= 1024
+                ? `约 ${(approxBytes / 1024).toFixed(1)} KB Base64`
+                : `约 ${approxBytes} 字节 Base64`;
+            beats.push({
+              emitted: false,
+              emitNow: (sim: boolean): void => {
+                emit({
+                  type: 'reasoning',
+                  step: {
+                    stepIndex: stepIndex++,
+                    phase: 'MULTIMODAL_VISION',
+                    title: '解析 3D WebGL 拓扑快照空间异常特征',
+                    detail:
+                      `接收到视口快照（${sizeLabel}），执行空间布局分析：` +
+                      '校验机架实例着色（翠绿/琥珀/鲜红分布）、地面警示波纹环激活范围、' +
+                      '以及异常机架与遥测数据的空间一致性。',
+                    latencyMs: SIM_LATENCY.vision,
+                    ...(sim ? { sim: true } : {}),
+                  },
+                });
+              },
+            });
+          }
+
+          if (intent === 'STEADY_HEALTH_CHECK') {
+            const nodeLines = clusterContext.nodes
+              .map(
+                (n): string =>
+                  `${n.name} ${n.status} · CPU ${n.cpuUsage.toFixed(1)}% / MEM ${n.memUsage.toFixed(1)}%`,
+              )
+              .join('；');
+            beats.push({
+              emitted: false,
+              emitNow: (sim: boolean): void => {
+                emit({
+                  type: 'reasoning',
+                  step: {
+                    stepIndex: stepIndex++,
+                    phase: 'INTENT_PLANNING',
+                    title: `扫描 ${clusterContext.nodes.length} 个计算节点的实时遥测水位`,
+                    detail:
+                      `逐节点比对水位阈值（CPU/内存均 < 85% 视为健康）：${nodeLines}。` +
+                      `入口 QPS ${clusterContext.totalQps.toLocaleString('en-US')} req/s，未发现越限节点。`,
+                    latencyMs: SIM_LATENCY.rag,
+                    ...(sim ? { sim: true } : {}),
+                  },
+                });
+              },
+            });
+          }
+
+          if (intent !== 'GREETING_OR_CHITCHAT') {
+            const ragDetail =
+              runbooks.length === 0
+                ? intent === 'STEADY_HEALTH_CHECK'
+                  ? '当前集群无异常特征词，混合检索（词频余弦 + 关键词 + 上下文先验）' +
+                    '全部低于相关性阈值 0.08，**跳过故障手册召回**——不编造无关手册。'
+                  : '混合检索（词频余弦 + 关键词 + 故障上下文先验）未命中达标手册，' +
+                    '本次不引用知识库，结论依据实时遥测得出。'
+                : `混合检索命中 ${runbooks.length} 条知识切片：\n` +
+                  runbooks
+                    .map(
+                      (doc): string =>
+                        `· ${doc.id} — ${doc.title}\n  置信度：${((doc.similarityScore ?? 0) * 100).toFixed(1)}%`,
+                    )
+                    .join('\n');
+
+            const shouldEmitRag =
+              intent === 'FAULT_DIAGNOSIS_AND_HEAL' ||
+              intent === 'STEADY_HEALTH_CHECK' ||
+              runbooks.length > 0;
+
+            if (shouldEmitRag) {
+              beats.push({
+                emitted: false,
+                emitNow: (sim: boolean): void => {
+                  emit({
+                    type: 'reasoning',
+                    step: {
+                      stepIndex: stepIndex++,
+                      phase: 'RAG_RETRIEVAL',
+                      title: '检索 SRE 知识库并计算混合融合置信度',
+                      detail: ragDetail,
+                      latencyMs: SIM_LATENCY.rag,
+                      ...(sim ? { sim: true } : {}),
+                    },
+                  });
+                },
+              });
+            }
+          }
+
+          return beats;
+        };
+
+        /**
+         * createRoundScheduler —— 单轮推理节拍调度器。
          *
-         * requestId：错误事件/日志/前端提示共用一个 id，便于把"用户看到的报错"
-         * 与服务端日志对上号。没有它，用户报"刚才失败了"时无法定位是哪一次。
-         *
-         * ledger：跨引擎共享的工具调用账本，是 A1（重复卡片）与 A2（悬空骨架）
-         * 两个缺陷的共同解药——引擎 B 只补缺失的卡，悬空的 start 会被补终止事件。
+         * 【状态流转】通过 `firstTextEmitted` 保证每轮至多 1 步思考在首字前发出；
+         * `startTimers` 在引擎点火之后立即并发挂载 `setTimeout`，并向全局 `reasoningTimers` 登记；
+         * `ensureMcpStep` 仅在真实调用工具时幂等补齐前置阶段并写入 `MCP_TOOL_INVOKE`。
          */
+        const createRoundScheduler = (
+          roundBeats: readonly ScheduledBeat[],
+          sim: boolean,
+        ): {
+          readonly ensureMcpStep: (toolName: string) => void;
+          readonly startTimers: () => void;
+          readonly flushAllRemaining: () => void;
+          readonly discardPending: () => void;
+        } => {
+          let mcpEmitted = false;
+          let deferredMcpTool: string | null = null;
+          const queuedAfterFirstText: Array<() => void> = [];
+          let discarded = false;
+
+          const emitBeatIfNeeded = (beat: ScheduledBeat): void => {
+            if (beat.emitted || discarded || isClosed || signal.aborted) return;
+            beat.emitted = true;
+            beat.emitNow(sim);
+          };
+
+          const emitMcpNow = (toolName: string): void => {
+            if (mcpEmitted || discarded || isClosed || signal.aborted) return;
+            mcpEmitted = true;
+            deferredMcpTool = null;
+            const toolLabelByUri: Readonly<Record<string, string>> = {
+              renderPodMetrics: '指标渲染工具（只读）',
+              renderRootCauseAnalysis: '根因分析渲染工具（只读）',
+              proposeRemediationAction: '自愈动作提议工具（写操作，需二次确认）',
+            };
+            emit({
+              type: 'reasoning',
+              step: {
+                stepIndex: stepIndex++,
+                phase: 'MCP_TOOL_INVOKE',
+                title: `路由至 MCP 工具链 · ${toolLabelByUri[toolName] ?? toolName}`,
+                detail:
+                  `本次实际调用 \`${toolName}\`，经 MCP 协议路由至 ` +
+                  `mcp://k8s-cluster/tools/${toolName}。` +
+                  '所有生产写操作（自愈动作）均不会自动执行，需用户在卡片上二次确认。',
+                mcpUri: `mcp://k8s-cluster/tools/${toolName}`,
+                latencyMs: SIM_LATENCY.mcp,
+                ...(sim ? { sim: true } : {}),
+              },
+            });
+          };
+
+          onFirstTextEmit = (): void => {
+            if (discarded || isClosed || signal.aborted) return;
+            const tasks = queuedAfterFirstText.splice(0);
+            tasks.forEach((task, idx): void => {
+              const timer = setTimeout((): void => {
+                reasoningTimers.delete(timer);
+                if (!discarded && !isClosed && !signal.aborted) {
+                  task();
+                }
+              }, (idx + 1) * 20);
+              reasoningTimers.add(timer);
+            });
+          };
+
+          return {
+            ensureMcpStep: (toolName: string): void => {
+              if (mcpEmitted || deferredMcpTool !== null || discarded || isClosed || signal.aborted) return;
+              if (!firstTextEmitted) {
+                deferredMcpTool = toolName;
+                queuedAfterFirstText.push((): void => {
+                  for (const beat of roundBeats) {
+                    emitBeatIfNeeded(beat);
+                  }
+                  emitMcpNow(toolName);
+                });
+                return;
+              }
+              for (const beat of roundBeats) {
+                emitBeatIfNeeded(beat);
+              }
+              emitMcpNow(toolName);
+            },
+
+            startTimers: (): void => {
+              roundBeats.forEach((beat, idx): void => {
+                const delayMs = 55 + idx * 40;
+                const timer = setTimeout((): void => {
+                  reasoningTimers.delete(timer);
+                  if (beat.emitted || discarded || isClosed || signal.aborted) return;
+                  if (firstTextEmitted) {
+                    emitBeatIfNeeded(beat);
+                  } else {
+                    queuedAfterFirstText.push((): void => {
+                      emitBeatIfNeeded(beat);
+                    });
+                  }
+                }, delayMs);
+                reasoningTimers.add(timer);
+              });
+            },
+
+            flushAllRemaining: (): void => {
+              if (discarded || isClosed || signal.aborted) return;
+              queuedAfterFirstText.length = 0;
+              for (const beat of roundBeats) {
+                emitBeatIfNeeded(beat);
+              }
+              if (deferredMcpTool !== null && !mcpEmitted) {
+                emitMcpNow(deferredMcpTool);
+              }
+            },
+
+            discardPending: (): void => {
+              discarded = true;
+              queuedAfterFirstText.length = 0;
+              deferredMcpTool = null;
+              onFirstTextEmit = null;
+            },
+          };
+        };
+
+        /* ============ 引擎执行（并发竞争 TTFT 与清晰 reset 回落） ============ */
         const ledger: ToolCallLedger = createToolCallLedger();
 
         if (useLLM) {
           const fallbackSpan = startSpan(trace, 'fallback');
-          const ok = await streamWithLLM({
+          emitIntentPlanningStep(false);
+          const primaryBeats = buildPostIntentBeats();
+          const primaryScheduler = createRoundScheduler(primaryBeats, false);
+
+          /* R10-A：先立即点火启动引擎 A，再挂载推理节拍 timer 并发竞争 */
+          const llmPromise = streamWithLLM({
             trace,
             onUsage: (value): void => {
               usageHolder.value = value;
@@ -3089,59 +3643,80 @@ export async function POST(request: Request): Promise<Response> {
             clusterContext,
             intent,
             allowedTools: toolsAllowedForIntent(intent),
-            onFirstToolCall: ensureMcpStep,
+            onFirstToolCall: primaryScheduler.ensureMcpStep,
             emit,
             signal,
             ledger,
           });
+          primaryScheduler.startTimers();
 
-          if (!ok) {
-            /*
-             * 【A2 自愈：先修孤儿，再回落】
-             *
-             * 引擎 A 可能已经发出若干 tool-start 后才失败。若直接回落，
-             * 这些 start 永远等不到配对 result —— 前端就是"骨架屏永远转圈"。
-             * 这里先为所有 pending 的调用补发 status:'error' 的 tool-result，
-             * 前端据此渲染"生成失败，点击重试"。
-             */
+          const engineResult = await llmPromise;
+          clearReasoningTimers();
+
+          if (engineResult !== 'ok') {
+            primaryScheduler.discardPending();
+            const isSchemaGuard = engineResult === 'schema-guard';
             repairPendingToolCalls(
               ledger,
               emit,
-              'engine A failed before producing this card; fell back to local engine',
+              isSchemaGuard
+                ? 'engine A cards rejected by schema-guard; fell back to local engine'
+                : 'engine A failed before producing this card; fell back to local engine',
             );
             actualEngine = 'simulator';
             emit({
               type: 'span',
-              ...endSpan(fallbackSpan, { status: 'error', attrs: { reason: 'llm-failed' } }),
+              ...endSpan(fallbackSpan, {
+                status: 'error',
+                attrs: { reason: engineResult },
+              }),
             });
-            /* 引擎 A 失败 → 无缝回落引擎 B，并先声明实际引擎（流内事实） */
+            /* R10-B：发送结构化 { type: 'reset' } 通知前端清理半截文本/骨架并切至引擎 B */
+            emit({
+              type: 'reset',
+              requestId,
+              reason: isSchemaGuard ? 'schema-guard' : 'engine-fallback',
+              note: isSchemaGuard
+                ? '模型输出的结构化卡片未通过 Schema 校验，已重置当前轮并切换至本地确定性 SRE 引擎。'
+                : '主模型响应异常（网络 / 额度 / 模型不受支持），已重置当前轮并无缝切换至本地确定性 SRE 引擎。',
+            });
             emit({
               type: 'engine',
               engine: 'simulator',
-              reason: 'llm invocation failed (network / quota / model unsupported); local deterministic SRE engine took over',
+              reason: isSchemaGuard
+                ? 'llm tool payload rejected by schema-guard; local deterministic SRE engine took over'
+                : 'llm invocation failed (network / quota / model unsupported); local deterministic SRE engine took over',
             });
-            emit({
-              type: 'text',
-              content:
-                '> [ ENGINE-FALLBACK ] 远程模型响应异常（网络 / 额度 / 模型不受支持），已无缝切换至本地确定性 SRE 推理引擎。\n\n',
-            });
-            await streamWithSimulator({
+
+            firstTextEmitted = false;
+            onFirstTextEmit = null;
+            emitIntentPlanningStep(true);
+            const fallbackBeats = buildPostIntentBeats();
+            const fallbackScheduler = createRoundScheduler(fallbackBeats, true);
+
+            const fallbackPromise = streamWithSimulator({
               ctx: clusterContext,
               intent,
               runbooks,
               hasImage,
               pixelFeatures: body.pixelFeatures,
-              onFirstToolCall: ensureMcpStep,
+              onFirstToolCall: fallbackScheduler.ensureMcpStep,
               emit,
               signal,
               ledger,
             });
+            fallbackScheduler.startTimers();
+
+            await fallbackPromise;
+            clearReasoningTimers();
+            fallbackScheduler.flushAllRemaining();
           } else {
+            primaryScheduler.flushAllRemaining();
             /* 引擎 A 成功：补一条引擎声明，使流内事实完整 */
             emit({ type: 'engine', engine: 'llm', reason: `model=${modelName}` });
           }
         } else {
-          /* 未配置 Key → 直接走引擎 B */
+          /* 未配置 Key → 直接走引擎 B（同样并发点火，首字耗时 ~28ms） */
           actualEngine = 'simulator';
           emit({
             type: 'span',
@@ -3155,17 +3730,26 @@ export async function POST(request: Request): Promise<Response> {
             engine: 'simulator',
             reason: 'OPENAI_API_KEY not configured; using local deterministic SRE engine by design',
           });
-          await streamWithSimulator({
+          emitIntentPlanningStep(true);
+          const simBeats = buildPostIntentBeats();
+          const simScheduler = createRoundScheduler(simBeats, true);
+
+          const simPromise = streamWithSimulator({
             ctx: clusterContext,
             intent,
             runbooks,
             hasImage,
             pixelFeatures: body.pixelFeatures,
-            onFirstToolCall: ensureMcpStep,
+            onFirstToolCall: simScheduler.ensureMcpStep,
             emit,
             signal,
             ledger,
           });
+          simScheduler.startTimers();
+
+          await simPromise;
+          clearReasoningTimers();
+          simScheduler.flushAllRemaining();
         }
 
         /* ---- R35：先发 span + trace-summary，再发 done（顺序保证 verify 可断言） ---- */
@@ -3258,13 +3842,17 @@ export async function POST(request: Request): Promise<Response> {
         emit({ type: 'done', requestId, engine: 'simulator' });
         assertStreamProtocol(emittedForAssert, requestId);
         safeClose();
+      } finally {
+        clearReasoningTimers();
+        signal.removeEventListener('abort', onSignalAbort);
       }
     },
 
     cancel(): void {
-      /* 客户端 reader.cancel()：标记关闭，异步循环会因 signal.aborted 尽快退出 */
+      /* 客户端 reader.cancel()：标记关闭并立即回收尚未触发的推理定时器 */
       isClosed = true;
       controllerRef = null;
+      clearReasoningTimers();
     },
   });
 

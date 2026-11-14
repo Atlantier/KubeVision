@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-11T06:46:00.482Z",
+  "generatedAt": "2026-11-14T07:08:56.908Z",
   "corpusSize": 12,
   "caseCount": 49,
   "counts": {
@@ -14,56 +14,133 @@
   },
   "modes": {
     "twoWayRrf": {
-      "recallAt1": 0.6666666666666666,
-      "recallAt3": 0.75,
-      "mrrAt5": 0.7459349593495935,
-      "ndcgAt5": 0.7573720674406953
+      "recallAt1": 0.8888888888888888,
+      "recallAt3": 0.9444444444444444,
+      "mrrAt5": 0.926829268292683,
+      "ndcgAt5": 0.9297945904145148
     },
     "threeWayRrf": {
-      "recallAt1": 0.6944444444444444,
-      "recallAt3": 0.7777777777777778,
-      "mrrAt5": 0.8032625910674691,
-      "ndcgAt5": 0.8310640196091175
+      "recallAt1": 0.9444444444444444,
+      "recallAt3": 1,
+      "mrrAt5": 0.975609756097561,
+      "ndcgAt5": 0.9785750782193929
     },
     "bm25Only": {
-      "recallAt1": 0.6944444444444444,
-      "recallAt3": 0.75,
-      "mrrAt5": 0.7930999894414528,
-      "ndcgAt5": 0.8229863867049827
+      "recallAt1": 0.9166666666666666,
+      "recallAt3": 1,
+      "mrrAt5": 0.9634146341463414,
+      "ndcgAt5": 0.9695733648918675
     },
     "lexicalOnly": {
-      "recallAt1": 0.6666666666666666,
-      "recallAt3": 0.75,
-      "mrrAt5": 0.7809048674902332,
-      "ndcgAt5": 0.8139846733774573
+      "recallAt1": 0.9166666666666666,
+      "recallAt3": 1,
+      "mrrAt5": 0.9634146341463414,
+      "ndcgAt5": 0.9695733648918675
+    }
+  },
+  "byKind": {
+    "colloquial": {
+      "count": 12,
+      "twoWayRrf": {
+        "recallAt1": 1,
+        "recallAt3": 1,
+        "mrrAt5": 1,
+        "ndcgAt5": 1
+      },
+      "threeWayRrf": {
+        "recallAt1": 1,
+        "recallAt3": 1,
+        "mrrAt5": 1,
+        "ndcgAt5": 1
+      }
+    },
+    "typo": {
+      "count": 12,
+      "twoWayRrf": {
+        "recallAt1": 0.75,
+        "recallAt3": 0.8333333333333334,
+        "mrrAt5": 0.7916666666666666,
+        "ndcgAt5": 0.8025774794642881
+      },
+      "threeWayRrf": {
+        "recallAt1": 0.9166666666666666,
+        "recallAt3": 1,
+        "mrrAt5": 0.9583333333333334,
+        "ndcgAt5": 0.9692441461309548
+      }
+    },
+    "mixed": {
+      "count": 12,
+      "twoWayRrf": {
+        "recallAt1": 0.9166666666666666,
+        "recallAt3": 1,
+        "mrrAt5": 0.9583333333333334,
+        "ndcgAt5": 0.9692441461309548
+      },
+      "threeWayRrf": {
+        "recallAt1": 0.9166666666666666,
+        "recallAt3": 1,
+        "mrrAt5": 0.9583333333333334,
+        "ndcgAt5": 0.9692441461309548
+      }
+    },
+    "nonTypoSingle": {
+      "count": 24,
+      "twoWayRrf": {
+        "recallAt1": 0.9583333333333334,
+        "recallAt3": 1,
+        "mrrAt5": 0.9791666666666666,
+        "ndcgAt5": 0.9846220730654774
+      },
+      "threeWayRrf": {
+        "recallAt1": 0.9583333333333334,
+        "recallAt3": 1,
+        "mrrAt5": 0.9791666666666666,
+        "ndcgAt5": 0.9846220730654774
+      }
+    },
+    "multi": {
+      "count": 5,
+      "twoWayRrf": {
+        "recallAt1": 0,
+        "recallAt3": 0,
+        "mrrAt5": 1,
+        "ndcgAt5": 0.9719437399704394
+      },
+      "threeWayRrf": {
+        "recallAt1": 0,
+        "recallAt3": 0,
+        "mrrAt5": 1,
+        "ndcgAt5": 0.9719437399704394
+      }
     }
   },
   "negativeRejectionRate": {
-    "twoWay": 0.875,
-    "threeWay": 0.875
+    "twoWay": 1,
+    "threeWay": 1
   },
   "falseRejectRate": {
-    "twoWay": 0,
+    "twoWay": 0.024390243902439025,
     "threeWay": 0
   },
   "latencyMs": {
     "twoWay": {
-      "p50": 1.0141000002622604,
-      "p95": 2.1818799998611205,
-      "mean": 1.1988816326294018,
+      "p50": 0.8492000000005646,
+      "p95": 1.3216199999998928,
+      "mean": 0.9091734693877753,
       "count": 49
     },
     "threeWay": {
-      "p50": 1.2317999992519617,
-      "p95": 2.4457999996840947,
-      "mean": 1.3485040815395055,
+      "p50": 0.8980999999985215,
+      "p95": 1.5720800000013677,
+      "mean": 0.9362857142857639,
       "count": 49
     }
   },
   "calibration": {
-    "meanRaw": 0.8533268292682926,
-    "meanCalibrated": 0.9376243902439022,
-    "note": "校准只改变置信度数值、不改变排序名次；R09 前后系数无法在同一次构建复现，故报告 ON/OFF 均值而非伪造排名差"
+    "meanRaw": 0.6628829268292685,
+    "meanCalibrated": 0.8647878048780491,
+    "note": "meanRaw 取未经 Sigmoid 校准的融合终值 fusedScore，meanCalibrated 取引擎输出的 similarityScore（无二次重复校准；校准只映射置信度数值、不改变排名顺序）"
   },
   "cases": [
     {
@@ -74,60 +151,24 @@
         "RUNBOOK-K8S-042"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-043",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-042"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-062"
+        "RUNBOOK-K8S-071"
       ]
     },
     {
       "id": "c1-typo",
       "kind": "typo",
-      "query": "oomm 报错怎么排查",
+      "query": "容器触发 omkilled 内存限制被强杀重启",
       "expectedIds": [
         "RUNBOOK-K8S-042"
       ],
-      "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
-      ],
+      "fusedTwoIds": [],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011",
         "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-051"
+        "RUNBOOK-K8S-043"
       ]
     },
     {
@@ -141,18 +182,7 @@
         "RUNBOOK-K8S-042"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-062",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-051",
-        "SRE-RB-012"
+        "RUNBOOK-K8S-042"
       ]
     },
     {
@@ -163,59 +193,25 @@
         "RUNBOOK-K8S-043"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-043",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-061"
+        "RUNBOOK-K8S-043"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-042",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-051"
+        "RUNBOOK-K8S-042"
       ]
     },
     {
       "id": "c2-typo",
       "kind": "typo",
-      "query": "crashlop 报错怎么排查",
+      "query": "业务副本持续处于 crashlopbackoff 探针反复失败",
       "expectedIds": [
         "RUNBOOK-K8S-043"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-043"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-012"
+        "RUNBOOK-K8S-043"
       ]
     },
     {
@@ -226,22 +222,11 @@
         "RUNBOOK-K8S-043"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-042"
+        "RUNBOOK-K8S-043"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-071",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-012"
+        "RUNBOOK-K8S-042"
       ]
     },
     {
@@ -252,60 +237,24 @@
         "RUNBOOK-K8S-051"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-062",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-051"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-012",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-051"
       ]
     },
     {
       "id": "c3-typo",
       "kind": "typo",
-      "query": "cpuu 报错怎么排查",
+      "query": "工作节点 CPU 发生 throtling 调度阻塞延时升高",
       "expectedIds": [
         "RUNBOOK-K8S-051"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-051"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012"
+        "RUNBOOK-K8S-051"
       ]
     },
     {
@@ -317,22 +266,11 @@
       ],
       "fusedTwoIds": [
         "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-071"
+        "RUNBOOK-K8S-052"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-043",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-012"
+        "RUNBOOK-K8S-052"
       ]
     },
     {
@@ -343,60 +281,25 @@
         "RUNBOOK-K8S-052"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-062",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-042",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-052"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-011",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-062"
+        "RUNBOOK-K8S-051"
       ]
     },
     {
       "id": "c4-typo",
       "kind": "typo",
-      "query": "qoss 报错怎么排查",
+      "query": "高水位节点依据 qoss 分级机制触发资源驱逐",
       "expectedIds": [
         "RUNBOOK-K8S-052"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-052"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-101"
+        "RUNBOOK-K8S-052"
       ]
     },
     {
@@ -410,18 +313,7 @@
         "RUNBOOK-K8S-052"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-062"
+        "RUNBOOK-K8S-052"
       ]
     },
     {
@@ -432,60 +324,25 @@
         "RUNBOOK-K8S-061"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-062",
-        "SRE-RB-012",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-042"
+        "RUNBOOK-K8S-061"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-011",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-042"
+        "RUNBOOK-K8S-061"
       ]
     },
     {
       "id": "c5-typo",
       "kind": "typo",
-      "query": "netwurk 报错怎么排查",
+      "query": "跨节点 netwurk 分区导致插件转发与连通中断",
       "expectedIds": [
         "RUNBOOK-K8S-061"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-061"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-062",
         "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-071",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-101"
+        "RUNBOOK-K8S-081"
       ]
     },
     {
@@ -496,23 +353,10 @@
         "RUNBOOK-K8S-061"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-062"
+        "RUNBOOK-K8S-061"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-071",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-051",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-061"
       ]
     },
     {
@@ -523,60 +367,26 @@
         "RUNBOOK-K8S-062"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-042",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-062"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-043",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-042"
+        "RUNBOOK-K8S-061"
       ]
     },
     {
       "id": "c6-typo",
       "kind": "typo",
-      "query": "vxlen 报错怎么排查",
+      "query": "隧道链路 vxlen 封装丢包与分片延时毛刺",
       "expectedIds": [
         "RUNBOOK-K8S-062"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-062"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-071",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-101"
+        "RUNBOOK-K8S-061"
       ]
     },
     {
@@ -592,17 +402,7 @@
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-043",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "SRE-RB-012"
+        "RUNBOOK-K8S-061"
       ]
     },
     {
@@ -613,60 +413,30 @@
         "RUNBOOK-K8S-071"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-062",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-081",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-101"
+        "RUNBOOK-K8S-071"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-071",
         "RUNBOOK-K8S-051",
         "RUNBOOK-K8S-061",
-        "SRE-RB-012",
         "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-043",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-101"
+        "SRE-RB-012"
       ]
     },
     {
       "id": "c7-typo",
       "kind": "typo",
-      "query": "pendeng 报错怎么排查",
+      "query": "新建 Pod 状态停在 pendeng 调度队列无法绑定",
       "expectedIds": [
         "RUNBOOK-K8S-071"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-061"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
         "RUNBOOK-K8S-061",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-052",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-051"
+        "RUNBOOK-K8S-091"
       ]
     },
     {
@@ -677,24 +447,10 @@
         "RUNBOOK-K8S-071"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-052"
+        "RUNBOOK-K8S-071"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-042",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-081",
-        "SRE-RB-012"
+        "RUNBOOK-K8S-071"
       ]
     },
     {
@@ -705,60 +461,24 @@
         "RUNBOOK-K8S-081"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-042",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-052",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-081"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-081",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-062",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-052"
+        "RUNBOOK-K8S-081"
       ]
     },
     {
       "id": "c8-typo",
       "kind": "typo",
-      "query": "dnss 报错怎么排查",
+      "query": "集群容器域名解析 coradns 返回超时或解析失败",
       "expectedIds": [
         "RUNBOOK-K8S-081"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-081"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-051",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052"
+        "RUNBOOK-K8S-081"
       ]
     },
     {
@@ -769,22 +489,10 @@
         "RUNBOOK-K8S-081"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-081",
-        "SRE-RB-012"
+        "RUNBOOK-K8S-081"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-081",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-052"
+        "RUNBOOK-K8S-081"
       ]
     },
     {
@@ -795,60 +503,24 @@
         "RUNBOOK-K8S-091"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-042",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-091"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-051",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-091"
       ]
     },
     {
       "id": "c9-typo",
       "kind": "typo",
-      "query": "imaga 报错怎么排查",
+      "query": "节点从私有仓库拉取 imaga 提示认证异常失败",
       "expectedIds": [
         "RUNBOOK-K8S-091"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-091"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-101"
+        "RUNBOOK-K8S-091"
       ]
     },
     {
@@ -864,17 +536,7 @@
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-051",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-101"
+        "SRE-RB-012"
       ]
     },
     {
@@ -885,59 +547,24 @@
         "RUNBOOK-K8S-101"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-101",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-042"
+        "RUNBOOK-K8S-101"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-101",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-042",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-051"
+        "RUNBOOK-K8S-101"
       ]
     },
     {
       "id": "c10-typo",
       "kind": "typo",
-      "query": "atcd 报错怎么排查",
+      "query": "控制平面 atcd 成员心跳失联引发选主延迟",
       "expectedIds": [
         "RUNBOOK-K8S-101"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-101"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-012"
+        "RUNBOOK-K8S-101"
       ]
     },
     {
@@ -953,17 +580,7 @@
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-101",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-043",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-051"
+        "SRE-RB-011"
       ]
     },
     {
@@ -974,51 +591,27 @@
         "SRE-RB-011"
       ],
       "fusedTwoIds": [
-        "SRE-RB-011",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-091"
+        "SRE-RB-011"
       ],
       "fusedThreeIds": [
         "SRE-RB-011",
         "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-042",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-062"
+        "RUNBOOK-K8S-091"
       ]
     },
     {
       "id": "c11-typo",
       "kind": "typo",
-      "query": "apiservar 报错怎么排查",
+      "query": "API 入口队列 apiservar 限流堆积返回 429 拒载",
       "expectedIds": [
         "SRE-RB-011"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
         "SRE-RB-011"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-071",
         "SRE-RB-011",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-043",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-052"
+        "RUNBOOK-K8S-101"
       ]
     },
     {
@@ -1029,22 +622,11 @@
         "SRE-RB-011"
       ],
       "fusedTwoIds": [
-        "SRE-RB-011",
-        "RUNBOOK-K8S-101"
+        "SRE-RB-011"
       ],
       "fusedThreeIds": [
         "SRE-RB-011",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-042",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051"
+        "RUNBOOK-K8S-101"
       ]
     },
     {
@@ -1056,57 +638,27 @@
       ],
       "fusedTwoIds": [
         "SRE-RB-012",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-061"
+        "RUNBOOK-K8S-091"
       ],
       "fusedThreeIds": [
         "SRE-RB-012",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-091"
       ]
     },
     {
       "id": "c12-typo",
       "kind": "typo",
-      "query": "imagepulbackoff 报错怎么排查",
+      "query": "私有仓库 harbur 拉取镜像触发 imagepulbackoff 证书或凭据失效",
       "expectedIds": [
         "SRE-RB-012"
       ],
       "fusedTwoIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-091",
+        "SRE-RB-012"
       ],
       "fusedThreeIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-011",
         "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-043",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-101"
+        "SRE-RB-012"
       ]
     },
     {
@@ -1122,17 +674,7 @@
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-051",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-101"
+        "SRE-RB-012"
       ]
     },
     {
@@ -1156,24 +698,8 @@
       "kind": "negative",
       "query": "React 的 useEffect 依赖数组该怎么写",
       "expectedIds": [],
-      "fusedTwoIds": [
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-071"
-      ],
-      "fusedThreeIds": [
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-012",
-        "SRE-RB-011"
-      ]
+      "fusedTwoIds": [],
+      "fusedThreeIds": []
     },
     {
       "id": "neg-4",
@@ -1225,29 +751,12 @@
       ],
       "fusedTwoIds": [
         "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-062"
+        "RUNBOOK-K8S-051"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-042",
         "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-052",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-062",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-071"
       ]
     },
     {
@@ -1260,23 +769,11 @@
       ],
       "fusedTwoIds": [
         "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012"
+        "RUNBOOK-K8S-062"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-071",
-        "SRE-RB-011"
+        "RUNBOOK-K8S-062"
       ]
     },
     {
@@ -1289,30 +786,13 @@
       ],
       "fusedTwoIds": [
         "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-091",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-062",
-        "RUNBOOK-K8S-101"
+        "RUNBOOK-K8S-091"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-071",
         "RUNBOOK-K8S-091",
         "SRE-RB-012",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-101",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-062"
+        "RUNBOOK-K8S-051"
       ]
     },
     {
@@ -1325,23 +805,11 @@
       ],
       "fusedTwoIds": [
         "SRE-RB-011",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-091"
+        "RUNBOOK-K8S-101"
       ],
       "fusedThreeIds": [
         "SRE-RB-011",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-061",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-081",
-        "RUNBOOK-K8S-043",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-062"
+        "RUNBOOK-K8S-101"
       ]
     },
     {
@@ -1354,24 +822,11 @@
       ],
       "fusedTwoIds": [
         "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-042"
+        "RUNBOOK-K8S-052"
       ],
       "fusedThreeIds": [
         "RUNBOOK-K8S-043",
-        "RUNBOOK-K8S-052",
-        "RUNBOOK-K8S-051",
-        "RUNBOOK-K8S-042",
-        "RUNBOOK-K8S-071",
-        "RUNBOOK-K8S-091",
-        "RUNBOOK-K8S-081",
-        "SRE-RB-011",
-        "RUNBOOK-K8S-061",
-        "SRE-RB-012",
-        "RUNBOOK-K8S-101",
-        "RUNBOOK-K8S-062"
+        "RUNBOOK-K8S-052"
       ]
     }
   ],

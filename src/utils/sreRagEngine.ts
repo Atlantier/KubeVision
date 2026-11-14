@@ -485,6 +485,13 @@ export const RagRunbookDocSchema = z
         bm25Score: z.number(),
         contextBoost: z.number(),
         rrfScore: z.number(),
+        fusedScore: z.number().optional(),
+        lexicalCosine: z.number().optional(),
+        semanticScore: z.number().optional(),
+        semanticAvailable: z.boolean().optional(),
+        candidatePoolSize: z.number().optional(),
+        corpusSize: z.number().optional(),
+        poolFactor: z.number().optional(),
       })
       .optional(),
     isCustom: z.boolean().optional(),
@@ -1090,7 +1097,45 @@ function contextScore(
  *   落在 0.10 以下。
  * 0.115 是区分二者的实测中点。
  */
-const MIN_FUSED_THRESHOLD = 0.115;
+/**
+ * 最低相关性门限（RRF 融合终值低于此值视为"全库都不相关"，宁可返空不乱推）。
+ *
+ * 【设计原理】配合候选池归一化与证据强度门控（rrfNormalized），
+ * 当只有单条弱语义证据或泛词噪声时，fused 会跌破 0.22 并被诚实拒答；
+ * 同时为正常领域查询留足余量（实测正例多在 0.35~0.85）。
+ */
+const MIN_FUSED_THRESHOLD = 0.22;
+
+/**
+ * 候选池规模归一化上限：当进入 RRF 排序池的候选数 C < min(N, CAP) 时，
+ * 对 RRF 名次一致性做比例折减 `poolFactor = min(1, C / min(N, CAP))`，
+ * 避免 C=1 或 C=2 的小候选池白拿 RRF=1.000 的满额排位奖励。
+ */
+const CANDIDATE_POOL_DENOM_CAP = 4;
+
+/** BM25 查询 IDF 质量分母下限：抑制仅有 1~2 个高复现泛词（如「pod 问题」）时归一化虚冲至 1.0 */
+const MIN_BM25_QUERY_IDF = 4.5;
+
+/** 语料外（OOV）英文/数字词元在 BM25 分母中的等效 IDF 惩罚权重 */
+const OOV_ASCII_IDF_WEIGHT = 1.6;
+
+/** 语料外（OOV）中文二元词在 BM25 分母中的等效 IDF 惩罚权重 */
+const OOV_ZH_IDF_WEIGHT = 0.55;
+
+/** 三路语义余弦准入阈值：过滤 < 0.22 的微小句向量噪声余弦，防止无意义词把全库 12 篇都拉进候选池 */
+const SEMANTIC_EVIDENCE_MIN_COSINE = 0.22;
+
+/** RRF 名次贡献的底层内容证据门控基准（combined < 0.35 时按比例收缩 RRF 权重） */
+const RRF_EVIDENCE_FLOOR = 0.35;
+
+/** 最低多维词袋支撑度，防止跨领域长句仅撞中单个通用词（如「状态」「依赖」）后凭 RRF 虚高闯关 */
+const MIN_VECTOR_EVIDENCE_FLOOR = 0.135;
+
+/** 三路模式下替代词袋支撑度的最低 MiniLM 语义余弦门槛 */
+const MIN_SEMANTIC_EVIDENCE_FLOOR = 0.29;
+
+/** 上下文强匹配兜底门槛（存在混沌先验或故障 Pod 命中时可直接通过证据校验） */
+const MIN_CONTEXT_EVIDENCE_FLOOR = 0.4;
 
 /**
  * 语义证据的浮点阈值。
@@ -1148,10 +1193,12 @@ function mergeCorpus(
  * 2. 构建语料库级 IDF 统计（BM25 与 TF-IDF 共用同一份口径）；
  * 3. 查询向量化：query → tokenize（英文词元 + 中文 Bigram）→ 词频向量；
  * 4. 逐文档三路打分：TF-IDF 余弦 / Okapi BM25 / 上下文先验；
- * 5. **语义证据闸门**：无任何语义证据的文档不进入排名池；
- * 6. RRF 倒数秩融合两路名次，再与三路加权分合成终值；
- * 7. **Sigmoid 校准**把终值映射为真实置信度（废除旧的 [0.86,0.98] 线性映射）；
- * 8. 提取 Top-5 高 IDF 命中特征词，回填 scoreBreakdown 供前端可解释展示。
+ * 5. **语义证据闸门**：无足够词袋/BM25/MiniLM 证据（`semanticScore >= 0.22`）的文档不进池；
+ * 6. RRF 倒数秩融合：乘以候选池规模系数 `poolFactor = min(1, C / min(N, 4))` 与内容证据门控
+ *    `min(1, combined / 0.35)`，防止小候选池或单泛词匹配凭排名一致性白拿 0.40 高分；
+ * 7. **相关性双闸门**：`fused >= 0.22` 且至少具备多维词袋 / 句向量 / 上下文之一的有效支撑；
+ * 8. **Sigmoid 校准**把终值映射为真实置信度（废除旧的 [0.86,0.98] 线性映射）；
+ * 9. 提取 Top-5 高 IDF 命中特征词，回填 scoreBreakdown（含 candidatePoolSize / corpusSize / poolFactor）。
  *
  * 【纯函数契约】不修改任何入参语料，输出为全新对象数组
  * （回填 similarityScore 时用展开运算符派生），因此可安全反复调用、
@@ -1240,9 +1287,24 @@ export function retrieveSreRunbooks(
    * 于是比值表达的是「这篇文档覆盖了多少查询的**信息质量**」，
    * 与本次查询里恰好有几篇候选文档无关。
    */
+  /*
+   * 查询的理论 BM25 有效分母与 OOV 噪声统计：
+   * - known IDF（queryIdfMass）保留原有术语质量；
+   * - 语料外（OOV）英文词按 1.6、中文二元组按 0.55 计入惩罚分母，且总分母下限为 4.5；
+   *   避免长跨领域句子仅撞中 1 个通用词（或超短泛词「pod 问题」）时 bm25Normalized 虚冲为 1.0。
+   */
   let queryIdfMass = 0;
+  let oovAsciiCount = 0;
+  let oovZhCount = 0;
   for (const term of uniqueQueryTerms) {
-    queryIdfMass += idfOf(term);
+    const termIdf = idfOf(term);
+    if (termIdf > 0) {
+      queryIdfMass += termIdf;
+    } else if (/^[a-z0-9]/.test(term)) {
+      oovAsciiCount += 1;
+    } else if (term.length === 2) {
+      oovZhCount += 1;
+    }
   }
 
   /**
@@ -1307,9 +1369,13 @@ export function retrieveSreRunbooks(
     const docTfIdf = applyIdfWeights(docVector);
     const vectorScore = cosineSimilarity(queryTfIdf, docTfIdf);
 
-    /* 稀疏路：BM25（原始分 + 绝对归一） */
+    /* 稀疏路：BM25（原始分 + OOV 惩罚与下限约束后的绝对归一） */
     const bm25Raw = bm25Score(uniqueQueryTerms, doc);
-    const bm25Normalized = queryIdfMass > 0 ? Math.min(1, bm25Raw / queryIdfMass) : 0;
+    const bm25Denominator = Math.max(
+      MIN_BM25_QUERY_IDF,
+      queryIdfMass + oovAsciiCount * OOV_ASCII_IDF_WEIGHT + oovZhCount * OOV_ZH_IDF_WEIGHT,
+    );
+    const bm25Normalized = queryIdfMass > 0 ? Math.min(1, bm25Raw / bm25Denominator) : 0;
 
     /* 先验路：上下文 */
     const contextBoost = contextScore(doc, chaos, faultyPods);
@@ -1331,7 +1397,7 @@ export function retrieveSreRunbooks(
       hasSemanticEvidence:
         vectorScore > SEMANTIC_EVIDENCE_EPSILON ||
         bm25Raw > SEMANTIC_EVIDENCE_EPSILON ||
-        semanticScore > SEMANTIC_EVIDENCE_EPSILON,
+        semanticScore >= SEMANTIC_EVIDENCE_MIN_COSINE,
     };
   });
 
@@ -1390,6 +1456,15 @@ export function retrieveSreRunbooks(
     readonly fused: number;
   }
 
+  /**
+   * 候选池规模归一化系数：
+   * 【设计意图】当仅少数文档进入候选池（C=1 或 C=2）时，RRF 排名第一的竞争强度
+   * 远低于多篇文档竞逐的场景。按 `min(1, C / min(N, 4))` 缩放 RRF 贡献，
+   * 并将 candidatePoolSize / corpusSize / poolFactor 回填至 scoreBreakdown 供可观测审计。
+   */
+  const poolDenominator = Math.max(1, Math.min(corpus.length, CANDIDATE_POOL_DENOM_CAP));
+  const poolFactor = Math.min(1, candidates.length / poolDenominator);
+
   const fused: Fused[] = candidates.map((entry): Fused => {
     const ranks =
       semanticQuery === null
@@ -1413,8 +1488,10 @@ export function retrieveSreRunbooks(
     /* 句向量可用时给 25% 权重，其余三路等比让位（总权重仍为 1） */
     const combined =
       semanticQuery === null ? baseCombined : baseCombined * 0.75 + entry.semanticScore * 0.25;
-    /* RRF 作为独立证据再融合一半权重，防止单路异常主导 */
-    const finalScore = combined * 0.6 + rrf * 0.4;
+    /* RRF 作为排名一致性证据，需同时受候选池规模（poolFactor）与内容证据强度（evidenceGate）约束 */
+    const evidenceGate = Math.min(1, combined / RRF_EVIDENCE_FLOOR);
+    const rrfNormalized = rrf * poolFactor * evidenceGate;
+    const finalScore = combined * 0.6 + rrfNormalized * 0.4;
 
     return {
       doc: entry.doc,
@@ -1427,8 +1504,15 @@ export function retrieveSreRunbooks(
     };
   });
 
-  /* ---- 7. 相关性闸门：拒绝零证据，绝不硬凑 ---- */
-  const relevant = fused.filter((entry): boolean => entry.fused >= MIN_FUSED_THRESHOLD);
+  /* ---- 7. 相关性双闸门：fused 达标且存在实质词袋/句向量/上下文支撑，绝不放行单泛词噪声 ---- */
+  const relevant = fused.filter((entry): boolean => {
+    if (entry.fused < MIN_FUSED_THRESHOLD) return false;
+    return (
+      entry.vectorScore >= MIN_VECTOR_EVIDENCE_FLOOR ||
+      entry.semanticScore >= MIN_SEMANTIC_EVIDENCE_FLOOR ||
+      entry.contextBoost >= MIN_CONTEXT_EVIDENCE_FLOOR
+    );
+  });
   if (relevant.length === 0) return [];
 
   /*
@@ -1461,6 +1545,9 @@ export function retrieveSreRunbooks(
         fusedScore: Math.round(entry.fused * 10000) / 10000,
         semanticScore: Math.round(entry.semanticScore * 10000) / 10000,
         semanticAvailable: semanticQuery !== null,
+        candidatePoolSize: candidates.length,
+        corpusSize: corpus.length,
+        poolFactor: Math.round(poolFactor * 10000) / 10000,
       },
       isCustom: entry.doc.isCustom === true,
     }),

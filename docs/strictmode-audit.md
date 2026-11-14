@@ -1,6 +1,6 @@
 # React 18 StrictMode 一致性审计
 
-> 由 `node scripts/strictmode-audit.mjs` 自动生成于 2026-11-13T11:21:13.383Z。
+> 由 `node scripts/strictmode-audit.mjs` 自动生成于 2026-11-13T12:53:14.624Z。
 > React StrictMode 在 dev 下会执行"挂载 → 卸载 → 再挂载"，本报告验证各资源的成对创建/释放。
 
 ## 首屏资源快照（双挂载之后）
@@ -10,7 +10,7 @@
 | 存活 EventSource | 1 | 1（不是 2） |
 | EventSource 创建/关闭 | 2 / 1 | 创建 2、关闭 1（StrictMode 成对） |
 | 存活 Worker | 0 | 0（审计台未打开时） |
-| 存活 timer / interval | 0 / 3 | 与单次挂载一致 |
+| 存活 timer / interval | 0 / 4 | 与单次挂载一致 |
 
 ## 面板反复切换（copilot ↔ auditor ×3）
 
@@ -19,42 +19,42 @@
   {
     "phase": "auditor",
     "timers": 2,
-    "intervals": 3,
+    "intervals": 4,
     "eventSources": 1,
     "workers": 1
   },
   {
     "phase": "copilot",
     "timers": 0,
-    "intervals": 3,
+    "intervals": 4,
     "eventSources": 1,
     "workers": 0
   },
   {
     "phase": "auditor",
     "timers": 2,
-    "intervals": 3,
+    "intervals": 4,
     "eventSources": 1,
     "workers": 1
   },
   {
     "phase": "copilot",
-    "timers": 1,
-    "intervals": 3,
+    "timers": 0,
+    "intervals": 4,
     "eventSources": 1,
     "workers": 0
   },
   {
     "phase": "auditor",
     "timers": 1,
-    "intervals": 3,
+    "intervals": 4,
     "eventSources": 1,
     "workers": 1
   },
   {
     "phase": "copilot",
     "timers": 1,
-    "intervals": 3,
+    "intervals": 4,
     "eventSources": 1,
     "workers": 0
   }

@@ -17,6 +17,7 @@
 import type {
   AgentReasoningStep,
   ChatStreamEvent,
+  ChatStreamResetReason,
   ChatStreamToolResultEvent,
   CopilotToolCard,
 } from '@/types/ai';
@@ -52,8 +53,13 @@ export function resolveFinalizationState(doneReceived: boolean, parseError: bool
 export interface NdjsonLineParserHandlers {
   /** 消费一条已通过形状校验的合法事件 */
   readonly onEvent: (event: ChatStreamEvent) => void;
-  /** 畸形行（JSON 损坏 / 形状不合法）回调；缺省则静默跳过，不中断整条流 */
-  readonly onMalformedLine?: (line: string) => void;
+  /**
+   * 畸形行（JSON 损坏 / 形状不合法）回调；缺省则静默跳过，不中断整条流。
+   *
+   * `meta.atEof === true` 表示流已到达 EOF 且末行未以 `\n` 结尾（TCP/代理半行截断），
+   * 消费方据此区分「中段协议畸形帧」与「EOF 截断残行」。
+   */
+  readonly onMalformedLine?: (line: string, meta?: { readonly atEof?: boolean }) => void;
   /** 运行时形状守卫（注入 zod 的 isChatStreamEvent）；把校验与解析解耦 */
   readonly validate: (value: unknown) => value is ChatStreamEvent;
 }
@@ -90,18 +96,18 @@ export function createNdjsonLineParser(handlers: NdjsonLineParserHandlers): Ndjs
    *
    * @param rawLine 去掉 '\n' 的原始行（可能含首尾空白）
    */
-  const consumeLine = (rawLine: string): void => {
+  const consumeLine = (rawLine: string, atEof: boolean): void => {
     const line = rawLine.trim();
     if (line.length === 0) return;
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
     } catch {
-      handlers.onMalformedLine?.(line);
+      handlers.onMalformedLine?.(line, { atEof });
       return;
     }
     if (!handlers.validate(parsed)) {
-      handlers.onMalformedLine?.(line);
+      handlers.onMalformedLine?.(line, { atEof });
       return;
     }
     handlers.onEvent(parsed);
@@ -115,14 +121,14 @@ export function createNdjsonLineParser(handlers: NdjsonLineParserHandlers): Ndjs
       while (newlineIndex >= 0) {
         const line = buffer.slice(0, newlineIndex);
         buffer = buffer.slice(newlineIndex + 1);
-        consumeLine(line);
+        consumeLine(line, false);
         newlineIndex = buffer.indexOf('\n');
       }
     },
     flush(): void {
       /* stream:false 冲刷解码器内部残留字节，再消费最后一条无 '\n' 的残行（不丢尾） */
       buffer += decoder.decode();
-      if (buffer.trim().length > 0) consumeLine(buffer);
+      if (buffer.trim().length > 0) consumeLine(buffer, true);
       buffer = '';
     },
   };
@@ -144,6 +150,7 @@ export interface StreamMessageState {
   readonly reasoningSteps: readonly AgentReasoningStep[];
   readonly toolCards: readonly CopilotToolCard[];
   readonly engine?: 'llm' | 'simulator';
+  readonly resetNotice?: string;
 }
 
 /**
@@ -163,6 +170,7 @@ export function mergeStreamState<T extends StreamMessageState>(host: T, state: S
     text: state.text,
     reasoningSteps: state.reasoningSteps,
     toolCards: state.toolCards,
+    resetNotice: state.resetNotice,
     ...(state.engine !== undefined ? { engine: state.engine } : {}),
   };
 }
@@ -264,16 +272,36 @@ export function applyToolResult(
 }
 
 /**
- * resetRound —— 轮换复位：清正文与思考链，**保留工具卡片**。
+ * resetRound —— 轮换复位：清正文与思考链，保留已就绪工具卡片。
  *
- * 【反作弊硬约束】reset 绝不清空整条消息或工具卡片——卡片是用户已经看到的诊断产物，
- * 清掉等于丢信息。它只复位"本轮流式累积的正文与思考链"，卡片原样保留。
+ * 【反作弊与 R10-B 约定】
+ * - 常规轮换（`reason === undefined || reason === 'new-round'`）：保留全部 `toolCards`
+ *   （兼容既有单参调用 `resetRound(state)` 与单测断言），并清空残留 `resetNotice`。
+ * - 容灾/守卫复位（`reason === 'engine-fallback' | 'schema-guard'`）：保留已完成
+ *   （`state === 'ready'`）卡片，清理孤立/失败占位卡避免回落引擎重发后出现故障卡残留，
+ *   并写入温和 `resetNotice` 供 UI 横幅展示。
  *
  * @param state 当前消息状态
- * @returns 复位后的状态（toolCards 原样保留）
+ * @param noteOrOptions 可选提示字符串或复位选项
+ * @returns 复位后的状态
  */
-export function resetRound(state: StreamMessageState): StreamMessageState {
-  return { ...state, text: '', reasoningSteps: [] };
+export function resetRound(
+  state: StreamMessageState,
+  noteOrOptions?: string | { readonly reason?: ChatStreamResetReason; readonly note?: string },
+): StreamMessageState {
+  const reason = typeof noteOrOptions === 'object' ? noteOrOptions.reason : undefined;
+  const note = typeof noteOrOptions === 'string' ? noteOrOptions : noteOrOptions?.note;
+  const keepOnlyReady = reason === 'engine-fallback' || reason === 'schema-guard';
+  const nextCards = keepOnlyReady
+    ? state.toolCards.filter((card): boolean => card.state === 'ready')
+    : state.toolCards;
+  return {
+    ...state,
+    text: '',
+    reasoningSteps: [],
+    toolCards: nextCards,
+    resetNotice: note,
+  };
 }
 
 /* ========================================================================== */
