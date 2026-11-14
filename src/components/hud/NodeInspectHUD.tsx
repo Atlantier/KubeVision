@@ -68,6 +68,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { UI_COPY } from '@/constants/copy';
 import { Z_CLASS } from '@/constants/zIndex';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import {
@@ -452,7 +453,7 @@ function deriveMasterView(snapshot: TelemetrySnapshot): EntityInspectView {
   const running = pods.filter((pod): boolean => pod.status === 'Running').length;
 
   const metaRows: InspectMetaRow[] = [
-    { label: '架构角色', value: 'API-Server' },
+    { label: '架构角色', value: 'API Server' },
     {
       label: '在线节点',
       value: `${nodes.filter((n): boolean => n.status === 'Ready').length} / ${nodes.length} Ready`,
@@ -464,7 +465,7 @@ function deriveMasterView(snapshot: TelemetrySnapshot): EntityInspectView {
   return {
     entityId: MASTER_ENTITY_ID,
     entityType: 'master',
-    displayName: '控制平面 · API-Server',
+    displayName: '控制平面 · API Server',
     statusLabel: `健康分 ${Math.round(score)}`,
     statusTone,
     metaRows,
@@ -971,7 +972,7 @@ function EntityProbeCard({
        * 加一条 `SYS // INSPECT` 微标尺后，面板从信息卡片变成仪表读数窗。
        */}
       <HoloMicroRuler
-        label="SYS // INSPECT"
+        label={UI_COPY.holoRulerInspect}
         accent="#22d3ee"
         tickCount={20}
         cursorAt={0.42}
@@ -1134,10 +1135,10 @@ function EntityProbeCard({
             disabled
             aria-disabled
             className="flex min-h-[44px] cursor-not-allowed items-center justify-center gap-1 rounded border border-white/[0.06] bg-white/[0.02] px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-slate-400 md:min-h-0"
-            title="控制面为只读保护对象，不提供破坏性运维动作"
+            title="控制平面为只读保护对象，不提供破坏性运维动作"
           >
             <ShieldCheck className="h-2.5 w-2.5 shrink-0" aria-hidden />
-            <span className="truncate">控制面只读</span>
+            <span className="truncate">控制平面只读</span>
           </button>
         ) : (
           <button
@@ -1312,7 +1313,7 @@ function FilterStatusBanner() {
          * 只写"无处于该状态的容器"仍不够——用户会追问"那我的容器去哪了"。
          */
         <span className="font-mono text-[11px] leading-tight text-amber-300">
-          当前集群无「{meta.label} ({meta.raw})」容器 · {total} 个实例均处于幽灵透视参考态
+          当前集群无「{meta.label}（{meta.raw}）」容器 · {total} 个实例均处于幽灵透视参考态 · 请点击右侧注入故障演练或返回全部视图
         </span>
       ) : (
         <span className="font-mono text-[11px] leading-tight text-cyan-300">
@@ -1345,7 +1346,7 @@ function FilterStatusBanner() {
           onClick={handleExitFilteredView}
           className="shrink-0 rounded-full border border-cyan-500/40 px-2 py-0.5 font-mono text-[10px] tracking-tight text-cyan-300 transition-colors hover:bg-cyan-500/[0.15]"
         >
-          重置为全部 (ESC)
+          重置为全部（Esc）
         </button>
       )}
     </motion.div>
@@ -1442,7 +1443,7 @@ export default function NodeInspectHUD({ className }: NodeInspectHUDProps) {
      */
     if (view.entityType === 'master') {
       appendTerminalLog(
-        '[WARN] 控制面为只读保护对象，已拒绝破坏性运维动作（master-control-plane）',
+        '[WARN] 控制平面为只读保护对象，已拒绝破坏性运维动作（master-control-plane）',
       );
       return;
     }

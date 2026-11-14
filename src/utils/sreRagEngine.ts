@@ -72,7 +72,7 @@ import type { ChaosScenario } from '@/types/cluster';
 export const SRE_RUNBOOK_CORPUS: readonly RagRunbookDoc[] = [
   {
     id: 'RUNBOOK-K8S-042',
-    title: 'Pod OOMKilled 应急处置手册（Cgroup 内存超限）',
+    title: 'Pod OOMKilled 应急处置手册（cgroup 内存超限）',
     category: 'memory',
     tags: ['oom', 'oomkilled', 'memory', 'cgroup', 'restart', 'crashloop'],
     symptom:
@@ -346,7 +346,7 @@ export const SRE_RUNBOOK_CORPUS: readonly RagRunbookDoc[] = [
     category: 'control-plane',
     tags: ['etcd', 'apiserver', 'control-plane', 'quorum', 'latency'],
     symptom:
-      'kubectl 命令响应极慢或超时，apiserver 报 etcdserver: request timed out，控制面操作大面积失败。',
+      'kubectl 命令响应极慢或超时，apiserver 报 etcdserver: request timed out，控制平面操作大面积失败。',
     remediationSteps: [
       '检查 etcd 成员健康：etcdctl endpoint health --cluster',
       '查看 etcd 磁盘 fsync 延迟与 WAL 所在盘 IOPS',
@@ -371,7 +371,7 @@ export const SRE_RUNBOOK_CORPUS: readonly RagRunbookDoc[] = [
   },
   {
     id: 'SRE-RB-011',
-    title: 'APIServer 限流 APF（Priority & Fairness）队列堆积与 429 排障手册',
+    title: 'API Server 限流 APF（优先级与公平性）队列堆积与 429 排障手册',
     category: 'control-plane',
     tags: ['apiserver', 'apf', 'priority', 'fairness', '429', 'throttling', 'flowcontrol'],
     symptom:

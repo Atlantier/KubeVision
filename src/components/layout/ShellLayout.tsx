@@ -36,6 +36,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Bot, Layers, ShieldCheck } from 'lucide-react';
 
+import { AGENT_COPY } from '@/constants/copy';
 import { Z_CLASS } from '@/constants/zIndex';
 import { cn } from '@/utils/cn';
 import { isInteractiveTarget } from '@/utils/keyboardTargets';
@@ -75,9 +76,9 @@ import SplitPaneResizer, { useDrawerWidth } from '@/components/layout/SplitPaneR
  * 独立滚动（细滚动条样式由 globals.css 全局提供）。
  */
 export function RightDrawerSlot({ activeTab, onTabChange, children }: RightDrawerSlotProps) {
-  const tabs: ReadonlyArray<{ readonly key: RightPanelTab; readonly label: string }> = [
-    { key: 'copilot', label: 'SRE Copilot' },
-    { key: 'auditor', label: 'Edge Auditor' },
+  const tabs: ReadonlyArray<{ readonly key: RightPanelTab; readonly label: string; readonly srAnchor?: string }> = [
+    { key: 'copilot', label: AGENT_COPY.copilotTitle },
+    { key: 'auditor', label: AGENT_COPY.auditorTitle, srAnchor: AGENT_COPY.auditorSrOnlyAnchor },
   ];
 
   return (
@@ -94,12 +95,13 @@ export function RightDrawerSlot({ activeTab, onTabChange, children }: RightDrawe
               aria-selected={active}
               onClick={(): void => onTabChange(tab.key)}
               className={cn(
-                'relative flex items-center gap-1.5 px-3 font-mono text-[11px] uppercase tracking-wider transition-colors',
+                'relative flex items-center gap-1.5 px-3 font-mono text-[11px] tracking-wider transition-colors',
                 active ? 'text-cyan-300' : 'text-slate-500 hover:text-slate-300',
               )}
             >
               {tab.key === 'copilot' ? <Bot className="h-3.5 w-3.5" aria-hidden /> : <ShieldCheck className="h-3.5 w-3.5" aria-hidden />}
               {tab.label}
+              {tab.srAnchor !== undefined ? <span className="sr-only">{tab.srAnchor}</span> : null}
               {active ? (
                 <motion.span
                   layoutId="drawer-tab-underline"
@@ -128,7 +130,7 @@ export function RightDrawerSlot({ activeTab, onTabChange, children }: RightDrawe
 /**
  * MobileViewSwitcher —— 小屏（< lg）底部浮动切换栏。
  *
- * 二段式拨片在「3D 拓扑」与「AI Copilot」间切换 mobileView；
+ * 二段式拨片在「3D 拓扑」与「AI 运维副驾」间切换 mobileView；
  * fixed 定位悬浮于视口底部安全区之上（pb 兼容 iOS home indicator），
  * z-30 低于顶层 Modal（z-50）与 HUD（z-40）。
  */
@@ -144,7 +146,7 @@ function MobileViewSwitcher({
   if (hidden) return null;
   const items: ReadonlyArray<{ readonly key: MobileViewKey; readonly label: string }> = [
     { key: 'topology', label: '3D 拓扑视图' },
-    { key: 'copilot', label: 'AI Copilot 视图' },
+    { key: 'copilot', label: AGENT_COPY.copilotTitle },
   ];
   return (
     <div

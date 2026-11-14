@@ -90,7 +90,7 @@
 |---|---|---|---|
 | R9 副驾流式丝滑 | P1 | 消息增量渲染、MarkdownLite O(n²)、虚拟化、锚定、动作卡目标级隔离 | **已完成**：`probe:stream-perf`（`d3d11`）**16/16**（`rootCommits 538→152`、总 bubble 渲染 `1718→77`、历史重渲染 `1290→0`、`longtask 65→0`、`CLS 0.00071`、`N2c dist=0`、50+ 虚拟化 DOM `12`/滚顶 `min=11`/历史 `0`） |
 | R10 AI 可靠性与可信度 | P1 | 首 token 前装饰 sleep、回落两段结论、畸形载荷白屏、MCP 超时、RAG 置信度语义 | **已完成**：`run-chat-stream-tests` **19/19**、`probe-stream-determinism` **160/160**、`probe:r10` **12/12**（TTFT `p50 5605.66→685.39ms`、`p95 10596.70→840.23ms`）、`eval:rag` 49 用例三路 `R@1 94.4% / R@3 100.0% / 误拒率 0.0%`、`eval:ai-quality` 20/20（RAG 正确率 `80.0%` vs 裸模型 `78.3%`，引用率 `65.0%` vs `0.0%`） |
-| R11 全站汉化与术语治理 | P1 高（**必须 R14 前**） | 术语契约、约 113 条文案替换、报告不泄漏实现细节 | API Server 拼法收敛；req/s=0；check-copy 全绿；34/34 不回退 |
+| R11 全站汉化与术语治理 | 已完成（main + 进阶） | `src/constants/copy/*`（34 条术语 A–E + J1–J3）、全站文案与报告去泄漏替换、`check:copy`（C1–C8）与只读「术语表（34）」 | `check:copy` 139 文件 0 违规（allowlist 12/12）；`verify-demo` 22/22；`verify.mjs` 34/35（仅文档数字一致性留待 R14）；术语表 UI CDP 0 报错 |
 | R12 交互与动效治理 | P1 | 命令面板模糊/分组/listbox、焦点陷阱与归还、退场动画、MotionConfig、四态 | 命令面板语义齐全；焦点陷阱；四态 100% |
 | R13 错误边界/a11y/长连接 | P1 | error.tsx/ErrorBoundary、慢空错三态、SSE 心跳、cancel 真关闭、多连接采样隔离 | 畸形不白屏；cancel 零回落；多连接不跳 0；a11y 全绿 |
 | R14 工程一致性/交付卫生 | P0·最后 | 文档数字=代码事实、安全头、release 卫生、verify:all 19 步、黄金演示彩排 | 文档同源；安全头齐全；19 步全跑；34/34；彩排偏差≤10s |
@@ -148,7 +148,7 @@ git revert 9e106b4   # R5-1 修测量（最后退）
 
 1. **工作区归档提交**：
    - R5 Part 1 + R6 + R7 + R8 + R9 + R10 均已完成验收，可按轮次拆分提交（**严禁提交** `docs/KubeVision_终极Prompt手册.md` 及 `.verify-artifacts/` / `tmp-*.mjs` 临时探针；如需独立回滚 `R9/R10`，工作区改动按模块提交或 `git checkout -- <file>`）。
-2. **按手册推进 R11（全站汉化与术语治理）**：
-   - **必须先于 R14** 执行术语契约收敛（API Server 拼法、`req/s=0`、约 113 条文案汉化与 `check-copy` 全绿），保证后续 R12–R14 契约不回退。
+2. **已完成 R11（全站汉化与术语治理）**：
+   - 已收敛 `src/constants/copy/*`（34 条 TERMS 与 J1–J3 产品裁决）、`postMortemReport.ts` 去泄漏汉化、`check-copy`（C1–C8）门禁与只读「术语表（34）」，并已同步更新 `docs/rag-eval.*`、`README.md` 与技术白皮书 RAG 指标。
 3. **继续收尾 R12 → R13 → R14**：
-   - 依次完成交互与动效治理（R12）、错误边界/a11y/SSE 长连接（R13）以及终稿文档同源对齐与 `verify:all` 19 步黄金彩排（R14）。
+   - 依次完成交互与动效治理（R12）、错误边界/a11y/SSE 长连接（R13）以及终稿文档同源对齐（含 README / 白皮书 / PPT 文档数字一致性）与 `verify:all` 19 步黄金彩排（R14）。

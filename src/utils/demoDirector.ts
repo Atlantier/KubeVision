@@ -385,7 +385,7 @@ const OOM_PHASES: readonly DemoPhase[] = [
     fallback: '检索 SRE Runbook 知识库 · 生成交互式诊断卡片',
     template: (facts: DemoFacts): string => {
       const nodePart = facts.nodeName === null ? '' : `受灾机架 ${facts.nodeName} 的`;
-      return `检索 SRE Runbook 知识库 · 分析${nodePart}故障根因并生成诊断卡片...`;
+      return `检索 SRE Runbook 知识库 · 分析${nodePart}故障根因并生成诊断卡片…`;
     },
   },
   {
@@ -443,10 +443,10 @@ const NETWORK_PHASES: readonly DemoPhase[] = [
     index: 2,
     atMs: 11_000,
     badge: '阶段 3/4 · CNI VXLAN 隧道瓶颈定位',
-    fallback: '比对 VXLAN 丢包率与 IPVS 连接超时 · 定位跨节点转发瓶颈...',
+    fallback: '比对 VXLAN 丢包率与 IPVS 连接超时 · 定位跨节点转发瓶颈…',
     template: (facts: DemoFacts): string => {
       const nodePart = facts.nodeName === null ? '跨节点' : `${facts.nodeName} 的跨节点`;
-      return `比对 VXLAN 丢包率与 IPVS 连接超时 · 定位${nodePart}转发瓶颈...`;
+      return `比对 VXLAN 丢包率与 IPVS 连接超时 · 定位${nodePart}转发瓶颈…`;
     },
   },
   {
@@ -513,10 +513,10 @@ const CPU_PHASES: readonly DemoPhase[] = [
     index: 2,
     atMs: 11_000,
     badge: '阶段 3/4 · 节点算力瓶颈定位',
-    fallback: '比对节点负载与容器 CPU 分布 · 定位算力瓶颈...',
+    fallback: '比对节点负载与容器 CPU 分布 · 定位算力瓶颈…',
     template: (facts: DemoFacts): string => {
       const nodePart = facts.nodeName === null ? '' : `受灾机架 ${facts.nodeName} 的`;
-      return `比对节点负载与容器 CPU 分布 · 定位${nodePart}算力瓶颈并生成扩缩容方案...`;
+      return `比对节点负载与容器 CPU 分布 · 定位${nodePart}算力瓶颈并生成扩缩容方案…`;
     },
   },
   {
@@ -1160,7 +1160,7 @@ function findExecuteButton(card: HTMLElement): HTMLButtonElement | null {
   for (const el of Array.from(buttons)) {
     if (!(el instanceof HTMLButtonElement)) continue;
     const text = (el.textContent ?? '').trim();
-    if (text.includes('立即执行') || text.includes('需二次确认')) return el;
+    if (text.includes('立即执行') || text.includes('需二次确认') || text.includes('请先勾选确认')) return el;
   }
   return null;
 }
@@ -1230,7 +1230,7 @@ function enterFaultAndLock(chaos: ActiveChaosScenario, label: string): void {
   api.selectEntity(target.nodeId, 'node');
 
   /* 先用静态兜底文案，避免断言期间字幕空白 */
-  setNarration('故障已注入，正在校验受灾目标的数据回传...');
+  setNarration('故障已注入，正在校验受灾目标的数据回传…');
   api.appendTerminalLog(
     `[DEMO-DIRECTOR] ${label} · 已注入 ${chaos}（${target.label}）并锁定 ${target.nodeId}`,
   );
@@ -1483,7 +1483,7 @@ function enterHeal(): void {
   const primaryId = victimIds[0];
   const primaryPod = snapshot.pods.find((pod): boolean => pod.id === primaryId);
   const primaryName = primaryPod === undefined ? primaryId : primaryPod.name;
-  setNarration(`正在对 ${victimIds.length} 个异常容器执行 MCP 自愈（动作 ${podAction}）...`);
+  setNarration(`正在对 ${victimIds.length} 个异常容器执行 MCP 自愈（动作 ${podAction}）…`);
   api.setDemoAutoConfirm(true);
 
   /* ---- 3. HITL：等卡片 → 勾选 → 点击真实按钮 ---- */

@@ -37,6 +37,7 @@
 
 import type { CSSProperties, ReactNode } from 'react';
 
+import { UI_COPY } from '@/constants/copy';
 import { cn } from '@/utils/cn';
 import { HUD_LABEL_SPEC } from '@/constants/hud';
 
@@ -218,7 +219,7 @@ const RULER_TICK_COUNT = 24;
  * @param cursorAt  游标位置比例 [0,1]，默认 0.5（居中）
  */
 export function HoloMicroRuler({
-  label = 'SYS // TELEMETRY',
+  label = UI_COPY.holoRulerTelemetry,
   accent = '#22d3ee',
   tickCount = RULER_TICK_COUNT,
   cursorAt = 0.5,

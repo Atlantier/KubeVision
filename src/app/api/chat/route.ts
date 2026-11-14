@@ -37,6 +37,7 @@
  */
 
 import { createOpenAI } from '@ai-sdk/openai';
+import { CHAOS_SCENARIO_LABELS, UI_COPY } from '@/constants/copy';
 import { streamText, tool, type CoreMessage } from 'ai';
 import { createTrace, elapsedMs, endSpan, startSpan, type AgentTrace, type EndedSpan } from '@/utils/agentTrace';
 import { annotateUngrounded, clampConfidence } from '@/utils/grounding';
@@ -1176,7 +1177,7 @@ function buildIntentDirective(
         '  1. 用简体中文简短直接回应（禁用“作为 AI / 仅供参考”等套话），给出核心能力与当前集群状态。',
         '  2. 引用下面的真实数据给出一句话集群健康摘要：',
         `     当前集群健康度 ${ctx.clusterHealthScore}/100，` +
-          `${ctx.nodes.length} 台计算节点（${healthyNodes} 台就绪）与 ${ctx.totalQps.toLocaleString('en-US')} req/s 入口流量均处于稳态。`,
+          `${ctx.nodes.length} 台计算节点（${healthyNodes} 台就绪）与 ${ctx.totalQps.toLocaleString('en-US')} QPS 入口流量均处于稳态。`,
         '  3. 仅使用简洁短句或短列表，总字数严格控制在 160 字以内（不超过 400 字上限）。',
         '  4. 最后一行必须以“建议动作：”开头，引导点击「故障演练」或提出具体排障问题。',
         '  5. **严禁**调用任何工具，**严禁**输出根因分析或虚构故障。',
@@ -2832,8 +2833,8 @@ function buildGreetingReport(ctx: ClusterContext): string {
   const healthyNodes = ctx.nodes.filter((n): boolean => n.status === 'Ready').length;
   const allReady = healthyNodes === ctx.nodes.length;
   return [
-    `当前集群健康度 **${ctx.clusterHealthScore}/100**，${allReady ? `${ctx.nodes.length} 台节点全部就绪` : `${healthyNodes}/${ctx.nodes.length} 台节点就绪`}，入口流量约 **${ctx.totalQps.toLocaleString('en-US')} req/s**。`,
-    '- 故障演练：支持一键注入 OOM 风暴 / CPU 尖峰 / 网络丢包场景。',
+    `当前集群健康度 **${ctx.clusterHealthScore}/100**，${allReady ? `${ctx.nodes.length} 台节点全部就绪` : `${healthyNodes}/${ctx.nodes.length} 台节点就绪`}，入口流量约 **${ctx.totalQps.toLocaleString('en-US')} QPS**。`,
+    `- 故障演练：支持一键注入 ${CHAOS_SCENARIO_LABELS.POD_OOM_SWARM} / ${CHAOS_SCENARIO_LABELS.NODE_CPU_SPIKE} / ${CHAOS_SCENARIO_LABELS.NET_PACKET_LOSS} 场景。`,
     '- 实时排障：可直接提问「排查内存溢出」「分析节点负载」「评估网络吞吐」。',
     '',
     '建议动作：点击顶栏「故障演练」注入场景，或直接输入问题（如「排查内存溢出」）。',
@@ -3439,7 +3440,7 @@ export async function POST(request: Request): Promise<Response> {
                     title: `扫描 ${clusterContext.nodes.length} 个计算节点的实时遥测水位`,
                     detail:
                       `逐节点比对水位阈值（CPU/内存均 < 85% 视为健康）：${nodeLines}。` +
-                      `入口 QPS ${clusterContext.totalQps.toLocaleString('en-US')} req/s，未发现越限节点。`,
+                      `入口流量 ${clusterContext.totalQps.toLocaleString('en-US')} QPS，未发现越限节点。`,
                     latencyMs: SIM_LATENCY.rag,
                     ...(sim ? { sim: true } : {}),
                   },
@@ -3526,7 +3527,7 @@ export async function POST(request: Request): Promise<Response> {
             const toolLabelByUri: Readonly<Record<string, string>> = {
               renderPodMetrics: '指标渲染工具（只读）',
               renderRootCauseAnalysis: '根因分析渲染工具（只读）',
-              proposeRemediationAction: '自愈动作提议工具（写操作，需二次确认）',
+              proposeRemediationAction: `自愈动作提议工具（写操作，${UI_COPY.actionNeedConfirm}）`,
             };
             emit({
               type: 'reasoning',

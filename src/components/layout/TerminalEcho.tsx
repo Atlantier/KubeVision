@@ -238,7 +238,7 @@ export default function TerminalEcho({ className, defaultCollapsed = false }: Te
           ) : null}
         </button>
 
-        {/* 三档高度切换：默认 peek（2 行）↔ 完整高 */}
+        {/* 三档高度切换：默认 peek（2 行）/ 完整高 */}
         <button
           type="button"
           onClick={(): void => {

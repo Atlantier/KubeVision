@@ -36,6 +36,7 @@
  */
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { UI_COPY } from '@/constants/copy';
 import { motion } from 'framer-motion';
 import {
   Ban,
@@ -932,7 +933,9 @@ function ActionConfirmImpl({
               ) : (
                 <>
                   <Wrench className="h-3 w-3" aria-hidden />
-                  {isHighRisk && !acknowledged ? '需二次确认' : '立即执行自愈方案'}
+                  {isHighRisk && !acknowledged
+                    ? UI_COPY.actionNeedConfirm
+                    : UI_COPY.actionExecuteNow}
                 </>
               )}
             </span>
@@ -1035,13 +1038,13 @@ function ActionConfirmImpl({
           {receipt !== null ? (
             <div className="mt-1.5 rounded border border-emerald-500/20 bg-emerald-500/[0.04] p-1.5">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-emerald-300/70">
-                <span className="text-emerald-400">[MCP RECEIPT]</span>
+                <span className="text-emerald-400">{UI_COPY.mcpReceiptTag}</span>
                 <span>{receipt.executionId}</span>
                 <span className="text-slate-500">·</span>
                 <span>{receipt.latencyMs}ms</span>
                 <span className="text-slate-500">·</span>
                 <span className={receipt.mode === 'real' ? 'text-emerald-400' : 'text-amber-300/80'}>
-                  {receipt.mode === 'real' ? 'LIVE CLUSTER' : 'SIMULATED'}
+                  {receipt.mode === 'real' ? UI_COPY.mcpModeReal : UI_COPY.mcpModeSimulated}
                 </span>
               </div>
 

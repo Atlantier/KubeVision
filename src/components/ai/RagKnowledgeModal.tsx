@@ -51,6 +51,7 @@ import { AnimatePresence,
   motion } from 'framer-motion';
 import {
   AlertTriangle,
+  BookOpen,
   CheckCircle2,
   Database,
   Plus,
@@ -61,6 +62,15 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import {
+  GLOSSARY_CATEGORY_META,
+  PRODUCT_DECISIONS,
+  TERMS,
+  UI_COPY,
+  type GlossaryCategory,
+  type GlossaryTermEntry,
+  type ProductDecisionEntry,
+} from '@/constants/copy';
 import {
   SRE_RUNBOOK_CORPUS,
   addCustomRunbook,
@@ -166,12 +176,12 @@ const EMPTY_FORM: CustomRunbookFormState = {
  * 编的一段话」，也让检索沙盒能立刻命中一篇高区分度文档。
  */
 const EXAMPLE_CUSTOM_RUNBOOK: CustomRunbookFormState = {
-  title: 'Redis 集群脑裂与 Sentinel 切换失败排障手册',
+  title: 'Redis 集群双主冲突与 Sentinel 切换失败排障手册',
   category: 'stateful',
   symptom:
     '主节点所在宿主机网络抖动后，哨兵完成过一次故障转移（failover），但旧主恢复后仍以 master 身份接受写入；客户端报 READONLY 只读错误，或写入成功后数据在数秒内回退。执行 redis-cli info replication 可见两台实例的 role 同为 master。',
   rootCauseMechanism:
-    'Sentinel 每秒 PING 一次主节点，超过 down-after-milliseconds 未响应记为主观下线（SDOWN）；quorum 个哨兵达成一致后升级为客观下线（ODOWN），再由被选举出的 Leader 哨兵执行 failover 并提升某个从节点。若网络分区持续时间长于哨兵判定窗口，且分区两侧各自凑齐 quorum（例如哨兵分布在两个可用区且各占多数），两个分区就会各自选出一个主节点，形成脑裂。旧主恢复网络后不会自动降级，继续接受写入；当它最终被降级为从库时会执行全量重同步，master_repl_offset 之后尚未复制到新主的写入被直接丢弃，这就是业务侧观察到的数据回退。若 min-replicas-to-write 与 min-replicas-max-lag 未配置，写节点在失去从节点确认时仍接受写入，会进一步放大回退范围。',
+    'Sentinel 每秒 PING 一次主节点，超过 down-after-milliseconds 未响应记为主观下线（SDOWN）；quorum 个哨兵达成一致后升级为客观下线（ODOWN），再由被选举出的 Leader 哨兵执行 failover 并提升某个从节点。若网络分区持续时间长于哨兵判定窗口，且分区两侧各自凑齐 quorum（例如哨兵分布在两个可用区且各占多数），两个分区就会各自选出一个主节点，形成双主冲突。旧主恢复网络后不会自动降级，继续接受写入；当它最终被降级为从库时会执行全量重同步，master_repl_offset 之后尚未复制到新主的写入被直接丢弃，这就是业务侧观察到的数据回退。若 min-replicas-to-write 与 min-replicas-max-lag 未配置，写节点在失去从节点确认时仍接受写入，会进一步放大回退范围。',
   featureVocabulary:
     'redis, sentinel, split-brain, sdown, odown, failover, readonly, master_replid, min-replicas-to-write, quorum',
   remediationSteps: [
@@ -425,6 +435,206 @@ function DetailSection({
  * @param props.onClose 关闭回调（关闭按钮、遮罩点击、Escape 三处共用）
  * @returns 打开时返回 AnimatePresence 包裹的弹窗元素，关闭时返回 null
  */
+const GLOSSARY_FILTER_CATEGORIES: readonly ('ALL' | GlossaryCategory)[] = [
+  'ALL',
+  'A',
+  'B',
+  'C',
+  'D',
+  'E',
+];
+
+/**
+ * GlossaryPanel —— 知识库弹窗内置的只读「术语表与产品裁决」视图（R11 进阶）。
+ */
+function GlossaryPanel({
+  query,
+  onQueryChange,
+  selectedCategory,
+  onSelectCategory,
+}: {
+  readonly query: string;
+  readonly onQueryChange: (next: string) => void;
+  readonly selectedCategory: 'ALL' | GlossaryCategory;
+  readonly onSelectCategory: (next: 'ALL' | GlossaryCategory) => void;
+}): React.ReactElement {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  const filteredTerms = useMemo<readonly GlossaryTermEntry[]>(() => {
+    return TERMS.filter((entry: GlossaryTermEntry): boolean => {
+      if (selectedCategory !== 'ALL' && entry.category !== selectedCategory) return false;
+      if (normalizedQuery === '') return true;
+      const haystack = [
+        entry.canonical,
+        entry.english,
+        entry.chinese,
+        entry.usageRule,
+        entry.rationale,
+        ...entry.forbiddenVariants,
+      ]
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+  }, [normalizedQuery, selectedCategory]);
+
+  const groupedTerms = useMemo<
+    readonly {
+      readonly meta: (typeof GLOSSARY_CATEGORY_META)[GlossaryCategory];
+      readonly entries: readonly GlossaryTermEntry[];
+    }[]
+  >(() => {
+    const categories: readonly GlossaryCategory[] = ['A', 'B', 'C', 'D', 'E'];
+    return categories
+      .map((code: GlossaryCategory) => ({
+        meta: GLOSSARY_CATEGORY_META[code],
+        entries: filteredTerms.filter(
+          (entry: GlossaryTermEntry): boolean => entry.category === code,
+        ),
+      }))
+      .filter((group): boolean => group.entries.length > 0);
+  }, [filteredTerms]);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 kv-safe-bottom sm:p-4">
+      {/* 产品关键裁决 J1–J3 */}
+      <section
+        aria-label="R11 产品与术语裁决"
+        className="shrink-0 rounded-lg border border-cyan-400/20 bg-slate-900/60 p-3"
+      >
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="font-mono text-[11px] font-semibold tracking-wide text-cyan-300">
+            关键产品裁决（J1–J3）
+          </span>
+          <span className="font-mono text-[10px] text-slate-400">只读权威规范</span>
+        </div>
+        <div className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+          {PRODUCT_DECISIONS.map((item: ProductDecisionEntry): React.ReactElement => (
+            <article
+              key={item.id}
+              className="rounded-md border border-white/[0.07] bg-slate-950/75 p-2.5"
+            >
+              <div className="flex items-center gap-1.5">
+                <span className="rounded border border-cyan-400/40 bg-cyan-400/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-cyan-300">
+                  {item.id}
+                </span>
+                <h3 className="text-[11px] font-semibold text-slate-100">{item.question}</h3>
+              </div>
+              <p className="mt-1.5 text-[11px] leading-relaxed text-emerald-300/95">
+                {item.decision}
+              </p>
+              <p className="mt-1 text-[10px] leading-relaxed text-slate-400">{item.rationale}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {/* 检索与分类筛选栏 */}
+      <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-white/[0.07] bg-slate-900/50 p-2.5">
+        <div className="relative min-w-[200px] flex-1">
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500"
+            aria-hidden
+          />
+          <input
+            type="text"
+            value={query}
+            onChange={(event: React.ChangeEvent<HTMLInputElement>): void => {
+              onQueryChange(event.target.value);
+            }}
+            placeholder="检索术语中英文、禁用变体或使用边界…"
+            aria-label="筛选术语表"
+            className={cn(FIELD_CLASS, 'pl-8')}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1" role="group" aria-label="术语分类筛选">
+          {GLOSSARY_FILTER_CATEGORIES.map((category): React.ReactElement => {
+            const active = selectedCategory === category;
+            const label =
+              category === 'ALL' ? `全部 (${TERMS.length})` : `${category} 类`;
+            return (
+              <button
+                key={category}
+                type="button"
+                onClick={(): void => onSelectCategory(category)}
+                aria-pressed={active}
+                className={cn(
+                  'rounded border px-2 py-1 font-mono text-[10px] transition-colors',
+                  active
+                    ? 'border-cyan-400/60 bg-cyan-400/20 text-cyan-200'
+                    : 'border-white/[0.08] bg-slate-950/60 text-slate-400 hover:border-white/[0.16] hover:text-slate-200',
+                )}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 按 A–E 五分法分组展示只读词条 */}
+      {groupedTerms.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-amber-400/30 bg-amber-400/5 px-4 py-6 text-center text-xs text-amber-300/90">
+          未匹配到符合条件的术语词条，请清空筛选关键字重试。
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {groupedTerms.map((group): React.ReactElement => (
+            <section
+              key={group.meta.code}
+              className="rounded-lg border border-white/[0.07] bg-slate-900/50 p-3"
+            >
+              <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2 border-b border-white/[0.06] pb-1.5">
+                <h3 className="font-mono text-xs font-semibold text-cyan-300">
+                  {group.meta.title}
+                </h3>
+                <p className="text-[11px] text-slate-400">{group.meta.summary}</p>
+              </div>
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                {group.entries.map((entry: GlossaryTermEntry): React.ReactElement => (
+                  <div
+                    key={entry.key}
+                    className="rounded-md border border-white/[0.06] bg-slate-950/75 p-2.5"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-1.5">
+                      <span className="font-mono text-xs font-semibold text-slate-100">
+                        {entry.canonical}
+                      </span>
+                      <span className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-px font-mono text-[10px] text-slate-300">
+                        {entry.english} · {entry.chinese}
+                      </span>
+                    </div>
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-slate-300">
+                      {entry.usageRule}
+                    </p>
+                    <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                      依据：{entry.rationale}
+                    </p>
+                    {entry.forbiddenVariants.length > 0 ? (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                        <span className="font-mono text-[10px] text-rose-300/90">禁用：</span>
+                        {entry.forbiddenVariants.map((variant: string): React.ReactElement => (
+                          <span
+                            key={`${entry.key}-${variant}`}
+                            className="rounded border border-rose-500/30 bg-rose-500/10 px-1.5 py-px font-mono text-[10px] text-rose-300"
+                          >
+                            {variant}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function RagKnowledgeModal({
   open,
   onClose,
@@ -432,6 +642,11 @@ export default function RagKnowledgeModal({
   readonly open: boolean;
   readonly onClose: () => void;
 }): React.ReactElement | null {
+  /* ---- 视图页签（知识库检索 vs 只读术语表） ---- */
+  const [activeTab, setActiveTab] = useState<'knowledge' | 'glossary'>('knowledge');
+  const [glossaryQuery, setGlossaryQuery] = useState<string>('');
+  const [glossaryCategory, setGlossaryCategory] = useState<'ALL' | GlossaryCategory>('ALL');
+
   /* ---- 语料池与选中项 ---- */
   const [corpus, setCorpus] = useState<RagRunbookDoc[]>(() => [...SRE_RUNBOOK_CORPUS]);
   const [selectedId, setSelectedId] = useState<string>(() =>
@@ -704,9 +919,47 @@ export default function RagKnowledgeModal({
               <h2 className="truncate text-sm font-semibold tracking-wide text-slate-100">
                 SRE 领域知识库
               </h2>
-              <p className="mt-0.5 truncate font-mono text-[10px] tracking-[0.16em] text-slate-400">
-                sre runbook corpus · hybrid retrieval sandbox
+              <p className="mt-0.5 truncate font-mono text-[10px] tracking-[0.12em] text-slate-400">
+                {UI_COPY.ragModalSubtitle}
               </p>
+            </div>
+
+            {/* 视图页签切换（默认停留在知识库检索沙盒，切换「术语表」查看全站 A–E 规范与 J1–J3 裁决） */}
+            <div
+              role="tablist"
+              aria-label="知识库弹窗视图切换"
+              className="hidden shrink-0 items-center gap-1 rounded-md border border-white/[0.08] bg-slate-900/70 p-0.5 sm:flex"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'knowledge'}
+                onClick={(): void => setActiveTab('knowledge')}
+                className={cn(
+                  'flex items-center gap-1 rounded px-2.5 py-1 font-mono text-[10px] transition-colors',
+                  activeTab === 'knowledge'
+                    ? 'bg-cyan-400/20 text-cyan-200'
+                    : 'text-slate-400 hover:text-slate-200',
+                )}
+              >
+                <Database className="h-3 w-3" aria-hidden />
+                <span>知识库</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'glossary'}
+                onClick={(): void => setActiveTab('glossary')}
+                className={cn(
+                  'flex items-center gap-1 rounded px-2.5 py-1 font-mono text-[10px] transition-colors',
+                  activeTab === 'glossary'
+                    ? 'bg-cyan-400/20 text-cyan-200'
+                    : 'text-slate-400 hover:text-slate-200',
+                )}
+              >
+                <BookOpen className="h-3 w-3" aria-hidden />
+                <span>术语表（{TERMS.length}）</span>
+              </button>
             </div>
 
             {/* 条目计数徽章：总量 + 自定义分量，两者分开计数避免混淆权威性 */}
@@ -732,8 +985,53 @@ export default function RagKnowledgeModal({
             </button>
           </header>
 
-          {/* ============ 主体：沙盒 / 列表+详情 / 新增表单 ============ */}
-          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 kv-safe-bottom sm:p-4 lg:overflow-hidden">
+          {/* 窄屏视图页签切换条 */}
+          <div
+            role="tablist"
+            aria-label="知识库弹窗移动端视图切换"
+            className="flex shrink-0 items-center gap-1.5 border-b border-white/[0.07] bg-slate-900/50 px-4 py-1.5 sm:hidden"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'knowledge'}
+              onClick={(): void => setActiveTab('knowledge')}
+              className={cn(
+                'flex flex-1 items-center justify-center gap-1 rounded border py-1 font-mono text-[10px] transition-colors',
+                activeTab === 'knowledge'
+                  ? 'border-cyan-400/50 bg-cyan-400/20 text-cyan-200'
+                  : 'border-white/[0.07] text-slate-400',
+              )}
+            >
+              <Database className="h-3 w-3" aria-hidden />
+              <span>知识库与沙盒</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'glossary'}
+              onClick={(): void => setActiveTab('glossary')}
+              className={cn(
+                'flex flex-1 items-center justify-center gap-1 rounded border py-1 font-mono text-[10px] transition-colors',
+                activeTab === 'glossary'
+                  ? 'border-cyan-400/50 bg-cyan-400/20 text-cyan-200'
+                  : 'border-white/[0.07] text-slate-400',
+              )}
+            >
+              <BookOpen className="h-3 w-3" aria-hidden />
+              <span>术语表（{TERMS.length}）</span>
+            </button>
+          </div>
+
+          {activeTab === 'glossary' ? (
+            <GlossaryPanel
+              query={glossaryQuery}
+              onQueryChange={setGlossaryQuery}
+              selectedCategory={glossaryCategory}
+              onSelectCategory={setGlossaryCategory}
+            />
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 kv-safe-bottom sm:p-4 lg:overflow-hidden">
             {/* ---------------- C. 顶部实时混合检索沙盒 ---------------- */}
             <section
               aria-label="实时混合检索沙盒"
@@ -741,14 +1039,14 @@ export default function RagKnowledgeModal({
             >
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <Search className="h-3.5 w-3.5 shrink-0 text-cyan-400" aria-hidden />
-                <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-500">
-                  retrieval sandbox
+                <span className="font-mono text-[10px] tracking-[0.14em] text-slate-400">
+                  {UI_COPY.ragSandboxTitle}
                 </span>
                 <span className="rounded border border-cyan-400/30 bg-cyan-400/10 px-1.5 py-px font-mono text-[10px] text-cyan-300">
-                  vector + bm25 + context
+                  {UI_COPY.ragSandboxPipeline}
                 </span>
                 <span className="ml-auto font-mono text-[10px] text-slate-500">
-                  top-{SANDBOX_TOP_K}
+                  前 {SANDBOX_TOP_K} 条
                 </span>
               </div>
 
@@ -771,7 +1069,7 @@ export default function RagKnowledgeModal({
                   </p>
                 ) : !hasResults ? (
                   <p className="rounded border border-dashed border-amber-400/30 bg-amber-400/5 px-3 py-4 text-center text-[11px] text-amber-300/80">
-                    未命中任何 Runbook（查询缺乏区分度）
+                    {UI_COPY.ragEmptySearchResult}
                   </p>
                 ) : (
                   <ul className="grid max-h-[212px] grid-cols-1 gap-2 overflow-y-auto pr-1 md:grid-cols-3">
@@ -883,8 +1181,8 @@ export default function RagKnowledgeModal({
               {/* ---- A. 左侧语料列表（桌面 280px 固定宽，移动端钳位高度） ---- */}
               <aside className="flex h-[170px] min-h-0 w-full shrink-0 flex-col rounded-lg border border-white/[0.07] bg-slate-900/50 lg:h-auto lg:w-[280px]">
                 <div className="flex shrink-0 items-center justify-between border-b border-white/[0.07] px-3 py-2">
-                  <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-500">
-                    corpus index
+                  <span className="font-mono text-[10px] tracking-[0.14em] text-slate-400">
+                    {UI_COPY.ragCorpusIndexTitle}
                   </span>
                   <span className="font-mono text-[10px] tabular-nums text-slate-500">
                     {corpus.length}
@@ -1082,7 +1380,7 @@ export default function RagKnowledgeModal({
                 </button>
 
                 <span className="min-w-0 truncate font-mono text-[10px] text-slate-500">
-                  localStorage 持久化 · 入库后立即参与混合检索
+                  {UI_COPY.ragLocalPersistHint}
                 </span>
 
                 {formNotice !== '' ? (
@@ -1119,7 +1417,7 @@ export default function RagKnowledgeModal({
                             onChange={(event: React.ChangeEvent<HTMLInputElement>): void => {
                               updateForm({ title: event.target.value });
                             }}
-                            placeholder="如：Redis 集群脑裂与 Sentinel 切换失败排障手册"
+                            placeholder="如：Redis 集群双主冲突与 Sentinel 切换失败排障手册"
                             className={FIELD_CLASS}
                           />
                         </label>
@@ -1238,7 +1536,7 @@ export default function RagKnowledgeModal({
                           收起表单
                         </button>
                         <span className="ml-auto font-mono text-[10px] text-slate-500">
-                          数据仅存于本地浏览器 localStorage
+                          {UI_COPY.ragFooterPersistHint}
                         </span>
                       </div>
                     </form>
@@ -1246,7 +1544,8 @@ export default function RagKnowledgeModal({
                 ) : null}
               </AnimatePresence>
             </section>
-          </div>
+            </div>
+          )}
         </motion.div>
       </motion.div>
     </AnimatePresence>,

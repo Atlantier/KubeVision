@@ -62,19 +62,19 @@ export const NODE_ROLE_PROFILE: Readonly<Record<NodeRole, NodeRoleProfile>> = {
     cpu: 44,
     mem: 36,
     label: '计算型',
-    rationale: 'CPU 偏高、内存偏低：批处理与编解码负载集中在这台，CPU 尖峰演练打在它身上最符合直觉',
+    rationale: 'CPU 偏高、内存偏低：批处理与编解码负载集中在这台，节点 CPU 饱和演练打在它身上最符合直觉',
   },
   memory: {
     cpu: 36,
     mem: 48,
     label: '内存型',
-    rationale: '内存偏高、CPU 偏低：缓存与状态服务常驻，OOM 风暴在这台上才有说服力',
+    rationale: '内存偏高、CPU 偏低：缓存与状态服务常驻，OOM 内存溢出演练在这台上才有说服力',
   },
   network: {
     cpu: 40,
     mem: 40,
     label: '网络型',
-    rationale: 'CPU/内存都中等：网关与流量转发节点，网络分区演练的天然目标',
+    rationale: 'CPU/内存都中等：网关与流量转发节点，CNI 网络分区丢包演练的天然目标',
   },
 };
 

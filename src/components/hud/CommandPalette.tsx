@@ -34,6 +34,7 @@ import {
   Zap,
 } from 'lucide-react';
 
+import { AGENT_COPY, CHAOS_INJECT_LABELS } from '@/constants/copy';
 import { Z_CLASS } from '@/constants/zIndex';
 import { useFocusReturn } from '@/hooks/useModalSheetBehavior';
 import { cn } from '@/utils/cn';
@@ -169,9 +170,9 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
 
     /* ---- 3. 运维动作：混沌演练 ---- */
     const chaosOptions: ReadonlyArray<{ scenario: ChaosScenario; label: string }> = [
-      { scenario: 'POD_OOM_SWARM', label: '注入：Pod OOM 雪崩' },
-      { scenario: 'NODE_CPU_SPIKE', label: '注入：节点 CPU 尖峰' },
-      { scenario: 'NET_PACKET_LOSS', label: '注入：网络丢包分区' },
+      { scenario: 'POD_OOM_SWARM', label: CHAOS_INJECT_LABELS.POD_OOM_SWARM },
+      { scenario: 'NODE_CPU_SPIKE', label: CHAOS_INJECT_LABELS.NODE_CPU_SPIKE },
+      { scenario: 'NET_PACKET_LOSS', label: CHAOS_INJECT_LABELS.NET_PACKET_LOSS },
     ];
     for (const opt of chaosOptions) {
       cmds.push({
@@ -247,8 +248,8 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
     cmds.push(
       {
         id: 'nav-copilot',
-        label: '打开 AI 运维副驾',
-        hint: '切到 Copilot 页签',
+        label: `打开 ${AGENT_COPY.copilotTitle}`,
+        hint: `切到${AGENT_COPY.copilotTitle}页签`,
         kind: 'nav',
         run: (): void => {
           setActiveRightTab('copilot');
@@ -257,8 +258,8 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
       },
       {
         id: 'nav-auditor',
-        label: '打开端侧隐私日志审计',
-        hint: '切到 Edge Log Auditor 页签',
+        label: `打开${AGENT_COPY.auditorTitle}`,
+        hint: `切到${AGENT_COPY.auditorTitle}页签`,
         kind: 'nav',
         run: (): void => {
           setActiveRightTab('auditor');

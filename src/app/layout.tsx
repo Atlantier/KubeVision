@@ -15,7 +15,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'KubeVision AI | 云原生集群 3D 态势感知与智能运维副驾',
   description:
-    'KubeVision AI —— 面向 Kubernetes 集群的云原生 3D 态势感知与智能副驾：WebGL 实时拓扑渲染、瞬态遥测流、浏览器端侧 RAG 推理与 SRE Copilot 一体化作战平台。',
+    'KubeVision AI —— 面向 Kubernetes 集群的云原生 3D 态势感知与 AI 运维副驾：WebGL 实时拓扑渲染、瞬态遥测流、浏览器端侧 RAG 推理与一键自愈一体化作战平台。',
   applicationName: 'KubeVision AI',
   keywords: [
     'Kubernetes',
@@ -23,14 +23,14 @@ export const metadata: Metadata = {
     'Observability',
     '3D Situational Awareness',
     'React Three Fiber',
-    'SRE Copilot',
+    'AI 运维副驾',
     'RAG',
     'Transformers.js',
   ],
   authors: [{ name: 'KubeVision AI Team' }],
   openGraph: {
     title: 'KubeVision AI | 云原生集群 3D 态势感知与智能运维副驾',
-    description: 'WebGL 实时集群拓扑 × 瞬态遥测 × 端侧 RAG 智能副驾',
+    description: 'WebGL 实时集群拓扑 × 瞬态遥测 × 端侧 RAG AI 运维副驾',
     type: 'website',
     locale: 'zh_CN',
   },

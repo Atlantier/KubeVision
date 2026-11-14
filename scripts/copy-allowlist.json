@@ -1,0 +1,89 @@
+{
+  "description": "R11 文案与术语门禁白名单（scripts/check-copy.mjs C8 双向核验，任何过时条目都会直接触发门禁失败）",
+  "entries": [
+    {
+      "file": "src/constants/copy/agent.ts",
+      "line": 19,
+      "pattern": "Edge Log Auditor (WASM)",
+      "rule": "C1",
+      "reason": "sr-only 无障碍与 E2E 回归锚点（scripts/verify.mjs:828 以 /Edge Log Auditor/i 定位端侧审计页签）"
+    },
+    {
+      "file": "src/components/layout/ShellLayout.tsx",
+      "line": 441,
+      "pattern": "AI Copilot 抽屉",
+      "rule": "C1",
+      "reason": "DOM aria-label 定位选择器（demoDirector.ts 与 scripts/verify-demo.mjs 查询 [aria-label=\"AI Copilot 抽屉\"]）"
+    },
+    {
+      "file": "src/components/hud/StartupStatusCapsule.tsx",
+      "line": 50,
+      "pattern": "AI Copilot 抽屉",
+      "rule": "C1",
+      "reason": "启动自检胶囊探活选择器（查询 ShellLayout/CopilotDrawer aria-label）"
+    },
+    {
+      "file": "src/components/ai/CopilotDrawer.tsx",
+      "line": 3284,
+      "pattern": "AI Copilot 抽屉",
+      "rule": "C1",
+      "reason": "DOM aria-label 定位选择器（demoDirector.ts 与 scripts/verify-demo.mjs 查询 [aria-label=\"AI Copilot 抽屉\"]）"
+    },
+    {
+      "file": "src/utils/demoDirector.ts",
+      "line": 1999,
+      "pattern": "AI Copilot 抽屉",
+      "rule": "C1",
+      "reason": "剧本导演引擎环境自检 DOM 选择器（匹配 ShellLayout / CopilotDrawer aria-label）"
+    },
+    {
+      "file": "src/utils/sreRagEngine.ts",
+      "line": 349,
+      "pattern": "apiserver",
+      "rule": "C2",
+      "reason": "Kubernetes 原生态报错日志文本与进程简称原文"
+    },
+    {
+      "file": "src/utils/sreRagEngine.ts",
+      "line": 354,
+      "pattern": "apiserver",
+      "rule": "C2",
+      "reason": "apiserver 与 etcd CLI 排障检查指引原文"
+    },
+    {
+      "file": "src/utils/sreRagEngine.ts",
+      "line": 359,
+      "pattern": "apiserver",
+      "rule": "C2",
+      "reason": "RAG 特征词库检索词（apiserver 关键词精确匹配）"
+    },
+    {
+      "file": "src/utils/sreRagEngine.ts",
+      "line": 369,
+      "pattern": "apiserver",
+      "rule": "C2",
+      "reason": "etcd 与 apiserver 连接池原理技术说明原文"
+    },
+    {
+      "file": "src/utils/sreRagEngine.ts",
+      "line": 378,
+      "pattern": "apiserver",
+      "rule": "C2",
+      "reason": "apiserver 429 限流原生日志与 kubectl 客户端报错原文"
+    },
+    {
+      "file": "src/utils/sreRagEngine.ts",
+      "line": 419,
+      "pattern": "--docker-username=...",
+      "rule": "C5",
+      "reason": "kubectl CLI 参数占位符原文（非中文句子省略号）"
+    },
+    {
+      "file": "src/utils/ragEvalSet.ts",
+      "line": 84,
+      "pattern": "apiserver",
+      "rule": "C2",
+      "reason": "R29 RAG 拼写容错评测集输入样本 typoize('apiserver')"
+    }
+  ]
+}

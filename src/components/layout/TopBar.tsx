@@ -50,6 +50,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { CHAOS_SCENARIO_LABELS, UI_COPY } from '@/constants/copy';
 import { Z_CLASS } from '@/constants/zIndex';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { useClusterStore } from '@/store/useClusterStore';
@@ -179,11 +180,11 @@ const FILTER_ALERT_BADGE_CLASS: Readonly<Partial<Record<StatusFilter, string>>> 
   Pending: 'bg-amber-500/20 text-amber-300',
 };
 
-/** 混沌场景 → 中文短名（告警胶囊内的可读标签） */
+/** 混沌场景 → 中文短名（唯一事实源：@/constants/copy） */
 const CHAOS_LABEL: Readonly<Record<Exclude<ChaosScenario, 'NONE'>, string>> = {
-  POD_OOM_SWARM: 'OOM 风暴',
-  NODE_CPU_SPIKE: 'CPU 尖峰',
-  NET_PACKET_LOSS: '网络丢包',
+  POD_OOM_SWARM: CHAOS_SCENARIO_LABELS.POD_OOM_SWARM,
+  NODE_CPU_SPIKE: CHAOS_SCENARIO_LABELS.NODE_CPU_SPIKE,
+  NET_PACKET_LOSS: CHAOS_SCENARIO_LABELS.NET_PACKET_LOSS,
 };
 
 /**
@@ -824,7 +825,7 @@ function DemoDirectorBar({
         ? '序列结束：可重播或关闭'
         : `下一阶段：${nextPhase?.badge ?? '结束态'}`;
   const hintStage = currentPhaseView === null
-    ? 'STAGE-00 / IDLE'
+    ? UI_COPY.demoIdleStage
     : `当前 ${currentPhaseView.badge} · T+${elapsedClock}`;
   const hintKey = 'Space 继续 / 暂停 · Esc 关闭 · ? 快捷键';
 
@@ -889,7 +890,7 @@ function DemoDirectorBar({
               isPreflightError ? 'text-rose-300' : 'text-cyan-300/80',
             )}
           >
-            {isPreflightError ? 'DEMO-PREFLIGHT · 未通过' : 'RUNBOOK · 自动演练'}
+            {isPreflightError ? '路演预检 · 未通过' : '剧本路演 · 自动演练'}
             {waitingForAi ? ' · 正在等待云端 AI 诊断响应…' : ''}
           </span>
           <span className="mt-0.5 truncate text-[11px] font-medium tracking-tight text-slate-100">
@@ -1118,7 +1119,7 @@ export default function TopBar() {
       );
       const label = option?.label ?? filter;
       appendTerminalLog(
-        `[HUD-FILTER] 视图过滤器已切换 -> ${label} (匹配容器: ${countByStatus[filter]}/${countByStatus.ALL})`,
+        `[HUD-FILTER] 视图过滤器已切换 → ${label}（匹配容器：${countByStatus[filter]}/${countByStatus.ALL}）`,
       );
     },
     [selectFilter, appendTerminalLog, countByStatus],

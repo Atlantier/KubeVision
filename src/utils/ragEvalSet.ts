@@ -150,7 +150,7 @@ export function buildRagEvalSet(): RagEvalCase[] {
     { query: 'Pod 内存超限 OOM 同时节点 CPU 饱和了怎么处理', first: 0, second: 2 },
     { query: '网络分区 CNI 丢包 同时 VXLAN 隧道 MTU 错配', first: 4, second: 5 },
     { query: 'Pod Pending 调度不上去 同时镜像拉取失败', first: 6, second: 8 },
-    { query: 'etcd 健康度异常 同时 APIServer 限流 429 堆积', first: 9, second: 10 },
+    { query: 'etcd 健康度异常 同时 API Server 限流 429 堆积', first: 9, second: 10 },
     { query: 'CrashLoopBackOff 崩溃循环 同时 HighLoad 水位治理', first: 1, second: 3 },
   ];
   multi.forEach((item, index): void => {

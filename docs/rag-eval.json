@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-14T07:08:56.908Z",
+  "generatedAt": "2026-11-14T08:07:43.750Z",
   "corpusSize": 12,
   "caseCount": 49,
   "counts": {
@@ -17,7 +17,7 @@
       "recallAt1": 0.8888888888888888,
       "recallAt3": 0.9444444444444444,
       "mrrAt5": 0.926829268292683,
-      "ndcgAt5": 0.9297945904145148
+      "ndcgAt5": 0.9180964213136306
     },
     "threeWayRrf": {
       "recallAt1": 0.9444444444444444,
@@ -105,7 +105,7 @@
         "recallAt1": 0,
         "recallAt3": 0,
         "mrrAt5": 1,
-        "ndcgAt5": 0.9719437399704394
+        "ndcgAt5": 0.8760187533431868
       },
       "threeWayRrf": {
         "recallAt1": 0,
@@ -125,21 +125,21 @@
   },
   "latencyMs": {
     "twoWay": {
-      "p50": 0.8492000000005646,
-      "p95": 1.3216199999998928,
-      "mean": 0.9091734693877753,
+      "p50": 0.8055000000003929,
+      "p95": 1.4036200000009555,
+      "mean": 0.8757081632654207,
       "count": 49
     },
     "threeWay": {
-      "p50": 0.8980999999985215,
-      "p95": 1.5720800000013677,
-      "mean": 0.9362857142857639,
+      "p50": 0.8145000000004075,
+      "p95": 2.056359999999399,
+      "mean": 1.0019755102040684,
       "count": 49
     }
   },
   "calibration": {
-    "meanRaw": 0.6628829268292685,
-    "meanCalibrated": 0.8647878048780491,
+    "meanRaw": 0.6632780487804878,
+    "meanCalibrated": 0.8650756097560975,
     "note": "meanRaw 取未经 Sigmoid 校准的融合终值 fusedScore，meanCalibrated 取引擎输出的 similarityScore（无二次重复校准；校准只映射置信度数值、不改变排名顺序）"
   },
   "cases": [
@@ -586,7 +586,7 @@
     {
       "id": "c11-colloquial",
       "kind": "colloquial",
-      "query": "APIServer 限流 APF 这个情况一般怎么处理啊",
+      "query": "API Server 限流 APF 这个情况一般怎么处理啊",
       "expectedIds": [
         "SRE-RB-011"
       ],
@@ -595,7 +595,6 @@
       ],
       "fusedThreeIds": [
         "SRE-RB-011",
-        "RUNBOOK-K8S-101",
         "RUNBOOK-K8S-091"
       ]
     },
@@ -798,14 +797,13 @@
     {
       "id": "multi-4",
       "kind": "multi",
-      "query": "etcd 健康度异常 同时 APIServer 限流 429 堆积",
+      "query": "etcd 健康度异常 同时 API Server 限流 429 堆积",
       "expectedIds": [
         "RUNBOOK-K8S-101",
         "SRE-RB-011"
       ],
       "fusedTwoIds": [
-        "SRE-RB-011",
-        "RUNBOOK-K8S-101"
+        "SRE-RB-011"
       ],
       "fusedThreeIds": [
         "SRE-RB-011",

@@ -41,6 +41,7 @@ import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Cpu, Network, ShieldCheck, Skull, X } from 'lucide-react';
 
+import { CHAOS_SCENARIO_LABELS, UI_COPY } from '@/constants/copy';
 import { Z_CLASS } from '@/constants/zIndex';
 import { useFocusReturn, useSheetSwipeClose } from '@/hooks/useModalSheetBehavior';
 import { cn } from '@/utils/cn';
@@ -65,7 +66,7 @@ const CHAOS_DRILL_CARDS: readonly ChaosDrillCard[] = [
     scenario: 'POD_OOM_SWARM',
     code: 'A',
     codename: 'POD_OOM_SWARM',
-    title: '内存溢出雪崩',
+    title: CHAOS_SCENARIO_LABELS.POD_OOM_SWARM,
     description:
       '模拟 worker-beta 机架上的支付网关与缓存服务突发内存泄漏，内存水位冲至 96~99% 触发 OOMKilled 崩溃循环，Pod 反复重启并产生 P0 告警风暴。',
     targetRackIndex: 1,
@@ -78,7 +79,7 @@ const CHAOS_DRILL_CARDS: readonly ChaosDrillCard[] = [
     scenario: 'NODE_CPU_SPIKE',
     code: 'B',
     codename: 'NODE_CPU_SPIKE',
-    title: '计算节点算力打满',
+    title: CHAOS_SCENARIO_LABELS.NODE_CPU_SPIKE,
     description:
       '模拟突发流量洪峰导致 worker-alpha 机架 CPU 飙升至 92~99%，节点进入 HighLoad 状态并触发调度阻塞，其上全部 Pod 争抢算力、响应延迟陡增。',
     targetRackIndex: 0,
@@ -91,7 +92,7 @@ const CHAOS_DRILL_CARDS: readonly ChaosDrillCard[] = [
     scenario: 'NET_PACKET_LOSS',
     code: 'C',
     codename: 'NET_PACKET_LOSS',
-    title: 'CNI 网络插件分区丢包',
+    title: CHAOS_SCENARIO_LABELS.NET_PACKET_LOSS,
     description:
       '模拟 worker-gamma 机架跨节点 VXLAN 隧道丢包，网络吞吐骤降至基准的 12%，节点判定为 NetworkPartition，下属部分 Pod 失联转为 Pending。',
     targetRackIndex: 2,
@@ -268,11 +269,11 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
               <AlertTriangle className="h-4 w-4 animate-glow-pulse text-rose-400" aria-hidden />
             </span>
             <div className="min-w-0 flex-1">
-              <h2 className="font-mono text-xs font-bold uppercase tracking-[0.25em] text-rose-300">
-                chaos&nbsp;engineering&nbsp;console
+              <h2 className="font-mono text-xs font-bold tracking-[0.12em] text-rose-300">
+                {UI_COPY.chaosModalTitle}
               </h2>
-              <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-400">
-                fault injection · drill authorization required
+              <p className="mt-0.5 font-mono text-[10px] tracking-[0.06em] text-slate-400">
+                {UI_COPY.chaosModalSubtitle}
               </p>
             </div>
             <button
@@ -289,7 +290,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
           {/* ======== 说明文案 ======== */}
           <p className="mb-4 mt-3 border-l-2 border-rose-500/40 pl-2.5 text-[11px] leading-relaxed text-slate-400">
             选择演练场景后，遥测流将立即进入对应故障演进，3D 相机自动锁定受灾 Worker
-            机架并激活地面红色警示脉冲。演练期间顶栏显示 CHAOS ACTIVE
+            机架并激活地面红色警示脉冲。演练期间顶栏显示「演练中」
             横幅，可随时一键终止，或在巡检 HUD 中执行自愈动作复位。
           </p>
 
@@ -343,12 +344,12 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
 
                   {/* 受灾机架徽标（恢复卡不显示） */}
                   {card.targetRackIndex !== null ? (
-                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-white/[0.05] bg-slate-800/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-slate-400">
-                      target&nbsp;·&nbsp;rack-{card.targetRackIndex}
+                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-white/[0.05] bg-slate-800/60 px-1.5 py-0.5 font-mono text-[11px] tracking-wider text-slate-400">
+                      {UI_COPY.chaosModalTargetRackPrefix}&nbsp;·&nbsp;rack-{card.targetRackIndex}
                     </span>
                   ) : (
-                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-emerald-700/60 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-wider text-emerald-300">
-                      restore&nbsp;·&nbsp;all&nbsp;racks
+                    <span className="mt-0.5 inline-flex w-fit items-center gap-1 rounded border border-emerald-700/60 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px] tracking-wider text-emerald-300">
+                      {UI_COPY.chaosModalRestoreAll}
                     </span>
                   )}
                 </button>
@@ -357,9 +358,9 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
           </div>
 
           {/* ======== 底部提示 ======== */}
-          <p className="mt-3.5 flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+          <p className="mt-3.5 flex items-center gap-1.5 font-mono text-[11px] tracking-wider text-slate-500">
             <AlertTriangle className="h-2.5 w-2.5" aria-hidden />
-            drills run against the simulated engine · no real cluster is harmed · ESC to abort
+            {UI_COPY.chaosModalFooterHint}
           </p>
         </div>
 

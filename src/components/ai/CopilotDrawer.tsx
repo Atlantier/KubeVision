@@ -106,6 +106,7 @@ import {
 } from '@/utils/chatStreamConsumer';
 import { isChatStreamEvent } from '@/utils/chatStreamSchema';
 import { validateStreamEvents } from '@/utils/chatStreamProtocol';
+import { AGENT_COPY } from '@/constants/copy';
 import TraceIdChip from '@/components/hud/TraceIdChip';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
@@ -217,7 +218,7 @@ const QUICK_PROMPTS: readonly TacticalCommand[] = [
     code: '02',
     icon: Flame,
     label: 'OOM 内存溢出排障',
-    subtitle: '定位 Cgroup Exit 137 容器并生成自愈方案',
+    subtitle: '定位 cgroup Exit 137 容器并生成自愈方案',
     short: 'OOM 排障',
     text: '诊断 OOMKilled 根因并生成自愈方案',
   },
@@ -481,7 +482,7 @@ function ContextPill({
     const pod = pods.find((p): boolean => p.id === raw);
     if (pod !== undefined) {
       return {
-        typeLabel: 'POD',
+        typeLabel: 'Pod',
         displayName: pod.name,
         colorClass: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300',
         title: `${pod.namespace} / ${pod.name}`,
@@ -1575,7 +1576,7 @@ export default function CopilotDrawer() {
       const node = snapshot.nodes.find((n): boolean => n.id === selectedEntityId);
       return node !== undefined ? `${node.name} · rack-${node.rackIndex}` : selectedEntityId;
     }
-    return 'MASTER 控制平面 · API-Server';
+    return '控制平面 · API Server';
   }, [selectedEntityId, selectedEntityType]);
   const quickPromptQueue = useClusterStore((s): readonly string[] => s.quickPromptQueue);
   const shiftQuickPrompt = useClusterStore((s): (() => void) => s.shiftQuickPrompt);
@@ -3266,8 +3267,8 @@ export default function CopilotDrawer() {
       readonly icon: typeof Bot;
     }> => [
       /* sub 仅作为 sr-only 测试锚点与 title 提示，视觉上不渲染 */
-      { key: 'copilot', label: 'AI 运维副驾', sub: 'SRE Copilot', icon: Bot },
-      { key: 'auditor', label: '端侧日志审计', sub: 'Edge Log Auditor (WASM)', icon: ShieldCheck },
+      { key: 'copilot', label: AGENT_COPY.copilotTitle, sub: AGENT_COPY.copilotTitle, icon: Bot },
+      { key: 'auditor', label: AGENT_COPY.auditorTitle, sub: AGENT_COPY.auditorSrOnlyAnchor, icon: ShieldCheck },
     ],
     [],
   );
@@ -3515,7 +3516,7 @@ export default function CopilotDrawer() {
 
                       <div className="text-center">
                         <p className="text-[13px] font-medium tracking-tight text-slate-200">
-                          KubeVision SRE 智能副驾
+                          {AGENT_COPY.copilotEmptyHeading}
                         </p>
                         <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
                           选择一条战术指令，或直接描述你观察到的异常。

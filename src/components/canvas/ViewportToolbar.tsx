@@ -207,7 +207,7 @@ export default function ViewportToolbar({
         type="button"
         onClick={onCaptureDiagnose}
         aria-label="3D 视口多模态快照诊断"
-        title="截取当前 3D 帧并唤醒 AI Copilot 执行多模态空间异常联合诊断"
+        title="截取当前 3D 帧并唤醒 AI 运维副驾执行多模态空间异常联合诊断"
         className="relative flex h-11 w-11 items-center justify-center rounded-md border border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-300 transition-all duration-150 hover:border-fuchsia-400 hover:bg-fuchsia-500/20 hover:shadow-[0_0_12px_0_rgba(217,70,239,0.45)] active:scale-90 md:h-9 md:w-9"
       >
         <Camera className="h-4 w-4" aria-hidden />

@@ -17,6 +17,7 @@
 
 import { z } from 'zod';
 import type { RagSignalBreakdown } from '@/utils/ragSignals';
+import { CHAT_ERROR_COPY } from '@/constants/copy/agent';
 
 /**
  * RagRunbookDoc —— SRE Runbook 知识库检索切片。
@@ -535,19 +536,9 @@ export const CHAT_ERROR_CATEGORY = {
 export type ChatErrorCategory = (typeof CHAT_ERROR_CATEGORY)[keyof typeof CHAT_ERROR_CATEGORY];
 
 /**
- * 各错误分类的展示文案与可重试性（前端唯一文案来源）。
- *
- * 【约束】不在这里塞视觉样式；只给"标题 + 建议动作"的纯文本。
+ * 各错误分类的展示文案与可重试性（R11 统一收口于 `@/constants/copy/agent` 并在此重导出）。
  */
-export const CHAT_ERROR_COPY: Readonly<
-  Record<ChatErrorCategory, { readonly title: string; readonly hint: string; readonly retryable: boolean }>
-> = {
-  network: { title: '网络连接中断', hint: '检查网络后重试，已生成的内容会保留', retryable: true },
-  model: { title: '模型服务异常', hint: '上游模型限流或不可用，可稍后重试', retryable: true },
-  tool_args: { title: '工具参数不合法', hint: '模型给出的工具参数无效，重试可让服务端重新生成', retryable: true },
-  server: { title: '服务端内部错误', hint: '服务端 5xx，请稍后重试', retryable: true },
-  abort: { title: '已停止生成', hint: '本次回答已中止，可重新发送', retryable: false },
-};
+export { CHAT_ERROR_COPY };
 
 /**
  * ChatStreamErrorEvent —— 结构化错误事件（向后兼容：旧前端忽略未知 type）。

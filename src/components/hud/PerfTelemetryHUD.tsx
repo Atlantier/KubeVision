@@ -29,6 +29,7 @@ import { motion } from 'framer-motion';
 import { Activity, Cpu, Gauge, Layers, Radio, Triangle, X } from 'lucide-react';
 
 import { Z_CLASS } from '@/constants/zIndex';
+import { UI_COPY } from '@/constants/copy';
 import { cn } from '@/utils/cn';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
@@ -269,13 +270,13 @@ function DataHealthBlock() {
                 className="font-mono text-[10px] font-bold tabular-nums"
                 style={{ color: traceSummary.ttftMs > 2000 ? '#fbbf24' : '#e2e8f0' }}
               >
-                TTFT {traceSummary.ttftMs.toFixed(0)}ms
+                {UI_COPY.traceTtftLabel} {traceSummary.ttftMs.toFixed(0)}ms
               </span>
               <span
                 className="ml-2 font-mono text-[10px] font-bold tabular-nums"
                 style={{ color: traceSummary.totalMs > 8000 ? '#fbbf24' : '#e2e8f0' }}
               >
-                TOTAL {traceSummary.totalMs.toFixed(0)}ms
+                {UI_COPY.traceTotalLabel} {traceSummary.totalMs.toFixed(0)}ms
               </span>
               <span className="ml-auto font-mono text-[10px] text-slate-500">
                 {traceSummary.engine === 'llm' ? 'LLM' : '容灾引擎'}

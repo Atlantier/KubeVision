@@ -304,7 +304,7 @@ function buildAlerts(scenario: ChaosScenario, snapshot: TelemetrySnapshot): Aler
         level: 'P0',
         entityId: node.id,
         entityName: node.name,
-        message: `节点 ${node.name} 网络吞吐骤降至 ${node.networkMbps.toFixed(1)} Mbps，判定为 NetworkPartition 脑裂`,
+        message: `节点 ${node.name} 网络吞吐骤降至 ${node.networkMbps.toFixed(1)} Mbps，判定为 NetworkPartition 网络分区`,
       });
     }
   }

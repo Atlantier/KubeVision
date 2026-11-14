@@ -17,6 +17,7 @@
  */
 
 import { memo, type ReactElement } from 'react';
+import { AGENT_COPY, UI_COPY } from '@/constants/copy';
 import {
   useAgentTraceStore,
   copyText,
@@ -56,20 +57,20 @@ function AgentTracePanel(): ReactElement | null {
   return (
     <div
       role="region"
-      aria-label="请求链路追踪"
+      aria-label={AGENT_COPY.traceRegionLabel}
       className="min-w-0 max-w-full rounded-kv border border-white/[0.075] bg-slate-950/60 p-2"
     >
       <div className="flex min-w-0 items-center justify-between gap-2">
         <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
-          TRACE
+          {UI_COPY.traceHeader}
         </span>
         <button
           type="button"
           onClick={(): void => {
             void copyText(traceId);
           }}
-          aria-label={`复制 traceId ${traceId}`}
-          title="点击复制 traceId"
+          aria-label={`复制链路编号 ${traceId}`}
+          title="点击复制链路编号"
           className="min-w-0 max-w-full truncate rounded-kv border border-white/[0.075] px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-cyan-300/90 outline-none hover:text-cyan-200 focus-visible:ring-1 focus-visible:ring-cyan-400/60"
         >
           {traceId}
@@ -79,22 +80,24 @@ function AgentTracePanel(): ReactElement | null {
       {summary !== null ? (
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10px] tabular-nums">
           <span className={ttftSlow ? 'text-amber-300' : 'text-slate-300'}>
-            TTFT {summary.ttftMs.toFixed(0)}ms
+            {UI_COPY.traceTtftLabel} {summary.ttftMs.toFixed(0)}ms
           </span>
           <span className={totalSlow ? 'text-amber-300' : 'text-slate-300'}>
-            TOTAL {summary.totalMs.toFixed(0)}ms
+            {UI_COPY.traceTotalLabel} {summary.totalMs.toFixed(0)}ms
           </span>
           <span className="text-slate-400">
             {summary.promptTokens === undefined && summary.completionTokens === undefined
-              ? 'TOKENS 未配置'
-              : `TOKENS ${summary.promptTokens ?? 0}/${summary.completionTokens ?? 0}`}
+              ? UI_COPY.traceTokensUnconfigured
+              : `${UI_COPY.traceTokensPrefix} ${summary.promptTokens ?? 0}/${summary.completionTokens ?? 0}`}
           </span>
           <span className="text-slate-400">
-            {summary.costCny === undefined ? 'COST 未配置' : `COST ¥${summary.costCny.toFixed(4)}`}
+            {summary.costCny === undefined
+              ? UI_COPY.traceCostUnconfigured
+              : `${UI_COPY.traceCostPrefix} ¥${summary.costCny.toFixed(4)}`}
           </span>
         </div>
       ) : (
-        <p className="mt-1.5 font-mono text-[10px] text-slate-400">等待 trace-summary…</p>
+        <p className="mt-1.5 font-mono text-[10px] text-slate-400">{UI_COPY.traceWaitingSummary}</p>
       )}
 
       <div className="mt-1.5 space-y-1">

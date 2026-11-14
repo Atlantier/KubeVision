@@ -200,13 +200,13 @@ try {
   let actionSeen = false;
   for (let i = 0; i < 240; i += 1) {
     await sleep(500);
-    actionSeen = (await evaluate(cdp, `document.body.textContent.includes('立即执行自愈方案') || document.body.textContent.includes('需二次确认')`)) === true;
+    actionSeen = (await evaluate(cdp, `document.body.textContent.includes('立即执行自愈方案') || document.body.textContent.includes('需二次确认') || document.body.textContent.includes('请先勾选确认')`)) === true;
     if (actionSeen) break;
   }
   result.actionCardSeen = actionSeen;
   result.actionCard = await evaluate(cdp, `(() => {
     const buttons = Array.from(document.querySelectorAll('button'));
-    const execute = buttons.find((b) => /立即执行自愈方案|需二次确认/.test(b.textContent || ''));
+    const execute = buttons.find((b) => /立即执行自愈方案|需二次确认|请先勾选确认/.test(b.textContent || ''));
     const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"]')).map((c) => ({
       checked: c.checked,
       label: (c.closest('label')?.textContent || c.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().slice(0, 160),

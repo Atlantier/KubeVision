@@ -32,6 +32,7 @@ import {
   Target,
 } from 'lucide-react';
 
+import { UI_COPY } from '@/constants/copy';
 import { cn } from '@/utils/cn';
 import MarkdownLite, { InlineMarkdown } from '@/components/ai/MarkdownLite';
 import {
@@ -390,7 +391,9 @@ function RootCauseAlertImpl({
       {/* ============ 影响范围 ============ */}
       {impactScope.length > 0 ? (
         <div className="px-2.5 pb-2">
-          <p className="font-mono text-[11px] uppercase tracking-wider text-slate-500">故障爆炸半径</p>
+          <p className="font-mono text-[11px] uppercase tracking-wider text-slate-500">
+            {UI_COPY.rootCauseImpactTitle}
+          </p>
           {/* 单段文本 → InlineMarkdown，避免块级容器撑散卡片 */}
           <p className="mt-0.5 text-caption leading-relaxed text-amber-300/90">
             <InlineMarkdown text={impactScope} />
@@ -484,8 +487,8 @@ function RootCauseAlertImpl({
 
                       {/* 内核机理 */}
                       <div className="mt-1">
-                        <p className="font-mono text-[10px] uppercase tracking-wider text-emerald-400/60">
-                          内核 / Cgroup / CNI 层机理
+                        <p className="font-mono text-[10px] tracking-wider text-emerald-400/60">
+                          {UI_COPY.rootCauseMechanismTitle}
                         </p>
                         <p className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-400">
                           {doc.rootCauseMechanism}

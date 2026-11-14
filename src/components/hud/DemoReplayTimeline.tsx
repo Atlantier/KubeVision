@@ -18,6 +18,7 @@
 
 import { ChevronDown, History, RotateCcw, X } from 'lucide-react';
 
+import { CHAOS_SCENARIO_LABELS } from '@/constants/copy';
 import { cn } from '@/utils/cn';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import {
@@ -35,12 +36,12 @@ const CARD_STATE_LABEL: Readonly<Record<DemoCardState, string>> = {
   executed: '已执行',
 };
 
-/** 混沌场景的中文标签（回放面板用，避免再拉一份映射表） */
+/** 混沌场景的中文标签（统一引自 @/constants/copy） */
 const CHAOS_LABEL: Readonly<Record<string, string>> = {
   NONE: '无',
-  POD_OOM_SWARM: 'OOM 内存溢出',
-  NODE_CPU_SPIKE: '节点 CPU 尖刺',
-  NET_PACKET_LOSS: 'CNI 网络丢包',
+  POD_OOM_SWARM: CHAOS_SCENARIO_LABELS.POD_OOM_SWARM,
+  NODE_CPU_SPIKE: CHAOS_SCENARIO_LABELS.NODE_CPU_SPIKE,
+  NET_PACKET_LOSS: CHAOS_SCENARIO_LABELS.NET_PACKET_LOSS,
 };
 
 /**

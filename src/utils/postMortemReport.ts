@@ -36,6 +36,7 @@ import type {
   RagRunbookDoc,
   RootCauseAlertProps,
 } from '@/types/ai';
+import { getChaosReportLabel, REPORT_COPY } from '@/constants/copy';
 import { renderIncidentTimelineMarkdown } from '@/utils/snapshotRingBuffer';
 import { formatDateTime, formatTimestampCompact, formatTimezoneOffset } from '@/utils/time';
 
@@ -332,18 +333,7 @@ function actionLabel(actionType: string): string {
  * @returns 中文标签
  */
 function chaosLabel(chaos: string): string {
-  switch (chaos) {
-    case 'NONE':
-      return 'NONE（稳态，无故障注入）';
-    case 'POD_OOM_SWARM':
-      return 'POD_OOM_SWARM（Pod OOM 集群性爆发）';
-    case 'NODE_CPU_SPIKE':
-      return 'NODE_CPU_SPIKE（节点 CPU 尖峰）';
-    case 'NET_PACKET_LOSS':
-      return 'NET_PACKET_LOSS（网络丢包）';
-    default:
-      return chaos;
-  }
+  return getChaosReportLabel(chaos);
 }
 
 /* ========================================================================== */
@@ -775,14 +765,20 @@ function resolveAffectedEntity(
 ): string {
   const firstFaulty = context.faultyPods[0];
   if (firstFaulty !== undefined) {
-    return `POD ${firstFaulty.name}（命名空间 ${firstFaulty.namespace}）`;
+    return `Pod ${firstFaulty.name}（命名空间 ${firstFaulty.namespace}）`;
   }
   if (
     context.selectedEntityId !== null &&
     context.selectedEntityId.trim() !== '' &&
     context.selectedEntityType !== null
   ) {
-    return `${context.selectedEntityType.toUpperCase()} ${context.selectedEntityId}`;
+    const entityLabel =
+      context.selectedEntityType === 'pod'
+        ? 'Pod'
+        : context.selectedEntityType === 'node'
+          ? 'Node'
+          : 'Master';
+    return `${entityLabel} ${context.selectedEntityId}`;
   }
   if (primary !== undefined) {
     return `根因卡标题所述范围：${normalizeInline(primary.props.title)}`;
@@ -884,7 +880,7 @@ function buildHeaderLines(input: PostMortemInput): string[] {
     `> 会话起点：${formatDateTime(startMs)}（${formatTimezoneOffset(
       startMs,
     )}） · 会话跨度：${formatDuration(spanMs)}`,
-    '> 数据来源：端侧实时集群快照（ClusterContext：健康分 / 入口 QPS / 异常 Pod / 节点水位）+ Agent 推理链（reasoningSteps：五态阶段与单步耗时）+ 生成式 UI 卡片载荷（toolCards.args：指标卡 / 根因卡 / 自愈审批卡）。全部字段由浏览器内的会话状态推导，报告中不存在手工补写的数据。',
+    REPORT_COPY.dataSourceQuote,
   ];
 }
 
@@ -923,9 +919,9 @@ function buildSummarySection(input: PostMortemInput, model: SessionModel): strin
         )}）· 会话起点（无根因卡可定位检测时刻）`;
   const statusText = `${summarizePodStatuses(context.faultyPods)}；${summarizeNodes(
     context,
-  )}；演练场景 ${context.activeChaos}`;
+  )}；演练场景 ${chaosLabel(context.activeChaos)}`;
 
-  lines.push('## 1. 事故摘要 (Incident Summary)');
+  lines.push('## 1. 事故摘要（Incident Summary）');
   lines.push('');
   lines.push('| 项目 | 内容 |');
   lines.push('| --- | --- |');
@@ -953,14 +949,14 @@ function buildSummarySection(input: PostMortemInput, model: SessionModel): strin
       )}）`,
     );
   } else {
-    symptomParts.push('快照中不存在异常 Pod（clusterContext.faultyPods 为空）');
+    symptomParts.push(REPORT_COPY.emptyFaultyPodsSymptom);
   }
   if (context.activeChaos !== 'NONE') {
     symptomParts.push(`混沌演练场景 ${chaosLabel(context.activeChaos)}处于激活状态`);
   }
   if (primary !== undefined) {
     symptomParts.push(
-      `Agent 判定根因标题为「${normalizeInline(primary.props.title)}」，自评置信度 ${formatConfidence(
+      `AI 运维副驾判定根因标题为「${normalizeInline(primary.props.title)}」，自评置信度 ${formatConfidence(
         primary.props.confidence,
       )}，引用 Runbook ${primary.props.ragReferences.length} 篇`,
     );
@@ -984,16 +980,16 @@ function buildSummarySection(input: PostMortemInput, model: SessionModel): strin
   lines.push(
     `- 自愈闭环：${
       executedCount > 0
-        ? `检测到 ${executedCount} 条 MCP Verification 执行回执，已执行动作 ${model.executedActions
+        ? `检测到 ${executedCount} 条 MCP 执行验证回执，已执行动作 ${model.executedActions
             .filter((record): boolean => record.actionType !== 'unknown')
             .map((record): string => actionLabel(record.actionType))
             .join('、')}。`
-        : '会话中未检测到 MCP Verification 执行回执，所有审批卡均按「待审批」处理。'
+        : '会话中未检测到 MCP 执行验证回执，所有审批卡均按「待审批」处理。'
     }`,
   );
   if (model.failedMessageCount > 0) {
     lines.push(
-      `- 异常消息：${model.failedMessageCount} 条消息被标记为失败（failed=true），其内容不完整，未纳入本次定论。`,
+      `- 异常消息：${model.failedMessageCount} 条消息${REPORT_COPY.failedMessageNote}`,
     );
   }
 
@@ -1001,7 +997,7 @@ function buildSummarySection(input: PostMortemInput, model: SessionModel): strin
 }
 
 /**
- * buildImpactSection —— 第 2 章：影响范围（impactScope + 异常 Pod 明细 + 实测指标）。
+ * buildImpactSection —— 第 2 章：影响范围（影响面描述 + 异常 Pod 明细 + 实测指标）。
  *
  * @param input 报告输入
  * @param model 会话模型
@@ -1011,14 +1007,14 @@ function buildImpactSection(input: PostMortemInput, model: SessionModel): string
   const context = input.clusterContext;
   const lines: string[] = [];
 
-  lines.push('## 2. 影响范围 (Impact)');
+  lines.push('## 2. 影响范围（Impact）');
   lines.push('');
 
   if (model.rootCauses.length === 0) {
-    lines.push('本次会话未产出根因分析卡片，因此没有可引用的 impactScope 描述。');
+    lines.push(REPORT_COPY.emptyImpactScope);
     lines.push('');
   } else {
-    lines.push('**Agent 给出的影响范围（来自 RootCauseAlertProps.impactScope）**');
+    lines.push(REPORT_COPY.impactScopeHeading);
     lines.push('');
     model.rootCauses.forEach((card, index): void => {
       lines.push(
@@ -1031,10 +1027,10 @@ function buildImpactSection(input: PostMortemInput, model: SessionModel): string
   }
 
   /* ---- 2.1 异常 Pod 明细 ---- */
-  lines.push('### 2.1 异常 Pod 明细（来自 clusterContext.faultyPods）');
+  lines.push(REPORT_COPY.faultyPodsSubheading);
   lines.push('');
   if (context.faultyPods.length === 0) {
-    lines.push('当前快照中没有异常 Pod。故障可能已自愈，或本次会话启动于稳态窗口。');
+    lines.push(REPORT_COPY.emptyFaultyPodsSection);
   } else {
     lines.push('| Pod 名称 | 命名空间 | 状态 | CPU | 内存 | 重启次数 |');
     lines.push('| --- | --- | --- | --- | --- | --- |');
@@ -1052,14 +1048,14 @@ function buildImpactSection(input: PostMortemInput, model: SessionModel): string
 
   /* ---- 2.2 指标卡实测快照 ---- */
   if (model.podMetrics.length > 0) {
-    lines.push('### 2.2 Agent 指标卡实测快照（来自 renderPodMetrics 卡片）');
+    lines.push(REPORT_COPY.podMetricsSubheading);
     lines.push('');
     lines.push('| Pod 名称 | 命名空间 | CPU | 内存 | 重启次数 | CPU 历史（6 点） |');
     lines.push('| --- | --- | --- | --- | --- | --- |');
     for (const card of model.podMetrics) {
       const history = card.props.cpuHistory
         .map((value): string => formatPercent(value))
-        .join(' -> ');
+        .join(' → ');
       lines.push(
         `| ${escapeTableCell(card.props.podName)} | ${escapeTableCell(
           card.props.namespace,
@@ -1076,10 +1072,10 @@ function buildImpactSection(input: PostMortemInput, model: SessionModel): string
   /* ---- 2.3 用户观测焦点 ---- */
   const selected = context.selectedPodSnapshot;
   if (selected !== undefined) {
-    lines.push('### 2.3 用户观测焦点（selectedPodSnapshot）');
+    lines.push('### 2.3 当前选中观测实例');
     lines.push('');
     lines.push(
-      `- 实体：POD ${escapeTableCell(selected.name)}（命名空间 ${escapeTableCell(
+      `- 实体：Pod ${escapeTableCell(selected.name)}（命名空间 ${escapeTableCell(
         selected.namespace,
       )}），状态 ${escapeTableCell(selected.status)}`,
     );
@@ -1089,7 +1085,7 @@ function buildImpactSection(input: PostMortemInput, model: SessionModel): string
       )}、累计重启 ${formatInteger(selected.restarts)} 次`,
     );
     lines.push(
-      `- 内存历史（6 点）：${selected.memHistory.map((value): string => formatPercent(value)).join(' -> ')}`,
+      `- 内存历史（6 点）：${selected.memHistory.map((value): string => formatPercent(value)).join(' → ')}`,
     );
   }
 
@@ -1134,7 +1130,7 @@ function buildIncidentBaselineSection(input: PostMortemInput): string[] {
     `| 异常 Pod 数 | ${before.anomalyCount} | ${input.clusterContext.faultyPods.length} | ${
       input.clusterContext.faultyPods.length - before.anomalyCount
     } |`,
-    `| 混沌场景 | ${before.chaos} | ${input.clusterContext.activeChaos} | — |`,
+    `| 混沌场景 | ${chaosLabel(before.chaos)} | ${chaosLabel(input.clusterContext.activeChaos)} | — |`,
     '',
     '> 「事故发生时」取自最近一次自愈动作记录的前值快照，而不是导出时刻的实时值。',
     '',
@@ -1156,11 +1152,9 @@ function buildIncidentBufferSection(input: PostMortemInput): string[] {
 
 function buildTimelineSection(model: SessionModel): string[] {
   const lines: string[] = [];
-  lines.push('## 3. 时间线 (Timeline)');
+  lines.push('## 3. 时间线（Timeline）');
   lines.push('');
-  lines.push(
-    '> 时间口径：CopilotMessage 契约不含绝对时间戳，相对时刻由每条 AI 消息的 reasoningSteps.latencyMs 顺序累加推算（用户提问不推进时钟），格式为 `+mm:ss`。该时间线用于还原因果顺序，不作为内核级精确证据。',
-  );
+  lines.push(REPORT_COPY.timelineQuote);
   lines.push('');
 
   if (model.timeline.length === 0) {
@@ -1196,15 +1190,13 @@ function buildTimelineSection(model: SessionModel): string[] {
  */
 function buildRootCauseSection(model: SessionModel): string[] {
   const lines: string[] = [];
-  lines.push('## 4. 根因分析 (Root Cause Analysis)');
+  lines.push('## 4. 根因分析（Root Cause Analysis）');
   lines.push('');
 
   if (model.rootCauses.length === 0) {
     lines.push('本次会话未产出根因分析卡片。');
     lines.push('');
-    lines.push(
-      '> 说明：没有任何根因卡（reportRootCause / renderRootCauseAnalysis）进入会话，因此本报告不对根因作任何推测。若故障确实存在，应重新发起一次带异常 Pod 上下文的诊断请求。',
-    );
+    lines.push(REPORT_COPY.noRootCauseNotice);
     return lines;
   }
 
@@ -1216,7 +1208,7 @@ function buildRootCauseSection(model: SessionModel): string[] {
       `- 严重度：${severityLabel(props.severity)} · 模型自评置信度：${formatConfidence(props.confidence)}`,
     );
     lines.push(
-      `- 卡片来源：${card.synthesized ? '服务端补全（synthesized=true）' : '模型原生调用'} · 工具名 \`${card.toolName}\``,
+      `- 卡片来源：${card.synthesized ? REPORT_COPY.synthesizedCardSource : REPORT_COPY.nativeCardSource}`,
     );
     lines.push(`- 时间位置：${formatRelative(card.offsetMs)}`);
     lines.push('');
@@ -1249,14 +1241,14 @@ function buildKnowledgeSection(model: SessionModel): string[] {
   const lines: string[] = [];
   const refs = collectRunbookRefs(model);
 
-  lines.push('## 5. 知识库依据 (Knowledge Base References)');
+  lines.push('## 5. 知识库依据（Knowledge Base References）');
   lines.push('');
 
   if (refs.length === 0) {
     lines.push(
       model.rootCauses.length === 0
         ? '本次会话未产出根因分析卡片，因此没有任何 Runbook 被引用。'
-        : '本次会话的根因卡片未携带 ragReferences，知识库依据缺失。',
+        : REPORT_COPY.missingRagRefsNotice,
     );
     return lines;
   }
@@ -1277,7 +1269,7 @@ function buildKnowledgeSection(model: SessionModel): string[] {
     lines.push('');
     lines.push(
       `- 匹配度：${formatConfidence(doc.similarityScore)} · 分类：${doc.category} · 语料来源：${
-        doc.isCustom === true ? '自定义语料（localStorage）' : '内置语料'
+        doc.isCustom === true ? REPORT_COPY.customCorpusSource : REPORT_COPY.builtinCorpusSource
       }`,
     );
     lines.push(
@@ -1304,16 +1296,14 @@ function buildKnowledgeSection(model: SessionModel): string[] {
  */
 function buildRemediationSection(model: SessionModel): string[] {
   const lines: string[] = [];
-  lines.push('## 6. 处置动作 (Remediation Actions)');
+  lines.push('## 6. 处置动作（Remediation Actions）');
   lines.push('');
 
   if (model.actions.length === 0 && model.executedActions.length === 0) {
     lines.push('本次会话未产出处置动作卡片，也没有检测到自愈执行回执。');
     return lines;
   }
-  lines.push(
-    '> 状态判定口径：ActionConfirmProps.onActionExecuted 是回调函数而非会话数据，卡片执行态不进入消息流；因此本表只以「MCP Verification 执行回执」作为「已执行」的唯一证据，无回执即视为「待审批」。',
-  );
+  lines.push(REPORT_COPY.actionStateQuote);
   lines.push('');
 
   if (model.actions.length > 0) {
@@ -1329,7 +1319,7 @@ function buildRemediationSection(model: SessionModel): string[] {
         `| ${escapeTableCell(actionLabel(action.props.actionType))} | ${escapeTableCell(
           action.props.targetName,
         )} | ${escapeTableCell(action.props.mcpEndpoint)} | ${escapeTableCell(
-          action.props.isHighRisk ? '是（需二次确认）' : '否',
+          action.props.isHighRisk ? REPORT_COPY.highRiskConfirmLabel : '否',
         )} | ${escapeTableCell(statusText)} |`,
       );
     }
@@ -1349,15 +1339,15 @@ function buildRemediationSection(model: SessionModel): string[] {
       lines.push(`- MCP 端点：\`${action.props.mcpEndpoint}\``);
       lines.push(`- 参数说明：${normalizeInline(action.props.paramDescription)}`);
       lines.push(
-        `- 卡片来源：${action.synthesized ? '服务端补全（synthesized=true）' : '模型原生调用'} · 工具名 \`${action.toolName}\``,
+        `- 卡片来源：${action.synthesized ? REPORT_COPY.synthesizedCardSource : REPORT_COPY.nativeCardSource}`,
       );
       lines.push(
         `- 执行状态：${
           matched !== undefined
-            ? `已执行 —— 会话中检索到对应的 MCP Verification 回执（相对时刻 ${formatRelative(
+            ? `已执行 —— 会话中检索到对应的 MCP 执行验证回执（相对时刻 ${formatRelative(
                 matched.offsetMs,
               )}，目标 ${matched.targetLabel}）`
-            : '待审批 —— 会话中未检索到该动作的 MCP Verification 回执，动作尚未执行'
+            : '待审批 —— 本次会话未检测到该动作的 MCP 执行验证回执，动作尚未执行'
         }`,
       );
       lines.push('');
@@ -1481,7 +1471,7 @@ function buildLessonItems(input: PostMortemInput, model: SessionModel): string[]
         executedRecord.offsetMs,
       )} 经 ${executedRecord.endpoint} 对 ${executedRecord.targetLabel} 执行了「${actionLabel(
         executedRecord.actionType,
-      )}」，需在变更系统补录工单号，并核对 healedPodIds 免疫窗口是否会把同 Pod 的重复告警吞掉——免疫窗口是去重机制，不是故障已消除的证明。`,
+      )}」，需在变更系统补录工单号，并核对自愈免疫窗口是否会把同 Pod 的重复告警吞掉——免疫窗口是去重机制，不是故障已消除的证明。`,
     );
   } else if (model.actions.length > 0) {
     candidates.push(
@@ -1542,10 +1532,10 @@ function buildLessonSection(input: PostMortemInput, model: SessionModel): string
   const lines: string[] = [];
   const startMs = Number.isFinite(input.startedAtMs) ? input.startedAtMs : 0;
   const reportMs = Number.isFinite(input.nowMs) ? input.nowMs : startMs;
-  lines.push('## 7. 经验教训与后续改进 (Lessons Learned & Action Items)');
+  lines.push('## 7. 经验教训与后续改进（Lessons Learned & Action Items）');
   lines.push('');
   lines.push(
-    `以下改进项依据本次会话的真实卡片与 clusterContext 数值生成（会话跨度 ${formatDuration(
+    `${REPORT_COPY.lessonsLeadTemplate}（会话跨度 ${formatDuration(
       Math.max(0, reportMs - startMs),
     )}，推理步骤累计耗时 ${formatLatency(
       model.totalReasoningLatencyMs,
@@ -1566,10 +1556,10 @@ function buildDisclaimerSection(): string[] {
     '## 8. 免责与数据边界声明',
     '',
     '- 本报告由 KubeVision AI 在浏览器端侧生成，生成过程未发起任何外部网络请求，报告正文不含任何凭据明文。',
-    '- 所有 Pod 名称、命名空间、状态、水位、重启次数、节点水位、健康分与 QPS 均来自端侧实时集群快照与会话上下文；卡片文本（根因摘要、证据链、影响范围、参数说明）由模型生成，并已逐卡标注「模型原生调用」或「服务端补全」。',
+    '- 所有 Pod 名称、命名空间、状态、水位、重启次数、节点水位、健康分与 QPS 均来自端侧实时集群快照与会话上下文；卡片文本（根因摘要、证据链、影响范围、参数说明）由模型生成，并已逐卡标注「模型原生调用」或「服务端自动补全」。',
     '- 所有敏感信息已由端侧脱敏链路处理：IP、Token、Secret、邮箱等模式在进入推理上下文前即被掩码为 [REDACTED]；原始凭证与原始日志仅留存于本地浏览器，未离开浏览器、未写入本报告。',
-    '- 时间线时刻为 reasoningSteps.latencyMs 顺序累加的推算值，用于还原因果顺序，不等同于内核或告警系统的精确时间戳。',
-    '- 本报告是复盘证据与改进清单，不构成生产变更指令。任何高危动作（尤其是 drain_node 驱逐节点）必须经过人工二次确认与变更审批流程后方可执行。',
+    REPORT_COPY.timelineFormulaDisclaimer,
+    REPORT_COPY.highRiskActionDisclaimer,
   ];
 }
 
