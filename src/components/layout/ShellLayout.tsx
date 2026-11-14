@@ -36,6 +36,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Bot, Layers, ShieldCheck } from 'lucide-react';
 
+import { Z_CLASS } from '@/constants/zIndex';
 import { cn } from '@/utils/cn';
 import { isInteractiveTarget } from '@/utils/keyboardTargets';
 import { useClusterStore } from '@/store/useClusterStore';
@@ -131,13 +132,25 @@ export function RightDrawerSlot({ activeTab, onTabChange, children }: RightDrawe
  * fixed 定位悬浮于视口底部安全区之上（pb 兼容 iOS home indicator），
  * z-30 低于顶层 Modal（z-50）与 HUD（z-40）。
  */
-function MobileViewSwitcher({ view, onChange }: { readonly view: MobileViewKey; readonly onChange: (view: MobileViewKey) => void }) {
+function MobileViewSwitcher({
+  view,
+  onChange,
+  hidden = false,
+}: {
+  readonly view: MobileViewKey;
+  readonly onChange: (view: MobileViewKey) => void;
+  readonly hidden?: boolean;
+}) {
+  if (hidden) return null;
   const items: ReadonlyArray<{ readonly key: MobileViewKey; readonly label: string }> = [
     { key: 'topology', label: '3D 拓扑视图' },
     { key: 'copilot', label: 'AI Copilot 视图' },
   ];
   return (
-    <div className="fixed inset-x-0 bottom-3 z-30 flex justify-center px-4 lg:hidden" aria-label="移动端视图切换">
+    <div
+      className={cn('fixed inset-x-0 bottom-3 flex justify-center px-4 lg:hidden kv-safe-bottom', Z_CLASS.CHROME_POPOVER)}
+      aria-label="移动端视图切换"
+    >
       <div className="kv-panel pointer-events-auto flex items-center gap-1 rounded-full p-1 shadow-panel">
         {items.map((item) => {
           const active = view === item.key;
@@ -148,7 +161,7 @@ function MobileViewSwitcher({ view, onChange }: { readonly view: MobileViewKey; 
               aria-pressed={active}
               onClick={(): void => onChange(item.key)}
               className={cn(
-                'relative flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-medium transition-colors',
+                'relative flex min-h-[44px] items-center gap-1.5 rounded-full px-4 py-2 text-xs font-medium transition-colors kv-touch-feedback',
                 active ? 'text-slate-950' : 'text-slate-400',
               )}
             >
@@ -219,10 +232,73 @@ export default function ShellLayout({ viewport, drawer, perfHud }: ShellLayoutPr
   const [isResizing, setIsResizing] = useState<boolean>(false);
 
   /**
-   * 主容器引用：Resizer 需要它的实时 rect（宽度与右缘位置）才能把
-   * 指针像素坐标换算成百分比。用 ref 而非 state，避免每帧测量引起重渲染。
+   * 主容器引用：Resizer 需要测量左栏+右栏容器宽度来换算拖拽百分比。
    */
-  const mainRef = useRef<HTMLElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+  const viewportSectionRef = useRef<HTMLElement>(null);
+  const drawerSectionRef = useRef<HTMLElement>(null);
+
+  /** 桌面端断点标记（>= 1024px 时双栏并排，不启用 inert） */
+  const [isLgDesktop, setIsLgDesktop] = useState<boolean>(true);
+  /** 移动端软键盘弹出态：收缩可视高度并聚焦输入控件时自动隐藏底部切换条 */
+  const [keyboardOpen, setKeyboardOpen] = useState<boolean>(false);
+
+  useEffect((): (() => void) => {
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const syncDesktop = (): void => setIsLgDesktop(mq.matches);
+    syncDesktop();
+    mq.addEventListener('change', syncDesktop);
+    return (): void => mq.removeEventListener('change', syncDesktop);
+  }, []);
+
+  /* 小屏隐藏面同步 inert：保活 Canvas WebGL 上下文与 Copilot scrollTop/输入草稿，同时阻断后台焦点穿透 */
+  useEffect((): void => {
+    const viewportEl = viewportSectionRef.current;
+    const drawerEl = drawerSectionRef.current;
+    const hideViewport = !isLgDesktop && mobileView !== 'topology';
+    const hideDrawer = !isLgDesktop && mobileView !== 'copilot';
+    viewportEl?.toggleAttribute('inert', hideViewport);
+    drawerEl?.toggleAttribute('inert', hideDrawer);
+  }, [isLgDesktop, mobileView]);
+
+  const maxHeightRef = useRef<number>(0);
+
+  useEffect((): (() => void) => {
+    const syncKeyboard = (): void => {
+      if (isLgDesktop) {
+        maxHeightRef.current = window.innerHeight;
+        setKeyboardOpen(false);
+        return;
+      }
+      if (window.innerHeight > maxHeightRef.current) {
+        maxHeightRef.current = window.innerHeight;
+      }
+      const active = document.activeElement;
+      const isTextInputFocused =
+        active !== null && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+      const vvHeight = window.visualViewport?.height ?? window.innerHeight;
+      const baseline = Math.max(window.innerHeight, maxHeightRef.current);
+      const shrunk = baseline > 0 && vvHeight < baseline * 0.75;
+      setKeyboardOpen(isTextInputFocused || shrunk);
+    };
+
+    const syncKeyboardDeferred = (): void => {
+      window.requestAnimationFrame(syncKeyboard);
+    };
+
+    syncKeyboard();
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', syncKeyboard);
+    window.addEventListener('resize', syncKeyboard);
+    document.addEventListener('focusin', syncKeyboard);
+    document.addEventListener('focusout', syncKeyboardDeferred);
+    return (): void => {
+      vv?.removeEventListener('resize', syncKeyboard);
+      window.removeEventListener('resize', syncKeyboard);
+      document.removeEventListener('focusin', syncKeyboard);
+      document.removeEventListener('focusout', syncKeyboardDeferred);
+    };
+  }, [isLgDesktop]);
 
   /* ---- 全局键盘：Shift+P 切换性能 HUD ---- */
   useEffect(() => {
@@ -297,108 +373,92 @@ export default function ShellLayout({ viewport, drawer, perfHud }: ShellLayoutPr
        * 否则会盖住 TerminalEcho 与 Copilot 的快捷指令芯片。
        */}
       <main
-        ref={mainRef}
-        className="flex min-h-0 flex-1 flex-col gap-2 p-2 pb-14 lg:flex-row lg:gap-0 lg:p-2"
+        className={cn(
+          'flex min-h-0 flex-1 flex-col p-2 lg:flex-row lg:gap-0 lg:p-2',
+          keyboardOpen
+            ? 'pb-2 lg:pb-2'
+            : 'pb-[calc(4.75rem+env(safe-area-inset-bottom))] lg:pb-2',
+        )}
       >
-        {/* ---- 左栏：3D 视口槽位（flex-1 自适应剩余空间）+ 底部悬浮 TerminalEcho ----
-         * 【为何从 lg:basis-[65%] 改成 flex-1 min-w-0】
-         * 引入可拖拽分栏后，右栏宽度是动态的（由 --drawer-w 驱动），
-         * 左栏必须"吃掉剩余空间"而不是固守某个比例。min-w-0 是关键：
-         * flex 子项默认 min-width:auto，不写 min-w-0 时内部的
-         * TerminalEcho/Canvas 会撑开最小宽度，导致右栏被挤到设定值之外。 */}
-        <section
-          aria-label="3D 集群拓扑视口"
-          className={cn(
-            'kv-fade-in relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-white/[0.07] bg-slate-900/40',
-            // 移动端：copilot 视图时隐藏左栏（常驻 DOM，不卸载画布）
-            mobileView === 'copilot' && 'hidden lg:block',
-          )}
+        <div
+          ref={mainRef}
+          className="relative flex min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden lg:flex-row lg:gap-0"
         >
-          {/* 视口槽位：后续轮次注入 dynamic(ssr:false) R3F Canvas */}
-          {viewport}
+          {/* ---- 左栏：3D 视口槽位（桌面 flex-1，移动端与右栏重叠常驻保活 WebGL 上下文） ---- */}
+          <section
+            ref={viewportSectionRef}
+            aria-label="3D 集群拓扑视口"
+            aria-hidden={!isLgDesktop && mobileView !== 'topology' ? true : undefined}
+            className={cn(
+              'kv-fade-in overflow-hidden rounded-lg border border-white/[0.07] bg-slate-900/40',
+              'absolute inset-0 transition-[opacity,transform] duration-200 ease-out',
+              mobileView === 'topology'
+                ? 'pointer-events-auto z-10 translate-x-0 opacity-100'
+                : 'pointer-events-none z-0 -translate-x-2 opacity-0',
+              'lg:static lg:inset-auto lg:z-auto lg:min-h-0 lg:min-w-0 lg:flex-1 lg:pointer-events-auto lg:translate-x-0 lg:opacity-100',
+            )}
+          >
+            {/* 视口槽位：后续轮次注入 dynamic(ssr:false) R3F Canvas */}
+            {viewport}
 
-          {/* ---- 混沌演练态势氛围光（审查报告 §2.4.2）----
-              值班人员余光扫一眼就该知道集群处于故障演练态，而不是
-              必须先读到顶部的红色胶囊。这里用一层极克制的内阴影暗角：
-              透明度 6-8%、pointer-events-none 不拦截任何交互、
-              与画布同层但覆盖其上，营造"整块屏幕被警示色浸染"的氛围。 */}
-          {activeChaos !== 'NONE' ? (
-            <div
-              className="pointer-events-none absolute inset-0 z-[5] animate-glow-pulse rounded-lg"
-              aria-hidden
-              style={{
-                boxShadow:
-                  'inset 0 0 60px 12px rgba(244, 63, 94, 0.07), inset 0 0 140px 40px rgba(245, 158, 11, 0.05)',
-              }}
+            {/* ---- 混沌演练态势氛围光（审查报告 §2.4.2）---- */}
+            {activeChaos !== 'NONE' ? (
+              <div
+                className="pointer-events-none absolute inset-0 z-[5] animate-glow-pulse rounded-lg"
+                aria-hidden
+                style={{
+                  boxShadow:
+                    'inset 0 0 60px 12px rgba(244, 63, 94, 0.07), inset 0 0 140px 40px rgba(245, 158, 11, 0.05)',
+                }}
+              />
+            ) : null}
+
+            {/* 事件流终端：右侧避让相机工具条（< lg 避让底部浮动视图切换栏，移动 44px 按钮需 right-[84px]） */}
+            {present ? null : <TerminalEcho className="absolute bottom-[4.75rem] left-3 right-[84px] md:right-[74px] lg:bottom-3" />}
+
+            {/* R73：演示态状态胶囊锚定在 3D 视口左下角 */}
+            {present ? <PresentStatusHud /> : null}
+
+            {/* R74：性能 HUD 锚定在 3D 视口内 */}
+            <AnimatePresence initial={false}>{perfHud}</AnimatePresence>
+          </section>
+
+          {/* ---- 桌面端专属分割手柄 ---- */}
+          <div className="hidden lg:flex">
+            <SplitPaneResizer
+              widthPct={drawerWidthPct}
+              onWidthChange={setDrawerWidthPct}
+              onDragStateChange={setIsResizing}
+              containerRef={mainRef}
             />
-          ) : null}
+          </div>
 
-          {/* 事件流终端：绝对定位于视口底部，右侧避让相机工具条（z-20）
-              —— right-[74px] = 工具条右距 12 + 宽 50 + 间隙 12，
-              两者在右下角不再重叠，terminal 的 clear 按钮与日志区完整可点 */}
-          {/* R32：演示模式隐藏终端；Canvas 不卸载，切回无重建成本 */}
-          {present ? null : <TerminalEcho className="absolute bottom-3 left-3 right-[74px]" />}
-
-          {/* R73：演示态状态胶囊锚定在 3D 视口左下角；终端隐藏后该区域为空闲安全区。
-              放在 section 内而非根容器，彻底避开右侧 Copilot 页签栏。 */}
-          {present ? <PresentStatusHud /> : null}
-
-          {/* R74：性能 HUD 也锚定在 3D 视口内，避免覆盖右侧 Copilot 内容；
-              通过 page.tsx 的 dynamic 节点传入，保留按需加载。 */}
-          <AnimatePresence initial={false}>{perfHud}</AnimatePresence>
-
-          {/* 性能遥测 HUD 已迁出本组件：由 page.tsx 通过 next/dynamic
-              懒加载 PerfTelemetryHUD 挂载（按需载入，首屏零开销）。
-              此处仅保留 Shift+P 的开关状态（isPerfHudOpen），
-              键盘监听仍在下方 useEffect 中维护。 */}
-        </section>
-
-        {/* ---- 桌面端专属分割手柄（移动端上下分栏时不存在左右之界，故隐藏） ---- */}
-        <div className="hidden lg:flex">
-          <SplitPaneResizer
-            widthPct={drawerWidthPct}
-            onWidthChange={setDrawerWidthPct}
-            onDragStateChange={setIsResizing}
-            containerRef={mainRef}
-          />
+          {/* ---- 右栏：AI 抽屉槽位（移动端常驻 DOM 保活 scrollTop/草稿/SSE，仅切换透明度与位移） ---- */}
+          <section
+            ref={drawerSectionRef}
+            aria-label="AI Copilot 抽屉"
+            aria-hidden={!isLgDesktop && mobileView !== 'copilot' ? true : undefined}
+            style={{ '--drawer-w': `${effectiveDrawerPct}%` } as React.CSSProperties}
+            className={cn(
+              'kv-panel kv-fade-in flex min-w-0 max-w-full flex-col overflow-hidden overflow-x-hidden rounded-lg',
+              'absolute inset-0 transition-[opacity,transform] duration-200 ease-out',
+              mobileView === 'copilot'
+                ? 'pointer-events-auto z-10 translate-x-0 opacity-100'
+                : 'pointer-events-none z-0 translate-x-2 opacity-0',
+              'lg:static lg:inset-auto lg:z-auto lg:min-h-0 lg:min-w-0 lg:pointer-events-auto lg:translate-x-0 lg:opacity-100 lg:w-[var(--drawer-w)] lg:shrink-0 lg:grow-0',
+              isResizing ? 'transition-none' : 'lg:transition-[width] lg:duration-200 lg:ease-out',
+            )}
+          >
+            {drawer}
+          </section>
         </div>
-
-        {/* ---- 右栏：AI 抽屉槽位（宽度由 --drawer-w 驱动，桌面端可拖拽） ---- *
-         * 【视觉契约】把 .kv-panel 容器下沉到这一层，左右两栏材质完全对称。
-         *
-         * 【宽度绑定】桌面端用内联 CSS 变量 --drawer-w 承载百分比，
-         * 再由 lg:w-[var(--drawer-w)] 消费。这样宽度变化只需改一个变量，
-         * 无需重建 className 字符串（Tailwind 无法生成动态百分比类，
-         * 动态拼接的 lg:basis-[${pct}%] 在生产构建中会被 JIT 丢弃）。
-         *
-         * 【过渡】拖拽中禁用 transition：宽度每帧都在变，
-         * 若叠加 200ms 过渡会产生明显的"跟不上指针"的橡皮筋感；
-         * 非拖拽时（双击复位/键盘微调）保留过渡以获得平滑感。
-         */}
-        <section
-          aria-label="AI Copilot 抽屉"
-          style={{ '--drawer-w': `${effectiveDrawerPct}%` } as React.CSSProperties}
-          className={cn(
-            'kv-panel kv-fade-in min-h-0 overflow-hidden rounded-lg',
-            // 移动端：w-full 铺满，宽度变量不生效
-            'w-full',
-            // 桌面端：消费 --drawer-w，且不参与 flex 伸缩
-            'lg:w-[var(--drawer-w)] lg:shrink-0 lg:grow-0',
-            // 拖拽中禁用过渡，其余时刻 200ms 平滑
-            isResizing ? 'transition-none' : 'transition-[width] duration-200 ease-out',
-            // 移动端：topology 视图时隐藏右栏
-            mobileView === 'topology' && 'hidden lg:block',
-          )}
-        >
-          {drawer}
-        </section>
       </main>
 
       {/* R32：演示模式极简状态胶囊已移入 3D 视口 section 左下角（见上方） */}
       <ShortcutHelpOverlay open={helpOpen} onClose={(): void => setHelpOpen(false)} />
 
-      {/* ============ 移动端底部浮动切换栏（< lg 可见） ============ */}
-      <MobileViewSwitcher view={mobileView} onChange={setMobileView} />
+      {/* ============ 移动端底部浮动切换栏（< lg 可见；软键盘弹出时自动让位） ============ */}
+      <MobileViewSwitcher view={mobileView} onChange={setMobileView} hidden={keyboardOpen} />
 
       {/* ============ 顶层：混沌演练 Modal 已迁出 ============
           原内联 ChaosConsoleModal 已替换为独立组件

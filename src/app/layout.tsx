@@ -39,8 +39,9 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
+  viewportFit: 'cover',
   /* 【R3】不设 maximumScale：旧值 1 禁用浏览器缩放，低视力用户无法放大界面。
-     保留 initialScale=1 保证首屏布局确定，缩放主权交还用户（WCAG 1.4.4）。 */
+     保留 initialScale=1 保证首屏布局确定，viewportFit='cover' 启用安全区适配（WCAG 1.4.4）。 */
   themeColor: '#020617', // slate-950：浏览器地址栏与深空底色融合
   colorScheme: 'dark',
 };

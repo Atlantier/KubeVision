@@ -78,7 +78,7 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
         onClick={enterDemoReplay}
         aria-label={`打开事故回放（已录 ${recorder.frames.length} 帧）`}
         title="事故回放（只读）"
-        className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-slate-950/80 px-3 py-1 font-mono text-[10px] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:text-cyan-100"
+        className="pointer-events-auto flex min-h-[44px] items-center gap-1.5 rounded-full border border-cyan-400/30 bg-slate-950/80 px-3 py-1 font-mono text-[10px] text-cyan-200 transition-colors hover:border-cyan-300/60 hover:text-cyan-100 md:min-h-0"
       >
         <History className="h-3 w-3" aria-hidden />
         事故回放
@@ -95,7 +95,7 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
     <div
       role="region"
       aria-label="事故回放时间轴（只读）"
-      className="pointer-events-auto w-full max-w-[46rem] rounded-lg border border-amber-400/40 bg-slate-950/[0.92] px-3.5 py-2.5 shadow-[0_12px_36px_-8px_rgba(2,6,23,0.92)] kv-blur-panel"
+      className="pointer-events-auto w-[min(32rem,calc(100vw-1.5rem))] rounded-lg border border-amber-400/40 bg-slate-950/[0.92] px-3.5 py-2.5 shadow-[0_12px_36px_-8px_rgba(2,6,23,0.92)] kv-blur-panel"
     >
       {/* 顶缘：回放态醒目标识 —— 琥珀色与运行态青色区分开 */}
       <span
@@ -120,7 +120,7 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
           onClick={exitDemoReplay}
           aria-label="退出事故回放（Esc）"
           title="退出回放（Esc）"
-          className="ml-auto flex h-5 w-5 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-amber-400/50 hover:text-amber-200"
+          className="ml-auto flex h-11 w-11 items-center justify-center rounded border border-white/[0.10] bg-white/[0.04] text-slate-300 transition-colors hover:border-amber-400/50 hover:text-amber-200 md:h-6 md:w-6"
         >
           <X className="h-2.5 w-2.5" aria-hidden />
         </button>
@@ -139,7 +139,7 @@ export default function DemoReplayTimeline(): React.ReactElement | null {
             setDemoReplayIndex(Number(event.currentTarget.value));
           }}
           aria-label="回放帧位置"
-          className="h-1 w-full cursor-pointer appearance-none rounded-full bg-white/[0.10] accent-amber-400"
+          className="kv-range h-1.5 w-full cursor-pointer"
         />
       </div>
 

@@ -1,0 +1,34 @@
+{
+  "base": "http://127.0.0.1:3000",
+  "date": "2026-11-14",
+  "clicks": [
+    {
+      "step": "overview",
+      "ok": true
+    },
+    {
+      "step": "perf-hud",
+      "ok": true
+    },
+    {
+      "step": "rag-open",
+      "ok": true
+    },
+    {
+      "step": "rag-query",
+      "ok": true
+    },
+    {
+      "step": "auditor-tab",
+      "ok": true
+    },
+    {
+      "step": "auditor-preset",
+      "ok": true
+    },
+    {
+      "step": "auditor-run",
+      "ok": true
+    }
+  ]
+}

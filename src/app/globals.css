@@ -193,6 +193,65 @@
     -webkit-backdrop-filter: blur(var(--kv-blur-overlay));
     backdrop-filter: blur(var(--kv-blur-overlay));
   }
+
+  /**
+   * 演练回放时间轴滑块（Cross-browser Range Input）
+   *
+   * 【设计意图】DemoReplayTimeline 使用 appearance-none 后需显式绘制
+   * WebKit / Firefox thumb 伪元素，确保拖动手柄清晰可见且具备 44px 内可点触感。
+   */
+  .kv-range {
+    -webkit-appearance: none;
+    appearance: none;
+    background: rgba(255, 255, 255, 0.14);
+    border-radius: 9999px;
+  }
+
+  .kv-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 9999px;
+    background: #fbbf24;
+    border: 2px solid #020617;
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.75);
+    cursor: pointer;
+    transition: transform 0.15s ease;
+  }
+
+  .kv-range::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+  }
+
+  .kv-range::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 9999px;
+    background: #fbbf24;
+    border: 2px solid #020617;
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.75);
+    cursor: pointer;
+    transition: transform 0.15s ease;
+  }
+
+  .kv-range::-moz-range-track {
+    height: 4px;
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  /**
+   * 移动端安全区底边距与触摸反馈（iPhone 刘海 / Home Indicator 适配）
+   */
+  .kv-safe-bottom {
+    padding-bottom: max(0.375rem, env(safe-area-inset-bottom));
+  }
+
+  .kv-touch-feedback:active {
+    transform: scale(0.97);
+    opacity: 0.9;
+  }
 }
 
 @layer utilities {

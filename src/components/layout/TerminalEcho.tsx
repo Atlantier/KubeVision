@@ -26,8 +26,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, ChevronsUpDown, Trash2 } from 'lucide-react';
 
+import { Z_CLASS } from '@/constants/zIndex';
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import type { TerminalLineProps, TerminalEchoProps, TerminalLogTone, TerminalToneRule } from '@/types/layout';
@@ -114,7 +115,9 @@ export function TerminalLine({ line, tone }: TerminalLineProps) {
  * 【渲染性能】memoized lines 依赖 terminalLogs 数组引用（Store FIFO 更新才失效）；
  * 单行组件无内部状态，200 行上限下 DOM 节点数受控（无需虚拟滚动）。
  */
-export default function TerminalEcho({ className, defaultCollapsed = true }: TerminalEchoProps) {
+type TerminalHeightMode = 'collapsed' | 'peek' | 'tall';
+
+export default function TerminalEcho({ className, defaultCollapsed = false }: TerminalEchoProps) {
   /* ---- Store 细粒度订阅 ---- */
   const terminalLogs = useClusterStore((s): string[] => s.terminalLogs);
   /* 【只清屏，不动持久化数据】详见 store.clearTerminalLogs 注释：
@@ -122,8 +125,25 @@ export default function TerminalEcho({ className, defaultCollapsed = true }: Ter
      totalMaskedSecrets / remediationHistory，属数据丢失事故。 */
   const clearTerminalLogs = useClusterStore((s): (() => void) => s.clearTerminalLogs);
 
-  /* ---- 折叠态（本地 UI 状态，非持久化——折叠偏好无跨会话价值） ---- */
-  const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
+  /* ---- 三档高度状态（collapsed / peek 2行默认 / tall 全高） ---- */
+  const [heightMode, setHeightMode] = useState<TerminalHeightMode>(
+    defaultCollapsed ? 'collapsed' : 'peek',
+  );
+  const collapsed = heightMode === 'collapsed';
+  const userInteractedRef = useRef<boolean>(false);
+
+  /* 小屏（< 768px）首屏及跨断点缩窄时自动收起（用户手动操作后尊重其选择） */
+  useEffect((): (() => void) | undefined => {
+    if (defaultCollapsed || typeof window === 'undefined') return undefined;
+    const syncCompact = (): void => {
+      if (!userInteractedRef.current && window.innerWidth < 768) {
+        setHeightMode('collapsed');
+      }
+    };
+    syncCompact();
+    window.addEventListener('resize', syncCompact);
+    return (): void => window.removeEventListener('resize', syncCompact);
+  }, [defaultCollapsed]);
 
   /* ---- 滚动容器与自动跟随 ---- */
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -157,16 +177,16 @@ export default function TerminalEcho({ className, defaultCollapsed = true }: Ter
     if (el !== null && stickToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [classifiedLines, collapsed]);
+  }, [classifiedLines, collapsed, heightMode]);
 
-  /** 折叠 → 展开时立即滚到底部并恢复自动跟随（错过展开动画期的新日志） */
+  /** 折叠 → 展开或高度扩展时立即滚到底部并恢复自动跟随 */
   useEffect(() => {
     if (!collapsed) {
       stickToBottomRef.current = true;
       const el = scrollRef.current;
       if (el !== null) el.scrollTop = el.scrollHeight;
     }
-  }, [collapsed]);
+  }, [collapsed, heightMode]);
 
   /** 折叠态状态栏显示的最新一行（无日志时显示待机文案） */
   const latestLine = terminalLogs.length > 0 ? terminalLogs[terminalLogs.length - 1] : null;
@@ -174,17 +194,21 @@ export default function TerminalEcho({ className, defaultCollapsed = true }: Ter
   return (
     <div
       className={cn(
-        'pointer-events-auto z-10 flex flex-col overflow-hidden rounded-lg border border-white/[0.07] bg-slate-950/80 shadow-panel transition-[height] duration-300 ease-out',
-        collapsed ? 'h-8' : 'h-32',
+        'pointer-events-auto flex flex-col overflow-hidden rounded-lg border border-white/[0.07] bg-slate-950/80 shadow-panel transition-[height] duration-300 ease-out',
+        Z_CLASS.CANVAS_HUD,
+        collapsed ? 'h-12 md:h-8' : heightMode === 'peek' ? 'h-[88px]' : 'h-36',
         className,
       )}
       aria-label="集群事件流终端"
     >
-      {/* ============ 头部状态栏（恒 h-8，点击切换折叠） ============ */}
-      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/[0.05] bg-slate-900/60">
+      {/* ============ 头部状态栏（移动端 h-[46px] 确保内部按钮 >= 44px / 桌面端 h-8） ============ */}
+      <div className="flex h-[46px] shrink-0 items-center gap-1 border-b border-white/[0.05] bg-slate-900/60 md:h-8 md:gap-2">
         <button
           type="button"
-          onClick={(): void => setCollapsed((prev): boolean => !prev)}
+          onClick={(): void => {
+            userInteractedRef.current = true;
+            setHeightMode((prev): TerminalHeightMode => (prev === 'collapsed' ? 'peek' : 'collapsed'));
+          }}
           className="flex h-full min-w-0 flex-1 items-center gap-2 px-3 text-left transition-colors hover:bg-slate-100/5"
           aria-expanded={!collapsed}
           title={collapsed ? '展开事件流终端' : '折叠事件流终端'}
@@ -214,16 +238,30 @@ export default function TerminalEcho({ className, defaultCollapsed = true }: Ter
           ) : null}
         </button>
 
+        {/* 三档高度切换：默认 peek（2 行）↔ 完整高 */}
+        <button
+          type="button"
+          onClick={(): void => {
+            userInteractedRef.current = true;
+            setHeightMode((prev): TerminalHeightMode => (prev === 'tall' ? 'peek' : 'tall'));
+          }}
+          aria-label={heightMode === 'tall' ? '收起为紧凑高度' : '展开全高日志终端'}
+          title={heightMode === 'tall' ? '切换为紧凑高度（2 行）' : '切换为完整高度'}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded border border-white/[0.05] bg-slate-800/50 text-slate-400 transition-colors hover:border-cyan-400/40 hover:text-cyan-200 active:scale-95 md:h-6 md:w-6"
+        >
+          <ChevronsUpDown className="h-3 w-3" aria-hidden />
+        </button>
+
         {/* 仅清屏：不触碰数据源偏好、脱敏计数与自愈审计历史 */}
         <button
           type="button"
           onClick={clearTerminalLogs}
           aria-label="清空终端日志"
-          className="mr-2 flex shrink-0 items-center gap-1 rounded border border-white/[0.05] bg-slate-800/50 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400 transition-colors hover:border-rose-500/50 hover:text-rose-300 active:scale-95"
+          className="mr-1.5 flex h-11 min-w-[44px] shrink-0 items-center justify-center gap-1 rounded border border-white/[0.05] bg-slate-800/50 px-2 font-mono text-[10px] uppercase tracking-wider text-slate-400 transition-colors hover:border-rose-500/50 hover:text-rose-300 active:scale-95 md:mr-2 md:h-6 md:min-w-0 md:px-1.5 md:py-0.5"
           title="清空终端滚动日志（不影响数据源偏好、脱敏计数与自愈审计历史）"
         >
           <Trash2 className="h-3 w-3" aria-hidden />
-          <span className="hidden sm:inline">清屏</span>
+          <span className="hidden md:inline">清屏</span>
         </button>
       </div>
 

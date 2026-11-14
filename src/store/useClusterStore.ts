@@ -389,6 +389,8 @@ function createInitialClusterState(): ClusterState {
     activeChaos: 'NONE',
     statusFilter: 'ALL',
     activeRightTab: 'copilot',
+    activeModal: null,
+    isCommandPaletteOpen: false,
     isChaosModalOpen: false,
     isPerfHudOpen: false,
     isOrbitPatrolActive: false,
@@ -798,6 +800,8 @@ export const useClusterStore = create<ClusterStore>()(
           lastRemediationDiff: null,
           capturedViewportDataUrl: null,
           statusFilter: 'ALL',
+          activeModal: null,
+          isCommandPaletteOpen: false,
           isChaosModalOpen: false,
           isPerfHudOpen: false,
           activeRightTab: 'copilot',
@@ -1029,9 +1033,47 @@ export const useClusterStore = create<ClusterStore>()(
         set({ statusFilter: filter });
       },
 
-      /** setChaosModalOpen —— 混沌控制台模态框开关 */
+      /**
+       * openModal —— 互斥打开全局阻塞式模态框（打开新弹窗自动关闭既有弹窗）。
+       *
+       * 【设计意图】确保 Chaos / RAG / PostMortem / ShortcutHelp 四大模态框
+       * 同一时刻至多存在一个，杜绝双层遮罩与键盘焦点冲突。
+       */
+      openModal: (modal) => {
+        set({
+          activeModal: modal,
+          isChaosModalOpen: modal === 'chaos',
+        });
+      },
+
+      /** closeModal —— 关闭活跃模态框（支持传 target 校验，防止异步关闭错杀新开弹窗） */
+      closeModal: (modal) => {
+        set((current) => {
+          if (modal !== undefined && current.activeModal !== modal) {
+            return current;
+          }
+          return {
+            activeModal: null,
+            isChaosModalOpen: false,
+          };
+        });
+      },
+
+      /** setCommandPaletteOpen —— 全局命令面板开关（z-[60] 独立置于模态框之上） */
+      setCommandPaletteOpen: (open) => {
+        set({ isCommandPaletteOpen: open });
+      },
+
+      /** setChaosModalOpen —— 混沌控制台模态框开关（与 activeModal 互斥槽保持双向同步） */
       setChaosModalOpen: (open) => {
-        set({ isChaosModalOpen: open });
+        if (open) {
+          set({ activeModal: 'chaos', isChaosModalOpen: true });
+          return;
+        }
+        set((current) => ({
+          activeModal: current.activeModal === 'chaos' ? null : current.activeModal,
+          isChaosModalOpen: false,
+        }));
       },
 
       /** setPerfHudOpen —— 性能 HUD 面板开关 */

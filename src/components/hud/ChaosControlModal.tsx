@@ -36,11 +36,13 @@
  * 让相机飞回全景鸟瞰。
  */
 
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Cpu, Network, ShieldCheck, Skull, X } from 'lucide-react';
 
+import { Z_CLASS } from '@/constants/zIndex';
+import { useFocusReturn, useSheetSwipeClose } from '@/hooks/useModalSheetBehavior';
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import type { SelectedEntityType } from '@/types/store';
@@ -154,13 +156,21 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
   );
   const appendTerminalLog = useClusterStore((s): ((line: string) => void) => s.appendTerminalLog);
 
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  const handleClose = useCallback((): void => {
+    setChaosModalOpen(false);
+  }, [setChaosModalOpen]);
+
+  useFocusReturn(isChaosModalOpen, closeBtnRef);
+  const swipe = useSheetSwipeClose(handleClose);
+
   /*
    * 【C1】Esc 交给页面级分级退出栈（优先级 90：高于 RAG/复盘，低于命令面板）。
    * 注意：弹窗是否打开由 store 控制，组件常驻挂载，因此这里以 open 状态注册。
    */
   useEscapeLayer(
     isChaosModalOpen
-      ? { id: 'chaos-modal', priority: 90, label: '混沌演练控制台', onEscape: (): void => setChaosModalOpen(false) }
+      ? { id: 'chaos-modal', priority: 90, label: '混沌演练控制台', onEscape: handleClose }
       : null,
   );
 
@@ -215,7 +225,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
 
   return (
     <div
-      className={cn('fixed inset-0 z-50 flex items-center justify-center p-4', className)}
+      className={cn('fixed inset-0 flex items-end justify-center p-0 md:items-center md:p-4', Z_CLASS.MODAL, className)}
       role="dialog"
       aria-modal="true"
       aria-label="混沌工程故障演练控制台"
@@ -225,21 +235,33 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
         type="button"
         aria-label="关闭混沌演练控制台"
         className="absolute inset-0 cursor-default bg-slate-950/[0.85]"
-        onClick={(): void => setChaosModalOpen(false)}
+        onClick={handleClose}
       />
 
-      {/* ============ 控制台面板 ============ */}
+      {/* ============ 控制台面板（移动端 90dvh Bottom Sheet，桌面端居中卡片） ============ */}
       <motion.div
         initial={{ opacity: 0, scale: 0.94, y: 16 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
+        animate={{ opacity: 1, scale: 1, y: swipe.dragOffsetY }}
         exit={{ opacity: 0, scale: 0.94, y: 16 }}
         transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-        className="relative w-full max-w-2xl overflow-hidden rounded-lg border border-rose-500/40 kv-panel shadow-modal"
+        className="relative flex max-h-[90dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-2xl rounded-b-none border border-rose-500/40 kv-panel shadow-modal md:rounded-xl"
       >
         {/* ---- 顶部红黑斜纹警戒条 ---- */}
-        <div className="h-2 w-full" style={HAZARD_STRIPE_STYLE} aria-hidden />
+        <div className="h-2 w-full shrink-0" style={HAZARD_STRIPE_STYLE} aria-hidden />
 
-        <div className="p-5">
+        {/* ---- 移动端 Bottom Sheet 下拉把手 ---- */}
+        <div
+          className="flex shrink-0 cursor-grab touch-none justify-center pb-1 pt-2.5 md:hidden"
+          onPointerDown={swipe.handlePointerDown}
+          onPointerMove={swipe.handlePointerMove}
+          onPointerUp={swipe.handlePointerUp}
+          onPointerCancel={swipe.handlePointerCancel}
+          aria-hidden
+        >
+          <span className="h-1 w-10 rounded-full bg-white/25" />
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 kv-safe-bottom sm:p-5">
           {/* ======== 头部：警示图标 + 标题 + 关闭 ======== */}
           <div className="mb-1 flex items-start gap-2.5">
             <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded border border-rose-500/50 bg-rose-500/[0.15]">
@@ -249,15 +271,16 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
               <h2 className="font-mono text-xs font-bold uppercase tracking-[0.25em] text-rose-300">
                 chaos&nbsp;engineering&nbsp;console
               </h2>
-              <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                fault&nbsp;injection&nbsp;·&nbsp;drill&nbsp;authorization&nbsp;required
+              <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                fault injection · drill authorization required
               </p>
             </div>
             <button
+              ref={closeBtnRef}
               type="button"
-              onClick={(): void => setChaosModalOpen(false)}
+              onClick={handleClose}
               aria-label="关闭混沌演练控制台"
-              className="shrink-0 rounded p-1 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200 active:scale-95"
+              className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded p-1 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100 active:scale-95 md:min-h-0 md:min-w-0"
             >
               <X className="h-4 w-4" aria-hidden />
             </button>
@@ -341,7 +364,7 @@ export default function ChaosControlModal({ className }: ChaosControlModalProps)
         </div>
 
         {/* ---- 底部红黑斜纹警戒条 ---- */}
-        <div className="h-2 w-full" style={HAZARD_STRIPE_STYLE} aria-hidden />
+        <div className="h-2 w-full shrink-0" style={HAZARD_STRIPE_STYLE} aria-hidden />
       </motion.div>
     </div>
   );

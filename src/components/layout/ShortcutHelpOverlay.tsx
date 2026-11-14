@@ -15,9 +15,12 @@
  * 关闭后焦点归还由触发方处理（不抢页面焦点）。
  */
 
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 
+import { Z_CLASS } from '@/constants/zIndex';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
+import { useFocusReturn, useSheetSwipeClose } from '@/hooks/useModalSheetBehavior';
+import { cn } from '@/utils/cn';
 
 interface ShortcutHelpOverlayProps {
   /** 是否显示 */
@@ -39,6 +42,9 @@ const SHORTCUTS: ReadonlyArray<{ keys: string; label: string; aria: string }> = 
 export default function ShortcutHelpOverlay({ open, onClose }: ShortcutHelpOverlayProps): React.ReactElement | null {
   const closeRef = useRef<HTMLButtonElement>(null);
 
+  useFocusReturn(open, closeRef);
+  const swipe = useSheetSwipeClose(onClose);
+
   /*
    * 【R3】Esc 关闭注册进全站分级退出栈（优先级 60：低于命令面板/混沌/RAG/复盘
    * 等功能层，高于视口浮层与页面兜底）。旧实现挂在 ShellLayout 的 window 监听里，
@@ -46,23 +52,35 @@ export default function ShortcutHelpOverlay({ open, onClose }: ShortcutHelpOverl
    */
   useEscapeLayer(open ? { id: 'shortcut-help', priority: 60, label: '快捷键帮助', onEscape: onClose } : null);
 
-  useEffect((): void => {
-    if (open) closeRef.current?.focus();
-  }, [open]);
-
   if (!open) return null;
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-label="快捷键帮助"
-      className="kv-overlay fixed inset-0 z-50 flex items-center justify-center p-4"
+      className={cn(
+        'kv-overlay fixed inset-0 flex items-end justify-center p-0 md:items-center md:p-4',
+        Z_CLASS.MODAL,
+      )}
       onClick={onClose}
     >
       <div
-        className="kv-panel w-full max-w-md rounded-xl p-4"
+        className="kv-panel max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-t-2xl rounded-b-none p-4 kv-safe-bottom md:rounded-xl"
+        style={
+          swipe.dragOffsetY > 0 ? { transform: `translateY(${swipe.dragOffsetY}px)` } : undefined
+        }
         onClick={(event): void => event.stopPropagation()}
       >
+        <div
+          className="mb-2 flex cursor-grab touch-none justify-center py-1 md:hidden"
+          onPointerDown={swipe.handlePointerDown}
+          onPointerMove={swipe.handlePointerMove}
+          onPointerUp={swipe.handlePointerUp}
+          onPointerCancel={swipe.handlePointerCancel}
+          aria-hidden
+        >
+          <span className="h-1 w-10 rounded-full bg-white/25" />
+        </div>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-[14px] font-semibold text-slate-100">快捷键</h2>
           <button
@@ -70,7 +88,7 @@ export default function ShortcutHelpOverlay({ open, onClose }: ShortcutHelpOverl
             type="button"
             onClick={onClose}
             aria-label="关闭快捷键帮助"
-            className="rounded-kv border border-white/[0.075] px-2 py-1 font-mono text-[10px] text-slate-400 hover:text-slate-100 focus-visible:ring-1 focus-visible:ring-cyan-400/60 outline-none"
+            className="flex min-h-[40px] min-w-[44px] items-center justify-center rounded-kv border border-white/[0.075] px-2 py-1 font-mono text-[10px] text-slate-300 hover:text-slate-100 md:min-h-0 md:min-w-0"
           >
             ESC
           </button>

@@ -17,7 +17,9 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { Z_CLASS } from '@/constants/zIndex';
 import { useClusterStore } from '@/store/useClusterStore';
+import { cn } from '@/utils/cn';
 
 /** 单条启动状态 */
 interface StartupItem {
@@ -111,7 +113,10 @@ export default function StartupStatusCapsule(): React.ReactElement | null {
 
   return (
     <div
-      className="pointer-events-auto fixed bottom-16 left-3 z-40 md:bottom-3"
+      className={cn(
+        'pointer-events-auto fixed bottom-[9.25rem] left-5 max-w-[calc(100vw-2.5rem)] lg:bottom-[7.5rem]',
+        Z_CLASS.HUD_OVERLAY,
+      )}
       data-startup-state={state}
       aria-label="系统启动状态"
       role="group"
@@ -122,7 +127,7 @@ export default function StartupStatusCapsule(): React.ReactElement | null {
           onClick={(): void => setExpanded((open): boolean => !open)}
           aria-expanded={expanded}
           aria-controls="startup-status-list"
-          className="flex w-full items-center gap-2 px-2.5 py-1.5 font-mono text-[10px] tracking-[0.08em] text-slate-300 transition-colors hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/60"
+          className="flex min-h-[44px] w-full items-center gap-2 px-2.5 py-1.5 font-mono text-[10px] tracking-[0.08em] text-slate-300 transition-colors hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/60 sm:min-h-0"
         >
           <span
             aria-hidden

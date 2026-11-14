@@ -119,6 +119,14 @@ try {
   await shot('final-overview');
   clicks.push({ step: 'overview', ok: true });
 
+  await evaluate(cdp, `(() => {
+    const existing = Array.from(document.querySelectorAll('button')).find((b) => (b.getAttribute('aria-label') || '').includes('性能监控 HUD'));
+    if (existing) return { ok: true };
+    const moreBtn = document.querySelector('button[aria-label="打开状态过滤与工具菜单"]');
+    if (moreBtn) moreBtn.click();
+    return { ok: Boolean(moreBtn) };
+  })()`);
+  await sleep(250);
   clicks.push({ step: 'perf-hud', ...(await evaluate(cdp, `(() => {
     const hit = Array.from(document.querySelectorAll('button')).find((b) => (b.getAttribute('aria-label') || '').includes('性能监控 HUD'));
     if (!hit) return { ok: false };
@@ -127,10 +135,17 @@ try {
   })()`)) });
   await sleep(1200);
   await shot('performance-hud');
-  /* 关闭 HUD，避免遮挡后续 */
+  /* 关闭 HUD 与更多菜单，避免遮挡后续 */
   await evaluate(cdp, `(() => {
-    const hit = Array.from(document.querySelectorAll('button')).find((b) => (b.getAttribute('aria-label') || '').includes('性能监控 HUD'));
-    if (hit) hit.click();
+    const closeHud = document.querySelector('button[aria-label="关闭性能遥测"]');
+    if (closeHud) {
+      closeHud.click();
+    } else {
+      const hit = Array.from(document.querySelectorAll('button')).find((b) => (b.getAttribute('aria-label') || '').includes('性能监控 HUD'));
+      if (hit) hit.click();
+    }
+    const openMore = document.querySelector('button[aria-label="打开状态过滤与工具菜单"][aria-expanded="true"]');
+    if (openMore) openMore.click();
   })()`);
   await sleep(400);
 

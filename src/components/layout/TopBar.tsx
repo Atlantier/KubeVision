@@ -29,18 +29,20 @@
  * 【响应式】中翼横向滚动适配小屏；左右两翼在窄屏收敛为图标 + 关键数值。
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Boxes,
-  Radar,
   Gauge,
+  MonitorPlay,
   OctagonAlert,
   Pause,
   Play,
+  Radar,
   Radio,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   Square,
   Terminal,
   X,
@@ -48,6 +50,8 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { Z_CLASS } from '@/constants/zIndex';
+import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { useClusterStore } from '@/store/useClusterStore';
 import {
   DEMO_SCRIPTS,
@@ -366,7 +370,7 @@ function StatusFilterTrack({
     <div
       role="group"
       aria-label="按 Pod 状态过滤"
-      className="flex shrink-0 items-center gap-0.5 rounded-lg border border-white/[0.07] bg-slate-950/60 p-0.5"
+      className="flex flex-wrap items-center gap-1 rounded-lg border border-white/[0.07] bg-slate-950/60 p-1"
     >
       {STATUS_FILTER_OPTIONS.map((option): ReactNode => {
         const active = activeFilter === option.filter;
@@ -453,12 +457,15 @@ export function ChaosBanner({ scenario, onTerminate }: ChaosBannerProps) {
 function ChaosDrillControl({
   activeChaos,
   isLive,
+  density,
   onOpenModal,
   onTerminate,
 }: {
   readonly activeChaos: ChaosScenario;
   /** 当前是否处于实时遥测模式（决定按钮提示文案） */
   readonly isLive: boolean;
+  /** 顶栏信息密度档位（由 ResizeObserver 驱动） */
+  readonly density: 'full' | 'compact' | 'minimal';
   readonly onOpenModal: () => void;
   readonly onTerminate: () => void;
 }): React.ReactElement {
@@ -480,19 +487,20 @@ function ChaosDrillControl({
             : '打开混沌工程控制台，注入故障演练场景'
         }
         className={cn(
-          'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5',
+          'flex min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 md:min-h-0 md:min-w-0 md:px-2.5',
           'font-mono text-[11px] tracking-tight transition-colors duration-150',
           'border-white/[0.08] bg-slate-950/70 text-slate-300',
           'hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300',
         )}
       >
-        <Zap className="h-3.5 w-3.5" aria-hidden />
-        {/*
-         * 【窄屏图标化仍需可访问名称】文案在 < lg 时隐藏，只剩一个闪电图标；
-         * 若不给 aria-label，屏幕阅读器只会读出"按钮"，用户不知道它做什么。
-         * 因此上方补 aria-label，且其值不依赖可见文案。
-         */}
-        <span className="hidden lg:inline">故障演练</span>
+        <Zap className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        {density === 'full' ? (
+          <span>故障演练</span>
+        ) : density === 'compact' ? (
+          <span>演练</span>
+        ) : (
+          <span className="sr-only">故障演练</span>
+        )}
       </button>
     );
   }
@@ -508,7 +516,7 @@ function ChaosDrillControl({
         onClick={onOpenModal}
         aria-label="切换故障演练场景"
         title="点击切换演练场景"
-        className="flex items-center gap-1.5 rounded px-0.5 py-1 font-mono text-[11px] tracking-tight text-rose-300 transition-colors hover:text-rose-200"
+        className="flex min-h-[44px] items-center gap-1.5 rounded px-0.5 py-1 font-mono text-[11px] tracking-tight text-rose-300 transition-colors hover:text-rose-200 md:min-h-0"
       >
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-rose-400 animate-glow-pulse" aria-hidden />
         <span className="hidden sm:inline">演练中：</span>
@@ -525,7 +533,7 @@ function ChaosDrillControl({
         }}
         aria-label="终止故障演练，恢复稳态"
         title="终止演练，恢复稳态"
-        className="rounded p-1 text-rose-400/80 transition-colors hover:bg-rose-500/25 hover:text-rose-100"
+        className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded p-1 text-rose-400/80 transition-colors hover:bg-rose-500/25 hover:text-rose-100 md:min-h-0 md:min-w-0"
       >
         <X className="h-3 w-3" aria-hidden />
       </button>
@@ -551,7 +559,7 @@ export function QpsBoard({ qps }: QpsBoardProps) {
     >
       <Zap className="h-3 w-3 text-cyan-400/80" aria-hidden />
       <span className="font-mono text-[12px] font-semibold tabular-nums text-slate-100">{display}</span>
-      <span className="font-mono text-[10px] tracking-wide text-slate-500">req/s</span>
+      <span className="font-mono text-[10px] tracking-wide text-slate-400">QPS</span>
     </div>
   );
 }
@@ -559,25 +567,20 @@ export function QpsBoard({ qps }: QpsBoardProps) {
 /**
  * CommandPaletteTrigger —— 命令面板唤醒按钮（⌘K）。
  *
- * 【为何用合成键盘事件而非直接改状态】命令面板的开关状态由 page.tsx
- * 的本地 useState 持有，TopBar 无法直接访问。而 page.tsx 已监听全局
- * keydown 处理 Cmd/Ctrl+K——派发一个合成的 KeyboardEvent 即可复用该入口，
- * 无需为了一个按钮把 UI 状态提升到 store（那会让所有订阅方无谓重渲染）。
- *
- * 【为何同时设 metaKey 与 ctrlKey】处理端只判断 `metaKey || ctrlKey`，
- * 两个都设为 true 可确保在 Mac 与 Windows 上都命中，且不需要分支。
+ * 【设计意图】通过 ResizeObserver 密度档位平缓收敛文字，始终保留 sr-only
+ * 文本标签与 aria-label，杜绝纯边框空盒与窄屏溢出。
  */
-function CommandPaletteTrigger(): React.ReactElement {
+function CommandPaletteTrigger({
+  density,
+}: {
+  readonly density: 'full' | 'compact' | 'minimal';
+}): React.ReactElement {
+  const setCommandPaletteOpen = useClusterStore(
+    (s): ((open: boolean) => void) => s.setCommandPaletteOpen,
+  );
   const handleClick = useCallback((): void => {
-    window.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'k',
-        metaKey: true,
-        ctrlKey: true,
-        bubbles: true,
-      }),
-    );
-  }, []);
+    setCommandPaletteOpen(true);
+  }, [setCommandPaletteOpen]);
 
   return (
     <button
@@ -586,17 +589,23 @@ function CommandPaletteTrigger(): React.ReactElement {
       aria-label="打开运维命令面板"
       title="打开命令面板（⌘K / Ctrl+K）：搜索 Pod、节点与运维动作"
       className={cn(
-        'flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1',
-        'border-white/[0.07] bg-slate-950/60 text-slate-400',
+        'flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-1 md:min-h-0 md:min-w-0',
+        'border-white/[0.07] bg-slate-950/60 text-slate-300',
         'font-mono text-[11px] transition-colors duration-150',
-        'hover:border-white/[0.12] hover:bg-slate-900/80 hover:text-slate-200',
+        'hover:border-white/[0.12] hover:bg-slate-900/80 hover:text-slate-100',
       )}
     >
-      <Search className="h-3 w-3" aria-hidden />
-      <span className="hidden xl:inline">搜索拓扑</span>
-      <kbd className="ml-0.5 hidden rounded border border-white/[0.08] bg-white/[0.04] px-1 py-px text-[10px] text-slate-500 sm:inline">
-        ⌘K
-      </kbd>
+      <Search className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      {density === 'full' ? (
+        <span>搜索拓扑</span>
+      ) : (
+        <span className="sr-only">搜索拓扑</span>
+      )}
+      {density !== 'minimal' ? (
+        <kbd className="ml-0.5 rounded border border-white/[0.08] bg-white/[0.04] px-1 py-px text-[10px] text-slate-400">
+          ⌘K
+        </kbd>
+      ) : null}
     </button>
   );
 }
@@ -634,12 +643,13 @@ export function ModeToggle({ mode, onChange, disabled = false }: ModeToggleProps
               type="button"
               role="radio"
               aria-checked={active}
+              aria-label={value === 'demo' ? '切换至合成演练数据流' : '切换至实时遥测数据流'}
               disabled={disabled}
               onClick={(): void => onChange(value)}
               className={cn(
-                'relative z-10 flex items-center gap-1.5 rounded-md px-2 py-1',
+                'relative z-10 flex min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-md px-2 py-1 md:min-h-0 md:min-w-0',
                 'font-mono text-[10px] tracking-tight transition-colors duration-200',
-                active ? 'text-slate-100' : 'text-slate-500 hover:text-slate-300',
+                active ? 'text-slate-100' : 'text-slate-400 hover:text-slate-200',
               )}
             >
               {active ? (
@@ -1024,13 +1034,40 @@ function DemoDirectorBar({
 /* ========================================================================== */
 
 /**
+ * resolveHeaderDensity —— 根据顶栏实时宽度平滑收敛信息密度。
+ *
+ * 【设计意图】通过 ResizeObserver 连续测量而非 Tailwind 阶跃隐藏，
+ * 让 1024px~1366px 与 360px~800px 视口之间自然降密，消除半成品空壳按钮与突然跳变。
+ */
+type HeaderDensity = 'full' | 'compact' | 'minimal';
+
+function resolveHeaderDensity(width: number): HeaderDensity {
+  if (width >= 1220) return 'full';
+  if (width >= 820) return 'compact';
+  return 'minimal';
+}
+
+/**
  * TopBar —— 中控台顶栏（品牌区 / 态势区 / 战术区 三段式）。
  *
- * 【订阅纪律】八个细粒度 selector 各取所需字段：任一字段变更只触发
- * 对应子树的重渲染比对，杜绝全量订阅；pods 计数经 useMemo 依赖
- * snapshotSummary.pods 引用（快照整体替换才失效，1Hz 上限）。
+ * 【订阅纪律】各细粒度 selector 各取所需字段；顶层交互控件收敛至 ≤ 7 项，
+ * 过滤条 / 演示模式 / 性能 HUD 收纳入「更多」二级面板，避免小屏与窄窗溢出。
  */
 export default function TopBar() {
+  const headerRef = useRef<HTMLElement | null>(null);
+  const midScrollRef = useRef<HTMLDivElement | null>(null);
+  const demoBtnRef = useRef<HTMLButtonElement | null>(null);
+  const demoMenuRef = useRef<HTMLDivElement | null>(null);
+  const moreBtnRef = useRef<HTMLButtonElement | null>(null);
+  const moreMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const [headerDensity, setHeaderDensity] = useState<HeaderDensity>('full');
+  const [midFade, setMidFade] = useState<{ left: boolean; right: boolean }>({
+    left: false,
+    right: false,
+  });
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+
   /* ---- 响应轨细粒度订阅 ---- */
   const snapshot = useClusterStore((s): TelemetrySnapshot => s.snapshotSummary);
   const statusFilter = useClusterStore((s): StatusFilter => s.statusFilter);
@@ -1254,8 +1291,83 @@ export default function TopBar() {
       handleStopDemo();
       return;
     }
+    setIsMoreMenuOpen(false);
     setIsDemoMenuOpen((open): boolean => !open);
   }, [demo.status, handleStopDemo]);
+
+  const handleToggleMoreMenu = useCallback((): void => {
+    setIsDemoMenuOpen(false);
+    setIsMoreMenuOpen((open): boolean => !open);
+  }, []);
+
+  /** ResizeObserver 监听顶栏宽度，实现 1024~1366 与窄屏的无阶跃连续降密 */
+  useEffect((): (() => void) | undefined => {
+    const headerEl = headerRef.current;
+    if (headerEl === null || typeof ResizeObserver === 'undefined') return undefined;
+    const syncDensity = (): void => {
+      const width = headerEl.getBoundingClientRect().width;
+      const next = resolveHeaderDensity(width);
+      setHeaderDensity((prev): HeaderDensity => (prev === next ? prev : next));
+    };
+    syncDensity();
+    const ro = new ResizeObserver(syncDensity);
+    ro.observe(headerEl);
+    return (): void => ro.disconnect();
+  }, []);
+
+  /** 中翼横向溢出渐隐提示监听 */
+  useEffect((): (() => void) | undefined => {
+    const scroller = midScrollRef.current;
+    if (scroller === null) return undefined;
+    const syncFade = (): void => {
+      const maxScroll = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+      const nextLeft = scroller.scrollLeft > 4;
+      const nextRight = maxScroll > 4 && scroller.scrollLeft < maxScroll - 4;
+      setMidFade((prev) =>
+        prev.left === nextLeft && prev.right === nextRight ? prev : { left: nextLeft, right: nextRight },
+      );
+    };
+    syncFade();
+    scroller.addEventListener('scroll', syncFade, { passive: true });
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(syncFade);
+      ro.observe(scroller);
+    }
+    return (): void => {
+      scroller.removeEventListener('scroll', syncFade);
+      if (ro !== null) ro.disconnect();
+    };
+  }, [headerDensity, connectionMode]);
+
+  /** 点击顶栏弹出菜单外部时自动收起 */
+  useEffect((): (() => void) | undefined => {
+    if (!isDemoMenuOpen && !isMoreMenuOpen) return undefined;
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (
+        isDemoMenuOpen &&
+        demoMenuRef.current !== null &&
+        !demoMenuRef.current.contains(target) &&
+        demoBtnRef.current !== null &&
+        !demoBtnRef.current.contains(target)
+      ) {
+        setIsDemoMenuOpen(false);
+      }
+      if (
+        isMoreMenuOpen &&
+        moreMenuRef.current !== null &&
+        !moreMenuRef.current.contains(target) &&
+        moreBtnRef.current !== null &&
+        !moreBtnRef.current.contains(target)
+      ) {
+        setIsMoreMenuOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    return (): void => window.removeEventListener('pointerdown', handlePointerDown);
+  }, [isDemoMenuOpen, isMoreMenuOpen]);
 
   /**
    * G 项：预检失败时 status 仍是 idle，但字幕位必须显示失败原因——
@@ -1263,107 +1375,136 @@ export default function TopBar() {
    */
   const isDemoActive = demo.status !== 'idle' || demo.preflightError !== null;
 
-  const healthScore = snapshot.clusterHealthScore;
-  const healthTier = resolveHealthTier(
-    Number.isNaN(healthScore) ? 0 : Math.min(100, Math.max(0, Math.round(healthScore))),
+  /** Esc 分层栈：关闭展开中的顶栏菜单并归还按钮焦点 */
+  useEscapeLayer(
+    isDemoMenuOpen && !isDemoActive
+      ? {
+          id: 'topbar-demo-menu',
+          priority: 92,
+          label: '剧本路演菜单',
+          onEscape: (): void => {
+            setIsDemoMenuOpen(false);
+            demoBtnRef.current?.focus();
+          },
+        }
+      : null,
   );
+
+  useEscapeLayer(
+    isMoreMenuOpen
+      ? {
+          id: 'topbar-more-menu',
+          priority: 92,
+          label: '更多工具菜单',
+          onEscape: (): void => {
+            setIsMoreMenuOpen(false);
+            moreBtnRef.current?.focus();
+          },
+        }
+      : null,
+  );
+
+  const healthScore = snapshot.clusterHealthScore;
+  const clampedHealth = Number.isNaN(healthScore) ? 0 : Math.min(100, Math.max(0, Math.round(healthScore)));
+  const activeOption = STATUS_FILTER_OPTIONS.find((item): boolean => item.filter === statusFilter);
+  const hasMoreActiveIndicator = statusFilter !== 'ALL' || presentMode || isPerfHudOpen;
 
   return (
     <>
-    <header className="kv-panel relative z-30 flex h-12 shrink-0 items-center gap-3 rounded-none border-x-0 border-t-0 border-b border-white/[0.07] px-3 sm:px-4">
-      {/* ============ 左翼：品牌 + 竖分割线 + 紧凑健康环 ============ */}
-      <div className="flex shrink-0 items-center gap-2.5">
-        {/*
-         * 品牌图标：极简线框雷达（无彩色填充块）。
-         * 早期是 `bg-cyan-400/10 + border-cyan-400/40 + shadow-glow-cyan` 的
-         * 发光方块——正是"廉价 AI 模板"的典型元素。现改为中性的
-         * 深色圆角容器 + 白色描边，让品牌标识靠**形状**而非**颜色**被识别。
-         */}
-        <span className="flex h-7 w-7 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.04]">
+    <header
+      ref={headerRef}
+      className={cn(
+        'kv-panel relative flex h-14 shrink-0 items-center justify-between gap-1 rounded-none border-x-0 border-t-0 border-b border-white/[0.07] px-1.5 sm:gap-3 sm:px-4 md:h-12',
+        Z_CLASS.CHROME_POPOVER,
+      )}
+    >
+      {/* ============ 左翼：品牌 + 竖分割线 + 单一读数健康环 ============ */}
+      <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
+        <span
+          className={cn(
+            'h-7 w-7 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.04]',
+            headerDensity === 'minimal' ? 'hidden sm:flex' : 'flex',
+          )}
+        >
           <Radar className="h-4 w-4 text-slate-200" aria-hidden />
         </span>
 
-        {/*
-         * 单行标题：删除 v2.4-Edge 版本徽标框与第二行副标题。
-         * 版本号是给开发者看的信息，不该占据顶栏这种黄金位置；
-         * 副标题"3D 态势感知"也与产品名重复。精简为一行标题后，
-         * 左翼视觉重量显著下降，与其余控件形成合理层级。
-         */}
-        <span className="hidden text-sm font-semibold tracking-tight text-slate-50 sm:inline">
-          KubeVision<span className="text-slate-400"> AI</span>
+        <span
+          className={cn(
+            'whitespace-nowrap text-sm font-semibold tracking-tight text-slate-50',
+            headerDensity === 'minimal' ? 'hidden' : 'inline',
+          )}
+        >
+          {headerDensity === 'full' ? (
+            <>
+              KubeVision<span className="text-slate-400"> AI</span>
+            </>
+          ) : (
+            'KubeVision'
+          )}
         </span>
 
-        {/* 竖分割线：分隔品牌区与健康度区 */}
-        <span className="hidden h-4 w-px bg-white/[0.08] sm:block" aria-hidden />
+        <span
+          className={cn(
+            'h-4 w-px bg-white/[0.08]',
+            headerDensity === 'minimal' ? 'hidden sm:block' : 'block',
+          )}
+          aria-hidden
+        />
 
-        {/*
-         * 紧凑健康度：32px 细环 + 小字标签 + 分数。
-         * 环内不再重复显示分数（32px 环内容纳两位数字会挤），
-         * 改为环右侧并列「健康度 + 分数」，可读性更好。
-         * 分数颜色随分档变化，环本身用内敛的 emerald（无外发光）。
-         */}
-        <div className="flex items-center gap-2" title={`集群健康分 ${Math.round(healthScore)} / 100`}>
-          <HealthRingBadge score={healthScore} size={TOPBAR_HEALTH_RING_SIZE} strokeWidth={TOPBAR_HEALTH_RING_STROKE} />
-          <div className="hidden flex-col leading-none sm:flex">
-            <span className="font-mono text-[10px] tracking-wide text-slate-500">健康度</span>
-            <span
-              className={cn(
-                'mt-0.5 font-mono text-[13px] font-bold tabular-nums',
-                TIER_TEXT_CLASS[healthTier],
-              )}
-            >
-              {Number.isNaN(healthScore) ? '—' : Math.round(healthScore)}
-            </span>
-          </div>
+        {/* 单一健康度读数：仅保留环形内清晰数值，移除邻近重复数字 */}
+        <div className="flex items-center" title={`集群健康分 ${clampedHealth} / 100`}>
+          <HealthRingBadge
+            score={healthScore}
+            size={headerDensity === 'minimal' ? TOPBAR_HEALTH_RING_SIZE : 34}
+            strokeWidth={TOPBAR_HEALTH_RING_STROKE}
+          />
         </div>
       </div>
 
-      {/* ============ 中翼：分段过滤轨道 + QPS 裸表 + ⌘K（横向滚动） ============ */}
-      <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <StatusFilterTrack activeFilter={statusFilter} counts={countByStatus} onSelect={handleSelectFilter} />
+      {/* ============ 中翼：QPS 裸表（大屏） + ⌘K 命令面板 + 横向溢出渐隐 ============ */}
+      <div className="relative flex min-w-0 flex-1 items-center">
+        {midFade.left ? (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 left-0 z-10 w-4 bg-gradient-to-r from-slate-950/95 to-transparent"
+          />
+        ) : null}
+        <div
+          ref={midScrollRef}
+          className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {headerDensity === 'full' ? <QpsBoard qps={snapshot.totalQps} /> : null}
 
-        <QpsBoard qps={snapshot.totalQps} />
+          <CommandPaletteTrigger density={headerDensity} />
 
-        <CommandPaletteTrigger />
-
-        {/*
-         * 【Live Tunnel 静默假死提示】
-         * 服务端在 mode=live 下只发心跳注释、不推业务帧（真实集群连接器
-         * 尚未接线）。若不提示，用户切到实时隧道后会看到完全静止的画面，
-         * 无法区分「集群稳定」与「数据源没接上」。
-         * 这里给出诚实说明与一键切回入口。
-         */}
-        {connectionMode === 'live' ? (
-          <button
-            type="button"
-            role="status"
-            onClick={(): void => setMode('demo')}
-            className="flex shrink-0 items-center gap-1 rounded-md border border-amber-500/[0.35] bg-amber-500/[0.08] px-2 py-1 font-mono text-[10px] tracking-tight text-amber-300/90 transition-colors hover:border-amber-400/60 hover:bg-amber-500/[0.15]"
-            title="当前构建未接入真实集群 Agent，实时隧道无可推送数据帧。点击切回合成演练流"
-            aria-label="切回合成演练数据流"
-          >
-            <Radio className="h-2.5 w-2.5 animate-glow-pulse" aria-hidden />
-            等待 Agent · 点击切回
-          </button>
+          {connectionMode === 'live' ? (
+            <button
+              type="button"
+              role="status"
+              onClick={(): void => setMode('demo')}
+              className="flex min-h-[44px] shrink-0 items-center gap-1 rounded-md border border-amber-500/[0.35] bg-amber-500/[0.08] px-2 py-1 font-mono text-[10px] tracking-tight text-amber-300/90 transition-colors hover:border-amber-400/60 hover:bg-amber-500/[0.15] md:min-h-0"
+              title="当前构建未接入真实集群 Agent，实时隧道无可推送数据帧。点击切回合成演练流"
+              aria-label="切回合成演练数据流"
+            >
+              <Radio className="h-2.5 w-2.5 animate-glow-pulse" aria-hidden />
+              <span>{headerDensity === 'minimal' ? '切回合成' : '等待 Agent · 点击切回'}</span>
+            </button>
+          ) : null}
+        </div>
+        {midFade.right ? (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 right-0 z-10 w-5 bg-gradient-to-l from-slate-950/95 to-transparent"
+          />
         ) : null}
       </div>
 
-      {/* ============ 右翼：剧本路演 + 双模拨片 + 混沌二合一 + 性能 HUD ============ */}
-      <div className="flex shrink-0 items-center gap-2">
-        {/*
-         * 剧本路演按钮（Auto-Play Demo Director）。
-         *
-         * 【为何是最醒目的一个】答辩场景里这是**唯一一个评委自己会想点的按钮**：
-         * 它承诺"点下去就能看完整场演示"。因此给它唯一的实心青色底，
-         * 与其他描边式控件区分开——顶栏里只能有一个"主角按钮"。
-         *
-         * 【三态语义】
-         * · idle    → 点击展开剧本菜单（两套剧本）
-         * · running → 按钮变红语义，点击即停止并复位
-         * · paused  → 同上（停止优先于暂停，暂停按钮在字幕条上）
-         */}
+      {/* ============ 右翼：Hero CTA 剧本路演 + 双模拨片 + 混沌演练 + 更多二级菜单（总控件 ≤ 7） ============ */}
+      <div className="flex shrink-0 items-center gap-1 sm:gap-2">
         <div className="relative">
           <button
+            ref={demoBtnRef}
             type="button"
             onClick={handleToggleDemoMenu}
             aria-haspopup={isDemoActive ? undefined : 'menu'}
@@ -1376,7 +1517,7 @@ export default function TopBar() {
             aria-pressed={isDemoActive}
             title={isDemoActive ? '停止剧本路演' : '一键全自动剧本路演（评委演示模式）'}
             className={cn(
-              'flex items-center gap-1.5 rounded-lg border px-2 py-1.5',
+              'flex min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 md:min-h-0 md:min-w-0 md:px-2.5',
               'font-mono text-[11px] tracking-tight transition-colors duration-150',
               isDemoActive
                 ? 'border-rose-400/[0.45] bg-rose-500/[0.12] text-rose-200 hover:border-rose-400/70 hover:bg-rose-500/20'
@@ -1384,21 +1525,30 @@ export default function TopBar() {
             )}
           >
             <Radar
-              className={cn('h-3.5 w-3.5', isDemoActive ? 'text-rose-300' : 'text-cyan-300')}
+              className={cn('h-3.5 w-3.5 shrink-0', isDemoActive ? 'text-rose-300' : 'text-cyan-300')}
               aria-hidden
             />
-            {/* 文案在 < xl 隐藏，故 aria-label 承担完整可访问名称 */}
-            <span className="hidden xl:inline">{isDemoActive ? '停止路演' : '剧本路演'}</span>
+            {headerDensity === 'full' ? (
+              <span>{isDemoActive ? '停止路演' : '剧本路演'}</span>
+            ) : headerDensity === 'compact' ? (
+              <span>{isDemoActive ? '停止' : '路演'}</span>
+            ) : (
+              <span className="sr-only">{isDemoActive ? '停止路演' : '剧本路演'}</span>
+            )}
           </button>
 
           {/* 剧本选择菜单：只在 idle 且展开时出现 */}
           {!isDemoActive && isDemoMenuOpen ? (
             <div
+              ref={demoMenuRef}
               role="menu"
               aria-label="选择路演剧本"
-              className="absolute right-0 top-full z-50 mt-1.5 w-60 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/[0.92] p-1 shadow-[0_16px_40px_rgba(2,6,23,0.85)]"
+              className={cn(
+                'absolute right-0 top-full mt-1.5 max-h-[calc(100dvh-4rem)] w-[min(15rem,calc(100vw-1rem))] overflow-y-auto rounded-lg border border-cyan-400/25 bg-slate-950/[0.92] p-1 shadow-[0_16px_40px_rgba(2,6,23,0.85)]',
+                Z_CLASS.MODAL,
+              )}
             >
-              <p className="px-2 pb-1 pt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">
+              <p className="px-2 pb-1 pt-1 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400">
                 自动路演剧本
               </p>
               {DEMO_SCRIPTS.map((script): ReactNode => (
@@ -1415,56 +1565,135 @@ export default function TopBar() {
 
         <ModeToggle mode={connectionMode} onChange={setMode} />
 
-        {/* 混沌演练二合一控件：未激活是按钮，激活后原地变为告警胶囊 */}
         <ChaosDrillControl
           activeChaos={activeChaos}
           isLive={connectionMode === 'live'}
+          density={headerDensity}
           onOpenModal={handleOpenChaosModal}
           onTerminate={handleTerminateChaos}
         />
 
-        {/* R32：演示模式开关（隐藏终端/极简 HUD/抽屉 34%） */}
-        <button
-          type="button"
-          onClick={togglePresentMode}
-          aria-pressed={presentMode}
-          aria-label={`演示模式 · 当前${presentMode ? '已开启' : '已关闭'}`}
-          className={cn(
-            'flex items-center gap-1.5 rounded-lg border px-2 py-1.5',
-            'font-mono text-[11px] tracking-tight transition-colors duration-150',
-            presentMode
-              ? 'border-cyan-400/[0.35] bg-cyan-400/[0.08] text-cyan-300'
-              : 'border-white/[0.08] bg-slate-950/70 text-slate-400 hover:border-white/[0.12] hover:text-slate-200',
-          )}
-          title="演示模式（隐藏终端/极简 HUD/抽屉 34%）"
-        >
-          <span className="hidden xl:inline">演示</span>
-        </button>
+        {/* 「更多」二级菜单：收纳 5 状态过滤、演示模式开关、性能 HUD 开关与紧凑模式 QPS 速览 */}
+        <div className="relative">
+          <button
+            ref={moreBtnRef}
+            type="button"
+            onClick={handleToggleMoreMenu}
+            aria-haspopup="dialog"
+            aria-expanded={isMoreMenuOpen}
+            aria-label="打开状态过滤与工具菜单"
+            title="视图过滤、演示模式与性能 HUD（Shift+P）"
+            className={cn(
+              'relative flex min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 md:min-h-0 md:min-w-0 md:px-2.5',
+              'font-mono text-[11px] tracking-tight transition-colors duration-150',
+              isMoreMenuOpen || hasMoreActiveIndicator
+                ? 'border-cyan-400/[0.35] bg-cyan-400/[0.08] text-cyan-200'
+                : 'border-white/[0.08] bg-slate-950/70 text-slate-300 hover:border-white/[0.14] hover:text-slate-100',
+            )}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            {headerDensity !== 'minimal' ? <span>更多</span> : <span className="sr-only">更多</span>}
+            {hasMoreActiveIndicator ? (
+              <span
+                aria-hidden
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400"
+              />
+            ) : null}
+          </button>
 
-        {/* 性能监控 HUD 开关（快捷键 Shift+P，监听器在 ShellLayout 全局挂载） */}
-        <button
-          type="button"
-          onClick={handleTogglePerfHud}
-          aria-pressed={isPerfHudOpen}
-          aria-label={`性能监控 HUD（快捷键 Shift+P）· 当前${isPerfHudOpen ? '已开启' : '已关闭'}`}
-          aria-keyshortcuts="Shift+P"
-          className={cn(
-            'flex items-center gap-1.5 rounded-lg border px-2 py-1.5',
-            'font-mono text-[11px] tracking-tight transition-colors duration-150',
-            isPerfHudOpen
-              ? 'border-cyan-400/[0.35] bg-cyan-400/[0.08] text-cyan-300'
-              : 'border-white/[0.08] bg-slate-950/70 text-slate-400 hover:border-white/[0.12] hover:text-slate-200',
-          )}
-          title="性能监控 HUD（快捷键 Shift+P）"
-        >
-          {isPerfHudOpen ? (
-            <Gauge className="h-3.5 w-3.5" aria-hidden />
-          ) : (
-            <Terminal className="h-3.5 w-3.5" aria-hidden />
-          )}
-          {/* 文案在 < xl 隐藏，故 aria-label 承担完整可访问名称（见上方注释） */}
-          <span className="hidden xl:inline">性能</span>
-        </button>
+          {isMoreMenuOpen ? (
+            <div
+              ref={moreMenuRef}
+              role="dialog"
+              aria-label="状态过滤与系统工具"
+              className={cn(
+                'kv-panel absolute right-0 top-full mt-1.5 max-h-[calc(100dvh-4rem)] w-[min(24rem,calc(100vw-1rem))] overflow-y-auto border border-white/[0.12] p-3',
+                Z_CLASS.MODAL,
+              )}
+            >
+              {/* QPS 与过滤汇总条 */}
+              <div className="mb-2.5 flex items-center justify-between border-b border-white/[0.07] pb-2 font-mono text-[10px]">
+                <span className="flex items-center gap-1.5 text-slate-300">
+                  <Zap className="h-3 w-3 text-cyan-400" aria-hidden />
+                  <span>
+                    总吞吐{' '}
+                    <strong className="tabular-nums text-slate-100">
+                      {Number.isNaN(snapshot.totalQps)
+                        ? '—'
+                        : Math.round(snapshot.totalQps).toLocaleString('en-US')}
+                    </strong>{' '}
+                    QPS
+                  </span>
+                </span>
+                <span className="text-slate-400">
+                  当前过滤：{activeOption?.label ?? statusFilter}
+                </span>
+              </div>
+
+              {/* 5 状态过滤组 */}
+              <div className="mb-3 space-y-1.5">
+                <p className="font-mono text-[10px] tracking-wider text-slate-400">
+                  容器状态过滤
+                </p>
+                <StatusFilterTrack
+                  activeFilter={statusFilter}
+                  counts={countByStatus}
+                  onSelect={handleSelectFilter}
+                />
+              </div>
+
+              {/* 工具切换区：带清晰图标与文字，无纯边框空盒 */}
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={togglePresentMode}
+                  aria-pressed={presentMode}
+                  aria-label={`演示模式 · 当前${presentMode ? '已开启' : '已关闭'}`}
+                  title="演示模式（隐藏终端/极简 HUD/抽屉 34%）"
+                  className={cn(
+                    'flex min-h-[44px] items-center justify-between gap-2 rounded-lg border px-2.5 py-2 font-mono text-[11px] transition-colors md:min-h-0',
+                    presentMode
+                      ? 'border-cyan-400/[0.45] bg-cyan-400/[0.12] text-cyan-200'
+                      : 'border-white/[0.08] bg-slate-950/70 text-slate-300 hover:border-white/[0.16] hover:text-slate-100',
+                  )}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <MonitorPlay className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    <span>演示模式</span>
+                  </span>
+                  <span className="text-[10px] text-slate-400">{presentMode ? '开启' : '关闭'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleTogglePerfHud}
+                  aria-pressed={isPerfHudOpen}
+                  aria-label={`性能监控 HUD（快捷键 Shift+P）· 当前${isPerfHudOpen ? '已开启' : '已关闭'}`}
+                  aria-keyshortcuts="Shift+P"
+                  title="性能监控 HUD（快捷键 Shift+P）"
+                  className={cn(
+                    'flex min-h-[44px] items-center justify-between gap-2 rounded-lg border px-2.5 py-2 font-mono text-[11px] transition-colors md:min-h-0',
+                    isPerfHudOpen
+                      ? 'border-cyan-400/[0.45] bg-cyan-400/[0.12] text-cyan-200'
+                      : 'border-white/[0.08] bg-slate-950/70 text-slate-300 hover:border-white/[0.16] hover:text-slate-100',
+                  )}
+                >
+                  <span className="flex items-center gap-1.5">
+                    {isPerfHudOpen ? (
+                      <Gauge className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    ) : (
+                      <Terminal className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    )}
+                    <span>性能 HUD</span>
+                  </span>
+                  <kbd className="rounded border border-white/[0.1] bg-white/[0.04] px-1 text-[10px] text-slate-400">
+                    ⇧P
+                  </kbd>
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
     </header>
 
@@ -1485,13 +1714,10 @@ export default function TopBar() {
     <AnimatePresence>
       {isDemoActive ? (
         <div
-          /*
-           * lg:pl-[23rem]：左上角检视面板宽 320~340px + 左边距，共约 352px。
-           * 字幕条是"居中于视口"的，若不做这个左内边距，它会横跨到视口左缘，
-           * 正好盖住检视面板的标尺行与节点名——而那恰是演示中要展示的内容。
-           * 加内边距后，居中区变成"检视面板右侧的剩余空间"，两者互不遮挡。
-           */
-          className="pointer-events-none fixed top-14 z-40 flex justify-center px-4 lg:pl-[23rem]"
+          className={cn(
+            'pointer-events-none fixed top-14 flex justify-center px-3 lg:pl-[23rem]',
+            Z_CLASS.HUD_OVERLAY,
+          )}
           style={{
             left: sceneRect?.left ?? 0,
             width: sceneRect?.width ?? '100vw',
@@ -1510,20 +1736,13 @@ export default function TopBar() {
       ) : null}
     </AnimatePresence>
 
-    {/*
-      * 【追问 2：事故回放入口/面板】
-      *
-      * 刻意放在 isDemoActive 条件**之外**：路演的"完成态 8 秒自动收起"
-      * 会把 status 打回 idle，但录像仍在——此时最需要回放。
-      * 若把它写在演示态里面，字幕条一收起回放入口就跟着消失。
-      * 组件自身在无录像时返回 null，所以常驻渲染不占位。
-      */}
     <div
-      className={
+      className={cn(
         sceneRect !== null
-          ? 'pointer-events-none fixed bottom-14 z-30 flex justify-center pl-3 pr-[76px]'
-          : 'pointer-events-none fixed bottom-14 left-3 right-[76px] z-30 flex justify-center lg:right-[440px]'
-      }
+          ? 'pointer-events-none fixed bottom-[9.25rem] flex justify-center pl-3 pr-3 md:pr-[76px] lg:bottom-[7.5rem]'
+          : 'pointer-events-none fixed bottom-[9.25rem] left-3 right-3 flex justify-center md:right-[76px] lg:bottom-[7.5rem] lg:right-[440px]',
+        Z_CLASS.CHROME_POPOVER,
+      )}
       style={
         sceneRect !== null
           ? { left: `${sceneRect.left}px`, width: `${sceneRect.width}px` }

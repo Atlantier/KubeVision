@@ -28,10 +28,12 @@ import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Activity, Cpu, Gauge, Layers, Radio, Triangle, X } from 'lucide-react';
 
+import { Z_CLASS } from '@/constants/zIndex';
 import { cn } from '@/utils/cn';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
 import { useClusterStore } from '@/store/useClusterStore';
+import { useQualityStore } from '@/store/useQualityStore';
 import {
   HEALTH_JITTER_WARN_MS,
   HEALTH_NODE_DRIFT_WARN,
@@ -52,7 +54,7 @@ const FPS_HISTORY_LENGTH = 24;
 
 /** 迷你折线图 SVG 视口（无单位，配合 preserveAspectRatio="none" 拉伸） */
 const SPARK_WIDTH = 120;
-const SPARK_HEIGHT = 22;
+const SPARK_HEIGHT = 28;
 
 /** 帧率健康阈值（与全局健康分档口径一致：60 优秀 / 40 及格） */
 const FPS_GOOD = 55;
@@ -63,23 +65,34 @@ const FPS_WARN = 40;
 /* ========================================================================== */
 
 /**
- * FpsSparkline —— FPS 迷你面积折线图。
+ * FpsSparkline —— FPS 迷你面积折线图（含 60 / 40 / 0 Y 轴刻度）。
  *
  * 【核心数学】把 FPS 序列线性映射到 SVG 高度：
  *   y = H − (value / maxFps) · H
  * 其中 maxFps 取 60（目标帧率）作为纵轴上限，超出部分会被 clamp——
  * 这样 60FPS 永远贴顶，一眼就能看出是否掉帧。
  *
- * 横轴按索引等距分布；序列不足时左对齐（右端留空），
- * 避免启动初期把 2 个点拉伸成满屏曲线造成"帧率剧烈波动"的错觉。
- *
  * @param values 历史 FPS 值（最多 FPS_HISTORY_LENGTH 个）
  */
 function FpsSparkline({ values }: { readonly values: readonly number[] }) {
+  const yAxisTicks = (
+    <div
+      aria-hidden="true"
+      className="flex h-[28px] shrink-0 flex-col justify-between pr-1 text-right font-mono text-[10px] leading-none tabular-nums text-slate-400"
+    >
+      <span>60</span>
+      <span>40</span>
+      <span>0</span>
+    </div>
+  );
+
   if (values.length < 2) {
     return (
-      <div className="flex h-[22px] items-center justify-center font-mono text-[10px] text-slate-500">
-        采样预热中…
+      <div className="flex items-center gap-1">
+        {yAxisTicks}
+        <div className="flex h-[28px] flex-1 items-center justify-center font-mono text-[10px] text-slate-400">
+          采样预热中…
+        </div>
       </div>
     );
   }
@@ -106,37 +119,40 @@ function FpsSparkline({ values }: { readonly values: readonly number[] }) {
   const fill = current >= FPS_GOOD ? '#34d399' : current >= FPS_WARN ? '#fbbf24' : '#f43f5e';
 
   return (
-    <svg
-      viewBox={`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`}
-      width="100%"
-      height={SPARK_HEIGHT}
-      preserveAspectRatio="none"
-      role="img"
-      aria-label={`FPS 趋势，当前 ${current}`}
-      className="overflow-visible"
-    >
-      <path d={area} fill={fill} fillOpacity={0.18} stroke="none" />
-      <polyline
-        points={line}
-        fill="none"
-        stroke={stroke}
-        strokeWidth={1.2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      {/* 60FPS 参考线（贴顶虚线，便于判断是否掉帧） */}
-      <line x1={0} y1={0.5} x2={SPARK_WIDTH} y2={0.5} stroke="#334155" strokeWidth={0.5} strokeDasharray="2 3" />
-      {/* 40FPS 警戒线 */}
-      <line
-        x1={0}
-        y1={SPARK_HEIGHT - (FPS_WARN / maxFps) * SPARK_HEIGHT}
-        x2={SPARK_WIDTH}
-        y2={SPARK_HEIGHT - (FPS_WARN / maxFps) * SPARK_HEIGHT}
-        stroke="#7f1d1d"
-        strokeWidth={0.5}
-        strokeDasharray="2 3"
-      />
-    </svg>
+    <div className="flex items-center gap-1">
+      {yAxisTicks}
+      <svg
+        viewBox={`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`}
+        width="100%"
+        height={SPARK_HEIGHT}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`FPS 趋势，当前 ${current}`}
+        className="flex-1 overflow-visible"
+      >
+        <path d={area} fill={fill} fillOpacity={0.18} stroke="none" />
+        <polyline
+          points={line}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={1.2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {/* 60FPS 参考线（贴顶虚线，便于判断是否掉帧） */}
+        <line x1={0} y1={0.5} x2={SPARK_WIDTH} y2={0.5} stroke="#334155" strokeWidth={0.5} strokeDasharray="2 3" />
+        {/* 40FPS 警戒线 */}
+        <line
+          x1={0}
+          y1={SPARK_HEIGHT - (FPS_WARN / maxFps) * SPARK_HEIGHT}
+          x2={SPARK_WIDTH}
+          y2={SPARK_HEIGHT - (FPS_WARN / maxFps) * SPARK_HEIGHT}
+          stroke="#7f1d1d"
+          strokeWidth={0.5}
+          strokeDasharray="2 3"
+        />
+      </svg>
+    </div>
   );
 }
 
@@ -320,6 +336,8 @@ function RenderPathBlock() {
   const reasonRef = useRef<HTMLParagraphElement | null>(null);
   const exposureRef = useRef<HTMLSpanElement | null>(null);
   const glowRef = useRef<HTMLSpanElement | null>(null);
+  const [softwareOrT0, setSoftwareOrT0] = useState<boolean>(false);
+  const viewportConstrained = useQualityStore((s): boolean => s.viewportConstrained);
 
   useEffect((): (() => void) => {
     const update = (): void => {
@@ -338,6 +356,10 @@ function RenderPathBlock() {
       if (reasonRef.current !== null) {
         reasonRef.current.textContent = stats.renderReason;
       }
+      const nextSoftwareOrT0 =
+        stats.renderTier === 'T0' || /软件光栅化|SwiftShader/i.test(stats.renderReason);
+      setSoftwareOrT0((prev): boolean => (prev === nextSoftwareOrT0 ? prev : nextSoftwareOrT0));
+
       if (exposureRef.current !== null) {
         exposureRef.current.textContent = stats.toneMappingExposure.toFixed(3);
         exposureRef.current.className = cn(
@@ -358,24 +380,38 @@ function RenderPathBlock() {
     <div className="mt-1.5 rounded border border-white/[0.07] bg-slate-950/40 p-1.5" aria-label="渲染路径">
       <div className="flex items-baseline gap-1">
         <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300/90">渲染路径</span>
-        <span className="ml-auto font-mono text-[10px] text-slate-500">瞬态轨 · 零重渲染</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-400">瞬态轨 · 零重渲染</span>
       </div>
       <div className="mt-1 flex items-baseline gap-1.5">
-        <span className="w-[3.5rem] shrink-0 font-mono text-[10px] text-slate-500">当前档位</span>
+        <span className="w-[3.5rem] shrink-0 font-mono text-[10px] text-slate-400">当前档位</span>
         <span ref={tierRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">T0</span>
-        <span className="ml-auto font-mono text-[10px] text-slate-500">T3/T2/T1/T0</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-400">T3/T2/T1/T0</span>
       </div>
       <div className="mt-0.5 flex items-baseline gap-1.5">
-        <span className="w-[3.5rem] shrink-0 font-mono text-[10px] text-slate-500">曝光</span>
+        <span className="w-[3.5rem] shrink-0 font-mono text-[10px] text-slate-400">曝光</span>
         <span ref={exposureRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">1.000</span>
-        <span className="ml-auto font-mono text-[10px] text-slate-500">[1.00, 1.18]</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-400">[1.00, 1.18]</span>
       </div>
       <div className="mt-0.5 flex items-baseline gap-1.5">
-        <span className="w-[3.5rem] shrink-0 font-mono text-[10px] text-slate-500">亮度估计</span>
+        <span className="w-[3.5rem] shrink-0 font-mono text-[10px] text-slate-400">亮度估计</span>
         <span ref={glowRef} className="font-mono text-[10px] font-bold tabular-nums text-slate-200">0.00</span>
-        <span className="ml-auto font-mono text-[10px] text-slate-500">0~1</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-400">0~1</span>
       </div>
-      <p ref={reasonRef} className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-500" />
+      {softwareOrT0 ? (
+        <p
+          role="status"
+          aria-label="渲染能力口径说明"
+          className="mt-1 rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 font-mono text-[10px] leading-snug text-amber-200"
+        >
+          仅功能证据（SwiftShader / T0 降级）
+        </p>
+      ) : null}
+      {viewportConstrained ? (
+        <p className="mt-1 rounded border border-cyan-400/40 bg-cyan-400/10 px-1.5 py-0.5 font-mono text-[10px] leading-snug text-cyan-200">
+          小屏视口自动降载（画质上限 T1）
+        </p>
+      ) : null}
+      <p ref={reasonRef} className="mt-0.5 font-mono text-[10px] leading-relaxed text-slate-400" />
     </div>
   );
 }
@@ -450,7 +486,7 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
   /** FPS 分档色 */
   const fpsTone =
     sample === null || sample.fps === 0
-      ? 'text-slate-500'
+      ? 'text-slate-400'
       : sample.fps >= FPS_GOOD
         ? 'text-emerald-400'
         : sample.fps >= FPS_WARN
@@ -463,7 +499,10 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8 }}
       transition={{ duration: 0.18 }}
-      className="kv-panel pointer-events-auto absolute right-3 top-16 z-40 w-[268px] max-w-[calc(100%-1.5rem)] max-h-[calc(100%-18rem)] overflow-y-auto p-2.5"
+      className={cn(
+        'kv-panel pointer-events-auto absolute right-3 top-12 w-[min(268px,calc(100%-1.5rem))] max-h-[calc(100%-4.5rem)] overflow-y-auto p-2.5 sm:top-14',
+        Z_CLASS.HUD_OVERLAY,
+      )}
       role="region"
       aria-label="性能遥测 HUD"
     >
@@ -473,89 +512,93 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
         <span className="font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-cyan-300">
           WebGL 渲染与遥测性能
         </span>
-        <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-500">2hz</span>
+        <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-400">2hz</span>
         <button
           type="button"
           onClick={onClose}
           aria-label="关闭性能遥测"
-          className="shrink-0 rounded p-0.5 text-slate-500 transition-colors hover:text-rose-400"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:text-rose-400 md:h-6 md:w-6"
         >
-          <X className="h-3 w-3" aria-hidden />
+          <X className="h-3.5 w-3.5 md:h-3 md:w-3" aria-hidden />
         </button>
       </div>
 
-      {/* ============ FPS 区块（数值 + 迷你折线） ============ */}
-      <div className="mt-2 rounded border border-white/[0.07] bg-slate-950/50 p-1.5">
+      {/* ============ 一级主信息：数据健康与渲染路径口径 ============ */}
+      <DataHealthBlock />
+      <RenderPathBlock />
+
+      {/* ============ 二级次信息：FPS 折线与底层指标（内敛字重） ============ */}
+      <div className="mt-1.5 rounded border border-white/[0.07] bg-slate-950/50 p-1.5">
         <div className="flex items-baseline gap-1.5">
           <Gauge className={cn('h-3 w-3 shrink-0', fpsTone)} aria-hidden />
-          <span className="font-mono text-[10px] uppercase tracking-wider text-slate-500">fps</span>
-          <span className={cn('ml-auto font-mono text-[15px] font-bold leading-none tabular-nums', fpsTone)}>
+          <span className="font-mono text-[10px] uppercase tracking-wider text-slate-400">fps</span>
+          <span className={cn('ml-auto font-mono text-[13px] font-semibold leading-none tabular-nums', fpsTone)}>
             {sample !== null && sample.fps > 0 ? sample.fps : hasData ? '0' : '--'}
           </span>
         </div>
-        {/* 迷你折线趋势图 */}
+        {/* 迷你折线趋势图（含 60 / 40 / 0 Y 轴刻度） */}
         <div className="mt-1">
           <FpsSparkline values={fpsHistory} />
         </div>
       </div>
 
-      {/* ============ 指标网格 ============ */}
+      {/* ============ 底层指标网格 ============ */}
       <div className="mt-1.5 grid grid-cols-2 gap-1">
         {/* Frame Time */}
         <div className="rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400">
             <Cpu className="h-2 w-2" aria-hidden />
             帧耗时
           </p>
-          <p className="font-mono text-[11px] font-bold tabular-nums text-slate-200">
+          <p className="font-mono text-[11px] font-semibold tabular-nums text-slate-200">
             {sample !== null && sample.frameTimeMs > 0 ? `${sample.frameTimeMs.toFixed(1)}` : '--'}
-            <span className="ml-0.5 text-[10px] font-normal text-slate-500">ms</span>
+            <span className="ml-0.5 text-[10px] font-normal text-slate-400">ms</span>
           </p>
         </div>
 
         {/* Draw Calls（R5：主场景 / 反射 / 合计三数，反射 pass 成本可见） */}
         <div className="rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400">
             <Layers className="h-2 w-2" aria-hidden />
             draws 合计
           </p>
-          <p className="font-mono text-[11px] font-bold tabular-nums text-cyan-300">
+          <p className="font-mono text-[11px] font-semibold tabular-nums text-slate-200">
             {sample !== null && sample.drawCalls > 0 ? sample.drawCalls : '--'}
           </p>
-          <p className="font-mono text-[10px] tabular-nums text-slate-500">
+          <p className="font-mono text-[10px] tabular-nums text-slate-400">
             主 {sample !== null && sample.drawCalls > 0 ? sample.drawCallsMain : '--'}
-            <span className="mx-0.5 text-slate-600">·</span>
+            <span className="mx-0.5 text-slate-400">·</span>
             反射 {sample !== null && sample.drawCalls > 0 ? sample.drawCallsReflection : '--'}
           </p>
         </div>
 
         {/* Triangles */}
         <div className="rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400">
             <Triangle className="h-2 w-2" aria-hidden />
             三角面
           </p>
-          <p className="font-mono text-[11px] font-bold tabular-nums text-slate-200">
+          <p className="font-mono text-[11px] font-semibold tabular-nums text-slate-200">
             {sample !== null && sample.triangles > 0 ? sample.triangles.toLocaleString('en-US') : '--'}
           </p>
         </div>
 
         {/* SSE Latency */}
         <div className="rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
-          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+          <p className="flex items-center gap-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400">
             <Radio className="h-2 w-2" aria-hidden />
             遥测流
           </p>
-          <p className="font-mono text-[11px] font-bold tabular-nums text-slate-200">
+          <p className="font-mono text-[11px] font-semibold tabular-nums text-slate-200">
             {sample !== null && sample.sseLatencyMs > 0 ? `${sample.sseLatencyMs}` : '--'}
-            <span className="ml-0.5 text-[10px] font-normal text-slate-500">ms</span>
+            <span className="ml-0.5 text-[10px] font-normal text-slate-400">ms</span>
           </p>
         </div>
       </div>
 
       {/* ============ 端侧 Worker 状态 ============ */}
       <div className="mt-1.5 flex items-center gap-1 rounded border border-white/[0.07] bg-slate-950/40 px-1.5 py-1">
-        <span className="font-mono text-[10px] tracking-wider text-slate-500">端侧</span>
+        <span className="font-mono text-[10px] tracking-wider text-slate-400">端侧</span>
         <span
           className={cn(
             'ml-auto truncate font-mono text-[11px] font-bold tabular-nums',
@@ -574,18 +617,14 @@ export default function PerfTelemetryHUD({ onClose }: PerfTelemetryHUDProps) {
       </div>
 
       {/* ============ 实体计数 ============ */}
-      <div className="mt-1.5 border-t border-white/[0.07] pt-1 font-mono text-[10px] uppercase tracking-wider text-slate-500">
+      <div className="mt-1.5 border-t border-white/[0.07] pt-1 font-mono text-[10px] uppercase tracking-wider text-slate-400">
         {sample !== null
           ? `${sample.nodeCount} 节点 / ${sample.podCount} Pod / ${sample.alertCount} 告警`
           : '--'}
       </div>
 
-      {/* ============ 数据健康（追问：连自己的数据都要监控） ============ */}
-      <DataHealthBlock />
-      <RenderPathBlock />
-
       {/* ============ 数据来源说明 ============ */}
-      <p className="mt-1 font-mono text-[10px] leading-relaxed text-slate-500">
+      <p className="mt-1 font-mono text-[10px] leading-relaxed text-slate-400">
         数据源：telemetryTransientRef.glStats + telemetryHealthRef（瞬态轨 · 零重渲染采样）
       </p>
     </motion.div>

@@ -154,6 +154,11 @@ export type StatusFilter = PodStatus | 'ALL';
 export type MobileViewKey = 'topology' | 'copilot';
 
 /**
+ * 全局阻塞式模态框互斥槽位类型（同一时刻至多开启一个模态框；命令面板 z-[60] 独立叠于其上）
+ */
+export type ActiveModalKind = 'chaos' | 'rag' | 'postMortem' | 'help';
+
+/**
  * 自愈动作历史记录条目（持久化字段，跨会话留存审计）。
  *
  * 【字段说明】actionType 采用开放 string 而非 RemediationActionType 枚举：
@@ -279,7 +284,11 @@ export interface ClusterState {
   readonly statusFilter: StatusFilter;
   /** 右侧抽屉当前页签 */
   readonly activeRightTab: RightPanelTab;
-  /** 混沌工程控制台模态框开关 */
+  /** 当前开启的阻塞式模态框（互斥单槽，null = 无模态框） */
+  readonly activeModal: ActiveModalKind | null;
+  /** 全局命令面板开关（z-[60]，可叠加在模态框之上，Esc 优先关闭） */
+  readonly isCommandPaletteOpen: boolean;
+  /** 混沌工程控制台模态框开关（由 activeModal === 'chaos' 同步派生） */
   readonly isChaosModalOpen: boolean;
   /** 性能 HUD 面板开关 */
   readonly isPerfHudOpen: boolean;
@@ -541,7 +550,13 @@ export interface ClusterActions {
   setSnapshotSummary: (snapshot: TelemetrySnapshot) => void;
   /** 设置 Pod 状态过滤器 */
   setStatusFilter: (filter: StatusFilter) => void;
-  /** 混沌控制台模态框开关 */
+  /** 互斥打开指定模态框（打开新模态框时自动关闭先前已开启的模态框） */
+  openModal: (modal: ActiveModalKind) => void;
+  /** 关闭模态框（传 target 时仅当当前活跃槽位匹配才关闭，避免异步竞态误关） */
+  closeModal: (modal?: ActiveModalKind) => void;
+  /** 全局命令面板开关 */
+  setCommandPaletteOpen: (open: boolean) => void;
+  /** 混沌控制台模态框开关（兼容封装，底层联动 activeModal 互斥槽） */
   setChaosModalOpen: (open: boolean) => void;
   /** 性能 HUD 面板开关 */
   setPerfHudOpen: (open: boolean) => void;

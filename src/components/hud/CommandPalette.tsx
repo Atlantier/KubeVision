@@ -34,6 +34,8 @@ import {
   Zap,
 } from 'lucide-react';
 
+import { Z_CLASS } from '@/constants/zIndex';
+import { useFocusReturn } from '@/hooks/useModalSheetBehavior';
 import { cn } from '@/utils/cn';
 import { isImeComposing } from '@/utils/keyboardTargets';
 import { useClusterStore } from '@/store/useClusterStore';
@@ -118,7 +120,8 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
   const setConnectionMode = useClusterStore((s) => s.setConnectionMode);
   const appendTerminalLog = useClusterStore((s) => s.appendTerminalLog);
 
-  /** 打开即聚焦输入框（含一个微延迟：等 framer-motion 进场后聚焦才不被打断） */
+  /** 打开即聚焦输入框（含一个微延迟：等 framer-motion 进场后聚焦才不被打断），关闭自动归还原焦点 */
+  useFocusReturn(true);
   useEffect(() => {
     const timer = window.setTimeout((): void => {
       inputRef.current?.focus();
@@ -369,7 +372,10 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.14 }}
-      className="fixed inset-0 z-[60] flex items-start justify-center bg-slate-950/70 pt-[12vh]"
+      className={cn(
+        'fixed inset-0 flex items-start justify-center bg-slate-950/70 px-2 pt-[10dvh] md:pt-[12vh]',
+        Z_CLASS.COMMAND_PALETTE,
+      )}
       role="dialog"
       aria-modal="true"
       aria-label="运维命令面板"
@@ -383,10 +389,10 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: -12, scale: 0.98 }}
         transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-        className="w-[min(640px,92vw)] overflow-hidden rounded-xl border border-white/[0.07] bg-slate-900/95 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06),0_24px_64px_-12px_rgba(2,6,23,0.95)]"
+        className="flex max-h-[82dvh] w-[min(640px,94vw)] flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-slate-900/95 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06),0_24px_64px_-12px_rgba(2,6,23,0.95)]"
       >
         {/* ---- 搜索输入行 ---- */}
-        <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-2.5">
+        <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.07] px-3 py-2.5">
           <Search className="h-4 w-4 shrink-0 text-cyan-400" aria-hidden />
           <input
             ref={inputRef}
@@ -402,14 +408,14 @@ export default function CommandPalette({ onClose }: CommandPaletteProps): React.
             type="button"
             onClick={onClose}
             aria-label="关闭命令面板"
-            className="shrink-0 rounded p-1 text-slate-500 transition-colors hover:text-rose-400"
+            className="flex min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded p-1 text-slate-400 transition-colors hover:text-rose-400 md:min-h-0 md:min-w-0"
           >
             <X className="h-3.5 w-3.5" aria-hidden />
           </button>
         </div>
 
         {/* ---- 结果列表 ---- */}
-        <div ref={listRef} className="max-h-[52vh] overflow-y-auto py-1">
+        <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto py-1">
           {filtered.length === 0 ? (
             <p className="px-3 py-6 text-center font-mono text-[11px] text-slate-500">
               未找到匹配的命令

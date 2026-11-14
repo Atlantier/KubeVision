@@ -68,6 +68,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
+import { Z_CLASS } from '@/constants/zIndex';
 import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import {
   HoloCorners,
@@ -339,6 +340,7 @@ function derivePodView(
     entityId: pod.id,
     entityType: 'pod',
     displayName: pod.name,
+    breadcrumb: `集群 / 机架 rack-${pod.rackIndex} / 槽位 slot-${pod.slotIndex}`,
     statusLabel: POD_STATUS_LABEL[pod.status],
     statusTone,
     metaRows,
@@ -456,7 +458,7 @@ function deriveMasterView(snapshot: TelemetrySnapshot): EntityInspectView {
       value: `${nodes.filter((n): boolean => n.status === 'Ready').length} / ${nodes.length} Ready`,
     },
     { label: '容器就绪', value: `${running} / ${pods.length}` },
-    { label: '吞吐速率', value: `${snapshot.totalQps.toLocaleString('en-US')} req/s` },
+    { label: '吞吐速率', value: `${snapshot.totalQps.toLocaleString('en-US')} QPS` },
   ];
 
   return {
@@ -770,7 +772,7 @@ function TopologyLegendPanel() {
         aria-expanded={expanded}
         aria-label="切换 3D 拓扑读图说明"
         className={cn(
-          'pointer-events-auto group flex items-center gap-2 rounded-lg border px-3 py-1.5 kv-blur-chip transition-all duration-200',
+          'pointer-events-auto group flex min-h-[44px] items-center gap-2 rounded-lg border px-3 py-1.5 kv-blur-chip transition-all duration-200 md:min-h-0',
           expanded
             ? 'border-cyan-400/[0.45] bg-slate-900/90 text-cyan-200 shadow-[0_0_20px_-4px_rgba(34,211,238,0.35)]'
             : 'border-slate-800/90 bg-slate-950/80 text-slate-300 hover:border-cyan-400/[0.35] hover:text-cyan-200',
@@ -805,7 +807,7 @@ function TopologyLegendPanel() {
             exit={{ opacity: 0, y: -6, scale: 0.96 }}
             transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
             style={{ transformOrigin: 'top left' }}
-            className="pointer-events-auto relative mt-1.5 w-64 overflow-hidden rounded-lg border border-cyan-400/25 bg-slate-950/90 px-3.5 py-3 shadow-[0_16px_40px_-8px_rgba(2,6,23,0.92)] kv-blur-panel"
+            className="pointer-events-auto relative mt-1.5 max-h-[min(22rem,calc(100dvh-11rem))] w-[min(16rem,calc(100vw-1.5rem))] overflow-y-auto rounded-lg border border-cyan-400/25 bg-slate-950/90 px-3.5 py-3 shadow-[0_16px_40px_-8px_rgba(2,6,23,0.92)] kv-blur-panel"
           >
             <HoloRefractionEdges accent="#22d3ee" />
             <HoloCorners color="#22d3ee" />
@@ -920,13 +922,14 @@ function EntityProbeCard({
     if (view.statusTone !== 'critical') return view.memSeries;
     return { ...view.memSeries, color: MEM_CRITICAL_COLOR };
   }, [view.memSeries, view.statusTone]);
+  const [mobileDetailsOpen, setMobileDetailsOpen] = useState<boolean>(false);
 
   /** 元数据条：只取 value 并用 `·` 连接（label 保留在 title 中供核对） */
 
   return (
     <div
       className={cn(
-        'pointer-events-auto relative w-[320px] sm:w-[340px] max-w-full overflow-hidden p-3',
+        'pointer-events-auto relative max-h-[calc(100dvh-11rem)] w-[min(320px,calc(100vw-1.5rem))] overflow-y-auto p-3 sm:w-[340px]',
         CARD_SHELL_CLASS,
       )}
     >
@@ -974,6 +977,16 @@ function EntityProbeCard({
         cursorAt={0.42}
         className="mb-0.5"
       />
+
+      {view.breadcrumb !== undefined ? (
+        <p
+          data-testid="inspect-breadcrumb"
+          className="truncate font-mono text-[10px] tracking-[0.06em] text-cyan-300/80"
+          title={view.breadcrumb}
+        >
+          {view.breadcrumb}
+        </p>
+      ) : null}
 
       {/* ============ 第 1 行：状态点 + 名称 + 状态徽标 + 重启徽标 + 关闭 ============ */}
       <div className="flex items-center gap-1.5">
@@ -1032,14 +1045,28 @@ function EntityProbeCard({
           onClick={onClose}
           aria-label="关闭巡检卡片并重置视角"
           title="关闭并重置视角"
-          className="shrink-0 rounded p-0.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200 active:scale-95"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200 active:scale-95 md:h-auto md:w-auto md:p-0.5"
         >
-          <X className="h-3 w-3" aria-hidden />
+          <X className="h-3.5 w-3.5 md:h-3 md:w-3" aria-hidden />
         </button>
       </div>
 
+      {/* 移动端（< md）按需折叠实时波形与元信息网格，避免首屏巡检卡遮挡 3D 视野 */}
+      <button
+        type="button"
+        onClick={(): void => setMobileDetailsOpen((prev): boolean => !prev)}
+        aria-expanded={mobileDetailsOpen}
+        className="mt-2 flex min-h-[44px] w-full items-center justify-between rounded border border-white/[0.08] bg-white/[0.03] px-2.5 py-2 font-mono text-[10px] font-semibold text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-200 md:hidden"
+      >
+        <span>{mobileDetailsOpen ? '收起指标详情' : '展开指标详情'}</span>
+        <ChevronDown
+          className={cn('h-3.5 w-3.5 text-slate-400 transition-transform duration-150', mobileDetailsOpen && 'rotate-180')}
+          aria-hidden
+        />
+      </button>
+
       {/* ============ 第 2 行：CPU / 内存 双列波形 ============ */}
-      <div className="mt-2 grid grid-cols-2 gap-2">
+      <div className={cn('mt-2 grid-cols-2 gap-2', mobileDetailsOpen ? 'grid' : 'hidden md:grid')}>
         <MiniGauge series={view.cpuSeries} icon={<Cpu className="h-2.5 w-2.5" aria-hidden />} />
         <MiniGauge series={memSeries} icon={<MemoryStick className="h-2.5 w-2.5" aria-hidden />} />
       </div>
@@ -1054,14 +1081,19 @@ function EntityProbeCard({
        * 右列亮白数值（tabular-nums 等宽数字，纵向对齐）。
        * 这是仪表盘的标准做法：标签与值分列，视线能沿列快速扫读。
        */}
-      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1.5">
+      <div
+        className={cn(
+          'mt-2 grid-cols-2 gap-x-3 gap-y-1 rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1.5',
+          mobileDetailsOpen ? 'grid' : 'hidden md:grid',
+        )}
+      >
         {view.metaRows.length === 0 ? (
-          <span className="col-span-2 font-mono text-[10px] text-slate-500">—</span>
+          <span className="col-span-2 font-mono text-[10px] text-slate-400">—</span>
         ) : (
           view.metaRows.slice(0, 4).map((row): ReactNode => (
             <div key={row.label} className="flex min-w-0 items-baseline gap-1.5">
               <span
-                className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-slate-500"
+                className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-slate-400"
                 title={row.label}
               >
                 {row.label}
@@ -1082,7 +1114,7 @@ function EntityProbeCard({
         <button
           type="button"
           onClick={onDiagnose}
-          className="flex items-center justify-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-cyan-300 transition-all duration-150 hover:border-cyan-400/70 hover:bg-cyan-500/20 active:scale-[0.98]"
+          className="flex min-h-[44px] items-center justify-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-cyan-300 transition-all duration-150 hover:border-cyan-400/70 hover:bg-cyan-500/20 active:scale-[0.98] md:min-h-0"
         >
           <Radar className="h-2.5 w-2.5 shrink-0" aria-hidden />
           <span className="truncate">AI 深度诊断</span>
@@ -1101,7 +1133,7 @@ function EntityProbeCard({
             type="button"
             disabled
             aria-disabled
-            className="flex cursor-not-allowed items-center justify-center gap-1 rounded border border-white/[0.06] bg-white/[0.02] px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-slate-500"
+            className="flex min-h-[44px] cursor-not-allowed items-center justify-center gap-1 rounded border border-white/[0.06] bg-white/[0.02] px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-slate-400 md:min-h-0"
             title="控制面为只读保护对象，不提供破坏性运维动作"
           >
             <ShieldCheck className="h-2.5 w-2.5 shrink-0" aria-hidden />
@@ -1111,7 +1143,7 @@ function EntityProbeCard({
           <button
             type="button"
             onClick={onHeal}
-            className="flex items-center justify-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-emerald-300 transition-all duration-150 hover:border-emerald-400/70 hover:bg-emerald-500/20 active:scale-[0.98]"
+            className="flex min-h-[44px] items-center justify-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-1.5 font-mono text-[10px] font-bold tracking-wide text-emerald-300 transition-all duration-150 hover:border-emerald-400/70 hover:bg-emerald-500/20 active:scale-[0.98] md:min-h-0"
           >
             <RotateCcw className="h-2.5 w-2.5 shrink-0" aria-hidden />
             <span className="truncate">{view.entityType === 'node' ? '驱逐并恢复水位' : '隔离并重启'}</span>
@@ -1428,14 +1460,23 @@ export default function NodeInspectHUD({ className }: NodeInspectHUDProps) {
        * 是两个正交的维度，放在中央顶部才不会与实体探针争位。
        * z-20 与探针卡同级（高于画布内 <Html> 的 [10,0]）。
        */}
-      <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2">
+      <div
+        className={cn(
+          'pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 max-w-[calc(100%-1.5rem)]',
+          Z_CLASS.CANVAS_FLOATING,
+        )}
+      >
         <AnimatePresence>
           <FilterStatusBanner />
         </AnimatePresence>
       </div>
 
       <div
-        className={cn('pointer-events-none absolute left-3 top-3 z-20 max-w-[calc(100%-1.5rem)]', className)}
+        className={cn(
+          'pointer-events-none absolute left-3 top-3 max-h-[calc(100%-6rem)] max-w-[calc(100%-1.5rem)]',
+          Z_CLASS.CANVAS_FLOATING,
+          className,
+        )}
         aria-label="实体巡检 HUD"
       >
       <AnimatePresence mode="wait">

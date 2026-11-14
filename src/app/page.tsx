@@ -21,17 +21,19 @@
  * 页面标题等元数据已由 src/app/layout.tsx（服务端根布局）统一承载。
  */
 
-import { useEffect, useState, type ReactElement } from 'react';
+import { useEffect, type ReactElement } from 'react';
 import dynamic from 'next/dynamic';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Radar } from 'lucide-react';
 
 import ShellLayout from '@/components/layout/ShellLayout';
 import StartupStatusCapsule from '@/components/hud/StartupStatusCapsule';
+import { Z_CLASS } from '@/constants/zIndex';
 import { useTelemetryStream } from '@/hooks/useTelemetryStream';
 import { useEscapeDispatcher, useEscapeHint, useEscapeLayer } from '@/hooks/useEscapeStack';
 import { rehydratePersistedClusterState, useClusterStore } from '@/store/useClusterStore';
 import { dispatchViewPreset } from '@/utils/viewPresetBus';
+import { cn } from '@/utils/cn';
 
 /**
  * CopilotDrawer 懒加载（右侧智能运维副驾驶主面板）。
@@ -209,8 +211,9 @@ export default function HomePage() {
   const isPerfHudOpen = useClusterStore((s): boolean => s.isPerfHudOpen);
   const setPerfHudOpen = useClusterStore((s): ((open: boolean) => void) => s.setPerfHudOpen);
 
-  /* 命令面板开关（本地状态：纯 UI 瞬时态，无跨组件共享需求） */
-  const [isCommandOpen, setCommandOpen] = useState<boolean>(false);
+  /* 命令面板开关（由 Store 持有，确保与 TopBar 触发器单源同步） */
+  const isCommandOpen = useClusterStore((s): boolean => s.isCommandPaletteOpen);
+  const setCommandOpen = useClusterStore((s): ((open: boolean) => void) => s.setCommandPaletteOpen);
 
   /**
    * 【全局快捷键】（审查报告 §4.4 / §4.5）
@@ -257,7 +260,8 @@ export default function HomePage() {
       /* ---- Cmd/Ctrl + K：唤起命令面板（输入框内也允许，便于随时跳转）---- */
       if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K')) {
         event.preventDefault();
-        setCommandOpen((prev): boolean => !prev);
+        const nextOpen = !useClusterStore.getState().isCommandPaletteOpen;
+        setCommandOpen(nextOpen);
         return;
       }
 
@@ -269,7 +273,7 @@ export default function HomePage() {
 
     window.addEventListener('keydown', onKeyDown);
     return (): void => window.removeEventListener('keydown', onKeyDown);
-  }, [isCommandOpen]);
+  }, [setCommandOpen]);
 
   return (
     <>
@@ -315,7 +319,12 @@ export default function HomePage() {
        * pointer-events-none 保证它永远不挡交互；aria-live 让读屏也能感知变化。
        */}
       {escapeHint !== null ? (
-        <div className="pointer-events-none fixed bottom-3 left-1/2 z-40 -translate-x-1/2">
+        <div
+          className={cn(
+            'pointer-events-none fixed bottom-16 left-1/2 -translate-x-1/2 md:bottom-[6.75rem]',
+            Z_CLASS.HUD_OVERLAY,
+          )}
+        >
           <div
             className="kv-chip flex items-center gap-1.5 rounded-full border border-cyan-400/30 bg-slate-950/[0.85] px-2.5 py-1 font-mono text-[10px] tracking-wider text-cyan-300 shadow-[0_0_18px_rgba(34,211,238,0.18)]"
             role="status"

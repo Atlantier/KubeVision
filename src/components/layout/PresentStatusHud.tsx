@@ -11,8 +11,10 @@
  */
 
 import { useEffect, useState } from 'react';
+import { Z_CLASS } from '@/constants/zIndex';
 import { useClusterStore } from '@/store/useClusterStore';
 import { telemetryTransientRef } from '@/store/useTelemetryRef';
+import { cn } from '@/utils/cn';
 
 /** PresentStatusHud 无 props */
 export default function PresentStatusHud(): React.ReactElement {
@@ -31,7 +33,10 @@ export default function PresentStatusHud(): React.ReactElement {
   return (
     <div
       aria-label="演示状态"
-      className="pointer-events-none absolute bottom-3 left-3 z-20 flex items-center gap-3 rounded-lg border border-cyan-400/25 bg-slate-950/[0.85] px-3.5 py-2 font-mono text-xs text-slate-200 shadow-lg kv-blur-chip"
+      className={cn(
+        'pointer-events-none absolute bottom-3 left-3 flex max-w-[calc(100%-5.5rem)] flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-cyan-400/25 bg-slate-950/[0.85] px-3.5 py-2 font-mono text-xs text-slate-200 shadow-lg kv-blur-chip md:max-w-[calc(100%-1.5rem)]',
+        Z_CLASS.CANVAS_FLOATING,
+      )}
     >
       <span className="flex items-center gap-1">
         <span aria-hidden className="h-1.5 w-1.5 rounded-full" style={{ background: tone }} />

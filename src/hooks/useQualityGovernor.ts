@@ -38,6 +38,15 @@ export function useQualityGovernor(): void {
       const fps = telemetryTransientRef.glStats.fps;
       if (!Number.isFinite(fps) || fps <= 0) return;
 
+      const maxTier: QualityTier = store.viewportConstrained ? 1 : 3;
+
+      if (store.viewportConstrained && store.tier > maxTier) {
+        store.setTier(maxTier, 'auto');
+        lowStreak = 0;
+        highStreak = 0;
+        return;
+      }
+
       if (fps < LOW_FPS) {
         lowStreak += 1;
         highStreak = 0;
@@ -54,7 +63,7 @@ export function useQualityGovernor(): void {
         lowStreak = 0;
       } else if (
         highStreak >= UP_SAMPLES &&
-        store.tier < 3 &&
+        store.tier < maxTier &&
         performance.now() - lastUpgradeAt > UP_COOLDOWN_MS
       ) {
         store.setTier((store.tier + 1) as QualityTier, 'auto');

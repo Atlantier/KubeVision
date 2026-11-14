@@ -17,6 +17,20 @@ export type QualityTier = 0 | 1 | 2 | 3;
 /** 档位来源 */
 export type QualitySource = 'auto' | 'url' | 'hud';
 
+/** 小屏自动降档阈值：宽度 < 640px 或视口面积 < 600,000 px² */
+export const COMPACT_VIEWPORT_MIN_WIDTH = 640;
+export const COMPACT_VIEWPORT_MIN_AREA = 600_000;
+
+/**
+ * 判定当前视口是否处于受限小屏（自动模式下限缩重装饰特效，保留全部故障语义与截图能力）。
+ */
+export function isCompactViewport(width: number, height: number): boolean {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return false;
+  }
+  return width < COMPACT_VIEWPORT_MIN_WIDTH || width * height < COMPACT_VIEWPORT_MIN_AREA;
+}
+
 /** 质量状态 */
 interface QualityState {
   /** 当前档位 */
@@ -25,10 +39,14 @@ interface QualityState {
   readonly auto: boolean;
   /** 最后一次设置的来源 */
   readonly source: QualitySource;
+  /** 小屏视口自动降载标记（仅影响 auto 模式的上限） */
+  readonly viewportConstrained: boolean;
   /** 设置档位 */
   setTier: (tier: QualityTier, source: QualitySource) => void;
   /** 开关自动治理 */
   setAuto: (auto: boolean) => void;
+  /** 同步小屏降载状态 */
+  setViewportConstrained: (constrained: boolean) => void;
 }
 
 /**
@@ -59,6 +77,11 @@ export const useQualityStore = create<QualityState>((set) => ({
   tier: initial.tier,
   auto: initial.source === 'auto' && !isDemoMode(),
   source: initial.source,
+  viewportConstrained: false,
   setTier: (tier, source): void => set({ tier, source }),
   setAuto: (auto): void => set({ auto }),
+  setViewportConstrained: (constrained): void =>
+    set((state): QualityState =>
+      state.viewportConstrained === constrained ? state : { ...state, viewportConstrained: constrained },
+    ),
 }));
