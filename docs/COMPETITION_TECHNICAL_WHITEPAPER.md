@@ -7,9 +7,10 @@
 | 项目 | 内容 |
 |---|---|
 | 作品名称 | KubeVision AI |
+| 参赛赛事 | 第七届传智杯全国高校IT技能大赛（全国高校 AI Web 开发挑战赛） · AI WEB 网页开发挑战赛（全国高等院校计算机教育研究会主办） |
 | 参赛赛道 | 智启未来：AI 驱动的 Web 应用创新挑战（赛道 ID `10037`） |
-| 文档版本 | v1.0 |
-| 代码规模 | 64 个 TypeScript 文件 · 约 34,600 行 |
+| 文档版本 | v1.1 |
+| 代码规模 | 145 个 TypeScript/TSX 源文件 · 57,268 行（`src/**/*.{ts,tsx}`） |
 | 运行环境 | Node.js ≥ 18.17 + pnpm · 浏览器需支持 WebGL2 |
 
 ---
@@ -19,11 +20,10 @@
 1. [第一章：项目概述](#第一章项目概述)
 2. [第二章：需求分析与场景定义](#第二章需求分析与场景定义)
 3. [第三章：系统总体架构设计](#第三章系统总体架构设计)
-4. [第四章：核心 AI 技术方案](#第四章核心-ai-技术方案)
+4. [第四章：核心 AI 技术方案（选型理由 · 集成方式 · 优化策略）](#第四章核心-ai-技术方案)
 5. [第五章：核心前端与 3D 渲染工程实现](#第五章核心前端与-3d-渲染工程实现)
-6. [第六章：系统测试、性能基准与部署指南](#第六章系统测试性能基准与部署指南)
-7. [第七章：数据边界声明](#第七章数据边界声明)
-7. [第七章：核心创新点总结](#第七章核心创新点总结)
+6. [第六章：系统测试、性能基准、部署指南与数据边界](#第六章系统测试性能基准部署指南与数据边界)
+7. [第七章：核心创新点总结（技术创新点与应用场景创新点）](#第七章核心创新点总结)
 8. [第八章：社会价值、商业化落地潜力与未来展望](#第八章社会价值商业化落地潜力与未来展望)
 
 ---
@@ -301,6 +301,16 @@ $$
 
 ## 第四章：核心 AI 技术方案
 
+### 4.0 AI 技术选型理由、集成方式与工程优化策略总览
+
+| AI 能力域 | 选型方案 | 选型理由 | 集成方式 | 关键工程优化策略 |
+|---|---|---|---|---|
+| **大模型与容灾引擎** | OpenAI 兼容网关（`deepseek-flash` / `glm-4-flash` 等）+ **本地确定性仿真引擎 B** | Flash 级模型 TTFT 实测均值 756ms、成本约 ¥0.008/次且支持多模态与 Tool Call；叠加引擎 B 保障无 Key/弱网 100% 离线演练 | Vercel AI SDK `streamText` + 自定义 10 类事件 NDJSON 流式协议 + Zod 单一事实源 Schema | **四档意图路由**防止闲聊误触发；**服务端工具差集补全**（标注 `synthesized`）解决小模型漏卡；异常自动无缝回落引擎 B |
+| **混合知识检索 (RAG)** | **Okapi BM25 + TF-IDF 余弦 + 可选 MiniLM 句向量 + RRF 融合** | 12~百篇级 SRE 手册引入外部向量数据库属过度设计；BM25 对 `oom_score_adj` 等稀缺 K8s 术语区分度极高，RRF 天然免疫跨路分数量纲差异 | 纯 TypeScript 零外部依赖检索引擎（均值 8.39ms），支持用户新增自定义 Runbook 经 `localStorage` 持久化并随请求动态并入检索池 | **语料库级共享 IDF 表**；**Sigmoid 分段置信度校准**消除分数虚高；**查询 IDF 质量闸门 + 零分禁入池**实现负例 100% 拒答 |
+| **多模态与语音协同** | 3D Canvas JPEG 帧采样（0.82 质量）+ Web Speech API 语音双通道 | 故障通过空间红光与波纹呈现，纯文本丢失拓扑方位；原生浏览器语音免第三方 ASR 付费且低延迟 | 升级最后一条 user 消息为 `[text, image]` 多模态载荷；浏览器能力检测按需渲染控件 | **单 turn 升级**避免双 user 消息浪费 Token；无 Key 时端侧计算红区连通块与质心特征供引擎 B 引用 |
+| **端侧隐私与语义推理** | `@huggingface/transformers` v3（`all-MiniLM-L6-v2` 384 维，Apache-2.0）+ 6 类 PII 正则脱敏 | 原始运维日志含连接串、JWT 与内网 IP，金融/政务禁止整包上云；86MB 量化权重可随包内网离线交付 | 独立 Web Worker 异步执行（WebGPU / WASM SIMD / 内置分类器三态），脱敏后摘要方可发往云端 | **单例 Promise 防重加载**；**15s 就绪看门狗 + 3s 单批超时降级**防界面假死；主线程零阻塞 |
+| **MCP 工具与安全护栏** | JSON-RPC 2.0 over HTTP（`/api/mcp` + `/api/mcp/execute`）+ HITL 审批 | Web 全栈无须进程间 stdio 即可标准化暴露工具清单与参数 Schema，便于审计追踪与异常隔离 | 模型仅输出 Tool Call 提案与参数，前端渲染 `ActionConfirm` 交互卡片等待人工确认后方可执行 | 高危写操作强制**二次风险勾选门控**；执行回执绑定等价 `kubectl` 命令、审计日志与 `sha256` 摘要 |
+
 ### 4.1 双擎大模型流式协议设计
 
 #### 4.1.1 双引擎架构
@@ -482,7 +492,7 @@ sequenceDiagram
     participant API as /api/chat
     participant LLM as 多模态模型
 
-    User->>Canvas: 点击「3D 视口多模态3D 视口多模态快照诊断」
+    User->>Canvas: 点击「3D 视口多模态快照诊断」
     Canvas->>Canvas: gl.domElement.toDataURL('image/jpeg')
     Canvas->>Drawer: 存入 capturedViewportDataUrl
     Drawer->>Drawer: 显示缩略图卡（可悬停放大）
@@ -810,7 +820,7 @@ Next.js App Router 默认服务端渲染。若组件在渲染期读取 `localSto
 
 ---
 
-## 第六章：系统测试、性能基准与部署指南
+## 第六章：系统测试、性能基准、部署指南与数据边界
 
 ### 6.1 自动化验收体系
 
@@ -822,10 +832,10 @@ node scripts/verify.mjs
 
 | 阶段 | 覆盖内容 | 检查数 |
 |---|---|---|
-| 静态检查 | tsc / ESLint / 关键文件完整性 / 禁 `any` 扫描 / 依赖版本锁 | 6 |
-| 核心算法 | 脱敏器 5 类敏感信息 / RAG 4 个故障场景与分数区间 | 5 |
-| API 契约 | SSE 推送 / NDJSON 流 / 推理链事件 / 工具调用配对 / 卡片载荷 | 9 |
-| 浏览器 E2E | 3D 场景构建 / GlStats 采集 / 相机联动 / 思考链 / 三卡水合 / 自愈执行 / 端侧审计 | 12 |
+| 静态检查 | tsc / ESLint / 关键文件完整 / 禁 `any` / 依赖锁 / GLSL / 文档一致性 / 样式契约 / dev 启动 | 9 |
+| 核心算法 | 脱敏器（全链路 6 类 PII，单测 5 类样本） / RAG 4 个故障场景与分数区间 | 2 |
+| API 契约 | 安全响应头 / SSE 推送 / NDJSON 流 / 推理链 / 工具调用配对 / 文本流 / 三卡载荷 | 11 |
+| 浏览器 E2E | 无头浏览器启动 / 3D 场景构建 / GlStats 采集 / 相机联动 / 思考链 / 三卡水合 / 自愈执行 / 端侧审计 | 14 |
 
 **设计原则**：每个断言都检查**真实行为**而非字符串存在。例如 RAG 分数检查用三档区间，而非硬编码期望值——否则测试会把"分数虚高"这个缺陷锁死。
 
@@ -909,33 +919,49 @@ pnpm start
 #### 6.5.3 Docker 部署
 
 ```dockerfile
-FROM node:20-alpine AS base
-RUN corepack enable && corepack prepare pnpm@11.8 --activate
-
-FROM base AS deps
+# ---------- deps：仅安装依赖（利用层缓存） ----------
+FROM node:20-alpine AS deps
 WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
-FROM base AS builder
+# ---------- builder：生产构建 ----------
+FROM node:20-alpine AS builder
 WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
-FROM base AS runner
+# ---------- runner：最小运行镜像 ----------
+FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+# 非 root 运行
+RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
+
+COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/next.config.mjs ./next.config.mjs
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
+
+RUN chown -R nextjs:nodejs /app
+USER nextjs
+
 EXPOSE 3000
-CMD ["pnpm", "start"]
+CMD ["./node_modules/.bin/next", "start", "-p", "3000", "-H", "0.0.0.0"]
 ```
 
 ```bash
-docker build -t kubevision:latest .
-docker run -p 3000:3000 --env-file .env.local kubevision:latest
+docker build -t kubevision:local .
+docker run --rm -p 3000:3000 --env-file .env.local kubevision:local
 ```
 
 #### 6.5.4 环境变量
@@ -947,14 +973,12 @@ docker run -p 3000:3000 --env-file .env.local kubevision:latest
 | `AI_MODEL_NAME` | 否 | 模型名 |
 | `K8S_API_SERVER` | 否 | 真实 K8s API Server 地址（如 `https://10.0.0.1:6443`），缺失时用合成遥测 |
 
----
+### 6.6 数据边界声明（模拟遥测 vs 真实 AI 推理 vs 生产接入路径）
 
-## 第七章：数据边界声明
-
-> 本章回答一个问题：**屏幕上这些数字，哪些可信、可信到什么程度、边界在哪里。**
+> 本节回答一个问题：**屏幕上这些数字，哪些可信、可信到什么程度、边界在哪里。**
 > 我们不回避"演示环境"的局限，而是把每一条边界写死，并用脚本持续校验。
 
-### 7.1 demo 与 live 的数据来源边界
+#### 6.6.1 demo 与 live 的数据来源边界
 
 | 模式 | 数据来源 | 可信度定位 |
 |---|---|---|
@@ -963,9 +987,9 @@ docker run -p 3000:3000 --env-file .env.local kubevision:latest
 | live · K8s API | 真实 /api/v1/nodes、/api/v1/pods、metrics-server | **数值与对象都真实**；无 metrics-server 时 CPU/内存用量留空，不编造 |
 
 **边界声明**：demo 模式的 QPS、CPU、内存是**合成值**，不声称是任何真实集群的实测；
-它可信的地方在于"故障语义"——同一场演练在两种数据源下必须表现一致（见 7.3）。
+它可信的地方在于"故障语义"——同一场演练在两种数据源下必须表现一致（见 6.6.3）。
 
-### 7.2 协议版本与降级边界
+#### 6.6.2 协议版本与降级边界
 
 遥测快照携带 schemaVersion（当前 v2）。客户端**只接受与自身版本完全一致**的帧：
 
@@ -978,7 +1002,7 @@ docker run -p 3000:3000 --env-file .env.local kubevision:latest
 **为什么不"尽力解析"**：字段语义不确定时继续渲染，会得到"画面在动但数字明显不对"
 的状态——这比停更更难排查，也更损害可信度。只读降级把"数据不可信"直接摆在脸上。
 
-### 7.3 demo / live 故障语义等价性
+#### 6.6.3 demo / live 故障语义等价性
 
 同一套混沌演练，在两种数据源下必须让观众看到同样的故障语义。
 校验脚本 scripts/verify-mode-parity.mjs 用**宿主桥接 mock**（同拓扑、不同数值）
@@ -991,20 +1015,20 @@ docker run -p 3000:3000 --env-file .env.local kubevision:latest
 | 网络丢包（NET_PACKET_LOSS） | 2 / 2 | [0:Ready, 1:Ready, 2:NetworkPartition] / [0:Ready, 1:Ready, 2:NetworkPartition] | P0:1·P1:0·P2:0 / P0:1·P1:0·P2:0 | 一致 |
 | CPU 尖峰（NODE_CPU_SPIKE） | 0 / 0 | [0:HighLoad, 1:Ready, 2:Ready] / [0:HighLoad, 1:Ready, 2:Ready] | P0:0·P1:1·P2:0 / P0:0·P1:1·P2:0 | 一致 |
 
-> 采集时间 2026-11-14 19:24 · 40 tick 演进 · 语义一致 3/3 场景。
+> 采集时间 2026-11-15 11:57 · 40 tick 演进 · 语义一致 3/3 场景。
 <!-- PARITY:END -->
 
 判定口径：**受害者数量 / 节点状态 / 告警级别分布**三项必须一致；
 健康分不参与判定（两侧底盘健康分本就不同，属预期差异）。
 
-### 7.4 帧缓冲与复盘边界
+#### 6.6.4 帧缓冲与复盘边界
 
 客户端保留最近 **120 帧**遥测快照（1 Hz，约 **2 分钟**窗口），用于复盘报告的事故时间线
 （告警出现/解除、健康分骤降/回升）。
 **边界**：超过 2 分钟的历史不可回溯；页面刷新即清空；时间线只记录"变化点"，
 不保留每帧全量数值的长期存储。
 
-### 7.5 明确不声称的指标
+#### 6.6.5 明确不声称的指标
 
 | 指标 | 原因 |
 |---|---|
@@ -1014,7 +1038,7 @@ docker run -p 3000:3000 --env-file .env.local kubevision:latest
 | 端侧神经推理延迟 | 当前环境降级为内置确定性分类器，0.07ms 不是神经网络推理 |
 | TTS 音质 / 多并发 SSE | 无头环境无法验证音频；未做并发压测 |
 
-### 7.6 端侧运行时三态（WebGPU / WASM / 内置分类器）
+#### 6.6.6 端侧运行时三态（WebGPU / WASM / 内置分类器）
 
 端侧日志审计存在三种**语义完全不同**的运行时，本项目的界面与文档始终三分标注，
 不把"规则兜底"说成"端侧模型推理"：
@@ -1038,28 +1062,16 @@ docker run -p 3000:3000 --env-file .env.local kubevision:latest
 本白皮书不将其作为端侧 AI 性能证据；`webgpu/wasm` 的推理延迟需在真机 GPU 环境采集。
 
 ---
----
+
 ## 第七章：核心创新点总结
 
-### 7.1 空间-语义双向绑定
+### 7.1 技术方案创新点
 
-**传统方案**：数据面板与物理拓扑是两个独立视图，故障定位靠人脑在 IP 与位置之间做映射。
+#### 7.1.1 云端推理 + 端侧隐私审计双模协同（含断网容灾与防幻觉检索）
 
-**本作品**：
+**行业现状**：多数 AI 运维方案把原始日志整包上云。这在金融、政务场景直接违反合规要求；且单路向量检索缺少防幻觉拒答机制，无关查询仍给虚高匹配分。
 
-$$
-\text{3D 实体} \xrightarrow{\text{click}} \text{相机飞跃} + \text{探针卡} \xrightarrow{\text{click}} \text{3D 反向定位}
-$$
-
-两个方向都通。这让"运维对话"可以自然地使用空间指代——"左边第二个柜子那台"成为有效的技术表达。
-
-**技术支撑**：`spatialLayout.ts` 提供唯一的坐标真相源，3D 渲染、相机聚焦、探针卡定位、命令面板跳转全部从同一处取值，不存在多套坐标系漂移。
-
-### 7.2 云端推理 + 端侧隐私审计双模协同
-
-**行业现状**：多数 AI 运维方案把原始日志整包上云。这在金融、政务场景直接违反合规要求。
-
-**本作品的数据流**：
+**本作品的数据流与算法突破**：
 
 ```mermaid
 flowchart LR
@@ -1076,9 +1088,29 @@ flowchart LR
     style X fill:#7f1d1d,stroke:#dc2626,color:#fff
 ```
 
-**关键洞察**：云端大模型需要的是"**语义**"而非"**原文**"。脱敏后的 `connect to [REDACTED_IP]:5432 failed` 与原文 `connect to 10.244.1.8:5432 failed` 承载完全相同的诊断信息，但前者可以合法出域。
+- **隐私零出域**：云端大模型需要的是"**语义**"而非"**原文**"。脱敏后的 `connect to [REDACTED_IP]:5432 failed` 与原文 `connect to 10.244.1.8:5432 failed` 承载完全相同的诊断信息，但前者可以合法出域（脱敏实测吞吐 11,264 条/秒）。
+- **无外库混合 RAG + Sigmoid 防幻觉双闸门**：共享 IDF 权重 + Okapi BM25 + RRF 融合，49 用例三路 R@1 达 **94.4%**、负例拒答 **100.0%**，兼顾毫秒级检索（均值 8.39ms）与零幻觉拒答。
+- **双擎容灾与差集补全**：无 Key/弱网无缝切换本地确定性引擎 B，并用服务端差集补全兜底小模型工具漏调问题。
 
-### 7.3 从告警到复盘报告的全链路闭环
+#### 7.1.2 浏览器端双轨状态架构与全程序化数字孪生渲染
+
+**技术突破**：面向目标 60FPS 交互体验，首创 `useTelemetryRef` 瞬态数组轨道与 Zustand 响应轨道严格分离（1Hz 遥测更新零 React 重渲染）；全场景零 `.glb` 外部资产依赖，以 `InstancedMesh` 合批（27 个实例网格承载 1,017 动态实例，Draw Calls 中位压至 **235**）叠加相位积分消抖与帧率无关阻尼，兼顾低首屏 JS（194 kB）与跨终端稳定运行。
+
+### 7.2 应用与交互模式创新点
+
+#### 7.2.1 空间-语义双向绑定（3D 拓扑 ↔ 运维指标互为索引）
+
+**传统方案**：数据面板与物理拓扑是两个独立视图，故障定位靠人脑在 IP 与位置之间做映射。
+
+**本作品**：
+
+$$
+\text{3D 实体} \xrightarrow{\text{click}} \text{相机飞跃} + \text{探针卡} \xrightarrow{\text{click}} \text{3D 反向定位}
+$$
+
+两个方向都通。这让"运维对话"可以自然地使用空间指代——"左边第二个柜子那台"成为有效的技术表达。**技术支撑**：`spatialLayout.ts` 提供唯一的坐标真相源，3D 渲染、相机聚焦、探针卡定位、命令面板跳转全部从同一处取值，不存在多套坐标系漂移。
+
+#### 7.2.2 生成式 UI 流式水合与「告警 → 自愈 → 复盘」全链路 HITL 闭环
 
 ```mermaid
 flowchart LR
@@ -1096,7 +1128,7 @@ flowchart LR
     style J fill:#064e3b,stroke:#10b981,color:#fff
 ```
 
-**多数作品止步于 E（给出建议）**。本作品打通到 J：自动汇总故障时间线、推理链、RAG 引用、遥测快照与执行动作，生成符合 Google SRE Workbook 结构的 8 章报告。
+**多数作品止步于 E（给出建议）**。本作品打通到 J：以 10 类 NDJSON 事件驱动可交互生成式 UI（思考链 + 骨架屏 + 指标/根因/审批三联卡片），强制高危操作 HITL 二次确认，最终自动汇总故障时间线、推理链、RAG 引用、遥测快照与执行动作，生成符合 Google SRE Workbook 结构的 8 章复盘报告。
 
 **诚实原则**：报告只陈述会话中真实发生过的事。没有产出根因卡时明确写"本次会话未产出根因分析卡片"，而不是编一段看起来合理的分析。
 
@@ -1196,7 +1228,7 @@ flowchart TB
 | 6 | RAG 延迟 | 旧值（多版本不一致） | 统一取最新（本次均值 8.39ms / P95 12.05ms） |
 | 7 | 脱敏吞吐 | 旧值（多版本不一致） | 统一取最新（本次 11,264 条/秒） |
 | 8 | 首屏体积 | 旧值 84.8kB / 172kB | 统一取最新构建（107kB / 194kB） |
-| 9 | 代码规模 | 64 文件 / 34,600 行 | 120 文件 / 59,063 行（src/**/*.{ts,tsx}） |
+| 9 | 代码规模 | 64 文件 / 34,600 行 | 145 个源文件 / 57,268 行（`src/**/*.{ts,tsx}`） |
 | 10 | 演示按钮名 | 旧按钮文案（已统一） | 「故障演练」「立即执行自愈方案」「3D 视口多模态快照诊断」 |
 | 11 | 路演入口 | 「路演」 | 「剧本路演」 |
 | 12 | 死链 | 旧 Hook 文件名（已修复） | `useSpeechInput.ts` |

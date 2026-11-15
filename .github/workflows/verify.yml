@@ -27,8 +27,28 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Docs consistency (performance.json / rag-eval.json / verify-summary.json)
-        run: node scripts/check-docs-consistency.mjs
+      - name: Docs & metrics lineage consistency
+        run: |
+          node scripts/check-docs-consistency.mjs
+          node scripts/check-metrics-lineage.mjs
 
-      - name: Static verification (tsc + lint + any/GLSL/docs checks; no browser)
+      - name: Static verification (tsc + lint + dead-exports + any/GLSL/docs checks; no browser)
         run: node scripts/verify.mjs --quick
+
+      - name: Unit & contract test suite
+        run: |
+          pnpm test:health
+          pnpm test:keyboard
+          pnpm test:slots
+          pnpm test:chat-stream
+          pnpm test:demo:fast
+          pnpm verify:rag
+          pnpm verify:receipt
+          pnpm verify:parity
+          pnpm verify:telemetry
+          pnpm verify:sanitizer
+
+      - name: Production build & style contract gate
+        run: |
+          pnpm build
+          node scripts/check-style-contract.mjs --require-build

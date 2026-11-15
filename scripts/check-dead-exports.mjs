@@ -133,15 +133,28 @@ function collectScriptFiles(dir = join(ROOT, 'scripts')) {
   return out;
 }
 
+/** 递归收集 tests 下的单测文件（作为引用语料，不参与导出清点） */
+function collectTestFiles(dir = join(ROOT, 'tests')) {
+  if (!existsSync(dir)) return [];
+  const out = [];
+  for (const entry of readdirSync(dir)) {
+    const absolute = join(dir, entry);
+    const stats = statSync(absolute);
+    if (stats.isDirectory()) out.push(...collectTestFiles(absolute));
+    else if (/\.(ts|tsx|mjs|js)$/.test(entry)) out.push(relative(ROOT, absolute).split(sep).join('/'));
+  }
+  return out;
+}
+
 /**
- * collectReferenceCorpus —— 引用统计语料：src 全量 + scripts 全量 + 构建配置。
+ * collectReferenceCorpus —— 引用统计语料：src 全量 + scripts/tests 全量 + 构建配置。
  *
- * 【为什么包含后两者】验证脚本与 tailwind.config 是真实消费者（如
+ * 【为什么包含后三者】验证脚本、单元测试与 tailwind.config 是真实消费者（如
  * verify-telemetry.mjs → clearFrameBuffer、probe-glass-contract.mjs → GLASS/COLORS、
  * tailwind.config.ts → TYPE_SCALE）。只数 src 会把它们误报成死导出。
  */
 function collectReferenceCorpus() {
-  const files = [...collectSourceFiles(), ...collectScriptFiles()];
+  const files = [...collectSourceFiles(), ...collectScriptFiles(), ...collectTestFiles()];
   if (existsSync(join(ROOT, 'tailwind.config.ts'))) files.push('tailwind.config.ts');
   return [...new Set(files)];
 }

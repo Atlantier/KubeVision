@@ -13,8 +13,8 @@
 | 3 | 技术白皮书升级（R02–R18、12 处口径、数字对齐） | **已补（R55）** | `docs/COMPETITION_TECHNICAL_WHITEPAPER.md` | 文档 | T-3 |
 | 4 | 白皮书 PDF（生成时间晚于最后代码提交、≤10MB） | **已生成：由 `docs:pdf` 刷新** | `docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf` | 文档 | T-1 |
 | 5 | 路演 PPT（12 页，PDF ≤10MB） | **已生成：由 `docs:ppt` 刷新** | `docs/KubeVision_PITCH.pdf` | 队长 | T-3 |
-| 6 | 3 分钟视频（1080p30、≤3:00） | **仍缺：待录制** | `recording/KubeVision_3min_FINAL_1080p30.mp4` | 主讲/录制 | **T-2** |
-| 7 | 60s 无旁白版 | **仍缺：待剪辑** | `recording/KubeVision_60s_silent_1080p30.mp4` | 录制 | T-2 |
+| 6 | **官网提交演示视频（5–8 分钟，建议 6:00，MP4 ≥1080p30，普通话）** | **仍缺：待录制**（分镜已就绪） | `recording/KubeVision_6min_FINAL_1080p30.mp4` | 主讲/录制 | **T-2** |
+| 7 | 答辩快闪版（≤3:00）与 60s 无旁白预览版（可选辅助物料） | **仍缺：待剪辑** | `recording/KubeVision_3min_FINAL_1080p30.mp4` · `KubeVision_60s_silent_1080p30.mp4` | 录制 | T-2 |
 | 8 | 源码包（排除 node_modules/.next/.git/大文件，含命名规则） | **R14 离线包已重打（无 `.env.local`）** | `release/` · `docs/SUBMISSION_PACKAGE.md` | 队长 | **T-1** |
 | 9 | 启动说明（Node≥18.17、pnpm、无 Key 可跑） | **已同步 R14** | `启动说明.md` | 文档 | T-7 |
 | 10 | Dockerfile/.dockerignore/部署步骤（SSE 注意） | **已静态修正（无 Docker daemon 未实测）** | `Dockerfile`、`.dockerignore`、`docs/DEPLOYMENT.md` | 工程 | T-3 |
@@ -30,11 +30,11 @@
 |---|---|---|---|
 | T-24h | 全量回归 | `node scripts/verify.mjs` 36/36；`node scripts/verify-demo.mjs` 通过 | 修复或降级演示链路 |
 | T-24h | 文档一致性 | `node scripts/check-docs-consistency.mjs` 通过 | 重跑 benchmark + sync-docs-metrics |
-| T-23h | PDF 重新生成 | 白皮书/PPT PDF 的生成时间晚于最后一次代码提交；各 ≤10MB | 重新生成，不手改 PDF |
-| T-22h | 视频母版 | 3:00 内、1080p30、无通知/无画圈；60s 版就绪 | 重录指定段 |
-| T-20h | 双机演练 | 主讲机+备份机同 BUILD_ID；断网可跑；≤60s 切换 | 重做离线包 |
-| T-18h | 源码包 | 命名含学校+队名+队长联系方式；解压可 build/start；无 `.env.local` | 重新打包 |
-| T-14h | 团队信息 | README 中 `【待填写】` 全部替换 | 立即补齐 |
+| T-23h | PDF 重新生成 | 白皮书 PDF（≤30 页，当前 26–28 页）/ PPT PDF 的生成时间晚于最后一次代码提交；各 ≤10MB | 重新生成，不手改 PDF |
+| T-22h | 视频母版 | **官网提交主视频 5:30–6:30（严格落于官网 5–8 分钟区间）**、MP4 ≥1080p30、普通话讲解、无通知/无画圈；60s 循环版与 3 分钟现场快闪版就绪 | 重录指定段 |
+| T-20h | 双机/在线演练 | 公网 Vercel 在线演示链接稳定可访问；主讲机+备份机同 BUILD_ID；断网可跑；≤60s 切换 | 重做离线包 / 核对 Vercel 环境变量 |
+| T-18h | 源码包 / 仓库 | GitHub/Gitee Public 仓库含完整 Git 历史与 `.env.example`；命名含学校+队名+队长联系方式；解压可 build/start；无 `.env.local` | 重新打包 |
+| T-14h | 团队信息 | README 中 `【待填写】` 全部替换（**严格 1–3 名同校学生，≤2 名指导老师，严禁降组**） | 立即补齐 |
 | T-12h | 合规 | LICENSE 决策确认；NOTICES 与模型/语料声明齐全 | 团队确认后替换 |
 | T-8h | 现场物料 | U 盘（zip/mp4/安装包/线材/电源）、打印分镜卡与检查表 | 补买/拷贝 |
 | T-4h | 现场彩排 | 投影 > 网络 > 音量 > 鼠标 全过；3 分钟误差 ≤10s | 按兜底矩阵处理 |

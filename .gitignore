@@ -80,3 +80,7 @@ tmp-slots/
 
 # 性能双跑临时产物
 /tmp-bench-run*.json
+
+# 内部历史归档与本地调试临时产物（严禁进入竞赛提交仓库）
+/docs/archive/
+/.verify-artifacts/

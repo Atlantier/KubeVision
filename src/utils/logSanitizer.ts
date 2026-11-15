@@ -529,3 +529,31 @@ export function sanitizeRawLog(raw: string): SanitizeResult {
 export function getSanitizerRuleNames(): readonly string[] {
   return SANITIZER_RULES.map((rule): string => rule.name);
 }
+
+/**
+ * sanitizeBatch —— 批量日志脱敏并汇总掩码总数。
+ *
+ * 【设计意图】供端侧批量日志流吞吐基准测试与契约验收脚本直接调用，
+ * 逐行执行脱敏并累加总命中次数。
+ *
+ * @param lines 原始日志行数组
+ * @returns 逐行脱敏结果列表 results 与累计掩码总数 totalMasked
+ */
+export function sanitizeBatch(lines: readonly string[]): {
+  readonly results: readonly SanitizeResult[];
+  readonly totalMasked: number;
+} {
+  const results = lines.map((line) => sanitizeRawLog(line));
+  const totalMasked = results.reduce((sum, item) => sum + item.maskedCount, 0);
+  return { results, totalMasked };
+}
+
+/**
+ * hasSensitiveData —— 快速判定单行日志是否包含敏感凭证或 PII。
+ *
+ * @param raw 原始日志字符串
+ * @returns 命中任一脱敏规则返回 true，否则返回 false
+ */
+export function hasSensitiveData(raw: string): boolean {
+  return sanitizeRawLog(raw).maskedCount > 0;
+}

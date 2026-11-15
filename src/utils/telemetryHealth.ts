@@ -198,17 +198,5 @@ export function resetTelemetryHealthBaseline(): void {
   };
 }
 
-/** 判断当前 HUD 应显示的最高严重度（供组件选色，不修改状态） */
-export function getHealthSeverity(): 'ok' | 'warn' {
-  const state = telemetryHealthRef.current;
-  const warn =
-    Math.abs(state.qpsDeviationRatio) > HEALTH_QPS_DEVIATION_WARN ||
-    state.nodeDriftPct > HEALTH_NODE_DRIFT_WARN ||
-    state.frameJitterMs > HEALTH_JITTER_WARN_MS ||
-    state.sseReconnects > 0 ||
-    state.immuneRewrites > 0;
-  return warn ? 'warn' : 'ok';
-}
-
 /** 当前支持的 schema 版本（再导出便于 HUD/测试引用单一来源） */
 export const SUPPORTED_SCHEMA_VERSION = TELEMETRY_SCHEMA_VERSION;

@@ -101,11 +101,6 @@ export function dispatchEscape(target: EventTarget | null): boolean {
   return true;
 }
 
-/** 读取当前注册层（仅用于测试/探针，返回快照副本） */
-export function getRegisteredEscapeLayers(): readonly EscapeLayer[] {
-  return layers.map((layer): EscapeLayer => ({ ...layer }));
-}
-
 /**
  * useEscapeLayer —— 在组件内注册一个 Esc 层（open 为 false 时不注册）。
  *

@@ -2,8 +2,9 @@
 
 > **云原生三维空间态势感知与多模态智能自愈副驾系统**
 
-> **赛事全称**：全国高校 AI Web 开发挑战赛
-> **参赛赛道**：智启未来 · AI 驱动的 Web 应用创新挑战（赛道 ID `10037`）
+> **赛事全称**：第七届传智杯全国高校IT技能大赛（全国高校 AI Web 开发挑战赛） · AI WEB 网页开发挑战赛
+> **主办单位**：全国高等院校计算机教育研究会
+> **参赛赛道**：智启未来：AI 驱动的 Web 应用创新挑战（赛道 ID `10037`）
 > **大赛页面**：https://www.boxuegu.com/matchTrack/detail/?id=10037
 > 报名状态、评分细则、提交格式以大赛官网为准；本仓库不伪造任何官方信息。
 
@@ -28,25 +29,28 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 | 项目 | 内容 |
 |---|---|
 | 作品名称 | **KubeVision AI** |
+| 参赛赛事 | 第七届传智杯全国高校IT技能大赛（全国高校 AI Web 开发挑战赛） · AI WEB 网页开发挑战赛 |
+| 主办单位 | 全国高等院校计算机教育研究会 |
 | 参赛赛道 | 智启未来：AI 驱动的 Web 应用创新挑战（赛道 ID `10037`） |
 | 核心定位 | 云原生三维空间态势感知与多模态智能自愈副驾系统 |
 | 作品形态 | B/S 架构 Web 应用（Next.js 14 App Router 全栈单体） |
-| 代码规模 | 120 个 TypeScript/TSX 源文件 · 59,063 行（`src/**/*.{ts,tsx}`，含注释；统计于 R55） |
+| 在线演示（加分项） | **【公网 Vercel 部署入口 · 部署后填入稳定可访问 URL】**（免 Key 自动运行本地确定性引擎 B；配置云端 Key 开启完整大模型多模态流式体验） |
+| 代码规模 | 145 个 TypeScript/TSX 源文件 · 57,268 行（`src/**/*.{ts,tsx}`，含注释） |
 | 运行要求 | Node.js ≥ 18.17 + pnpm；**无需 GPU、无需真实 K8s 集群、无需 API Key**（无 Key 自动走引擎 B） |
 | 大赛页面 | https://www.boxuegu.com/matchTrack/detail/?id=10037 |
-| 技术白皮书 | [docs/COMPETITION_TECHNICAL_WHITEPAPER.md](docs/COMPETITION_TECHNICAL_WHITEPAPER.md) |
+| 技术白皮书 | [docs/COMPETITION_TECHNICAL_WHITEPAPER.md](docs/COMPETITION_TECHNICAL_WHITEPAPER.md)（[PDF 版 ≤30 页](docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf)） |
 
 ### 1.2 团队成员信息表
 
 > **提交前必填**：以下所有 `【待填写】` 必须替换为真实信息（姓名/学号/院校/邮箱），未替换视为未完成交付。
+> **赛制红线核对**：每队 **1–3 名同一所学校的在校学生**，指导老师 **不超过 2 名**；按最高学历成员所属院校层次选择组别（研究生组 / 本科 A 组 985·211 / 本科 B 组普通本科 / 高职高专 C 组），**严禁降组参赛**。
 
 | 角色 | 姓名 | 学号 / 工号 | 专业 / 年级 | 主要分工 |
 |---|---|---|---|---|
 | 队长 | `【待填写】` | `【待填写】` | `【待填写】` | 整体架构设计、AI Agent 工作流、答辩主讲 |
-| 队员 1 | `【待填写】` | `【待填写】` | `【待填写】` | 3D 渲染工程（R3F / GLSL Shader / 性能优化） |
-| 队员 2 | `【待填写】` | `【待填写】` | `【待填写】` | RAG 检索引擎、知识库语料、端侧推理 |
-| 队员 3 | `【待填写】` | `【待填写】` | `【待填写】` | 前端工程质量、HUD 交互、测试与验收脚本 |
-| 指导教师 | `【待填写】` | — | `【待填写】` | 选题指导、技术路线评审 |
+| 队员 1（选填） | `【待填写】` | `【待填写】` | `【待填写】` | 3D 渲染工程（R3F / GLSL Shader / 性能优化）、前端 HUD 交互 |
+| 队员 2（选填） | `【待填写】` | `【待填写】` | `【待填写】` | 混合 RAG 检索引擎、端侧隐私审计、自动化测试与验收脚本 |
+| 指导教师（≤2名，选填） | `【待填写】` | — | `【待填写】` | 选题指导、技术路线评审 |
 
 | 团队 / 单位信息 | 内容 |
 |---|---|
@@ -150,8 +154,8 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 
 ## 三、评委 3 分钟黄金演示路径（唯一版）
 
-> **本表是唯一版本**：按钮文案来自真实 UI 抓取（headless Edge + CDP，2026-11-10），与代码一致；
-> 完整逐句旁白、停顿标记、5 分钟加长版与兜底矩阵见 [docs/summit/DEMO_DIRECTOR_PLAYBOOK.md](docs/summit/DEMO_DIRECTOR_PLAYBOOK.md)。
+> 本表是线下答辩 **3 分钟主链路**的唯一版本；按钮文案来自真实 UI 抓取（headless Edge + CDP，2026-11-10），与代码一致；
+> **官网提交演示视频规范**：大赛官网要求提交 **5–8 分钟完整演示视频**（MP4 ≥1080p，普通话讲解，含项目背景介绍 + 核心功能演示 + AI 技术亮点展示），完整 **6:00 合规版**分镜与逐句讲稿见 [docs/summit/R55-RECORDING-RUNSHEET.md](docs/summit/R55-RECORDING-RUNSHEET.md) 与 [docs/summit/DEMO_DIRECTOR_PLAYBOOK.md](docs/summit/DEMO_DIRECTOR_PLAYBOOK.md)。
 > 规则：每步点击后停 1.5–2 秒再讲；任一步失败 3 秒内切兜底，不在台上找按钮。
 
 | 时间 | 操作（真实 UI 文案） | 期望画面 | 讲解要点（约字数） | 证明点 |
@@ -432,13 +436,15 @@ src/
 | 路由 | 方法 | 说明 |
 |---|---|---|
 | `/api/chat` | POST | 双擎 NDJSON 流式对话（意图 → RAG → 多模态 → MCP 工具卡片） |
-| `/api/telemetry` | GET | SSE 遥测流（1Hz 合成集群快照） |
-| `/api/logs/live` | GET | 模拟实时日志流（端侧脱敏后的日志样本） |
-| `/api/mcp` | GET | MCP JSON-RPC 工具清单（tools/list） |
-| `/api/mcp/execute` | POST | MCP 工具执行回执（写操作需前端 HITL 二次确认） |
+| `/api/telemetry` | GET | SSE 遥测流（1Hz 合成集群快照 / 真实 K8s 或宿主机采样） |
+| `/api/health` | GET | 运行态健康诊断与五层降级矩阵只读快照（零敏感凭据暴露） |
+| `/api/logs/live` | GET | 采集 K8s 或宿主机运行时原始日志（返回未脱敏 `rawLog` 供浏览器端侧 PII 正则脱敏与 WebWorker 审计） |
+| `/api/mcp` | POST / GET | MCP JSON-RPC 2.0 端点（`POST` 支持 `initialize` / `tools/list` / `tools/call` / `ping`；`GET` 返回只读工具清单） |
+| `/api/mcp/execute` | POST / GET | MCP 工具执行与幂等回执查询（写操作需前端 HITL 二次确认；`GET` 支持按 `clientRequestId` 查询回执账本） |
 | `/api/verify/rag` | POST | RAG 检索契约验证（评测/CI 用） |
 | `/api/verify/sanitize` | POST | 脱敏契约验证（评测/CI 用） |
-| `/api/dev/rag-eval` | GET | 仅开发环境可用的 RAG 评测数据（生产 404） |
+| `/api/dev/rag-eval` | GET | 仅开发环境可用的 RAG 评测数据（生产返回 404） |
+| `/api/dev/corpus` | GET | 仅开发环境可用的内置 Runbook 语料导出（供构建向量索引脚本读取，生产返回 404） |
 
 > 流式响应由路由自身返回 `Cache-Control: no-cache, no-transform`、
 > `X-Accel-Buffering: no` 等头；`vercel.json` 不再重复声明，避免配置漂移导致 SSE 被缓冲。
@@ -500,7 +506,7 @@ src/
 
 ## 已知局限与数据边界
 
-> 本作品不声称超出以下边界的能力；所有性能/质量数字附采集环境，详见 §六 与白皮书第七章。
+> 本作品不声称超出以下边界的能力；所有性能/质量数字附采集环境，详见 §六 与白皮书 6.6 节。
 
 | # | 局限 | 现状 | 影响 |
 |---|---|---|---|

@@ -56,6 +56,17 @@ const CANARY_LOG =
   'aws_access_key_id=AKIAIOSFODNN7EXAMPLE; contact oncall@kubevision.io from 10.244.3.17; ' +
   'Authorization: Bearer canary-token-9f3a';
 
+try {
+  const healthRes = await fetch(`${BASE_URL}/api/health`, { signal: AbortSignal.timeout(4000) });
+  if (!healthRes.ok) {
+    console.error(`[verify-privacy] 预检失败：${BASE_URL}/api/health 返回 HTTP ${healthRes.status}，请先启动服务后再运行本脚本。`);
+    process.exit(2);
+  }
+} catch (err) {
+  console.error(`[verify-privacy] 预检失败：无法连接 ${BASE_URL}/api/health (${err instanceof Error ? err.message : String(err)})，拒绝生成残缺的 docs/privacy-egress.md。`);
+  process.exit(2);
+}
+
 const EDGE = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -330,8 +341,14 @@ lines.push('- Header 抓包是请求头快照（CDP 提供），浏览器自动�
 lines.push('- 端侧分类若走 WebGPU，模型权重来自远程下载（一次性、非凭证数据），不在本次金丝雀范围内。');
 lines.push('');
 
-writeFileSync(join(process.cwd(), 'docs/privacy-egress.md'), lines.join('\n'), 'utf8');
-console.log('\n  报告已写入 docs/privacy-egress.md');
+if (fail === 0 && chatRequests.length > 0) {
+  writeFileSync(join(process.cwd(), 'docs/privacy-egress.md'), lines.join('\n'), 'utf8');
+  console.log('\n  报告已写入 docs/privacy-egress.md');
+} else {
+  console.warn(
+    '\n  [warn] 未满足零失败（fail=' + fail + '）且含真实对话抓包（chatRequests=' + chatRequests.length + '）条件，保留既有 docs/privacy-egress.md 不覆写。',
+  );
+}
 
 console.log('\n汇总: 通过 ' + pass + ' · 失败 ' + fail);
 captureEnabled = false;

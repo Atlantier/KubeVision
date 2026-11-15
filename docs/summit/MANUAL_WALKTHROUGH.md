@@ -10,8 +10,8 @@
 | 3 | 故障注入 | ✅ | `walkthrough-03-chaos-injected-2026-11-11.png` | 顶栏「演练中：OOM 风暴」+ 机架红色脉冲 |
 | 4 | 快照诊断三卡（含第三张 MCP 卡最终态） | ✅ | `walkthrough-04-three-cards-2026-11-11.png`、`walkthrough-04b-action-executed-2026-11-11.png` | 三卡齐；**人工点击「立即执行自愈方案」后**显示「已执行 · 3D 拓扑已自愈恢复」、MCP 回执、健康分 77→96 |
 | 5 | 勾选自愈（高危动作） | ⚠ | 代码路径：`GenUI/ActionConfirm.tsx` 复选框与 `需二次确认` 禁用态 | 本轮 OOM 为 **非高危 restart**，按真实 UI **没有复选框**；高危 drain 的勾选未在截图中验证，现场按代码路径说明 |
-| 6 | RAG 知识库检索 | ✅ | `rag-three-way-2026-11-11.png` | 真实输入「容器内存爆了 exit 137」→ 90% / 76% / 73%，含 Vector/BM25/Context 占比；负例显示「未命中任何 Runbook」 |
-| 7 | 端侧日志审计 | ✅ | `auditor-before-after-2026-11-11.png` | 预设「数据库连接串泄露」→ 脱敏前后对照 + 敏感类型计数 |
+| 6 | RAG 知识库检索 | ✅ | `rag-three-way-2026-11-14.png` | 真实输入「容器内存爆了 exit 137」→ 90% / 76% / 73%，含 Vector/BM25/Context 占比；负例显示「未命中任何 Runbook」 |
+| 7 | 端侧日志审计 | ✅ | `auditor-before-after-2026-11-14.png` | 预设「数据库连接串泄露」→ 脱敏前后对照 + 敏感类型计数 |
 | 8 | 复盘报告 | ✅ | `walkthrough-05-postmortem-2026-11-11.png` | 「SRE 故障复盘报告」弹窗，预览/源码/复制/下载 |
 | 9 | 路演全流程（暂停/跳转/终止） | ⚠ | `roadshow-phase2/phase4/preflight-fail-2026-11-11.png`；`docs/evidence/verify-demo-2026-11-11.log` | 暂停/继续/停止：J-6 通过（阶段单调、停止后无新增导演日志）；**跳转 seek 未实现**；软渲染+慢模型下阶段 4 HITL 会超时（见风险台账 #1） |
 | 10 | 断网演示 | ⚠ | `docs/summit/failures/*/last-frame.png`（引擎行「本地确定性容灾引擎」）；实测 ttft 6688.66ms | 本轮未做物理断网走查；此前实测回落约 6.7s，不是 1 秒；现场按兜底话术 |

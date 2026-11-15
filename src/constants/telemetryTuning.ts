@@ -90,10 +90,9 @@ export const NODE_ROLE_PROFILE: Readonly<Record<NodeRole, NodeRoleProfile>> = {
  * - 高于 56%：已经接近琥珀色的心理阈值，稳态就偏黄会让人误以为有异常。
  * 因此所有角色基线（36~48）都刻意收在区间中段：最靠边的 48 距上界 56 仍留 8 个
  * 百分点，正好覆盖噪声的 3σ 摆动（实测 300 tick 内所有采样都在 24~56 内，
- * 仅内存型节点的瞬时峰值 56.2 擦过一次上界）。
+ * 仅内存型节点的瞬时峰值 56.2 擦过一次上界 56%）。
  */
 export const NODE_HEALTHY_MIN = 24;
-export const NODE_HEALTHY_MAX = 56;
 
 /**
  * 高负载（HighLoad）判定阈值。

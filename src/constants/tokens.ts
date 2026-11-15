@@ -45,27 +45,6 @@ export const TYPE_SCALE = {
   h1: 24,
 } as const;
 
-/** 4px 栅格间距（px） */
-export const SPACE = {
-  '1': 4,
-  '2': 8,
-  '3': 12,
-  '4': 16,
-  '5': 20,
-  '6': 24,
-  '8': 32,
-  '10': 40,
-} as const;
-
-/** 圆角（px） */
-export const RADIUS = {
-  sm: 4,
-  md: 6,
-  lg: 8,
-  xl: 12,
-  full: 9999,
-} as const;
-
 /** 描边 */
 export const STROKE = {
   /** 默认 hairline */
@@ -99,9 +78,6 @@ export const GLASS = {
   chip: { blurPx: 8, use: '终端条 / 工具条 / 图例 / 筛选横幅（无大投影）' },
   overlay: { blurPx: 30, use: '全屏遮罩' },
 } as const;
-
-/** 焦点环（可访问性统一） */
-export const FOCUS_RING = 'focus-visible:ring-1 focus-visible:ring-cyan-400/60 focus-visible:outline-none';
 
 /**
  * 状态语义色令牌表（text / ring / badge 三态）

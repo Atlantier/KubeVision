@@ -55,7 +55,8 @@ Get-FileHash "..\XX大学_星火队_队长13800000000_源码包.zip" -Algorithm 
 | 附件 | 命名 | 备注 |
 |---|---|---|
 | 离线演示包 | `kubevision-demo-<commit>-<time>.zip` | `pnpm package:demo` 生成，含 `.next` |
-| 3 分钟视频 | `KubeVision_3min_FINAL_1080p30.mp4` | ≤3:00，1080p30 |
-| 60s 无旁白版 | `KubeVision_60s_silent_1080p30.mp4` | 60±2s |
-| 白皮书 PDF | `KubeVision_Technical_Whitepaper.pdf` | 由脚本重导 |
+| **官网提交主视频（5–8 分钟）** | `KubeVision_6min_FINAL_1080p30.mp4` | **5–8 分钟（建议 6:00），≥1080p30 MP4，普通话讲解（含背景+功能+AI亮点）** |
+| 现场答辩快闪视频（辅助） | `KubeVision_3min_FINAL_1080p30.mp4` | ≤3:00，1080p30 |
+| 60s 无旁白预览版（辅助） | `KubeVision_60s_silent_1080p30.mp4` | 60±2s |
+| 白皮书 PDF | `KubeVision_Technical_Whitepaper.pdf` | 由脚本重导，≤30 页 |
 | PPT PDF | `KubeVision_Pitch.pdf` | 10–12 页 |

@@ -424,9 +424,6 @@ export const TOOL_NAME = {
   REMEDIATION: 'proposeRemediationAction',
 } as const;
 
-/** 工具名联合类型 */
-export type ChatToolName = (typeof TOOL_NAME)[keyof typeof TOOL_NAME];
-
 /**
  * 判定工具名归属（兼容历史别名，但判定结果唯一）。
  *

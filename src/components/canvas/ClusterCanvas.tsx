@@ -1618,11 +1618,11 @@ export default function ClusterCanvas() {
                 requestAnimationFrame(captureOnFrame);
                 return;
               }
-              void requestViewportCapture({ mime: 'image/png' }).then((dataUrl): void => {
+              void requestViewportCapture({ mime: 'image/jpeg', quality: 0.78 }).then((dataUrl): void => {
                 if (dataUrl === null) return;
                 /* base64 膨胀约 4/3，用长度反推原始字节数 */
                 const approxBytes = Math.floor((dataUrl.length * 3) / 4);
-                if (dataUrl.startsWith('data:image/png') && approxBytes <= SNAPSHOT_MAX_BYTES) {
+                if (dataUrl.startsWith('data:image/jpeg') && approxBytes <= SNAPSHOT_MAX_BYTES) {
                   setSnapshotDataUrl(dataUrl);
                 }
               });

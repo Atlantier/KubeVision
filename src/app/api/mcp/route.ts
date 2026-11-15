@@ -65,6 +65,27 @@ function isValidId(value: unknown): value is string | number | null {
   return value === null || typeof value === 'string' || typeof value === 'number';
 }
 
+/**
+ * GET /api/mcp —— 浏览器与健康探针直读的 MCP 工具清单端点。
+ *
+ * 【设计意图】除标准 JSON-RPC 2.0 POST (`tools/list`) 外，提供幂等 GET 响应，
+ * 便于浏览器直读、README 契约核验与运维探针快速检视已注册的 MCP 工具。
+ */
+export async function GET(): Promise<Response> {
+  return Response.json(
+    {
+      jsonrpc: '2.0',
+      protocolVersion: '2025-11-05',
+      serverInfo: {
+        name: 'kubevision-k8s-mcp-server',
+        version: '1.0.0',
+      },
+      tools: MCP_TOOLS,
+    },
+    { headers: { 'Cache-Control': 'no-store' } },
+  );
+}
+
 /** POST /api/mcp —— 单个 JSON-RPC 请求 */
 export async function POST(request: Request): Promise<Response> {
   let body: unknown;
