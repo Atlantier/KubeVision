@@ -23,6 +23,7 @@
     "test:health": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --test tests/clusterHealth.test.mjs",
     "test:keyboard": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --test tests/keyboardTargets.test.mjs",
     "test:slots": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --test tests/telemetrySlots.test.mjs",
+    "test:chunk-retry": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --test tests/chunkRetry.test.mjs",
     "verify:telemetry": "node scripts/verify-telemetry.mjs",
     "verify:parity": "node scripts/verify-mode-parity.mjs",
     "verify:sanitizer": "node scripts/verify-sanitizer.mjs",

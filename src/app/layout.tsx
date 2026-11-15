@@ -27,7 +27,7 @@ export const metadata: Metadata = {
     'RAG',
     'Transformers.js',
   ],
-  authors: [{ name: 'KubeVision AI Team' }],
+  authors: [{ name: 'KubeVision AI Contributors' }],
   openGraph: {
     title: 'KubeVision AI | 云原生集群 3D 态势感知与智能运维副驾',
     description: 'WebGL 实时集群拓扑 × 瞬态遥测 × 端侧 RAG AI 运维副驾',

@@ -32,14 +32,14 @@ import {
   type ProfilerOnRenderCallback,
   type ReactNode,
 } from 'react';
+import dynamic from 'next/dynamic';
 import { Canvas, useFrame, useThree, type RootState } from '@react-three/fiber';
 import { ContactShadows, Grid, MeshReflectorMaterial, PerformanceMonitor, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
 import { NeutralToneMapping, NoToneMapping } from 'three';
-import { ExposureDriver, ExposureEffect, type ExposureEffectHandle } from '@/components/canvas/ExposureDriver';
-import { Bloom, DepthOfField, EffectComposer, FXAA, Noise, ToneMapping, Vignette } from '@react-three/postprocessing';
-import type { DepthOfFieldEffect } from 'postprocessing';
-import { ToneMappingMode } from 'postprocessing';
+import type { PostProcessingTierConfig } from '@/components/canvas/ClusterPostProcessing';
+import DynamicSlotBoundary from '@/components/common/DynamicSlotBoundary';
+import { retryDynamicImport } from '@/utils/dynamicWithRetry';
 
 import {
   REDUCED_MOTION_AMPLITUDE,
@@ -94,7 +94,6 @@ import { isCompactViewport, isDemoMode, useQualityStore } from '@/store/useQuali
 import { useQualityGovernor } from '@/hooks/useQualityGovernor';
 import PodInstancedMesh from '@/components/canvas/PodInstancedMesh';
 import ClusterTopologyFloor3D from '@/components/canvas/ClusterTopologyFloor3D';
-import { HalfFloatType } from 'three';
 import { getDemoDirectorSnapshot } from '@/utils/demoDirector';
 import SelectionBeacon3D from '@/components/canvas/SelectionBeacon3D';
 import ViewportToolbar from '@/components/canvas/ViewportToolbar';
@@ -166,56 +165,16 @@ const CAMERA_FOV = 40;
 /* ClusterCanvas 主体                                                          */
 /* ========================================================================== */
 
-/**
- * DofFocusDriver —— T3 景深焦点阻尼跟随（R27 B3）。
- *
- * 焦点目标 = 相机到"关注实体"的距离：选中节点→机架中心；
- * 选中 Pod→其所属机架中心；否则→控制平面中心。
- * 每 250ms 更新目标、每帧指数阻尼（k=5），镜头飞行时焦点平滑跟随、无跳变。
- *
- * @param props.effectRef 指向 DepthOfFieldEffect 的 ref
- */
-function DofFocusDriver({
-  effectRef,
-}: {
-  readonly effectRef: React.MutableRefObject<DepthOfFieldEffect | null>;
-}): null {
-  const targetRef = useRef<number>(12);
-  const currentRef = useRef<number>(12);
-  const lastReadRef = useRef<number>(0);
-  const centerRef = useRef(new THREE.Vector3(MASTER_POSITION[0], MASTER_POSITION[1], MASTER_POSITION[2]));
-
-  useFrame(({ camera }, delta): void => {
-    const now = performance.now();
-    if (now - lastReadRef.current >= 250) {
-      lastReadRef.current = now;
-      const state = useClusterStore.getState();
-      const selectedId = state.selectedEntityId;
-      centerRef.current.set(MASTER_POSITION[0], MASTER_POSITION[1], MASTER_POSITION[2]);
-      if (selectedId !== null) {
-        const node = state.snapshotSummary.nodes.find((item): boolean => item.id === selectedId);
-        const pod = state.snapshotSummary.pods.find((item): boolean => item.id === selectedId);
-        const rackIndex =
-          node?.rackIndex ??
-          (pod === undefined
-            ? undefined
-            : state.snapshotSummary.nodes.find((item): boolean => item.id === pod.nodeId)?.rackIndex);
-        if (rackIndex !== undefined) {
-          const rack = getRackTransform(rackIndex);
-          centerRef.current.set(rack.position[0], rack.position[1] + 1.2, rack.position[2]);
-        }
-      }
-      targetRef.current = camera.position.distanceTo(centerRef.current);
-    }
-    const alpha = 1 - Math.exp(-5 * Math.min(delta, 0.1));
-    currentRef.current += (targetRef.current - currentRef.current) * alpha;
-    const effect = effectRef.current;
-    if (effect !== null) {
-      effect.circleOfConfusionMaterial.focusDistance = currentRef.current;
-    }
-  });
-  return null;
-}
+/** 后期处理链按需错峰加载 + 自动退避重试，防首屏并发加载阻断或击垮 3D 视口 */
+const ClusterPostProcessing = dynamic(
+  retryDynamicImport(() => import('@/components/canvas/ClusterPostProcessing'), {
+    startDelayMs: 60,
+  }),
+  {
+    ssr: false,
+    loading: (): null => null,
+  },
+);
 
 /**
  * ToneMappingSync —— R5 第6步：toneMapping 与渲染路径同源（逐帧守卫）。
@@ -450,20 +409,7 @@ function getRenderCapabilities(): { software: boolean; webgl2: boolean; halfFloa
  * 【SSAO 说明】本渲染管线未接入 SSAO（成本高、与星环加色叠加观感差），
  * 表中不设该字段——R5 不新增任何效果成本。
  */
-interface TierEffects {
-  /** 是否启用景深（仅最高档） */
-  readonly dof: boolean;
-  /** 是否用 FXAA 抗锯齿（Composer 内 MSAA 关闭时的低成本替代） */
-  readonly fxaa: boolean;
-  /** EffectComposer 的 MSAA 采样数（0 = 关闭；2 = ×2，禁 ×8 以控 HDR RT 体积） */
-  readonly multisampling: number;
-  /** Bloom mip 层数（越低越省，T1 降级） */
-  readonly bloomLevels: number;
-  /** Bloom 强度 */
-  readonly bloomIntensity: number;
-  /** 是否启用暗角 */
-  readonly vignette: boolean;
-}
+type TierEffects = PostProcessingTierConfig;
 
 const TIER_EFFECT_MATRIX: Readonly<Record<0 | 1 | 2 | 3, TierEffects>> = {
   3: { dof: false, fxaa: false, multisampling: 4, bloomLevels: 4, bloomIntensity: 0.32, vignette: true },
@@ -1056,12 +1002,11 @@ export default function ClusterCanvas() {
   const [envCaps] = useState(getRenderCapabilities);
   const [postEnabled, setPostEnabled] = useState<boolean>(!envCaps.software);
   const [reflectorEnabled, setReflectorEnabled] = useState<boolean>(!envCaps.software);
-
-  /** R24：自适应曝光 Effect 实例（Composer 路径下由 ExposureDriver 驱动） */
-  const exposureEffectRef = useRef<ExposureEffectHandle | null>(null);
-
-  /** R27：T3 景深 Effect 实例（T2/T1/T0 不挂载、不分配） */
-  const dofEffectRef = useRef<DepthOfFieldEffect | null>(null);
+  /** 异步后处理子模块是否已就绪，确保渲染器仅在 Composer 实际接管时切换 NoToneMapping */
+  const [postEffectsActive, setPostEffectsActive] = useState<boolean>(false);
+  const handlePostProcessingActiveChange = useCallback((active: boolean): void => {
+    setPostEffectsActive(active);
+  }, []);
 
   /* R29 F + R8 小屏降载：质量档位（非持久化）+ 自动治理（2Hz 采样、带迟滞与冷却） */
   const qualityTier = useQualityStore((state): number => state.tier);
@@ -1103,6 +1048,7 @@ export default function ClusterCanvas() {
    * 小屏降载时停用重粒子 Sparkles / 矩阵雨与高成本真反射（保留核心拓扑、故障着色与截图能力）。
    */
   const qualityPost = postEnabled && effectiveTier > 0 && !contextLost;
+  const composerActive = qualityPost && postEffectsActive;
   const qualityReflector = reflectorEnabled && effectiveTier >= 3;
   /** R5 第5步：当前档位对应的后处理效果组合（单一事实源） */
   const tierEffects: TierEffects = TIER_EFFECT_MATRIX[effectiveTier];
@@ -1326,51 +1272,6 @@ export default function ClusterCanvas() {
     };
   }, []);
 
-  /**
-   * R5 第5步：后处理效果子节点按 tierEffects 组装成数组。
-   *
-   * 【为何用数组而非内联条件 JSX】@react-three/postprocessing 的 EffectComposer
-   * children 类型为 `ReactElement | ReactElement[]`，不接受 `null`，因此无法用
-   * `cond ? <X/> : null` 的写法省略效果。改为按档位 push 到数组，天然跳过不需要的
-   * 效果（DoF/FXAA/暗角），且顺序固定：DoF → Bloom → ToneMapping → AA → 暗角 → 噪点。
-   */
-  const postEffectChildren: React.ReactElement[] = [];
-  if (tierEffects.dof) {
-    /* R27：DoF 在 Bloom 之前（失焦发生在成像面，Bloom 是镜头后的光溢出） */
-    postEffectChildren.push(
-      <DepthOfField
-        key="dof"
-        ref={dofEffectRef}
-        focusDistance={12}
-        focalLength={0.02}
-        focusRange={26}
-        bokehScale={1.2}
-      />,
-    );
-  }
-  postEffectChildren.push(
-    <Bloom
-      key="bloom"
-      intensity={tierEffects.bloomIntensity}
-      luminanceThreshold={0.96}
-      luminanceSmoothing={0.22}
-      mipmapBlur
-      radius={0.28}
-      levels={tierEffects.bloomLevels}
-    />,
-    <ExposureEffect key="exposure" ref={exposureEffectRef} />,
-    <ToneMapping key="tonemap" mode={ToneMappingMode.NEUTRAL} />,
-  );
-  if (tierEffects.fxaa) {
-    postEffectChildren.push(<FXAA key="fxaa" />);
-  }
-  if (tierEffects.vignette) {
-    /* R6-4：为什么是 offset=0.3、darkness=0.12：Canvas 外层已有 DOM 径向暗角，后处理若维持 0.22/0.28
-       会双重压暗四角跌破中心亮度的 75%；放宽到 0.3/0.12 后仅做轻量边角收敛，四角相对中心亮度 ≥ 75%。 */
-    postEffectChildren.push(<Vignette key="vignette" eskil={false} offset={0.3} darkness={0.12} />);
-  }
-  postEffectChildren.push(<Noise key="noise" opacity={0.012} />);
-
   return (
     /*
      * 【兜底背景】容器自带一层与场景同色的 CSS 背景。
@@ -1465,7 +1366,7 @@ export default function ClusterCanvas() {
            */
           /* R5 第6步：toneMapping 抽到 syncRendererToneMapping，创建期与档位切换共用。
            * 创建期先做一次（避免兜底路径首帧用错 tone mapping）；运行期由 useEffect 跟随档位。 */
-          syncRendererToneMapping(state.gl, qualityPost);
+          syncRendererToneMapping(state.gl, composerActive);
           /*
            * ---- R5 测量契约：先修测量再优化 ----
            *
@@ -1650,10 +1551,10 @@ export default function ClusterCanvas() {
         <GlStatsCollector />
 
         {/* ---- R5 第6步：toneMapping 逐帧与渲染路径同源（须在 Canvas 上下文内） ---- */}
-        <ToneMappingSync qualityPost={qualityPost} />
+        <ToneMappingSync qualityPost={composerActive} />
 
         {/* ---- R5 第8步：按需视口截图（渲染后同帧读取，无需常开 preserveDrawingBuffer） ---- */}
-        <FrameCaptureProvider composerActive={qualityPost} />
+        <FrameCaptureProvider composerActive={composerActive} />
 
         {/* R29 B：开场编排唯一推进者（uBoot 0→1，1.2s） */}
         <BootController />
@@ -1663,14 +1564,6 @@ export default function ClusterCanvas() {
 
         {/* R5 进阶：开发期每 2s 渲染预算巡检（超预算仅 console.warn，无 UI 报错） */}
         <RenderBudgetProbe />
-
-        {/* ---- R24：自适应曝光驱动（≤4Hz 估计亮度、每帧阻尼插值） ---- */}
-        <ExposureDriver effectRef={exposureEffectRef} />
-
-        {/* ---- R27：景深焦点阻尼跟随（仅当 DoF 真渲染时挂载，与 tierEffects.dof 同源） ---- */}
-        {qualityPost && tierEffects.dof ? (
-          <DofFocusDriver effectRef={dofEffectRef} />
-        ) : null}
 
         {/* ---- 深空氛围：背景色 + 线性雾 ---- */}
         <color attach="background" args={[VOID_COLOR]} />
@@ -1970,13 +1863,13 @@ export default function ClusterCanvas() {
          *   T1 = Bloom(3，降级)；禁止 ×8 MSAA（HDR 8× RT > 200MB）。
          */}
         {qualityPost ? (
-          <EffectComposer
-            key={`composer-${canvasRemountKey}-${effectiveTier}`}
-            multisampling={tierEffects.multisampling}
-            frameBufferType={HalfFloatType}
-          >
-            {postEffectChildren}
-          </EffectComposer>
+          <DynamicSlotBoundary slotName="WebGL 后处理管线" silent>
+            <ClusterPostProcessing
+              composerKey={`composer-${canvasRemountKey}-${effectiveTier}`}
+              tierEffects={tierEffects}
+              onActiveChange={handlePostProcessingActiveChange}
+            />
+          </DynamicSlotBoundary>
         ) : null}
       </Canvas>
         </CanvasErrorBoundary>

@@ -826,21 +826,20 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
      * 「切换 chaos 后时钟倒退 12 秒」的跳变（实测 gaps 出现 −12000ms）。
      * 携带 since 后服务端把起始时间戳抬到该值，保证跨连接单调。
      */
+    /* R6 错峰连接：延后 180ms 建立 EventSource，避免与首屏 Webpack chunk 请求争抢同一 HTTP/2 连接池 */
+    let connectTimer: ReturnType<typeof setTimeout> | null = null;
     const lastKnownTs = evolutionBaseRef.current.timestamp;
     const url = `/api/telemetry?mode=${connectionMode}&chaos=${activeChaos}&since=${lastKnownTs}`;
-    try {
-      eventSource = new EventSource(url);
-    } catch {
-      /* 构造即抛错（极少数环境）：直接降级，保证画面不停 */
-      startFallback();
-      return (): void => {
-        disposed = true;
-        if (fallbackTimer !== null) {
-          clearInterval(fallbackTimer);
-          fallbackTimer = null;
-        }
-      };
-    }
+
+    const connectStream = (): void => {
+      if (disposed) return;
+      try {
+        eventSource = new EventSource(url);
+      } catch {
+        /* 构造即抛错（极少数环境）：直接降级，保证画面不停 */
+        startFallback();
+        return;
+      }
 
     /* 连接建立：收到 open 时暂不清空 errorCountRef（待 onmessage 收到真实遥测帧再清零，避免服务端 HTTP 200 下发 budget-exceeded 立即关流造成重连死循环） */
     eventSource.onopen = (): void => {
@@ -946,11 +945,18 @@ export function useTelemetryStream(options: UseTelemetryStreamOptions = {}): Tel
         /* 未达阈值且仍可重连：保持 connecting，等待浏览器重连 */
         setTransportBothRef.current('connecting');
       }
+      };
     };
+
+    connectTimer = setTimeout(connectStream, 180);
 
     /* ---- 清理：关闭连接与定时器（组件卸载 / 依赖变化时执行） ---- */
     return (): void => {
       disposed = true;
+      if (connectTimer !== null) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
       if (eventSource !== null) {
         eventSource.close();
         eventSource = null;

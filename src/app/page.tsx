@@ -27,12 +27,14 @@ import { AnimatePresence, MotionConfig, motion } from 'framer-motion';
 import { Radar, X } from 'lucide-react';
 
 import ShellLayout from '@/components/layout/ShellLayout';
+import DynamicSlotBoundary from '@/components/common/DynamicSlotBoundary';
 import StartupStatusCapsule from '@/components/hud/StartupStatusCapsule';
 import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
 import { useTelemetryStream } from '@/hooks/useTelemetryStream';
 import { useEscapeDispatcher, useEscapeHint, useEscapeLayer } from '@/hooks/useEscapeStack';
 import { rehydratePersistedClusterState, useClusterStore } from '@/store/useClusterStore';
+import { retryDynamicImport } from '@/utils/dynamicWithRetry';
 import { installGlobalRuntimeErrorListeners } from '@/utils/runtimeErrorBuffer';
 import { dispatchViewPreset } from '@/utils/viewPresetBus';
 import { cn } from '@/utils/cn';
@@ -50,10 +52,13 @@ import { cn } from '@/utils/cn';
  *    一块毫无内容的纯黑空洞（审查报告 §2.2 判定的 P0 视觉割裂）。
  *    改为与 CanvasSkeleton 同语言的轻量骨架，让左右两栏在加载期就对称。
  */
-const CopilotDrawer = dynamic(() => import('@/components/ai/CopilotDrawer'), {
-  ssr: false,
-  loading: (): ReactElement => <DrawerSkeleton />,
-});
+const CopilotDrawer = dynamic(
+  retryDynamicImport(() => import('@/components/ai/CopilotDrawer'), { startDelayMs: 90 }),
+  {
+    ssr: false,
+    loading: (): ReactElement => <DrawerSkeleton />,
+  },
+);
 
 /**
  * ClusterCanvas 懒加载（SSR 边界核心配置）。
@@ -63,10 +68,13 @@ const CopilotDrawer = dynamic(() => import('@/components/ai/CopilotDrawer'), {
  * 使其仅在浏览器端解析，且自动代码分割为独立 chunk（首屏 HTML 零 three 体积）。
  * loading 回调返回赛博风 Skeleton，chunk 下载/编译期间维持主题氛围。
  */
-const ClusterCanvas = dynamic(() => import('@/components/canvas/ClusterCanvas'), {
-  ssr: false,
-  loading: (): ReactElement => <CanvasSkeleton />,
-});
+const ClusterCanvas = dynamic(
+  retryDynamicImport(() => import('@/components/canvas/ClusterCanvas')),
+  {
+    ssr: false,
+    loading: (): ReactElement => <CanvasSkeleton />,
+  },
+);
 
 /**
  * ChaosControlModal 懒加载（混沌演练模态框）。
@@ -79,10 +87,13 @@ const ClusterCanvas = dynamic(() => import('@/components/canvas/ClusterCanvas'),
  * 3. 视觉连续：loading 返回 null 而非骨架屏——模态框的加载发生在用户点击
  *    「Inject Chaos」的瞬间，chunk 通常在 50ms 内就绪，闪现骨架反而更糟。
  */
-const ChaosControlModal = dynamic(() => import('@/components/hud/ChaosControlModal'), {
-  ssr: false,
-  loading: (): null => null,
-});
+const ChaosControlModal = dynamic(
+  retryDynamicImport(() => import('@/components/hud/ChaosControlModal')),
+  {
+    ssr: false,
+    loading: (): null => null,
+  },
+);
 
 /**
  * PerfTelemetryHUD 懒加载（开发者性能遥测浮层）。
@@ -94,10 +105,13 @@ const ChaosControlModal = dynamic(() => import('@/components/hud/ChaosControlMod
  * 【loading 返回 null】HUD 是浮层，加载期间不占位；chunk 通常几十毫秒就绪，
  * 闪现骨架只会造成视觉噪音。
  */
-const PerfTelemetryHUD = dynamic(() => import('@/components/hud/PerfTelemetryHUD'), {
-  ssr: false,
-  loading: (): null => null,
-});
+const PerfTelemetryHUD = dynamic(
+  retryDynamicImport(() => import('@/components/hud/PerfTelemetryHUD')),
+  {
+    ssr: false,
+    loading: (): null => null,
+  },
+);
 
 /**
  * CommandPalette 懒加载（全局运维命令面板）。
@@ -106,10 +120,13 @@ const PerfTelemetryHUD = dynamic(() => import('@/components/hud/PerfTelemetryHUD
  * 但只在用户按 Cmd/Ctrl+K 时才需要。绝大多数会话根本不会打开它，
  * 让它进首屏 bundle 是纯浪费。与 Perf HUD 同理，loading 返回 null。
  */
-const CommandPalette = dynamic(() => import('@/components/hud/CommandPalette'), {
-  ssr: false,
-  loading: (): null => null,
-});
+const CommandPalette = dynamic(
+  retryDynamicImport(() => import('@/components/hud/CommandPalette')),
+  {
+    ssr: false,
+    loading: (): null => null,
+  },
+);
 
 /**
  * DrawerSkeleton —— 右侧 AI 抽屉加载占位。
@@ -293,8 +310,16 @@ export default function HomePage() {
   return (
     <MotionConfig reducedMotion="user">
       <ShellLayout
-        viewport={<ClusterCanvas />}
-        drawer={<CopilotDrawer />}
+        viewport={
+          <DynamicSlotBoundary slotName="三维拓扑画布">
+            <ClusterCanvas />
+          </DynamicSlotBoundary>
+        }
+        drawer={
+          <DynamicSlotBoundary slotName="AI 智能副驾驶">
+            <CopilotDrawer />
+          </DynamicSlotBoundary>
+        }
         perfHud={
           isPerfHudOpen ? (
             <PerfTelemetryHUD key="perf-hud" onClose={(): void => setPerfHudOpen(false)} />

@@ -13,6 +13,7 @@
 import { useEffect, type ReactElement } from 'react';
 import { AlertTriangle, RefreshCw, RotateCcw } from 'lucide-react';
 
+import { isChunkLoadError, triggerSafeChunkReload } from '@/utils/dynamicWithRetry';
 import { recordRuntimeError } from '@/utils/runtimeErrorBuffer';
 
 interface RouteErrorProps {
@@ -21,18 +22,32 @@ interface RouteErrorProps {
 }
 
 export default function RouteErrorBoundary({ error, reset }: RouteErrorProps): ReactElement {
+  const chunkError = isChunkLoadError(error);
+
   useEffect(() => {
     recordRuntimeError({
       kind: 'boundary',
       message: error.message || '控制台视图渲染异常',
       source: error.digest ? `app/error:${error.digest}` : 'app/error',
     });
-  }, [error]);
+
+    if (chunkError) {
+      triggerSafeChunkReload();
+    }
+  }, [error, chunkError]);
 
   const handleReload = (): void => {
     if (typeof window !== 'undefined') {
       window.location.reload();
     }
+  };
+
+  const handleRecover = (): void => {
+    if (chunkError) {
+      handleReload();
+      return;
+    }
+    reset();
   };
 
   return (
@@ -73,11 +88,11 @@ export default function RouteErrorBoundary({ error, reset }: RouteErrorProps): R
         <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
           <button
             type="button"
-            onClick={reset}
+            onClick={handleRecover}
             className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/50 bg-cyan-500/20 px-4 py-2 text-xs font-medium text-cyan-200 transition-colors hover:bg-cyan-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
           >
             <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>重试恢复视图</span>
+            <span>{chunkError ? '重新加载分片' : '重试恢复视图'}</span>
           </button>
           <button
             type="button"

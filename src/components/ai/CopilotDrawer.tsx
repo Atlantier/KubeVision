@@ -140,6 +140,7 @@ import { buildPostMortemFilename, buildPostMortemMarkdown } from '@/utils/postMo
 import { renderIncidentTimelineMarkdown } from '@/utils/snapshotRingBuffer';
 import { getCustomRunbooks } from '@/utils/sreRagEngine';
 import { buildRagSignalBreakdown, type RagSignalBreakdown } from '@/utils/ragSignals';
+import { retryDynamicImport } from '@/utils/dynamicWithRetry';
 
 /* ========================================================================== */
 /* 懒加载：端侧日志审计台                                                        */
@@ -152,10 +153,13 @@ import { buildRagSignalBreakdown, type RagSignalBreakdown } from '@/utils/ragSig
  * Worker 通信与浏览器 API，服务端求值必然失败；且其代码体积远大于
  * Copilot 外壳，用户可能整个会话都不切过去——按需 chunk 是明确收益。
  */
-const LocalAuditorPanel = dynamic(() => import('@/components/ai/LocalAuditorPanel'), {
-  ssr: false,
-  loading: (): ReactElement => <AuditorSkeleton />,
-});
+const LocalAuditorPanel = dynamic(
+  retryDynamicImport(() => import('@/components/ai/LocalAuditorPanel'), { startDelayMs: 120 }),
+  {
+    ssr: false,
+    loading: (): ReactElement => <AuditorSkeleton />,
+  },
+);
 
 /** 审计台加载骨架（与主题一致，避免切换瞬间白屏） */
 function AuditorSkeleton() {

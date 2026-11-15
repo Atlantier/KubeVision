@@ -12,6 +12,7 @@ import './globals.css';
 import { useEffect, type ReactElement } from 'react';
 import { AlertOctagon, RefreshCw, RotateCcw } from 'lucide-react';
 
+import { isChunkLoadError, triggerSafeChunkReload } from '@/utils/dynamicWithRetry';
 import { recordRuntimeError } from '@/utils/runtimeErrorBuffer';
 
 interface GlobalErrorProps {
@@ -20,18 +21,32 @@ interface GlobalErrorProps {
 }
 
 export default function GlobalErrorBoundary({ error, reset }: GlobalErrorProps): ReactElement {
+  const chunkError = isChunkLoadError(error);
+
   useEffect(() => {
     recordRuntimeError({
       kind: 'boundary',
       message: error.message || '根布局全局异常',
       source: error.digest ? `app/global-error:${error.digest}` : 'app/global-error',
     });
-  }, [error]);
+
+    if (chunkError) {
+      triggerSafeChunkReload();
+    }
+  }, [error, chunkError]);
 
   const handleReload = (): void => {
     if (typeof window !== 'undefined') {
       window.location.reload();
     }
+  };
+
+  const handleRecover = (): void => {
+    if (chunkError) {
+      handleReload();
+      return;
+    }
+    reset();
   };
 
   return (
@@ -74,11 +89,11 @@ export default function GlobalErrorBoundary({ error, reset }: GlobalErrorProps):
             <div className="mt-5 flex flex-wrap items-center justify-end gap-3">
               <button
                 type="button"
-                onClick={reset}
+                onClick={handleRecover}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/50 bg-cyan-500/20 px-4 py-2 text-xs font-medium text-cyan-200 transition-colors hover:bg-cyan-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
               >
                 <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>尝试重建应用</span>
+                <span>{chunkError ? '重新加载应用' : '尝试重建应用'}</span>
               </button>
               <button
                 type="button"

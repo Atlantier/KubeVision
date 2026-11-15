@@ -1536,7 +1536,7 @@ export default function TopBar() {
                 : '启动全自动剧本路演（OOM 全链路自愈 / CNI 网络延迟追踪）'
             }
             aria-pressed={isDemoActive}
-            title={isDemoActive ? '停止剧本路演' : '一键全自动剧本路演（评委演示模式）'}
+            title={isDemoActive ? '停止剧本路演' : '一键全自动剧本路演（全自动演示模式）'}
             className={cn(
               'flex min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 md:min-h-0 md:min-w-0 md:px-2.5',
               'font-mono text-[11px] tracking-tight transition-colors duration-150',

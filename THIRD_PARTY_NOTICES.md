@@ -44,15 +44,15 @@
 4. 若你分发本项目的构建产物（含 `public/models/`），请保留本声明与 `LICENSE`。
 ## RAG 语料来源声明
 
-- 内置 12 篇 Runbook（RUNBOOK-K8S-042/043/051/052/061/062/071/081/091/101、SRE-RB-011/012）由本项目团队**自行撰写**，
+- 内置 12 篇 Runbook（RUNBOOK-K8S-042/043/051/052/061/062/071/081/091/101、SRE-RB-011/012）为本项目**自撰语料**，
   用于演示云原生排障语义，**不复制任何第三方文档原文**；
 - 语料中的命令、退出码与机制描述依据 Kubernetes / Linux 公开文档与通用 SRE 实践，未逐句引用受版权保护的文本；
 - 自定义 Runbook 由使用者在浏览器 localStorage 内自建，服务端不持久化；
 - 若后续引入第三方语料，必须在本节登记来源、许可证与作者，并同步更新 `docs/rag-eval.json` 的评测口径。
 
-## 团队自主核心研发与第三方边界矩阵（M24）
+## 核心自研与第三方能力边界矩阵（M24）
 
-| 模块层级 | 第三方开源底座 / 预训练资源 | 本团队自主设计与编码贡献 |
+| 模块层级 | 第三方开源底座 / 预训练资源 | 本项目自主设计与编码贡献 |
 |---|---|---|
 | **3D 态势与渲染性能** | Three.js / R3F / Postprocessing 基础能力 | 双轨状态架构（`useTelemetryRef` + `useClusterStore`）、程序化机柜与 `InstancedMesh` 批渲染、`spatialLayout.ts` 单源坐标几何、`webglcontextlost` 到 2D 无缝升降级 |
 | **混合 RAG 与证据约束** | `Xenova/all-MiniLM-L6-v2` (Apache-2.0) | 12 篇自撰 SRE Runbook、语料级 IDF + Okapi BM25 + TF-IDF + 384d 句向量三路 RRF 融合、Sigmoid 证据门与 `grounding.ts` 结构化实体-指标校验、`RagQueryOptions` 真消融开关 |
