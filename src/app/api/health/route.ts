@@ -43,6 +43,14 @@ export function GET(): Response {
     activeTiers.push('sse-synthetic');
   }
 
+  const k8sApiConfigured =
+    (process.env.K8S_API_SERVER?.trim() ?? '').length > 0 &&
+    (process.env.K8S_BEARER_TOKEN?.trim() ?? '').length > 0;
+  const gitSha =
+    process.env.VERCEL_GIT_COMMIT_SHA?.trim() ||
+    process.env.GITHUB_SHA?.trim() ||
+    'local-head';
+
   const payload: HealthApiResponse = {
     status: sseMetrics.liveConsecutiveFailures >= 3 ? 'degraded' : 'ok',
     timestamp: new Date().toISOString(),
@@ -77,6 +85,26 @@ export function GET(): Response {
         recoveryCondition: item.recoveryCondition,
         forbiddenClaims: item.forbiddenClaims,
       })),
+    },
+    capabilities: {
+      realClusterWriteEnabled: process.env.K8S_ALLOW_REAL_WRITE === 'true',
+      mcpTokenProtected: (process.env.MCP_ADMIN_TOKEN?.trim() ?? '').length > 0,
+      k8sApiConfigured,
+    },
+    buildInfo: {
+      gitSha: gitSha.slice(0, 12),
+      buildEnv: process.env.VERCEL_ENV?.trim() || process.env.NODE_ENV || 'development',
+      publicDemoUrl: 'https://kube-vision-bice.vercel.app',
+    },
+    factMeta: {
+      telemetrySource:
+        hostSamplerSubscribers > 0
+          ? k8sApiConfigured
+            ? 'k8s-api'
+            : 'host-os-bridge'
+          : 'synthetic-drill',
+      metricNature: k8sApiConfigured ? 'observed' : 'derived-estimate',
+      confidenceCalibration: 'heuristic_evidence_support_score',
     },
   };
 

@@ -86,16 +86,19 @@ function formatTimestamp(date: Date): string {
 }
 
 /**
- * buildHostRuntimeLog —— 组装宿主真实运行时日志。
+ * buildHostRuntimeLog —— 组装宿主真实运行时日志（公网匿名访问时对宿主机身份脱敏隔离，M23）。
  *
+ * @param exposeHostIdentity 是否允许输出真实 hostname 与网卡 RFC1918 IP
  * @returns 结构化载荷
  */
-function buildHostRuntimeLog(): LiveLogPayload {
+function buildHostRuntimeLog(exposeHostIdentity: boolean): LiveLogPayload {
   const now = new Date();
   const stamp = formatTimestamp(now);
-  const pid = process.pid;
-  const hostname = os.hostname();
-  const platform = `${os.platform()} ${os.release()} (${os.arch()})`;
+  const pid = exposeHostIdentity ? process.pid : 1001;
+  const hostname = exposeHostIdentity ? os.hostname() : 'kv-public-sandbox-host';
+  const platform = exposeHostIdentity
+    ? `${os.platform()} ${os.release()} (${os.arch()})`
+    : `${os.platform()} (${os.arch()})`;
   const cores = os.cpus().length;
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
@@ -108,7 +111,7 @@ function buildHostRuntimeLog(): LiveLogPayload {
   const heapTotalMb = Math.round(memory.heapTotal / 1024 / 1024);
   const externalMb = Math.round(memory.external / 1024 / 1024);
   const uptimeSec = Math.round(process.uptime());
-  const internalIp = pickInternalIpv4();
+  const internalIp = exposeHostIdentity ? pickInternalIpv4() : '10.244.1.18';
   const loadAvg = os.loadavg();
 
   const lines: string[] = [];
@@ -214,13 +217,18 @@ async function collectK8sPodLogs(server: string, token: string): Promise<string 
 }
 
 /**
- * GET —— 返回真实运行日志。
+ * GET —— 返回真实运行日志（M23：生产公网匿名访问隐去真实宿主机名/网卡地址）。
  *
  * @returns JSON：{ source, timestamp, rawLog }
  */
-export async function GET(): Promise<Response> {
+export async function GET(request: Request): Promise<Response> {
   const server = process.env.K8S_API_SERVER;
   const token = process.env.K8S_BEARER_TOKEN;
+  const adminToken = process.env.MCP_ADMIN_TOKEN?.trim() ?? '';
+  const providedToken = request.headers.get('x-mcp-admin-token')?.trim() ?? '';
+  const exposeHostIdentity =
+    process.env.NODE_ENV !== 'production' ||
+    (adminToken.length > 0 && providedToken === adminToken);
 
   if (
     typeof server === 'string' &&
@@ -240,6 +248,6 @@ export async function GET(): Promise<Response> {
     /* K8s 不可用 → 回落宿主运行时（日志里如实标注，不伪装成集群日志） */
   }
 
-  const payload = buildHostRuntimeLog();
+  const payload = buildHostRuntimeLog(exposeHostIdentity);
   return Response.json(payload, { headers: { 'Cache-Control': 'no-store' } });
 }

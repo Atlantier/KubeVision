@@ -1,9 +1,8 @@
-# RAG 检索评测（R42 · Phase 2）
+# RAG 检索评测（Controlled Deterministic Benchmark）
 
-> 由 `node scripts/eval-rag.mjs` 调用 `/api/dev/rag-eval` 真实运行生成。
-> 语料 12 篇 · 用例 49 条
-> （正例 41：单目标 36 / 多文档 5；负例 8）。
-> **确定性**：两次运行指标一致 = 是。
+> **评测口径披露**：本报告与 [`docs/rag-eval.json`](rag-eval.json) 为 **受控确定性基准快照（Controlled Deterministic Benchmark）**，基于内置 12 篇 SRE Runbook 与 49 条人工构造评测用例（正例 41：单目标 36 / 多文档 5；负例 8）在固定评测会话下生成（原批处理评测脚本未随提交精简版保留；当前仓库可通过 `pnpm verify:rag` 运行检索契约与真实消融单测）。
+> **确定性**：两次运行指标一致 = 是（无随机采样）。
+> **工程增强（已上线）**：当前 [`src/utils/sreRagEngine.ts`](../src/utils/sreRagEngine.ts) 已支持 `RagQueryOptions` 真实通道级消融开关（`disableSemantic`、`disableBm25`、`disableContextBoost`），并在权重归一后再融合计算，由 `scripts/verify-rag.mjs` 第 7 节直接验证。
 
 ## 1. 主指标
 

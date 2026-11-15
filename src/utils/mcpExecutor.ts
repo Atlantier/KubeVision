@@ -45,13 +45,13 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: 'scale_deployment',
-    description: '调整 Deployment 副本数（等价 kubectl scale deployment）',
+    description: '调整 Deployment 副本数（等价 kubectl scale deployment，允许范围 1-50）',
     inputSchema: {
       type: 'object',
       properties: {
         targetName: { type: 'string', description: 'Deployment 名称' },
         namespace: { type: 'string', description: '命名空间，默认 default' },
-        replicas: { type: 'number', minimum: 0, maximum: 50, description: '目标副本数' },
+        replicas: { type: 'number', minimum: 1, maximum: 50, description: '目标副本数（1-50 的整数）' },
         clusterMode: { type: 'string', enum: ['demo', 'live'] },
       },
       required: ['targetName', 'replicas'],
@@ -60,7 +60,7 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: 'drain_node',
-    description: '隔离节点（等价 kubectl cordon；高危动作，需确认）',
+    description: '隔离节点调度（等价 kubectl cordon 设置 spec.unschedulable=true，不直接驱逐存量 Pod；高危动作，需二次确认）',
     inputSchema: {
       type: 'object',
       properties: {

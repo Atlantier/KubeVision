@@ -78,17 +78,104 @@ interface McpExecuteRequest {
   readonly clusterMode?: unknown;
   /** R10-D：客户端幂等查询键（前端超时后通过 GET 只读对账，绝不重复触发写操作） */
   readonly clientRequestId?: unknown;
+  /** M01：显式二次确认开关（可选） */
+  readonly requireConfirmation?: unknown;
+  /** M01：二次确认凭据，绑定 actionType / targetId / issuedAt / highRiskAcknowledged */
+  readonly confirmation?: unknown;
 }
 
 /** R10-D：近期执行回执内存账本上限（FIFO 淘汰，防止长期运行内存增长） */
 const EXECUTION_LEDGER_MAX_ENTRIES = 128;
 
+/** M01：确认凭据有效期（5 分钟）与最大时钟超前容差（60 秒） */
+const CONFIRMATION_TTL_MS = 5 * 60 * 1000;
+const CONFIRMATION_CLOCK_SKEW_MS = 60 * 1000;
+
 interface ExecutionLedgerRecord {
   readonly status: 'pending' | 'succeeded' | 'failed';
   readonly updatedAt: number;
+  readonly payloadFingerprint?: string;
   readonly receipt?: SharedMcpExecuteReceipt;
   readonly errorMessage?: string;
   readonly httpStatus?: number | null;
+}
+
+/**
+ * authorizeMcpRequest —— 可选管理令牌与同源校验（M01）。
+ *
+ * 【设计意图】
+ * 1. 若配置 `MCP_ADMIN_TOKEN`，要求请求头携带匹配的 `x-mcp-admin-token` 或 Bearer Token；
+ * 2. 若请求包含 Origin 与 Host 头，拒绝跨站恶意站点发起的非同源写请求。
+ */
+function authorizeMcpRequest(request: NextRequest): string | null {
+  const configuredToken = process.env.MCP_ADMIN_TOKEN?.trim() ?? '';
+  if (configuredToken.length > 0) {
+    const headerToken = request.headers.get('x-mcp-admin-token')?.trim() ?? '';
+    const authHeader = request.headers.get('authorization')?.trim() ?? '';
+    const bearerToken = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
+    if (headerToken !== configuredToken && bearerToken !== configuredToken) {
+      return 'MCP 执行端点已启用令牌保护：缺少有效 x-mcp-admin-token 或 Authorization Bearer 凭据';
+    }
+  }
+
+  const originHeader = request.headers.get('origin')?.trim() ?? '';
+  const hostHeader = request.headers.get('host')?.trim() ?? '';
+  if (originHeader.length > 0 && hostHeader.length > 0) {
+    try {
+      const originHost = new URL(originHeader).host.toLowerCase();
+      if (originHost !== hostHeader.toLowerCase()) {
+        return `禁止跨域发起 MCP 变更请求（origin=${originHost}, host=${hostHeader}）`;
+      }
+    } catch {
+      return '请求包含非法的 Origin 头，已拒绝执行';
+    }
+  }
+
+  return null;
+}
+
+/**
+ * validateConfirmationPayload —— 校验二次确认凭据是否与本次变更目标严格绑定（M01）。
+ */
+function validateConfirmationPayload(
+  confirmation: unknown,
+  actionType: McpActionType,
+  targetId: string,
+): string | null {
+  if (typeof confirmation !== 'object' || confirmation === null || Array.isArray(confirmation)) {
+    return '缺少合法的二次确认凭据 confirmation 对象';
+  }
+  const rec = confirmation as {
+    readonly confirmed?: unknown;
+    readonly targetId?: unknown;
+    readonly actionType?: unknown;
+    readonly issuedAt?: unknown;
+    readonly highRiskAcknowledged?: unknown;
+  };
+  if (rec.confirmed !== true) {
+    return 'confirmation.confirmed 必须为 true';
+  }
+  if (typeof rec.targetId !== 'string' || rec.targetId.trim() !== targetId) {
+    return 'confirmation.targetId 与当前变更目标不一致，已拒绝执行';
+  }
+  if (rec.actionType !== actionType) {
+    return 'confirmation.actionType 与当前动作不一致，已拒绝执行';
+  }
+  if (typeof rec.issuedAt !== 'string') {
+    return 'confirmation.issuedAt 必须为 ISO 时间戳字符串';
+  }
+  const issuedMs = Date.parse(rec.issuedAt);
+  if (!Number.isFinite(issuedMs)) {
+    return 'confirmation.issuedAt 时间戳格式非法';
+  }
+  const ageMs = Date.now() - issuedMs;
+  if (ageMs > CONFIRMATION_TTL_MS || ageMs < -CONFIRMATION_CLOCK_SKEW_MS) {
+    return '二次确认凭据已过期或时间偏移超限，请在前端卡片重新确认';
+  }
+  if (actionType === 'drain_node' && rec.highRiskAcknowledged !== true) {
+    return '高危动作 drain_node（节点 Cordon 隔离）必须勾选确认 highRiskAcknowledged=true';
+  }
+  return null;
 }
 
 const executionLedger = new Map<string, ExecutionLedgerRecord>();
@@ -411,6 +498,17 @@ export async function POST(request: NextRequest): Promise<Response> {
   const startedAt = Date.now();
   const rpcId = compactId();
 
+  /* ---- 0. 令牌与同源安全门禁 ---- */
+  const authError = authorizeMcpRequest(request);
+  if (authError !== null) {
+    const failure: JsonRpcFailure = {
+      jsonrpc: '2.0',
+      id: rpcId,
+      error: { code: RPC_INVALID_PARAMS, message: authError },
+    };
+    return Response.json(failure, { status: 403 });
+  }
+
   /* ---- 1. 解析并校验请求体 ---- */
   let body: McpExecuteRequest;
   /* R43：调用方 traceId（可选，不参与 sha256 摘要）；函数级作用域，回执组装时可用 */
@@ -506,16 +604,83 @@ export async function POST(request: NextRequest): Promise<Response> {
   const namespace =
     requestedNamespace !== null ? requestedNamespace : clusterMode === 'live' ? null : 'default';
 
-  /* replicas：仅 scale 使用；范围校验防止把集群缩到 0 */
-  const requestedReplicas =
-    typeof body.replicas === 'number' && Number.isFinite(body.replicas) ? Math.round(body.replicas) : null;
-  const replicas = requestedReplicas !== null && requestedReplicas >= 1 && requestedReplicas <= 50
-    ? requestedReplicas
-    : 2;
+  /* replicas：仅 scale 使用；M17 严格整数范围 [1, 50] 校验，拒绝静默回退默认值 */
+  let replicas = 2;
+  if (actionType === 'scale_deployment' && body.replicas !== undefined) {
+    if (
+      typeof body.replicas !== 'number' ||
+      !Number.isInteger(body.replicas) ||
+      body.replicas < 1 ||
+      body.replicas > 50
+    ) {
+      const message = 'scale_deployment 的 replicas 必须为 1 到 50 之间的整数（禁止缩容至 0 或超出上限）';
+      recordExecutionStatus([clientRequestId, traceId], {
+        status: 'failed',
+        updatedAt: Date.now(),
+        errorMessage: message,
+        httpStatus: 400,
+      });
+      const failure: JsonRpcFailure = {
+        jsonrpc: '2.0',
+        id: rpcId,
+        error: {
+          code: RPC_INVALID_PARAMS,
+          message,
+          data: { detail: `收到非法 replicas=${String(body.replicas)}` },
+        },
+      };
+      return Response.json(failure, { status: 400 });
+    }
+    replicas = body.replicas;
+  }
 
-  /* ---- 2. 执行（真实集群优先，未配置则模拟时序） ---- */
+  /* ---- 1.5 二次确认凭据校验（live 模式、显式 requireConfirmation 或携带 confirmation 时强制执行） ---- */
+  const shouldVerifyConfirmation =
+    clusterMode === 'live' ||
+    body.requireConfirmation === true ||
+    body.confirmation !== undefined;
+  if (shouldVerifyConfirmation) {
+    const confirmError = validateConfirmationPayload(body.confirmation, actionType, targetId);
+    if (confirmError !== null) {
+      recordExecutionStatus([clientRequestId, traceId], {
+        status: 'failed',
+        updatedAt: Date.now(),
+        errorMessage: confirmError,
+        httpStatus: 403,
+      });
+      const failure: JsonRpcFailure = {
+        jsonrpc: '2.0',
+        id: rpcId,
+        error: { code: RPC_INVALID_PARAMS, message: `二次确认校验未通过：${confirmError}` },
+      };
+      return Response.json(failure, { status: 403 });
+    }
+  }
+
+  /* ---- 2. 执行（live 实写隔离总开关 + 幂等指纹校验） ---- */
   const config = readEnvClusterConfig();
-  if (config !== null && actionType === 'restart_pod' && namespace === null) {
+  const realWriteAllowed = process.env.K8S_ALLOW_REAL_WRITE === 'true';
+
+  if (clusterMode === 'live' && (!realWriteAllowed || config === null)) {
+    const message =
+      config === null
+        ? 'live 真实集群模式未配置 K8S_API_SERVER / K8S_BEARER_TOKEN，拒绝退回模拟执行'
+        : '真实集群写操作保护已启用：请显式配置 K8S_ALLOW_REAL_WRITE=true 后再执行 live 变更';
+    recordExecutionStatus([clientRequestId, traceId], {
+      status: 'failed',
+      updatedAt: Date.now(),
+      errorMessage: message,
+      httpStatus: 403,
+    });
+    const failure: JsonRpcFailure = {
+      jsonrpc: '2.0',
+      id: rpcId,
+      error: { code: RPC_INVALID_PARAMS, message },
+    };
+    return Response.json(failure, { status: 403 });
+  }
+
+  if (clusterMode === 'live' && config !== null && actionType === 'restart_pod' && namespace === null) {
     const message = '真实集群模式下必须提供 namespace 参数';
     recordExecutionStatus([clientRequestId, traceId], {
       status: 'failed',
@@ -535,16 +700,52 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json(failure, { status: 400 });
   }
 
+  const effectiveNamespace = namespace ?? 'default';
+  const payloadFingerprint = `${actionType}:${targetId}:${effectiveNamespace}:${
+    actionType === 'scale_deployment' ? String(replicas) : ''
+  }:${clusterMode}`;
+
+  if (clientRequestId !== undefined) {
+    const existing = executionLedger.get(clientRequestId);
+    if (existing !== undefined) {
+      if (existing.payloadFingerprint !== undefined && existing.payloadFingerprint !== payloadFingerprint) {
+        const message = '同一 clientRequestId 不可篡改变更目标、动作或参数指纹';
+        const failure: JsonRpcFailure = {
+          jsonrpc: '2.0',
+          id: rpcId,
+          error: { code: RPC_INVALID_PARAMS, message },
+        };
+        return Response.json(failure, { status: 409 });
+      }
+      if (existing.status === 'pending') {
+        const failure: JsonRpcFailure = {
+          jsonrpc: '2.0',
+          id: rpcId,
+          error: { code: RPC_INVALID_PARAMS, message: '相同 clientRequestId 正在执行中，请勿重复提交' },
+        };
+        return Response.json(failure, { status: 409 });
+      }
+      if (existing.status === 'succeeded' && existing.receipt !== undefined) {
+        const idempotentSuccess: JsonRpcSuccess = {
+          jsonrpc: '2.0',
+          id: rpcId,
+          result: existing.receipt,
+        };
+        return Response.json(idempotentSuccess, { status: 200 });
+      }
+    }
+  }
+
   recordExecutionStatus([clientRequestId, traceId], {
     status: 'pending',
     updatedAt: Date.now(),
+    payloadFingerprint,
   });
 
-  const effectiveNamespace = namespace ?? 'default';
   let mode: ExecutionMode = 'simulated';
   let note: string;
 
-  if (config !== null) {
+  if (clusterMode === 'live' && realWriteAllowed && config !== null) {
     mode = 'real';
     try {
       const detail = await executeAgainstRealCluster(
@@ -555,7 +756,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         effectiveNamespace,
         replicas,
       );
-      note = `已通过 Kubernetes REST API 下发至真实集群：${detail}`;
+      note = `Kubernetes API Server 已受理变更请求（accepted）：${detail}`;
     } catch (error) {
       /**
        * 【真实集群失败时绝不伪装成功】这是本端点最重要的一条纪律。
@@ -568,6 +769,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       recordExecutionStatus([clientRequestId, traceId], {
         status: 'failed',
         updatedAt: Date.now(),
+        payloadFingerprint,
         errorMessage: `Kubernetes API 执行失败：${message.slice(0, 240)}`,
         httpStatus,
       });
@@ -594,7 +796,10 @@ export async function POST(request: NextRequest): Promise<Response> {
     await new Promise<void>((resolve): void => {
       setTimeout(resolve, SIMULATED_RECONCILE_MS);
     });
-    note = '控制器模拟自愈已执行（未配置 K8S_API_SERVER）';
+    note =
+      actionType === 'drain_node'
+        ? '仿真控制器已核验 Cordon 隔离调度状态（verified：spec.unschedulable=true，未驱逐存量 Pod）'
+        : '仿真控制器自愈态已核验（verified）';
   }
 
   /* ---- 3. 组装回执 ---- */
@@ -611,6 +816,8 @@ export async function POST(request: NextRequest): Promise<Response> {
     `${executionId}|${actionType}|${targetId}|${timestamp}|${kubectlCommand}`,
   );
 
+  const executionStage = mode === 'real' ? ('accepted' as const) : ('verified' as const);
+
   const receipt: SharedMcpExecuteReceipt = {
     executionId,
     timestamp,
@@ -623,6 +830,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     auditDigest,
     ...(traceId === undefined ? {} : { traceId }),
     mode,
+    executionStage,
     note: `${note} (clusterMode=${clusterMode}, namespace=${effectiveNamespace}${
       requestedNamespace === null ? ' [模拟模式默认推测]' : ''
     })`,
@@ -631,6 +839,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   recordExecutionStatus([clientRequestId, traceId, executionId], {
     status: 'succeeded',
     updatedAt: Date.now(),
+    payloadFingerprint,
     receipt,
   });
 

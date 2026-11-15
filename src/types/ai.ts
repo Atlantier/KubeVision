@@ -1127,6 +1127,8 @@ export interface ClassifierEmbedRequest {
   readonly type: 'embed';
   /** 待编码文本（最多 8 条，Worker 侧截断） */
   readonly texts: readonly string[];
+  /** M14：并发关联 ID，Worker 原样回传 */
+  readonly requestId?: string;
 }
 
 /** 主线程 → Worker 的全部请求消息 */
@@ -1235,6 +1237,8 @@ export interface ClassifierErrorMessage {
 export interface ClassifierEmbedResultMessage {
   readonly type: 'embed-result';
   readonly vectors: readonly (readonly number[])[] | null;
+  /** M14：并发关联 ID（原样回传） */
+  readonly requestId?: string;
   /** R49：本次句向量编码的热推理耗时（毫秒） */
   readonly latencyMs?: number;
 }
@@ -1288,21 +1292,21 @@ export function isClassifierResponse(value: unknown): value is ClassifierRespons
           rec.status === 'READY' ||
           rec.status === 'INFERENCING' ||
           rec.status === 'ERROR') &&
-        (rec.runtime === 'webgpu' || rec.runtime === 'wasm') &&
+        (rec.runtime === 'webgpu' || rec.runtime === 'wasm' || rec.runtime === 'builtin') &&
         isNonEmptyString(rec.label)
       );
 
     case 'progress':
       return (
         isFiniteNumber(rec.progress) &&
-        (rec.runtime === 'webgpu' || rec.runtime === 'wasm') &&
+        (rec.runtime === 'webgpu' || rec.runtime === 'wasm' || rec.runtime === 'builtin') &&
         typeof rec.runtimeLabel === 'string' &&
         typeof rec.modelName === 'string'
       );
 
     case 'ready':
       return (
-        (rec.runtime === 'webgpu' || rec.runtime === 'wasm') &&
+        (rec.runtime === 'webgpu' || rec.runtime === 'wasm' || rec.runtime === 'builtin') &&
         typeof rec.runtimeLabel === 'string' &&
         typeof rec.modelName === 'string' &&
         typeof rec.fallback === 'boolean'
@@ -1310,6 +1314,12 @@ export function isClassifierResponse(value: unknown): value is ClassifierRespons
 
     case 'result':
       return Array.isArray(rec.results) && isFiniteNumber(rec.requestId);
+
+    case 'embed-result':
+      return (
+        (rec.vectors === null || Array.isArray(rec.vectors)) &&
+        (rec.requestId === undefined || typeof rec.requestId === 'string')
+      );
 
     case 'error':
       return (

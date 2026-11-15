@@ -41,6 +41,7 @@ import { CHAOS_SCENARIO_LABELS, UI_COPY } from '@/constants/copy';
 import { streamText, tool, type CoreMessage } from 'ai';
 import { createTrace, elapsedMs, endSpan, startSpan, type AgentTrace, type EndedSpan } from '@/utils/agentTrace';
 import { annotateUngrounded, clampConfidence } from '@/utils/grounding';
+import { sanitizeRawLog } from '@/utils/logSanitizer';
 import { isConfiguredLlmApiKey, logStructuredEvent } from '@/utils/telemetryMetrics';
 import { z } from 'zod';
 
@@ -2216,7 +2217,7 @@ function defaultParamDescription(
 ): string {
   const targetLabel = target !== null ? target.name : '目标实体';
   if (actionType === 'drain_node') {
-    return `驱逐节点 ${targetLabel} 上的全部工作负载并标记为不可调度，需人工二次确认`;
+    return `对节点 ${targetLabel} 执行隔离调度（Cordon：设置 spec.unschedulable=true 阻止新 Pod 调度，不直接驱逐存量 Pod），需人工二次确认`;
   }
   if (actionType === 'scale_deployment') {
     return `调整 ${targetLabel} 的副本数至期望水位，缓解当前负载压力`;
@@ -2604,7 +2605,7 @@ function buildActionArgs(
       targetName: nodeTarget.name,
       paramDescription:
         actionType === 'drain_node'
-          ? `驱逐节点 ${nodeTarget.name} 上的工作负载，Pod 将平滑迁移至其他节点（预计 30~60s 完成）。`
+          ? `对节点 ${nodeTarget.name} 执行隔离调度（Cordon：设置 spec.unschedulable=true 阻止新 Pod 调度，预计 3~5s 生效；不驱逐存量 Pod）。`
           : `为节点 ${nodeTarget.name} 上的工作负载扩容副本，缓解 CPU/内存水位（预计 15~30s 生效）。`,
       mcpEndpoint: `mcp://k8s-cluster/tools/${actionType}`,
       isHighRisk: actionType === 'drain_node',
@@ -2996,7 +2997,9 @@ async function parseRequestBody(request: Request): Promise<ChatRequestBody | nul
     const content = mm.content;
     if (role !== 'user' && role !== 'assistant') return null;
     if (typeof content !== 'string') return null;
-    messages.push({ role, content });
+    /* M08 / M23：服务端入口再次兜底对 user 输入执行零延迟敏感信息掩码，防直接 POST 绕过前端脱敏 */
+    const safeContent = role === 'user' ? sanitizeRawLog(content).sanitized : content;
+    messages.push({ role, content: safeContent });
   }
 
   /* ---- clusterContext：核心数值字段必须存在 ---- */
@@ -3177,6 +3180,26 @@ function normalizeCustomRunbooks(raw: unknown): RagRunbookDoc[] {
 /* 路由主体                                                                    */
 /* ========================================================================== */
 
+/** M23：公网防刷滑动窗口限流参数（60s 内云端 LLM 限 20 次，超出自动切本地引擎 B；恶意洪峰 > 120 次/分钟返回 429） */
+const CHAT_RATE_WINDOW_MS = 60_000;
+const CHAT_LLM_WINDOW_LIMIT = 20;
+const CHAT_HARD_WINDOW_LIMIT = 120;
+const chatRequestTimestamps: number[] = [];
+
+function checkChatRateWindow(nowMs = Date.now()): {
+  readonly hardLimited: boolean;
+  readonly llmBudgetExceeded: boolean;
+} {
+  while (chatRequestTimestamps.length > 0 && nowMs - chatRequestTimestamps[0] > CHAT_RATE_WINDOW_MS) {
+    chatRequestTimestamps.shift();
+  }
+  chatRequestTimestamps.push(nowMs);
+  return {
+    hardLimited: chatRequestTimestamps.length > CHAT_HARD_WINDOW_LIMIT,
+    llmBudgetExceeded: chatRequestTimestamps.length > CHAT_LLM_WINDOW_LIMIT,
+  };
+}
+
 /**
  * POST —— 双擎流式对话入口。
  *
@@ -3187,6 +3210,14 @@ function normalizeCustomRunbooks(raw: unknown): RagRunbookDoc[] {
  * - 'x-kubevision-engine': llm | simulator —— 实际生效的引擎（便于调试与断言）
  */
 export async function POST(request: Request): Promise<Response> {
+  const rateState = checkChatRateWindow();
+  if (rateState.hardLimited) {
+    return Response.json(
+      { error: '请求过于频繁（超出每分钟保护阈值），请稍候重试' },
+      { status: 429, headers: { 'Retry-After': '60' } },
+    );
+  }
+
   const body = await parseRequestBody(request);
   if (body === null) {
     return Response.json({ error: 'invalid request body' }, { status: 400 });
@@ -3301,7 +3332,7 @@ export async function POST(request: Request): Promise<Response> {
   const apiKey = process.env.OPENAI_API_KEY;
   const baseURL = process.env.OPENAI_BASE_URL;
   const modelName = process.env.AI_MODEL_NAME ?? 'glm-4-flash';
-  const useLLM = isConfiguredLlmApiKey(apiKey);
+  const useLLM = isConfiguredLlmApiKey(apiKey) && !rateState.llmBudgetExceeded;
 
   /* ---- 构造 NDJSON 流 ---- */
   const encoder = new TextEncoder();
@@ -3549,6 +3580,41 @@ export async function POST(request: Request): Promise<Response> {
                     detail:
                       `逐节点比对水位阈值（CPU/内存均 < 85% 视为健康）：${nodeLines}。` +
                       `入口流量 ${clusterContext.totalQps.toLocaleString('en-US')} QPS，未发现越限节点。`,
+                    latencyMs: SIM_LATENCY.rag,
+                    ...(sim ? { sim: true } : {}),
+                  },
+                });
+              },
+            });
+          } else if (intent === 'FAULT_DIAGNOSIS_AND_HEAL') {
+            const topPod = clusterContext.faultyPods[0] ?? null;
+            const hostNode =
+              topPod !== null
+                ? clusterContext.nodes.find((n): boolean => n.id === topPod.nodeId) ?? null
+                : clusterContext.nodes[0] ?? null;
+            const nodeSummary =
+              hostNode !== null
+                ? `宿主节点 ${hostNode.name}（${hostNode.status}，CPU ${hostNode.cpuUsage.toFixed(1)}% / MEM ${hostNode.memUsage.toFixed(1)}%）`
+                : `集群 ${clusterContext.nodes.length} 个节点`;
+            const podSummary =
+              topPod !== null
+                ? `异常容器 ${topPod.name}（状态 ${topPod.status}，CPU ${topPod.cpuUsage.toFixed(1)}% / MEM ${topPod.memoryUsage.toFixed(1)}%，重启 ${topPod.restarts} 次）`
+                : `未定位到单个异常 Pod（按节点/全局拓扑指标收敛）`;
+            const hypothesisConclusion =
+              topPod !== null && hostNode !== null && hostNode.memUsage < 75 && topPod.memoryUsage >= 80
+                ? '交叉排除节点级内存耗尽，收敛为单容器/Pod 内部内存或配置故障假设。'
+                : '交叉比对节点水位与 Pod 指标后，聚焦高压力资源域并校验手册判据。';
+
+            beats.push({
+              emitted: false,
+              emitNow: (sim: boolean): void => {
+                emit({
+                  type: 'reasoning',
+                  step: {
+                    stepIndex: stepIndex++,
+                    phase: 'INTENT_PLANNING',
+                    title: '多假设遥测交叉取证（节点水位 vs 单容器异常）',
+                    detail: `${podSummary}；对比 ${nodeSummary}。${hypothesisConclusion}`,
                     latencyMs: SIM_LATENCY.rag,
                     ...(sim ? { sim: true } : {}),
                   },
@@ -3846,27 +3912,30 @@ export async function POST(request: Request): Promise<Response> {
             emit({ type: 'engine', engine: 'llm', reason: `model=${modelName}` });
           }
         } else {
-          /* 未配置 Key → 直接走引擎 B（同样并发点火，首字耗时 ~28ms） */
+          /* 未配置 Key 或触发公网 LLM 额度限流 → 直接走引擎 B（同样并发点火，首字耗时 ~28ms） */
           actualEngine = 'simulator';
+          const fallbackReason = rateState.llmBudgetExceeded ? 'rate-limit-protected' : 'no-api-key';
           logStructuredEvent({
             event: 'fallback',
             route: '/api/chat',
             traceId: trace.traceId,
             durationMs: elapsedMs(trace),
             timestamp: new Date().toISOString(),
-            attrs: { reason: 'no-api-key' },
+            attrs: { reason: fallbackReason },
           });
           emit({
             type: 'span',
             ...endSpan(startSpan(trace, 'fallback'), {
               status: 'ok',
-              attrs: { reason: 'no-api-key' },
+              attrs: { reason: fallbackReason },
             }),
           });
           emit({
             type: 'engine',
             engine: 'simulator',
-            reason: 'OPENAI_API_KEY not configured; using local deterministic SRE engine by design',
+            reason: rateState.llmBudgetExceeded
+              ? 'cloud llm rate window reached; auto-routed to deterministic SRE engine B'
+              : 'OPENAI_API_KEY not configured; using local deterministic SRE engine by design',
           });
           emitIntentPlanningStep(true);
           const simBeats = buildPostIntentBeats();

@@ -413,6 +413,17 @@ const SANITIZER_RULES: readonly SanitizerRule[] = [
     placeholder: '[MASKED_KEY]',
   },
   {
+    /* ---- 1.5 AI / 代码仓库 / IM 开发者 Token ---- */
+    name: 'ai-and-vcs-token',
+    /**
+     * M08 扩充：拦截 OpenAI/Anthropic API Key (sk- / sk-proj- / sk-ant-)、
+     * GitHub PAT (ghp_/gho_/ghu_/ghs_/ghr_/github_pat_)、Slack (xox*-)、Google (AIza)。
+     */
+    pattern:
+      /\bsk-(?:proj-|ant-api\d*-)?[A-Za-z0-9_-]{16,}\b|\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b|\bAIza[0-9A-Za-z_-]{35}\b/g,
+    placeholder: '[REDACTED_API_TOKEN]',
+  },
+  {
     /* ---- 2. JWT / Bearer Token ---- */
     name: 'bearer-token',
     /**
@@ -423,6 +434,17 @@ const SANITIZER_RULES: readonly SanitizerRule[] = [
     pattern:
       /\b[Bb]earer\s+[A-Za-z0-9\-._~+/]{8,}=*|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
     placeholder: '[MASKED_TOKEN]',
+  },
+  {
+    /* ---- 2.5 通用 API Key / Client Secret / Auth Token 键值对 ---- */
+    name: 'generic-secret-kv',
+    /**
+     * M08 扩充：匹配 api_key / access_token / auth_token / client_secret 等非 JWT 的自定义凭据键值对。
+     * 放在 ai-and-vcs-token 与 bearer-token 之后，已命中占位符的值会自动被 PLACEHOLDER_TEST 跳过以保障幂等。
+     */
+    pattern:
+      /(?<![A-Za-z0-9])([A-Za-z0-9_.-]*(?:api[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|refresh[_-]?token)["']?\s*[=:]\s*["']?)([A-Za-z0-9_\-./+=]{8,})(["']?)/gi,
+    placeholder: '$1[REDACTED_SECRET]$3',
   },
   {
     /* ---- 3. IPv4 地址（含可选端口） ---- */
@@ -439,6 +461,17 @@ const SANITIZER_RULES: readonly SanitizerRule[] = [
     pattern:
       /(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?::\d{1,5})?(?![\d.])/g,
     placeholder: '[REDACTED_IP]',
+  },
+  {
+    /* ---- 3.5 IPv6 地址（置于 IPv4 之后，严禁误伤 IPv4:port 与时间戳） ---- */
+    name: 'ipv6',
+    /**
+     * M08 扩充：匹配标准 8 段 IPv6（7 个冒号）、带 `::` 压缩段的 IPv6（含可选 %zone 与端口）。
+     * 单冒号（如 host:5432）或无 `::` 的时间戳（如 12:34:56）均不会命中。
+     */
+    pattern:
+      /(?<![0-9a-fA-F:])(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,6}:(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}|::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,6}:)(?:%[0-9a-zA-Z_-]+)?(?::\d{1,5})?(?![0-9a-fA-F:])/g,
+    placeholder: '[MASKED_IPV6]',
   },
   {
     /* ---- 4. 邮箱地址 ---- */

@@ -90,6 +90,36 @@ function clearOrbitResidualDelta(controls: OrbitControlsImpl): void {
   controls.enableDamping = prevDamping;
 }
 
+/**
+ * applyNarrowPortraitFraming —— 窄屏竖屏（如 390x844 移动端）自适应全景构图修正（M20）。
+ *
+ * 【设计意图】窄屏竖屏下透视相机水平 FOV 明显收窄，固定桌面全景机位 [7.8, 14, 22]
+ * 会裁切两侧机架边缘。仅在视口宽度 < 520 且高大于宽时收敛水平偏置并沿视线适度后退，
+ * 桌面与宽屏 E2E 视口零改动。
+ */
+function applyNarrowPortraitFraming(focus: CameraFocus): CameraFocus {
+  if (typeof window === 'undefined') return focus;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (w <= 0 || w >= 520 || h <= w) return focus;
+
+  const dx = focus.position[0] - focus.lookAt[0];
+  const dy = focus.position[1] - focus.lookAt[1];
+  const dz = focus.position[2] - focus.lookAt[2];
+  const dist = Math.hypot(dx, dy, dz);
+  if (dist < 12) return focus;
+
+  const clampedScale = Math.min(1.28, (MAX_ORBIT_DISTANCE - 1) / dist);
+  return {
+    position: [
+      focus.lookAt[0] + dx * 0.55 * clampedScale,
+      focus.lookAt[1] + dy * clampedScale,
+      focus.lookAt[2] + dz * clampedScale,
+    ],
+    lookAt: focus.lookAt,
+  };
+}
+
 /* ========================================================================== */
 /* CameraRig 主体                                                              */
 /* ========================================================================== */
@@ -114,6 +144,10 @@ export default function CameraRig() {
   );
 
   const focusRef = useRef<CameraFocus>({
+    position: OVERVIEW_CAMERA_POSITION,
+    lookAt: OVERVIEW_LOOK_AT,
+  });
+  const openingTargetRef = useRef<CameraFocus>({
     position: OVERVIEW_CAMERA_POSITION,
     lookAt: OVERVIEW_LOOK_AT,
   });
@@ -162,6 +196,10 @@ export default function CameraRig() {
     if (typeof window === 'undefined') return undefined;
     const handleResize = (): void => {
       setIsMobileViewport(window.innerWidth < CAMERA_MOTION.mobileBreakpointPx);
+      openingTargetRef.current = applyNarrowPortraitFraming({
+        position: OVERVIEW_CAMERA_POSITION,
+        lookAt: OVERVIEW_LOOK_AT,
+      });
     };
     window.addEventListener('resize', handleResize);
     return () => {
@@ -181,10 +219,11 @@ export default function CameraRig() {
    * beginFlight —— 初始化一次程序化相机飞行（统一计算时长、起终点快照与球面模式）。
    */
   const beginFlight = (
-    nextFocus: CameraFocus,
+    rawFocus: CameraFocus,
     kind: 'preset' | 'entity',
     preset: ViewPresetKey | null,
   ): void => {
+    const nextFocus = applyNarrowPortraitFraming(rawFocus);
     const controls = controlsRef.current;
     focusRef.current = nextFocus;
     openingDoneRef.current = true;
@@ -284,12 +323,21 @@ export default function CameraRig() {
 
   /* ---- 挂载开场运镜 ---- */
   useEffect((): void => {
-    currentLookVec.set(OVERVIEW_LOOK_AT[0], OVERVIEW_LOOK_AT[1], OVERVIEW_LOOK_AT[2]);
+    const framedOverview = applyNarrowPortraitFraming({
+      position: OVERVIEW_CAMERA_POSITION,
+      lookAt: OVERVIEW_LOOK_AT,
+    });
+    openingTargetRef.current = framedOverview;
+    currentLookVec.set(
+      framedOverview.lookAt[0],
+      framedOverview.lookAt[1],
+      framedOverview.lookAt[2],
+    );
     if (isReducedMotion()) {
       camera.position.set(
-        OVERVIEW_CAMERA_POSITION[0],
-        OVERVIEW_CAMERA_POSITION[1],
-        OVERVIEW_CAMERA_POSITION[2],
+        framedOverview.position[0],
+        framedOverview.position[1],
+        framedOverview.position[2],
       );
       openingDoneRef.current = true;
       const controls = controlsRef.current;
@@ -461,12 +509,17 @@ export default function CameraRig() {
         openingProgressRef.current + clampedDelta / OPENING_FLIGHT_DURATION,
       );
       const alpha = 1 - Math.exp(-OPENING_FLIGHT_DAMPING * clampedDelta);
+      const openingTarget = openingTargetRef.current;
       targetPosVec.set(
-        OVERVIEW_CAMERA_POSITION[0],
-        OVERVIEW_CAMERA_POSITION[1],
-        OVERVIEW_CAMERA_POSITION[2],
+        openingTarget.position[0],
+        openingTarget.position[1],
+        openingTarget.position[2],
       );
-      targetLookVec.set(OVERVIEW_LOOK_AT[0], OVERVIEW_LOOK_AT[1], OVERVIEW_LOOK_AT[2]);
+      targetLookVec.set(
+        openingTarget.lookAt[0],
+        openingTarget.lookAt[1],
+        openingTarget.lookAt[2],
+      );
       state.camera.position.lerp(targetPosVec, alpha);
       currentLookVec.lerp(targetLookVec, alpha);
       state.camera.lookAt(currentLookVec);

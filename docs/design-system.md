@@ -82,8 +82,7 @@ MasterNode3D，自动继承 CSS 变量）。
 
 ## 3. 可访问性
 
-- `scripts/check-a11y.mjs`：扫描 `<10px` 字号、icon-only `<button>` 缺 `aria-label`、
-  `slate-600/700`、手写 `backdrop-blur`；可纳入 verify。
+- 可访问性与字号/透明度合规已并入静态样式契约校验 `node scripts/check-style-contract.mjs`（扫描 `<10px` 字号、非标准透明度等），并通过 `node scripts/verify.mjs` 进行端到端验证；
 - 本轮运行结果：**0 命中**（扫描 102 个文件）。
 - `focus-visible` 统一：`outline-none + ring-1 ring-cyan-400/60`（globals.css 全局 + 工具类）。
 - 弹窗焦点陷阱 / Esc 关闭 / 焦点归还：既有 Modal 组件（R22 起）已具备，本轮未回归测试。
@@ -99,20 +98,19 @@ MasterNode3D，自动继承 CSS 变量）。
 
 ---
 
-## 5. 验收
+## 5. 验收历史快照
+
+> 以下为 R31 迁移阶段的历史静态/截图核验摘录（辅助脚本与大体积 PNG 截图未保留在当前精简仓中；当前全量验收以 `node scripts/verify.mjs` 35/35 与 `node scripts/check-style-contract.mjs --require-build` 为准）：
 
 ```
 grep -rn "text-\[[0-9]px\]" src  → 0（已无 <10px；含小数也覆盖）
-node scripts/check-a11y.mjs      → 0 命中，通过（102 文件）
+手写 <10px / 非标准透明度门禁      → 0 命中（由 check-style-contract.mjs 接管）
 backdrop-blur 手写残留            → 0；kv-blur-* 12 处（≤12 上限）
 slate-600/700 残留                → 0
-shot 1920×1080                   → 3 FPS（SwiftShader 软件光栅化，不作为性能证据） / 420 draws / 亮度均值 20.6 / 过曝 0.05%
-shot 1366×768                    → 5 FPS（SwiftShader 软件光栅化，不作为性能证据） / 420 draws / 亮度均值 22.4 / 过曝 0.06%
-verify.mjs                       → 33/33
+SwiftShader 基准抓拍 1920×1080   → 3 FPS（SwiftShader 软件光栅化，不作为性能证据） / 420 draws / 亮度均值 20.6 / 过曝 0.05%
+SwiftShader 基准抓拍 1366×768    → 5 FPS（SwiftShader 软件光栅化，不作为性能证据） / 420 draws / 亮度均值 22.4 / 过曝 0.06%
 tsc / next lint                  → 0 / 干净
 ```
-
-截图：`docs/summit/shots/r31-design/overview-{1920x1080,1366x768}.png`。
 
 ---
 
@@ -182,22 +180,4 @@ usage 裁剪，始终可被引用。
     避免把 `fill-${toolName}` 这类 toolCallId 误判为颜色类；
   - **`--require-build` 硬闸门（R3）**：缺生产 CSS 时全量比对不再 skip 而是 fail，
     确保"类是否真实生成"永远被验证（配合先 `pnpm build`）。
-- `scripts/probe-glass-contract.mjs`（接入 `verify:all`，需 dev/preview 服务）：
-  四档视口（1920×1080 / 1366×768 / 1024×768 / 800×600）实测 `.kv-panel / .kv-chip /
-  .kv-overlay` 的 `backdropFilter / backgroundColor / borderColor / boxShadow` 逐项符合令牌，
-  并读取 DOM 中真实挂载的 `.kv-panel` 业务面板复核；`prefers-reduced-motion` 下
-  `transition/animationDuration ≤ 1ms`，且 **BootController 开场直接完成**
- （`window.__KUBEVISION_BOOT__ === 1`）。期望值从 `tokens.ts` 读取。
-  **R3 跨浏览器/跨 GPU**：`--browser edge|chrome`、`--gpu swiftshader|d3d11`（真实独显 ANGLE D3D11），
-  每档视口截图真实页面作视觉证据，并读 WebGL `UNMASKED_RENDERER` 证明 d3d11 走硬件。
-
-**能红能绿证明**：
-- 把 `.kv-panel` 的 `var(--kv-blur-panel)` 改回 `var(--)` → 契约脚本 exit 1（红）；恢复 → exit 0（绿）。
-- 注入"合法刻度但不存在的颜色"类（如 `bg-notacolor-500/50`）→ 静态检查通过但全量比对报缺失、
-  exit 1（红）；移除 → 绿。
-- **`--require-build`（R3）**：隐藏 `.next/static/css` → exit 1（红，不 skip）；恢复构建 → exit 0（绿）。
-
-**R3 已验证矩阵**（每组合 59 断言全过）：Edge×SwiftShader、Edge×d3d11（NVIDIA RTX 5070）、
-Chrome×d3d11，各覆盖四档视口 + 常规/reduced-motion 开场。证据：
-`docs/summit/shots/r2-glass/computed-style-{edge-swiftshader,edge-d3d11,chrome-d3d11}.json`
-及 `overview-<browser>-<gpu>-<viewport>.png`。
+- 玻璃计算样式与四档视口矩阵（Edge×SwiftShader、Edge×d3d11、Chrome×d3d11，覆盖常规与 `prefers-reduced-motion`）已完成跨浏览器阶段验证，现行仓通过 `node scripts/check-style-contract.mjs --require-build` 持续门禁。

@@ -114,6 +114,24 @@ export interface HealthApiResponse {
       readonly forbiddenClaims: readonly string[];
     }[];
   };
+  /** 运行态能力与安全开关诚实性摘要（M04，不含凭据原文） */
+  readonly capabilities?: {
+    readonly realClusterWriteEnabled: boolean;
+    readonly mcpTokenProtected: boolean;
+    readonly k8sApiConfigured: boolean;
+  };
+  /** 构建与版本冻结可追溯元数据（M07，用于四件套同源核验） */
+  readonly buildInfo?: {
+    readonly gitSha: string;
+    readonly buildEnv: string;
+    readonly publicDemoUrl: string;
+  };
+  /** 统一事实口径元数据（M04，显式区分真实观测/派生估算/演练仿真） */
+  readonly factMeta?: {
+    readonly telemetrySource: 'synthetic-drill' | 'host-os-bridge' | 'k8s-api';
+    readonly metricNature: 'observed' | 'derived-estimate' | 'snapshot';
+    readonly confidenceCalibration: 'heuristic_evidence_support_score';
+  };
 }
 
 /**

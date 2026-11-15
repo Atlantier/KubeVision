@@ -8,9 +8,8 @@
 | 类型 | 必须包含 | 说明 |
 |---|---|---|
 | 源码 | `src/`、`public/`（含 ONNX 权重）、配置文件、`package.json`、`pnpm-lock.yaml` | 生产构建与离线运行都需要 |
-| 文档 | `README.md`、`启动说明.md`、`docs/COMPETITION_TECHNICAL_WHITEPAPER.md`、`docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf`、`docs/KubeVision_PITCH.pdf`、`docs/EVIDENCE.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE` | 评审材料 |
-| 证据 | `docs/evidence/`（图/日志，约数 MB） | 若平台限制大小，可只保留索引与关键图 |
-| 规则 | `.gitignore`、`.dockerignore`、`Dockerfile`、`docs/DEPLOYMENT.md` | 部署与复现 |
+| 文档 | `README.md`、`启动说明.md`、`docs/EVIDENCE.md`、`docs/SECURITY_ADVISORY.md`、`docs/BUSINESS_CASE.md`、`docs/SUBMISSION_CHECKLIST.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE` | 仓库内置核心评审与合规文档 |
+| 规则 | `.gitignore`、`.dockerignore`、`Dockerfile`、`vercel.json`、`docs/DEPLOYMENT.md` | 部署与复现（Node 24 + 流式头配置） |
 
 ## 2. 排除清单（必须排除）
 
@@ -48,15 +47,13 @@ Get-FileHash "..\XX大学_星火队_队长13800000000_源码包.zip" -Algorithm 
 - [ ] 解压后按 `启动说明.md` 能 `pnpm install --frozen-lockfile && pnpm build && pnpm start`；
 - [ ] 命名含学校 + 队名 + 队长联系方式（真实信息，提交前替换）；
 - [ ] SHA256 与文件大小已记录；
-- [ ] README/白皮书/PPT 数字一致（`node scripts/check-docs-consistency.mjs` 通过）。
+- [ ] 全仓验收与静态门禁通过（`node scripts/verify.mjs` 35/35 与 `pnpm build && node scripts/check-style-contract.mjs --require-build`）。
 
 ## 5. 附件（单独提交，不打进源码包）
 
 | 附件 | 命名 | 备注 |
 |---|---|---|
-| 离线演示包 | `kubevision-demo-<commit>-<time>.zip` | `pnpm package:demo` 生成，含 `.next` |
 | **官网提交主视频（5–8 分钟）** | `KubeVision_6min_FINAL_1080p30.mp4` | **5–8 分钟（建议 6:00），≥1080p30 MP4，普通话讲解（含背景+功能+AI亮点）** |
 | 现场答辩快闪视频（辅助） | `KubeVision_3min_FINAL_1080p30.mp4` | ≤3:00，1080p30 |
 | 60s 无旁白预览版（辅助） | `KubeVision_60s_silent_1080p30.mp4` | 60±2s |
-| 白皮书 PDF | `KubeVision_Technical_Whitepaper.pdf` | 由脚本重导，≤30 页 |
-| PPT PDF | `KubeVision_Pitch.pdf` | 10–12 页 |
+| 技术白皮书与路演 PPT（独立制备） | `KubeVision_Technical_Whitepaper.pdf` / `KubeVision_Pitch.pdf` | 单独随官网提交，不强制放入精简源码仓库 |

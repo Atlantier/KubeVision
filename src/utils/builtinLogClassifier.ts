@@ -41,10 +41,18 @@ export const LABEL_FEATURES: Readonly<
     { term: 'unhandled exception', weight: 2 },
     { term: 'nil pointer', weight: 2 },
     { term: 'stack overflow', weight: 2 },
+    { term: 'stackoverflowerror', weight: 3 },
+    { term: 'uncaught typeerror', weight: 3 },
+    { term: 'typeerror', weight: 2 },
+    { term: 'nullpointerexception', weight: 3 },
+    { term: 'unhandledrejection', weight: 2 },
   ],
   RESOURCE_EXHAUSTED: [
     { term: 'oomkilled', weight: 3 },
     { term: 'out of memory', weight: 3 },
+    { term: 'outofmemoryerror', weight: 3 },
+    { term: 'java heap space', weight: 3 },
+    { term: 'heap space', weight: 2 },
     { term: 'memory limit', weight: 2 },
     { term: 'no space left', weight: 3 },
     { term: 'disk full', weight: 3 },
@@ -52,6 +60,9 @@ export const LABEL_FEATURES: Readonly<
     { term: 'evicted', weight: 2 },
     { term: 'quota exceeded', weight: 3 },
     { term: 'cpu throttl', weight: 2 },
+    { term: 'threads saturated', weight: 2 },
+    { term: 'scheduler lag', weight: 2 },
+    { term: 'ephemeral-storage', weight: 2 },
     { term: 'resource exhausted', weight: 3 },
     { term: 'cannot allocate memory', weight: 3 },
     { term: 'memory pressure', weight: 2 },
@@ -59,6 +70,9 @@ export const LABEL_FEATURES: Readonly<
   NETWORK_TIMEOUT: [
     { term: 'timeout', weight: 2 },
     { term: 'timed out', weight: 2 },
+    { term: 'context deadline exceeded', weight: 3 },
+    { term: 'deadline exceeded', weight: 3 },
+    { term: 'socket hang up', weight: 3 },
     { term: 'connection refused', weight: 3 },
     { term: 'connection reset', weight: 3 },
     { term: 'econnrefused', weight: 3 },
@@ -92,7 +106,10 @@ export function classifyWithBuiltinClassifier(text: string): {
   readonly label: EdgeLogLabel;
   readonly confidence: number;
 } {
-  const haystack = text.toLowerCase();
+  /* M16：先清除“0 errors / no panic / without timeouts”等否定词短语，避免正常巡检日志被误判为故障 */
+  const haystack = text
+    .toLowerCase()
+    .replace(/\b(?:0|no|zero|without)\s+(?:errors?|panics?|exceptions?|timeouts?|failures?|oom)\b/g, ' ');
 
   const scores: Array<{ label: EdgeLogLabel; score: number }> = [];
   for (const label of Object.keys(LABEL_FEATURES) as EdgeLogLabel[]) {
@@ -110,7 +127,8 @@ export function classifyWithBuiltinClassifier(text: string): {
 
   const totalScore = scores.reduce((sum, entry): number => sum + entry.score, 0);
   if (best.score === 0 || totalScore === 0) {
-    return { label: 'NORMAL_INFO', confidence: 0.85 };
+    /* M16：零特征词命中时仅给出低证据先验（0.45），禁止虚报 0.85 高置信度 */
+    return { label: 'NORMAL_INFO', confidence: 0.45 };
   }
 
   const dominance = best.score / totalScore;

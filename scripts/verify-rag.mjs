@@ -66,6 +66,7 @@ mkdirSync(OUT, { recursive: true });
 const { calibrateConfidence, computeCorpusFingerprint, retrieveSreRunbooks } = require(
   join(OUT, 'sreRagEngine.cjs'),
 );
+const { EMBEDDING_MODEL_META } = require(join(OUT, 'runbookEmbeddings.cjs'));
 
 console.log('KubeVision AI — RAG 校准与指纹验证\n');
 
@@ -273,6 +274,30 @@ console.log('▸ 6. 接口前后对比（需 dev server）');
   } else {
     console.log('    ○ 跳过（dev server 不可用或缺少 before 数据）');
   }
+}
+
+console.log('\n▸ 7. M11 + M12 真实通道消融开关与模型元数据验证');
+{
+  is('7.1 嵌入模型元数据声明 384 维 MiniLM', EMBEDDING_MODEL_META.dimension === 384 && EMBEDDING_MODEL_META.modelId.includes('MiniLM'), true);
+
+  // Use RagQueryOptions fields in genuine channel ablation assertions
+  const fullHits = retrieveSreRunbooks('pod OOMKilled Exit Code 137 memory leak', 'POD_OOM_SWARM', ['payment-gateway-7f8b9-x2k'], 2);
+  const noSemHits = retrieveSreRunbooks('pod OOMKilled Exit Code 137 memory leak', 'POD_OOM_SWARM', ['payment-gateway-7f8b9-x2k'], 2, [], undefined, { disableSemantic: true });
+  const noBm25Hits = retrieveSreRunbooks('pod OOMKilled Exit Code 137 memory leak', 'POD_OOM_SWARM', ['payment-gateway-7f8b9-x2k'], 2, [], undefined, { disableBm25: true });
+  const noCtxHits = retrieveSreRunbooks('pod OOMKilled Exit Code 137 memory leak', 'POD_OOM_SWARM', ['payment-gateway-7f8b9-x2k'], 2, [], undefined, { disableContextBoost: true });
+
+  is('7.2 全通道与各单消融组均能召回 RUNBOOK-K8S-042', [fullHits[0]?.id, noSemHits[0]?.id, noBm25Hits[0]?.id, noCtxHits[0]?.id].every((id) => id === 'RUNBOOK-K8S-042'), true);
+  is('7.3 disableSemantic 真实将 vectorScore 置 0', noSemHits[0]?.scoreBreakdown?.vectorScore === 0 && (noSemHits[0]?.scoreBreakdown?.bm25Score ?? 0) > 0, true);
+  is('7.4 disableBm25 真实将 bm25Score 置 0', noBm25Hits[0]?.scoreBreakdown?.bm25Score === 0 && (noBm25Hits[0]?.scoreBreakdown?.vectorScore ?? 0) > 0, true);
+  is('7.5 disableContextBoost 真实将 contextBoost 置 0 且降低或保持分数区分度', noCtxHits[0]?.scoreBreakdown?.contextBoost === 0 && (fullHits[0]?.scoreBreakdown?.contextBoost ?? 0) > 0, true);
+
+  /* M12：去除 activeChaos 标签泄露对照 —— chaos 置 NONE 时仅凭可观测现象文本应仍命中对应排障手册 */
+  const noChaosOom = retrieveSreRunbooks('容器 Exit Code 137 内存到达 cgroup 上限被内核触发 OOMKilled', 'NONE', [], 2);
+  const noChaosCpu = retrieveSreRunbooks('节点 CPU 使用率高于 90% 触发 cfs quota throttling 调度阻塞', 'NONE', [], 2);
+  const noChaosNet = retrieveSreRunbooks('节点 NotReady 发生网络分区 CNI calico conntrack 打满引起 packet loss', 'NONE', [], 2);
+  is('7.6a 去 activeChaos 标签泄露对照（NONE 凭 OOM 症状召回 Top-1 = RUNBOOK-K8S-042）', noChaosOom[0]?.id ?? null, 'RUNBOOK-K8S-042');
+  is('7.6b 去 activeChaos 标签泄露对照（NONE 凭 CPU 症状召回 Top-1 = RUNBOOK-K8S-051）', noChaosCpu[0]?.id ?? null, 'RUNBOOK-K8S-051');
+  is('7.6c 去 activeChaos 标签泄露对照（NONE 凭网络症状召回 Top-1 = RUNBOOK-K8S-061）', noChaosNet[0]?.id ?? null, 'RUNBOOK-K8S-061');
 }
 
 rmSync(OUT, { recursive: true, force: true });

@@ -1,6 +1,6 @@
-# 渲染管线 A/B 对比（L11 证据）
+# 渲染管线 A/B 对比（历史受控快照）
 
-> 由 `node scripts/r23-pipeline-evidence.mjs` 自动生成于 2026-11-10T09:39:37.843Z。
+> 生成于 `2026-11-10T09:39:37.843Z`（对应历史一次性证据采集已归档；相关辅助脚本与大体积 PNG 截图未随提交精简版保留）。
 > 同一会话、同一帧缓冲原地切换两条路径；分辨率 1366×768（SwiftShader 软件光栅化）。
 
 ## 量化结果
@@ -21,11 +21,9 @@
 > Shift+P 性能 HUD 实测：4 FPS / 1 draw calls（按需渲染静置帧，仅 HUD 合成 pass；稳态连续渲染帧见上表 398 draws）/ tier=T3。
 > 注：SwiftShader 为软件光栅化，FPS 数值不代表真机性能，不作为性能证据，仅用于两条路径的相对对照。
 
-## 截图
+## 视觉核对说明
 
-- ![Composer](shots/r23-pipeline/overview-post.png)
-- ![兜底](shots/r23-pipeline/overview-fallback.png)
-- ![性能 HUD](shots/r23-pipeline/perf-hud.png)
+原采集记录对应 1366×768 分辨率 Composer 路径、兜底路径与 Shift+P 性能 HUD 三张像素级对比图（大体积二进制 PNG 截图未纳入当前精简仓，保留上述量化亮度/对比度/色相实测表）。
 
 ## 结论
 

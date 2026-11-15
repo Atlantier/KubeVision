@@ -526,6 +526,7 @@ async function initModelWithTimeout(
       void loadTask
         .then(async (extractor): Promise<void> => {
           modelHandle = { extractor, fallback: false };
+          activeIsBuiltin = false;
           await ensurePrototypes(extractor);
           postProgress(post, runtime, label, 100, MODEL_ID);
           post({
@@ -682,6 +683,8 @@ let modelPromise: Promise<ModelHandle> | null = null;
  */
 const currentRuntime: Exclude<ClassifierRuntime, 'builtin'> = detectRuntime();
 const currentLabel = runtimeLabel(currentRuntime);
+/** M04/M15：模型超时或不可用降级后如实标记为 builtin */
+let activeIsBuiltin = false;
 
 /** 回传消息到主线程 */
 function post(message: ClassifierResponse): void {
@@ -704,7 +707,11 @@ function post(message: ClassifierResponse): void {
  * @param status 目标状态
  */
 function postStatus(status: ClassifierWorkerStatus): void {
-  const runtimeTag = currentRuntime === 'webgpu' ? 'WebGPU' : 'WASM';
+  const effectiveRuntime: ClassifierRuntime = activeIsBuiltin ? 'builtin' : currentRuntime;
+  const runtimeTag =
+    effectiveRuntime === 'webgpu' ? 'WebGPU' : effectiveRuntime === 'wasm' ? 'WASM' : 'builtin';
+  const effectiveLabel =
+    effectiveRuntime === 'builtin' ? 'Builtin Deterministic Rules (Fallback)' : currentLabel;
   const label =
     status === 'INITIALIZING'
       ? `INITIALIZING (${runtimeTag})`
@@ -717,8 +724,8 @@ function postStatus(status: ClassifierWorkerStatus): void {
   post({
     type: 'status',
     status,
-    runtime: currentRuntime,
-    runtimeLabel: currentLabel,
+    runtime: effectiveRuntime,
+    runtimeLabel: effectiveLabel,
     label,
   });
 }
@@ -743,6 +750,7 @@ async function ensureModel(): Promise<ModelHandle> {
 
   modelPromise = (async (): Promise<ModelHandle> => {
     const handle = await initModelWithTimeout(currentRuntime, post);
+    activeIsBuiltin = handle.fallback;
 
     /*
      * 【原型锚点预计算】模型真正加载成功后（非降级），立刻把 4 类语义原型的
@@ -756,10 +764,13 @@ async function ensureModel(): Promise<ModelHandle> {
       await ensurePrototypes(handle.extractor);
     }
 
+    const readyRuntime: ClassifierRuntime = handle.fallback ? 'builtin' : currentRuntime;
+    const readyLabel = handle.fallback ? 'Builtin Deterministic Rules (Fallback)' : currentLabel;
+
     post({
       type: 'ready',
-      runtime: currentRuntime,
-      runtimeLabel: currentLabel,
+      runtime: readyRuntime,
+      runtimeLabel: readyLabel,
       modelName: handle.fallback ? 'builtin-semantic-classifier' : MODEL_ID,
       fallback: handle.fallback,
     });
@@ -843,12 +854,13 @@ self.addEventListener('message', (event: MessageEvent<unknown>): void => {
   }
 
   if (request.type === 'embed') {
+    const requestId = request.requestId;
     /*
      * 【未就绪契约】模型还在下载 / 已降级 → 立即返回 null，绝不等待。
      * 主线程据此退回两路召回（不阻塞对话）。
      */
     if (modelHandle === null || modelHandle.extractor === null) {
-      post({ type: 'embed-result', vectors: null });
+      post({ type: 'embed-result', vectors: null, ...(requestId === undefined ? {} : { requestId }) });
       return;
     }
     const extractor = modelHandle.extractor;
@@ -864,11 +876,12 @@ self.addEventListener('message', (event: MessageEvent<unknown>): void => {
         post({
           type: 'embed-result',
           vectors,
+          ...(requestId === undefined ? {} : { requestId }),
           latencyMs: Math.round(performance.now() - inferenceStartedAt),
         });
       } catch {
         /* 任何推理异常 → null，主线程走两路；不把 0 向量当结果 */
-        post({ type: 'embed-result', vectors: null });
+        post({ type: 'embed-result', vectors: null, ...(requestId === undefined ? {} : { requestId }) });
       }
     })();
     return;

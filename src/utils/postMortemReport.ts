@@ -37,6 +37,7 @@ import type {
   RootCauseAlertProps,
 } from '@/types/ai';
 import { getChaosReportLabel, REPORT_COPY } from '@/constants/copy';
+import { sanitizeRawLog } from '@/utils/logSanitizer';
 import { renderIncidentTimelineMarkdown } from '@/utils/snapshotRingBuffer';
 import { formatDateTime, formatTimestampCompact, formatTimezoneOffset } from '@/utils/time';
 
@@ -1555,8 +1556,8 @@ function buildDisclaimerSection(): string[] {
   return [
     '## 8. 免责与数据边界声明',
     '',
-    '- 本报告由 KubeVision AI 在浏览器端侧生成，生成过程未发起任何外部网络请求，报告正文不含任何凭据明文。',
-    '- 所有 Pod 名称、命名空间、状态、水位、重启次数、节点水位、健康分与 QPS 均来自端侧实时集群快照与会话上下文；卡片文本（根因摘要、证据链、影响范围、参数说明）由模型生成，并已逐卡标注「模型原生调用」或「服务端自动补全」。',
+    '- 本报告由 KubeVision AI 在浏览器端侧生成，生成过程未发起任何外部网络请求，并已通过正则二次复检掩码，报告正文不含任何凭据明文。',
+    '- 所有 Pod 名称、命名空间、状态、水位、重启次数、节点水位、健康分与 QPS 均来自端侧实时集群快照与会话上下文；卡片文本（根因摘要、证据链、影响范围、参数说明）由模型生成，并已逐卡标注「模型原生调用」或「服务端自动补全」；文中百分比置信度均为「启发式证据支持分（Heuristic Evidence Support Score）」，不等同于生产统计准确率。',
     '- 所有敏感信息已由端侧脱敏链路处理：IP、Token、Secret、邮箱等模式在进入推理上下文前即被掩码为 [REDACTED]；原始凭证与原始日志仅留存于本地浏览器，未离开浏览器、未写入本报告。',
     REPORT_COPY.timelineFormulaDisclaimer,
     REPORT_COPY.highRiskActionDisclaimer,
@@ -1622,7 +1623,7 @@ export function buildPostMortemMarkdown(input: PostMortemInput): string {
     lines.push(...trimmed);
   }
 
-  return `${lines.join('\n')}\n`;
+  return sanitizeRawLog(`${lines.join('\n')}\n`).sanitized;
 }
 
 /**

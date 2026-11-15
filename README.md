@@ -16,9 +16,25 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 
 1. **问题**：K8s 告警把三维现场压成一行日志——定位靠猜、根因无出处、高危操作难审计。
 2. **方案**：3D 空间索引 + 双擎 Agent（云端 LLM / 离线引擎 B）+ 混合 RAG + 端侧脱敏 + MCP 人工在环闭环。
-3. **证据**：36/36 自动化验收；draw calls 中位 235；RAG 三路 Recall@1 94.4%（+5.6pp）；检索均值 8.39ms；脱敏 11,264 条/秒。
-4. **边界**：无真实集群、FPS 未在真实 GPU 采集、端侧模型降级、MCP 走 HTTP JSON-RPC 非 stdio、无客户/营收数据。
+3. **证据**：35/35 自动化验收；draw calls 中位 235；RAG 三路 Recall@1 94.4%（+5.6pp，受控评测基准）；检索均值 8.39ms；脱敏 11,264 条/秒；完整安全声明见 [docs/SECURITY_ADVISORY.md](docs/SECURITY_ADVISORY.md)。
+4. **边界**：默认走确定性仿真集群（真实 K8s 写操作受 `K8S_ALLOW_REAL_WRITE=true` 硬隔离）、FPS 采集于 SwiftShader 不代表真机 GPU、端侧模型超时降级为内置分类器、MCP 走 HTTP JSON-RPC 非 stdio、无真实客户/营收数据。
 5. **价值**：离线优先、零凭证出域、可审计可复盘的 SRE 副驾，降低中小企业 K8s 排障门槛。
+
+### 评委 30 秒快速复现与虚实边界速览
+
+- **30 秒一键启动（无需 Key / 无需真实集群）**：
+  ```bash
+  pnpm install --frozen-lockfile && pnpm dev   # 或 pnpm build && pnpm start
+  ```
+- **自动化验证入口**：`node scripts/verify.mjs --quick`（静态门禁）· `node scripts/verify.mjs`（完整 35 项含 CDP 浏览器 E2E）· 安全基线见 [docs/SECURITY_ADVISORY.md](docs/SECURITY_ADVISORY.md)。
+
+| 能力域 | 真实运行路径（Real / Live） | 确定性仿真 / 降级兜底路径（Simulated / Fallback） | 诚实标识机制 |
+|---|---|---|---|
+| **集群遥测与自愈执行** | 配置 `K8S_API_SERVER` 后采集真实节点/Pod；仅当 `K8S_ALLOW_REAL_WRITE=true` 时允许写入（`MCP_ADMIN_TOKEN` 可选鉴权） | 默认 `demo` 确定性故障集群；`drain_node` 为 **Cordon（仅禁止新调度）**，`scale_deployment` 限 `[1, 50]`，严禁暗中回落伪装真集群 | 顶栏 Mode 标识 + `/api/health` 能力矩阵 +回执 `executionStage` 与 `kubectl` 预览 |
+| **双擎 AI 副驾驶** | 配置 `OPENAI_API_KEY` 等走真实大模型流式 NDJSON + 多模态视觉分析 | 无 Key 或网关异常时自动切本地确定性仿真引擎 B，基于**真实遥测切片 + 真实 RAG 检索 + 多假设交叉验证推理链** | 抽屉底部「推理引擎」行如实显示当前引擎 |
+| **混合 RAG 检索** | 语料级 IDF + Okapi BM25 + TF-IDF 余弦 + MiniLM 384d 句向量三路 RRF（含真实通道消融开关 `disableSemantic`/`disableBm25`） | 查询向量未就绪时退化为两路 RRF；无关/寒暄触发 IDF 与证据闸门零命中拒答 | UI 直接展示 Vector/BM25/Context 证据占比或零命中提示 |
+| **端侧隐私与日志分类** | 浏览器内 9 类有序正则先脱敏（含 AI/VCS Token、通用 KV 密钥、IPv6）；WebWorker `requestId` 关联 MiniLM 句向量余弦分类 | 无 WebGPU/WASM 权重超时（3500ms 熔断）时切换带否定词消除与置信度校准的内置分类器 | 页签状态徽标如实标为 `WebGPU` / `WASM` / `内置 (builtin-fallback)` |
+| **3D 渲染与质量门禁** | Real Three.js r169 / R3F 程序化网格 + InstancedMesh 批量渲染（Draw Calls 中位 235）+ WebGL Context Lost 恢复守卫 | 无独显环境运行于 SwiftShader 软件光栅化 | 全仓明确声明 SwiftShader FPS 不作为性能证据，仅展示硬件无关统计 |
 
 ---
 
@@ -34,28 +50,27 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 | 参赛赛道 | 智启未来：AI 驱动的 Web 应用创新挑战（赛道 ID `10037`） |
 | 核心定位 | 云原生三维空间态势感知与多模态智能自愈副驾系统 |
 | 作品形态 | B/S 架构 Web 应用（Next.js 14 App Router 全栈单体） |
-| 在线演示（加分项） | **【公网 Vercel 部署入口 · 部署后填入稳定可访问 URL】**（免 Key 自动运行本地确定性引擎 B；配置云端 Key 开启完整大模型多模态流式体验） |
+| 在线演示（加分项） | [https://kube-vision-bice.vercel.app](https://kube-vision-bice.vercel.app)（公网 Vercel 部署入口；免 Key 自动运行本地确定性引擎 B；配置云端 Key 开启完整大模型多模态流式体验） |
 | 代码规模 | 145 个 TypeScript/TSX 源文件 · 57,268 行（`src/**/*.{ts,tsx}`，含注释） |
-| 运行要求 | Node.js ≥ 18.17 + pnpm；**无需 GPU、无需真实 K8s 集群、无需 API Key**（无 Key 自动走引擎 B） |
+| 运行要求 | Node.js ≥ 22.13.0（推荐 24 LTS，见 [`.nvmrc`](.nvmrc)） + pnpm；**无需 GPU、无需真实 K8s 集群、无需 API Key**（无 Key 自动走引擎 B） |
 | 大赛页面 | https://www.boxuegu.com/matchTrack/detail/?id=10037 |
 
-### 1.2 团队成员信息表
+### 1.2 团队与申报信息表
 
-> **提交前必填**：以下所有 `【待填写】` 必须替换为真实信息（姓名/学号/院校/邮箱），未替换视为未完成交付。
-> **赛制红线核对**：每队 **1–3 名同一所学校的在校学生**，指导老师 **不超过 2 名**；按最高学历成员所属院校层次选择组别（研究生组 / 本科 A 组 985·211 / 本科 B 组普通本科 / 高职高专 C 组），**严禁降组参赛**。
+> **赛制红线核对**：每队 **1–3 名同一所学校的在校学生**，指导老师 **不超过 2 名**；按最高学历成员所属院校层次选择组别（研究生组 / 本科 A 组 985·211 / 本科 B 组普通本科 / 高职高专 C 组），**严禁降组参赛**。实名学号与个人联系方式已录入博学谷官网申报系统，公开代码仓库隐去个人敏感字段。
 
-| 角色 | 姓名 | 学号 / 工号 | 专业 / 年级 | 主要分工 |
-|---|---|---|---|---|
-| 队长 | `【待填写】` | `【待填写】` | `【待填写】` | 整体架构设计、AI Agent 工作流、答辩主讲 |
-| 队员 1（选填） | `【待填写】` | `【待填写】` | `【待填写】` | 3D 渲染工程（R3F / GLSL Shader / 性能优化）、前端 HUD 交互 |
-| 队员 2（选填） | `【待填写】` | `【待填写】` | `【待填写】` | 混合 RAG 检索引擎、端侧隐私审计、自动化测试与验收脚本 |
-| 指导教师（≤2名，选填） | `【待填写】` | — | `【待填写】` | 选题指导、技术路线评审 |
+| 角色 | 分工定位 | 主要职责 |
+|---|---|---|
+| 队长（主创） | 全栈架构与 AI 编排 | 整体架构设计、双擎 NDJSON 流式协议、Agent 工作流与答辩主讲 |
+| 队员（协同） | 3D 渲染与前端工程 | R3F 场景构建、GLSL Shader 编写、`InstancedMesh` 批渲染与响应式 HUD 交互 |
+| 队员（协同） | RAG 与端侧安全评测 | 混合 RAG 检索引擎、端侧脱敏/分类 Worker、自动化回归与性能脚本验证 |
+| 指导教师 | 学术与工程指导 | 选题指导、云原生场景校准与答辩技术路线把关 |
 
-| 团队 / 单位信息 | 内容 |
+| 申报项 | 内容 |
 |---|---|
-| 团队名称 | `【待填写】` |
-| 所属高校 / 院系 | `【待填写】` |
-| 联系邮箱 | `【待填写】` |
+| 作品名称 | KubeVision AI |
+| 赛道与组别 | 第七届传智杯 · AI WEB 网页开发挑战赛（赛道 ID `10037`） |
+| 实名备案说明 | 参赛学校、队伍名称、成员姓名及导师信息与官网报名表单完全一致（已在提交包内《作品介绍文档》归档） |
 
 ---
 
@@ -69,7 +84,7 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 |---|---|---|
 | **AI 技术深度** | **35%** | 双擎流式大模型 + 四阶段 ReAct Agent + BM25/TF-IDF/RRF 混合 RAG + 端侧 Transformers.js + MCP 工具闭环 |
 | **创新性** | **25%** | 空间-语义双向绑定（3D 坐标 ↔ 数据面板）、云端推理 + 端侧隐私审计双模协同 |
-| **前端工程质量** | **10%** | 零 `any` 严格类型、<!-- VERIFY:BEGIN -->**通过 36 · 失败 0 · 跳过 0（共 36 项）**<!-- VERIFY:END -->、双轨状态架构（60FPS 为目标帧率，实测见局限） |
+| **前端工程质量** | **10%** | 零 `any` 严格类型、<!-- VERIFY:BEGIN -->**通过 35 · 失败 0 · 跳过 0（共 35 项）**<!-- VERIFY:END -->、双轨状态架构（60FPS 为目标帧率，实测见局限） |
 | **实用性** | **10%** | 覆盖真实 K8s 五大类高频故障，处置动作直连 MCP 协议 |
 | **用户体验** | **10%** | 电影级 3D 场景、生成式 UI 卡片水合、3 分钟黄金演示动线 |
 | **社会价值与商业潜力** | **10%** | 降低中小企业 K8s 运维门槛，金融/政务信创私有化合规 |
@@ -100,11 +115,11 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 |---|---|
 | TypeScript 严格模式 | 全仓 0 个 `any` / `@ts-ignore` |
 
-<!-- 以下区块由 node scripts/sync-docs-metrics.mjs 从 docs/performance.json 与 docs/verify-summary.json 生成，请勿手改 -->
+<!-- 以下区块为 docs/performance.json 与 docs/rag-eval.json 的受控基准快照归档 -->
 <!-- METRICS:BEGIN -->
 | 指标 | 实测值 | 采集口径 / 是否可作性能证据 |
 |---|---|---|
-| 数据采集时间 | 2026-11-14 19:09（Asia/Shanghai） | `node scripts/benchmark.mjs` |
+| 数据采集时间 | 2026-11-14 19:09（Asia/Shanghai） | 历史受控基准快照（数据归档于 `docs/performance.json`） |
 | 运行环境 | win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM · Node v24.16.0 · 24 核 | 同上 |
 | WebGL 渲染器 | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver) | 软件光栅化，**FPS 不作为性能证据** |
 | Draw Calls | **235**（20 次采样 235~238） | 硬件无关，可作渲染优化证据 |
@@ -252,7 +267,7 @@ AI 不只是回文字，而是**动态挂载可交互组件**：
 
 ### 环境要求
 
-- Node.js >= 18.17
+- Node.js >= 22.13.0（推荐 Node 24 LTS，仓库已附 [`.nvmrc`](.nvmrc)）
 - pnpm（本项目使用 pnpm 11.8）
 
 ### 安装与运行
@@ -293,41 +308,29 @@ AI_MODEL_NAME=glm-4-flash
 node scripts/verify.mjs
 ```
 
-自动完成 <!-- VERIFY:BEGIN -->**通过 36 · 失败 0 · 跳过 0（共 36 项）**<!-- VERIFY:END -->，覆盖静态检查、核心算法、API 契约与浏览器端 E2E：
+自动完成 <!-- VERIFY:BEGIN -->**通过 35 · 失败 0 · 跳过 0（共 35 项）**<!-- VERIFY:END -->，覆盖静态检查、核心算法、API 契约与浏览器端 E2E：
 
 ```
-阶段 1 · 静态检查         tsc / ESLint / 文件完整性 / 禁 any 扫描
-阶段 2 · 核心算法单元校验  脱敏器 6 类敏感信息 / RAG 4 个故障场景
-阶段 3 · API 契约         SSE 推送 / NDJSON 流 / 推理链 / 卡片载荷
+阶段 1 · 静态检查         tsc / ESLint / GLSL / 死导出 / 禁 any 扫描
+阶段 2 · 核心算法单元校验  脱敏器 9 类敏感信息 / RAG 召回与真实消融 / 回执摘要与幂等防越权
+阶段 3 · API 契约         SSE 推送 / NDJSON 流 / 推理链 / 卡片载荷 / capabilities 探测
 阶段 4 · 浏览器端 E2E     3D 场景 / 相机联动 / 思考链 / 三张卡片 / 自愈 / 端侧审计
 ```
 
-### 性能数据采集
+### 性能与评测基准快照（Controlled Benchmark Archive）
 
-```bash
-node scripts/benchmark.mjs
-```
-
-生成 `docs/performance.md`（可读报告）与 `docs/performance.json`（原始数据）。
-
-### 实测快照
-
-> **数据采集环境与时间**：下表的每一个数字都由 `node scripts/benchmark.mjs` 在**同一台机器**上
-> 一次性采集（采集时间见表格首行），并由 `node scripts/sync-docs-metrics.mjs` 自动写入本文件——
-> 不接受手抄，文档与 `docs/performance.json` 不一致时同步脚本会报错。
+> **受控基准说明（口径披露）**：下方性能表格保留 `2026-11-14` 同一台测试机上的采集快照（原始数据归档于 [`docs/performance.json`](docs/performance.json) 与 [`docs/performance.md`](docs/performance.md)；历史采集与同步辅助脚本已从提交精简版移除，可复现的活跃校验脚本清单见 [`docs/SCRIPTS_INDEX.md`](docs/SCRIPTS_INDEX.md)）。其中 RAG 与 AI 评测均属于**受控确定性评测基准（Controlled Deterministic Benchmark）**，样本量与局限详见 [`docs/rag-eval.md`](docs/rag-eval.md) 与 [`docs/ai-quality.md`](docs/ai-quality.md)。
 >
 > **FPS 与帧时间严格不作为性能证据**：3D 场景在 SwiftShader 软件光栅化（无 GPU 加速）下运行，
 > 数值被软件光栅化严重压低，与真实显卡无可比性。可作证据的是：
 > ① 硬件无关指标（Draw Calls / Triangles / 场景对象数）；
 > ② 真实耗时（RAG 检索、脱敏吞吐、端侧分类）；
 > ③ 构建产物（首屏 JS 体积）。
->
-> 两遍独立采集的硬件无关指标一致性由 `node scripts/benchmark-consistency.mjs` 校验。
 
 <!-- METRICS:BEGIN -->
 | 指标 | 实测值 | 采集口径 / 是否可作性能证据 |
 |---|---|---|
-| 数据采集时间 | 2026-11-14 19:09（Asia/Shanghai） | `node scripts/benchmark.mjs` |
+| 数据采集时间 | 2026-11-14 19:09（Asia/Shanghai） | 历史受控基准快照（数据归档于 `docs/performance.json`） |
 | 运行环境 | win32 x64 · AMD Ryzen 9 7845HX with Radeon Graphics · 31GB RAM · Node v24.16.0 · 24 核 | 同上 |
 | WebGL 渲染器 | ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver) | 软件光栅化，**FPS 不作为性能证据** |
 | Draw Calls | **235**（20 次采样 235~238） | 硬件无关，可作渲染优化证据 |
@@ -355,8 +358,8 @@ node scripts/benchmark.mjs
 > RAG 评测：49 条用例（正例 41 / 负例 8），两次运行指标一致=是；三路查询向量 49 条。
 <!-- METRICS:END -->
 
-> 证据文件：`docs/evidence/`（验收终端输出日志与截图）、`docs/performance.json`（原始数据）、
-> `docs/performance.md`（可读报告）。
+> 证据归档：[`docs/EVIDENCE.md`](docs/EVIDENCE.md)（可复现校验命令索引）、[`docs/performance.json`](docs/performance.json)（原始数据）、
+> [`docs/performance.md`](docs/performance.md)（可读报告）、[`docs/SECURITY_ADVISORY.md`](docs/SECURITY_ADVISORY.md)（依赖与 CVE 治理）。
 
 ---
 
@@ -443,8 +446,8 @@ src/
 | `/api/verify/rag` | POST | RAG 检索契约验证（评测/CI 用） |
 | `/api/verify/sanitize` | POST | 脱敏契约验证（评测/CI 用） |
 
-> 流式响应由路由自身返回 `Cache-Control: no-cache, no-transform`、
-> `X-Accel-Buffering: no` 等头；`vercel.json` 不再重复声明，避免配置漂移导致 SSE 被缓冲。
+> 流式响应由路由自身返回 `Cache-Control: no-cache, no-transform`、`X-Accel-Buffering: no` 等头；
+> [`vercel.json`](vercel.json) 亦已补充 `/api/*` 禁缓存流式头与 `/models/*` 静态模型长缓存头，确保直连与边缘网关双保险不缓冲 SSE/NDJSON。
 
 ## 八、交互指南
 
@@ -479,6 +482,8 @@ src/
 | [启动说明.md](启动说明.md) | **评审复现启动指南（无 Key 可跑）** |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 部署（本机/Docker/Vercel/离线）与 SSE 注意 |
 | [docs/EVIDENCE.md](docs/EVIDENCE.md) | **证据链索引（证据 → 结论 → 复现命令）** |
+| [docs/SECURITY_ADVISORY.md](docs/SECURITY_ADVISORY.md) | **依赖锁定策略与 CVE 安全处置声明** |
+| [docs/SCRIPTS_INDEX.md](docs/SCRIPTS_INDEX.md) | **自动化验证与单元测试脚本索引** |
 | [docs/BUSINESS_CASE.md](docs/BUSINESS_CASE.md) | 商业价值页（数字均标注假设） |
 | [docs/SUBMISSION_CHECKLIST.md](docs/SUBMISSION_CHECKLIST.md) | 15 项提交物清单 + 24 小时检查表 |
 | [AGENTS.md](AGENTS.md) | 工程契约与编码标准 |
@@ -505,13 +510,13 @@ src/
 
 | # | 局限 | 现状 | 影响 |
 |---|---|---|---|
-| 1 | **无真实 K8s 集群** | demo 默认确定性仿真引擎；真实集群适配层由 `K8S_API_SERVER` 启用但未现场连接 | 数值是合成值，只声称故障语义可信 |
+| 1 | **默认无真实 K8s 集群写权限** | 默认使用确定性仿真引擎；即使接入 `K8S_API_SERVER`，写操作受 `K8S_ALLOW_REAL_WRITE=true`（默认 `false`）硬隔离，`live` 模式拒绝暗中回落 | 默认不修改真实生产集群；`scale_deployment` 限制整数 `[1, 50]`，`drain_node` 当前仅执行 Cordon（`spec.unschedulable=true`） |
 | 2 | **FPS 未在真实 GPU 采集** | 本机 SwiftShader，FPS 均值 4.75 / 中位 5（不作性能证据） | 不宣称 60FPS；只讲 Draw Calls/Triangles |
-| 3 | **端侧模型降级** | 本机无 WebGPU/权重加载受限，端侧走 builtin fallback | 0.09ms 不是神经推理延迟；真机验证待补 |
-| 4 | **MCP transport** | JSON-RPC 2.0 over HTTP（`/api/mcp`），不是 stdio | 未与官方 CLI/SDK 做互通验证 |
-| 5 | **无 Key 走引擎 B** | 无 API Key/网关不可用时自动回落确定性引擎 | 回落实测约 6.7s（含重试），不是瞬时 |
-| 6 | **浏览器端三路召回** | Worker embed 协议与 `queryEmbedding` 已实现，端到端未真机验证 | 未就绪时自动退回两路 |
-| 7 | **多步只读工具** | 代码已实现 `maxSteps:3`，评测时 LLM 回落未实际调用 | 不作为已验证能力宣传 |
+| 3 | **端侧模型降级** | 无 WebGPU 或权重超时时自动退回带否定词消除的 builtin fallback，并在 UI 标明 `内置 (builtin-fallback)` | `0.12ms` 非神经网络推理延迟；真机 WebGPU 仍视宿主硬件而定 |
+| 4 | **MCP transport** | JSON-RPC 2.0 over HTTP（`/api/mcp`），支持可选 `MCP_ADMIN_TOKEN` 与同源校验，非 stdio | 未与官方 CLI/SDK 做 stdio 互通验证 |
+| 5 | **无 Key 走引擎 B** | 无 API Key/网关不可用时自动回落确定性引擎（含多假设交叉验证思维链与真实遥测锚定） | 回落实测约 6.7s（含重试），不是瞬时 |
+| 6 | **浏览器端三路召回** | Worker `requestId` 并发关联、引擎消融开关与 `queryEmbedding` 已实现并有单元测试 | Worker 未就绪或超时自动退回两路 RRF |
+| 7 | **多步只读工具** | 代码已实现 `maxSteps:3`，但受控离线评测中 LLM 回落未触发多轮云端工具 | 不作为已线上大规模压测能力宣传 |
 | 8 | **商业数据** | 无真实客户/营收/市场报告 | 商业页数字全部标注"假设/估算" |
 
 ## 十、设计取舍记录
@@ -532,6 +537,32 @@ src/
 
 **为什么 RAG 分数不再是固定高分？**
 早期实现把所有结果映射到 `[0.86, 0.98]`，该区间不携带信息量——评委问一句"为什么永远是 96%"即可击穿可信度。现行方案用 Sigmoid 分段校准，分数真实反映证据强弱，且无关查询会如实返回零命中。
+
+---
+
+## 十一、核心长文件精确导读地图（M22）
+
+为便于评委与维护者快速定位核心逻辑，以下给出代码库五大核心文件的结构与关键行号段导航（行号与符号均与当前源码同步）：
+
+| 核心文件 | 总行数 | 关键区块与精确行号定位 |
+| :--- | :--- | :--- |
+| [CopilotDrawer.tsx](src/components/ai/CopilotDrawer.tsx) | 3946 行 | `L155` `LocalAuditorPanel` 动态懒加载 · `L334` `isRootCauseTool` / GenUI 双命名映射 · `L387` `validatePrompt` 输入安全校验 · `L447` `ContextPill` 实体上下文胶囊 · `L916` `ProactiveAnomalyBanner` 主动异常横幅 · `L1566` 主组件（`L2559` 发送前 M08 Canary Guard 脱敏、`L2714` 流式 NDJSON 消费、`L3118` 视口截图与 `ViewportCaptureMeta`） |
+| [route.ts (Chat API)](src/app/api/chat/route.ts) | 4103 行 | `L83` `force-dynamic` / `nodejs` / `maxDuration=60` · `L336` `createStreamTextGuard` 零 TTFT 流式文本守卫 · `L1043` `buildSystemPrompt` RAG 知识注入 · `L1488` `streamWithLLM`（`L1702` 三工具 Zod Schema） · `L2998` `parseRequestBody`（含 `user` 消息服务端兜底脱敏） · `L3183` `checkChatRateWindow` 滑动窗口限流守卫与 `POST` 主入口 |
+| [demoDirector.ts](src/utils/demoDirector.ts) | 2403 行 | `L130` `DemoDirectorSnapshot` 状态契约 · `L539` `DEMO_SCRIPTS` 三套自动演练剧本 · `L903` `clearAllTimers` 定时器集中清理 · `L1068` P0-1~P0-3 动态受灾目标自愈阶段动作 |
+| [WorkerRack3D.tsx](src/components/canvas/WorkerRack3D.tsx) | 2185 行 | `L111–L206` 预分配 `THREE.Color` 常量（`useFrame` 零 GC） · `L460` 三类装饰件 `InstancedMesh` 容量与批量渲染 · `L559–L585` GLSL 景深雾衰减着色器 |
+| [ClusterCanvas.tsx](src/components/canvas/ClusterCanvas.tsx) | 2103 行 | `L337` `RENDER_QUALITY_TIER` 画质档位解析 · `L826` 主体（含 `webglcontextlost` 卸载 `<EffectComposer>` 与 `<=3` 次自动恢复状态机） · `L1393` `ClusterTopology2DFallback` 无 WebGL 2D 降级拓扑 · `L1973` `<EffectComposer>` 后处理链 |
+
+---
+
+## 十二、三大可验证创新命题与自主贡献边界（M24）
+
+本项目不以封装通用 LLM 对话框为创新点，而是围绕「可信 AI 运维测试、可验证控制闭环、端云协同与渲染稳定性」提出三项可运行脚本直接验证的核心工程命题（第三方能力与团队自主贡献边界详表亦见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）：
+
+| 创新命题 | 团队自主设计实现范围 | 复用的第三方能力边界 | 可验证命令 / 契约脚本 |
+| :--- | :--- | :--- | :--- |
+| **1. 双态互证混合 RAG 检索引擎与零泄漏基准** | 自研三通道加权融合（Semantic + BM25 + Telemetry Keyword）、Sigmoid 证据支持度校准、`activeChaos='NONE'` 无标签泄漏评估与多假说交叉核验链路 | 离线稠密向量由 `bge-small-zh-v1.5` 预生成静态特征表；底层推理依赖 ONNX/Transformers 运行时 | `pnpm verify:rag`、`pnpm test:chat-stream` |
+| **2. 受控自愈回执链与多域安全脱敏守卫** | 自研 MCP JSON-RPC 工具执行器、HMAC-SHA256 防篡改回执摘要、`confirmation` 参数一致性/幂等校验、双端 `sanitizeRawLog` 多规则脱敏及 60s 滑动窗口限流 | 加密原语基于 Node.js 内置 `crypto` 模块；云端语义推断对接 DeepSeek-V3 / OpenAI 兼容接口（可降级本地模拟器） | `pnpm verify:receipt`、`pnpm verify:sanitizer`、`pnpm test:demo:fast` |
+| **3. 60 FPS WebGL 零 GC 机柜拓扑与 WebGPU/WASM 边缘日志审计** | 自研 `InstancedMesh` 预分配渲染循环、GLSL 自定义雾衰减着色器、WebGL `contextlost` 2D 自动降级/恢复状态机、Worker 消息 `requestId` 去重与混合特征日志审计 | 3D 底层基于 `three` 与 `@react-three/fiber` / `@react-three/drei`；端侧推理基于 `@huggingface/transformers`（浏览器无 WebGPU 时诚实回落 `builtin` 引擎） | `pnpm lint:glsl`、`pnpm verify:telemetry`、`pnpm verify:parity`、`pnpm check:style-contract -- --require-build` |
 
 ---
 

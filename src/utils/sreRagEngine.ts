@@ -41,7 +41,17 @@
  */
 
 import { z } from 'zod';
-import { RUNBOOK_EMBEDDING_DIM, getAllRunbookVectors } from '@/utils/runbookEmbeddings';
+import { EMBEDDING_MODEL_META, RUNBOOK_EMBEDDING_DIM, getAllRunbookVectors } from '@/utils/runbookEmbeddings';
+
+/** M11：RAG 检索真实通道消融开关（全不传或 false 时与默认混合检索完全等价） */
+export interface RagQueryOptions {
+  /** 禁用稠密语义通道（词袋 TF-IDF 余弦 + MiniLM 句向量） */
+  readonly disableSemantic?: boolean;
+  /** 禁用稀疏精确匹配通道（Okapi BM25） */
+  readonly disableBm25?: boolean;
+  /** 禁用运行上下文先验加权（chaos / faultyPods） */
+  readonly disableContextBoost?: boolean;
+}
 
 import type { RagRunbookDoc } from '@/types/ai';
 import type { ChaosScenario } from '@/types/cluster';
@@ -1229,7 +1239,12 @@ export function retrieveSreRunbooks(
    * 传入后会做 L2 归一化，再与预计算的手册向量做余弦。
    */
   queryEmbedding?: readonly number[] | Float32Array,
+  options: RagQueryOptions = {},
 ): RagRunbookDoc[] {
+  const disableSemantic = options.disableSemantic === true;
+  const disableBm25 = options.disableBm25 === true;
+  const disableContextBoost = options.disableContextBoost === true;
+  const expectedDim = EMBEDDING_MODEL_META.dimension || RUNBOOK_EMBEDDING_DIM;
   /* 防御：topK 非正时返回空数组（避免 slice 语义歧义） */
   const limit = Math.max(0, Math.floor(topK));
   if (limit === 0) return [];
@@ -1247,7 +1262,7 @@ export function retrieveSreRunbooks(
 
   /* ---- 1b. 查询句向量校验 + L2 归一化（失败则两路回退） ---- */
   let semanticQuery: Float32Array | null = null;
-  if (queryEmbedding !== undefined && queryEmbedding.length === RUNBOOK_EMBEDDING_DIM) {
+  if (!disableSemantic && queryEmbedding !== undefined && queryEmbedding.length === expectedDim) {
     const candidate = Float32Array.from(queryEmbedding);
     let normSquared = 0;
     let valid = true;
@@ -1367,23 +1382,24 @@ export function retrieveSreRunbooks(
     /* 用 IDF 加权后再算余弦——TF-IDF 的核心就是"重要词权重更高" */
     const queryTfIdf = applyIdfWeights(queryVector);
     const docTfIdf = applyIdfWeights(docVector);
-    const vectorScore = cosineSimilarity(queryTfIdf, docTfIdf);
+    const vectorScore = disableSemantic ? 0 : cosineSimilarity(queryTfIdf, docTfIdf);
 
     /* 稀疏路：BM25（原始分 + OOV 惩罚与下限约束后的绝对归一） */
-    const bm25Raw = bm25Score(uniqueQueryTerms, doc);
+    const bm25Raw = disableBm25 ? 0 : bm25Score(uniqueQueryTerms, doc);
     const bm25Denominator = Math.max(
       MIN_BM25_QUERY_IDF,
       queryIdfMass + oovAsciiCount * OOV_ASCII_IDF_WEIGHT + oovZhCount * OOV_ZH_IDF_WEIGHT,
     );
-    const bm25Normalized = queryIdfMass > 0 ? Math.min(1, bm25Raw / bm25Denominator) : 0;
+    const bm25Normalized =
+      !disableBm25 && queryIdfMass > 0 ? Math.min(1, bm25Raw / bm25Denominator) : 0;
 
     /* 先验路：上下文 */
-    const contextBoost = contextScore(doc, chaos, faultyPods);
+    const contextBoost = disableContextBoost ? 0 : contextScore(doc, chaos, faultyPods);
 
     /* 句向量路：仅内置手册有预计算向量，自定义语料自动跳过 */
     const docSemanticVector = precomputedVectors?.get(doc.id) ?? null;
     const semanticScore =
-      semanticQuery !== null && docSemanticVector !== null
+      !disableSemantic && semanticQuery !== null && docSemanticVector !== null
         ? semanticCosine(semanticQuery, docSemanticVector)
         : 0;
 
@@ -1395,9 +1411,9 @@ export function retrieveSreRunbooks(
       contextBoost,
       semanticScore,
       hasSemanticEvidence:
-        vectorScore > SEMANTIC_EVIDENCE_EPSILON ||
-        bm25Raw > SEMANTIC_EVIDENCE_EPSILON ||
-        semanticScore >= SEMANTIC_EVIDENCE_MIN_COSINE,
+        (!disableSemantic && vectorScore > SEMANTIC_EVIDENCE_EPSILON) ||
+        (!disableBm25 && bm25Raw > SEMANTIC_EVIDENCE_EPSILON) ||
+        (!disableSemantic && semanticScore >= SEMANTIC_EVIDENCE_MIN_COSINE),
     };
   });
 
@@ -1466,28 +1482,30 @@ export function retrieveSreRunbooks(
   const poolFactor = Math.min(1, candidates.length / poolDenominator);
 
   const fused: Fused[] = candidates.map((entry): Fused => {
-    const ranks =
-      semanticQuery === null
-        ? [vectorRankOf.get(entry.doc.id) ?? Infinity, bm25RankOf.get(entry.doc.id) ?? Infinity]
-        : [
-            vectorRankOf.get(entry.doc.id) ?? Infinity,
-            bm25RankOf.get(entry.doc.id) ?? Infinity,
-            semanticRankOf.get(entry.doc.id) ?? Infinity,
-          ];
-    const rrf = rrfFuse(ranks, semanticQuery === null ? 2 : 3);
+    const ranks: number[] = [];
+    if (!disableSemantic) ranks.push(vectorRankOf.get(entry.doc.id) ?? Infinity);
+    if (!disableBm25) ranks.push(bm25RankOf.get(entry.doc.id) ?? Infinity);
+    if (!disableSemantic && semanticQuery !== null) {
+      ranks.push(semanticRankOf.get(entry.doc.id) ?? Infinity);
+    }
+    const rrf = rrfFuse(ranks, Math.max(1, ranks.length));
 
     /*
-     * 终值 = 加权三路。
-     * 注意权重分配：BM25 占 0.45 最高——因为在本语料库上，
-     * 精确术语命中（oom_score_adj / vxlan）比整体词分布更具决定性。
+     * 终值 = 加权三路（M11 消融开关下自动按剩余激活通道总权重归一化）。
      */
+    const wVec = disableSemantic ? 0 : CONFIDENCE_WEIGHT_VECTOR;
+    const wBm25 = disableBm25 ? 0 : CONFIDENCE_WEIGHT_BM25;
+    const wCtx = disableContextBoost ? 0 : CONFIDENCE_WEIGHT_CONTEXT;
+    const wSum = wVec + wBm25 + wCtx;
     const baseCombined =
-      CONFIDENCE_WEIGHT_VECTOR * entry.vectorScore +
-      CONFIDENCE_WEIGHT_BM25 * entry.bm25Normalized +
-      CONFIDENCE_WEIGHT_CONTEXT * entry.contextBoost;
+      wSum > 0
+        ? (wVec * entry.vectorScore + wBm25 * entry.bm25Normalized + wCtx * entry.contextBoost) / wSum
+        : 0;
     /* 句向量可用时给 25% 权重，其余三路等比让位（总权重仍为 1） */
     const combined =
-      semanticQuery === null ? baseCombined : baseCombined * 0.75 + entry.semanticScore * 0.25;
+      disableSemantic || semanticQuery === null
+        ? baseCombined
+        : baseCombined * 0.75 + entry.semanticScore * 0.25;
     /* RRF 作为排名一致性证据，需同时受候选池规模（poolFactor）与内容证据强度（evidenceGate）约束 */
     const evidenceGate = Math.min(1, combined / RRF_EVIDENCE_FLOOR);
     const rrfNormalized = rrf * poolFactor * evidenceGate;
@@ -1508,9 +1526,10 @@ export function retrieveSreRunbooks(
   const relevant = fused.filter((entry): boolean => {
     if (entry.fused < MIN_FUSED_THRESHOLD) return false;
     return (
-      entry.vectorScore >= MIN_VECTOR_EVIDENCE_FLOOR ||
-      entry.semanticScore >= MIN_SEMANTIC_EVIDENCE_FLOOR ||
-      entry.contextBoost >= MIN_CONTEXT_EVIDENCE_FLOOR
+      (!disableSemantic && entry.vectorScore >= MIN_VECTOR_EVIDENCE_FLOOR) ||
+      (!disableSemantic && entry.semanticScore >= MIN_SEMANTIC_EVIDENCE_FLOOR) ||
+      (disableSemantic && !disableBm25 && entry.bm25Score >= 0.12) ||
+      (!disableContextBoost && entry.contextBoost >= MIN_CONTEXT_EVIDENCE_FLOOR)
     );
   });
   if (relevant.length === 0) return [];

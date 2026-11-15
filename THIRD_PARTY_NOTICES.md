@@ -49,3 +49,12 @@
 - 语料中的命令、退出码与机制描述依据 Kubernetes / Linux 公开文档与通用 SRE 实践，未逐句引用受版权保护的文本；
 - 自定义 Runbook 由使用者在浏览器 localStorage 内自建，服务端不持久化；
 - 若后续引入第三方语料，必须在本节登记来源、许可证与作者，并同步更新 `docs/rag-eval.json` 的评测口径。
+
+## 团队自主核心研发与第三方边界矩阵（M24）
+
+| 模块层级 | 第三方开源底座 / 预训练资源 | 本团队自主设计与编码贡献 |
+|---|---|---|
+| **3D 态势与渲染性能** | Three.js / R3F / Postprocessing 基础能力 | 双轨状态架构（`useTelemetryRef` + `useClusterStore`）、程序化机柜与 `InstancedMesh` 批渲染、`spatialLayout.ts` 单源坐标几何、`webglcontextlost` 到 2D 无缝升降级 |
+| **混合 RAG 与证据约束** | `Xenova/all-MiniLM-L6-v2` (Apache-2.0) | 12 篇自撰 SRE Runbook、语料级 IDF + Okapi BM25 + TF-IDF + 384d 句向量三路 RRF 融合、Sigmoid 证据门与 `grounding.ts` 结构化实体-指标校验、`RagQueryOptions` 真消融开关 |
+| **端侧隐私与日志审计** | Transformers.js / onnxruntime-web | 同步 9 类正则脱敏引擎（含 AI/VCS Token 与 IPv6）、发送前 Canary 拦截门、`requestId` 并发隔离 Worker、带否定短语消除与低证据阈值的确定性兜底分类器 |
+| **双擎流式与 MCP 闭环** | Next.js App Router / Vercel AI SDK | 自研 NDJSON 双擎容灾状态机、按 `clientRequestId` 指纹幂等校验、高危动作 Cordon 确认绑定、`K8S_ALLOW_REAL_WRITE` 物理隔离与 Google SRE 风格纯函数复盘导出 |

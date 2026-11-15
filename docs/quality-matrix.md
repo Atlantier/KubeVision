@@ -1,11 +1,11 @@
-# 质量矩阵标定（T3 / T2 / T1 / T0）
+# 质量矩阵标定（T3 / T2 / T1 / T0 · 历史快照）
 
-> 由 `node scripts/quality-matrix.mjs` 自动生成于 2026-11-10T10:58:12.949Z。
+> 生成于 `2026-11-10T10:58:12.949Z`（历史硬件标定脚本未保留在精简提交仓；当前 3D 渲染与质量门禁由 `node scripts/verify.mjs` 回归）。
 > 渲染器：`ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)`
 
 ## ⚠️ 重要：本结果来自软件光栅化（SwiftShader）
 
-本沙箱没有可用独显/集显，Edge 只能软渲染。**这些 fps 数字不能作为 60FPS 决策依据**，只用于记录档位切换对 draw calls / 显存估算的影响。真机复跑命令：`node scripts/quality-matrix.mjs`（renderer 会显示真实 GPU 名称）。
+本沙箱没有可用独显/集显，Edge 只能软渲染。**这些 fps 数字不能作为 60FPS 决策依据**，只用于记录档位切换对 draw calls / 显存估算的影响。真机 GPU 环境可直接通过 `?quality=high|balanced|low|off` 参数对比。
 
 ## 矩阵
 

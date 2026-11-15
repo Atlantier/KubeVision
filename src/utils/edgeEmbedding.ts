@@ -24,7 +24,14 @@ const EMBED_TIMEOUT_MS = 300;
 let worker: Worker | null = null;
 let workerReady = false;
 let initializing = false;
-let pendingResolvers: Array<(vectors: number[][] | null) => void> = [];
+let nextEmbedSeq = 0;
+
+interface PendingEmbedRequest {
+  readonly resolve: (vectors: number[][] | null) => void;
+  readonly timer: number;
+}
+
+const pendingRequests = new Map<string, PendingEmbedRequest>();
 
 /**
  * ensureWorker —— 惰性创建 Worker 并开始初始化（不等待模型下载）。
@@ -61,9 +68,28 @@ function ensureWorker(): Worker | null {
         ? (message.vectors as number[][])
         : null;
       console.info('[edge-embed] warm inference=' + String(message.latencyMs ?? 'n/a') + 'ms');
-      const resolvers = pendingResolvers;
-      pendingResolvers = [];
-      for (const resolve of resolvers) resolve(vectors);
+
+      const requestId = typeof message.requestId === 'string' ? message.requestId : null;
+      if (requestId !== null) {
+        const entry = pendingRequests.get(requestId);
+        if (entry !== undefined) {
+          pendingRequests.delete(requestId);
+          window.clearTimeout(entry.timer);
+          entry.resolve(vectors);
+        }
+        return;
+      }
+
+      /* 兼容未携带 requestId 的旧式消息：按 FIFO 弹出首条 */
+      const firstKey = pendingRequests.keys().next().value;
+      if (firstKey !== undefined) {
+        const entry = pendingRequests.get(firstKey);
+        pendingRequests.delete(firstKey);
+        if (entry !== undefined) {
+          window.clearTimeout(entry.timer);
+          entry.resolve(vectors);
+        }
+      }
     }
   });
 
@@ -76,7 +102,7 @@ function ensureWorker(): Worker | null {
 }
 
 /**
- * embedQueryText —— 把文本编码为 384 维查询向量（带超时）。
+ * embedQueryText —— 把文本编码为 384 维查询向量（带 requestId 并发关联与超时清理）。
  *
  * @param text 查询文本
  * @param timeoutMs 超时（默认 300ms）
@@ -91,25 +117,32 @@ export async function embedQueryText(
   const trimmed = text.trim();
   if (trimmed.length === 0) return null;
 
+  const requestId = `emb-${Date.now()}-${++nextEmbedSeq}`;
+
   return await new Promise<number[] | null>((resolve): void => {
     let settled = false;
     const finish = (value: number[] | null): void => {
       if (settled) return;
       settled = true;
+      const entry = pendingRequests.get(requestId);
+      if (entry !== undefined) {
+        pendingRequests.delete(requestId);
+        window.clearTimeout(entry.timer);
+      }
       resolve(value);
     };
 
-    pendingResolvers.push((vectors): void => {
-      const first = vectors?.[0];
-      finish(Array.isArray(first) && first.length === 384 ? first : null);
+    const timer = window.setTimeout((): void => finish(null), timeoutMs);
+    pendingRequests.set(requestId, {
+      timer,
+      resolve: (vectors): void => {
+        const first = vectors?.[0];
+        finish(Array.isArray(first) && first.length === 384 ? first : null);
+      },
     });
 
-    const timer = window.setTimeout((): void => finish(null), timeoutMs);
-    /* 超时后仍需清理 resolver 队列中的本轮占位（用一个空返回兜底） */
-    void timer;
-
     try {
-      activeWorker.postMessage({ type: 'embed', texts: [trimmed] });
+      activeWorker.postMessage({ type: 'embed', texts: [trimmed], requestId });
     } catch {
       finish(null);
     }

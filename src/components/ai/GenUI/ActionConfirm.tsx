@@ -174,7 +174,7 @@ const EXECUTION_ANIMATION_MS = 600;
 const ACTION_LABEL: Readonly<Record<RemediationActionType, string>> = {
   restart_pod: '重启 Pod',
   scale_deployment: '扩缩容 Deployment',
-  drain_node: '驱逐节点',
+  drain_node: '隔离节点 (Cordon)',
 };
 
 /**
@@ -668,6 +668,13 @@ function ActionConfirmImpl({
             targetName: effectiveTargetName,
             ...(targetPod !== undefined ? { namespace: targetPod.namespace } : {}),
             clusterMode: useClusterStore.getState().connectionMode,
+            confirmation: {
+              confirmed: true,
+              targetId: effectiveTargetId,
+              actionType,
+              issuedAt: new Date().toISOString(),
+              highRiskAcknowledged: !isHighRisk || acknowledged,
+            },
           }),
           signal: controller.signal,
         });
@@ -1046,6 +1053,14 @@ function ActionConfirmImpl({
                 <span className={receipt.mode === 'real' ? 'text-emerald-400' : 'text-amber-300/80'}>
                   {receipt.mode === 'real' ? UI_COPY.mcpModeReal : UI_COPY.mcpModeSimulated}
                 </span>
+                {receipt.executionStage !== undefined ? (
+                  <>
+                    <span className="text-slate-400">·</span>
+                    <span className="text-slate-300">
+                      {receipt.executionStage === 'accepted' ? 'stage:accepted' : 'stage:verified'}
+                    </span>
+                  </>
+                ) : null}
               </div>
 
               <pre className="mt-1 overflow-x-auto rounded bg-slate-950/70 px-1.5 py-1 font-mono text-[10px] leading-relaxed text-cyan-300/90">

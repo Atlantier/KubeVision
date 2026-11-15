@@ -18,6 +18,8 @@ export type McpActionType = 'restart_pod' | 'scale_deployment' | 'drain_node';
  * auditDigest 的参与字段**顺序**写在 mcpReceiptDigest.buildReceiptDigestPayload，
  * 任何改动都属于协议破坏性变更。
  */
+export type McpExecutionStage = 'accepted' | 'verified';
+
 export interface McpExecuteReceipt {
   readonly executionId: string;
   readonly timestamp: string;
@@ -29,5 +31,6 @@ export interface McpExecuteReceipt {
   readonly latencyMs: number;
   readonly auditDigest: string;
   readonly mode: McpExecutionMode;
+  readonly executionStage?: McpExecutionStage;
   readonly note: string;
 }

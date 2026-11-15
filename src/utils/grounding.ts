@@ -59,7 +59,6 @@ export function collectGroundedTokens(
     }
   };
   addPercentages(ctx.clusterHealthScore);
-  addPercentages(ctx.totalQps);
   for (const node of ctx.nodes) {
     addPercentages(node.cpuUsage);
     addPercentages(node.memUsage);
@@ -92,6 +91,41 @@ export interface GroundingResult {
   readonly text: string;
   /** 未证实实体（去重） */
   readonly unverified: readonly string[];
+  /** 结构化「实体 + 指标值」精确对齐命中数 */
+  readonly entityMetricMatches?: number;
+  /** 证据核验方法标识 */
+  readonly scoreMethod?: 'heuristic_numeric_entity_v2';
+}
+
+/**
+ * countEntityMetricMatches —— 结构化核验文本中「已知实体 + 观测指标百分比」共现次数（M09）。
+ */
+function countEntityMetricMatches(text: string, ctx: ClusterContext): number {
+  const candidates: Array<{ readonly names: readonly string[]; readonly metrics: readonly number[] }> = [
+    ...ctx.nodes.map((n) => ({ names: [n.id.toLowerCase(), n.name.toLowerCase()], metrics: [n.cpuUsage, n.memUsage] })),
+    ...ctx.faultyPods.map((p) => ({
+      names: [p.id.toLowerCase(), p.name.toLowerCase()],
+      metrics: [p.cpuUsage, p.memoryUsage],
+    })),
+  ];
+
+  let matches = 0;
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    for (const item of candidates) {
+      if (!item.names.some((name): boolean => name.length > 0 && lower.includes(name))) continue;
+      let m: RegExpExecArray | null;
+      const re = new RegExp(PERCENT_PATTERN.source, 'g');
+      while ((m = re.exec(lower)) !== null) {
+        const val = Number(m[1]);
+        if (Number.isFinite(val) && item.metrics.some((obs): boolean => Math.abs(obs - val) <= 1.5)) {
+          matches += 1;
+        }
+      }
+    }
+  }
+  return matches;
 }
 
 /**
@@ -123,7 +157,12 @@ export function annotateUngrounded(
       return `${match}[未证实]`;
     });
 
-  return { text: annotated, unverified: [...unverified] };
+  return {
+    text: annotated,
+    unverified: [...unverified],
+    entityMetricMatches: countEntityMetricMatches(text, ctx),
+    scoreMethod: 'heuristic_numeric_entity_v2',
+  };
 }
 
 /**

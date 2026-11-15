@@ -1,7 +1,7 @@
 # 依赖与体积审计（deps-audit）
 
-> 由 `node scripts/audit-deps.mjs` 自动生成，请勿手改数字。
-> 生成时间：2026-11-10T14:16:36.764Z；构建产物：`.next/`（生产构建）
+> 本报告为冻结前的历史专项评测快照（原始体积口径基于 `.next/` 生产构建）；构建产物大小与安全缓解策略说明请结合 [`docs/SECURITY_ADVISORY.md`](SECURITY_ADVISORY.md) 与 [`docs/SCRIPTS_INDEX.md`](SCRIPTS_INDEX.md) 查验。
+> 采集快照时间：2026-11-10T14:16:36.764Z；构建产物：`.next/`（生产构建）
 
 ## 1. 未使用依赖
 
@@ -39,12 +39,12 @@
 3. 首屏 JS = app-build-manifest 的 `/` 页面 chunk ∪ build-manifest 的 rootMainFiles；
    动态 `next/dynamic` 懒加载块不计入首屏；
 4. 未用依赖仅做静态 import 检查：通过字符串/反射/CLI 间接使用的依赖可能被误报，需人工复核；
-5. 预算值集中在 `scripts/audit-deps.mjs` 的 `BUDGETS`，调整预算必须在 PR 里说明理由。
+5. `pnpm audit --audit-level=high` 的风险可达性评估与工程缓解措施（含 `next@14.2.18` 锁版本依据）详见 [`docs/SECURITY_ADVISORY.md`](SECURITY_ADVISORY.md)。
 
-## 5. 复现
+## 5. 复现与验证
 
 ```bash
-pnpm build                      # 生成 .next/ 生产产物
-node scripts/audit-deps.mjs     # 生成本报告（超限 WARN）
-node scripts/audit-deps.mjs --strict   # CI：超限即失败
+pnpm build                              # 生成 .next/ 生产产物与真实 Route chunk 大小
+pnpm check:dead-exports                 # 静态扫描全仓死导出与未使用边界
+pnpm check:style-contract -- --require-build
 ```

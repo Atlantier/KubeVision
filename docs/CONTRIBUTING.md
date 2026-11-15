@@ -5,39 +5,33 @@
 ## 1. 提交前必跑
 
 ```bash
-pnpm tsc --noEmit                 # 类型必须 0 error（不允许 any / @ts-ignore）
+pnpm typecheck                    # 类型必须 0 error（不允许 any / @ts-ignore）
 pnpm lint                         # next lint 必须无 warning/error
-node scripts/verify.mjs --quick   # 静态检查（tsc + lint + any 禁令 + GLSL + A11y/emoji）
+pnpm lint:glsl                    # GLSL 着色器语法静态校验
+node scripts/verify.mjs --quick   # 静态检查（tsc + lint + any 禁令 + GLSL + 死导出）
 pnpm test:health                  # 健康分不变量单测（P0 必不升分）
 ```
 
-涉及浏览器行为（3D/对话/语音/截图）时，另跑：
+涉及浏览器行为（3D/对话/语音/截图）与核心算法时，另跑：
 
 ```bash
-node scripts/verify.mjs           # 完整浏览器回归（需要 dev server 在 3000）
-node scripts/verify-demo.mjs      # 3 分钟演示动线
+node scripts/verify.mjs           # 完整 35 项浏览器回归（自动启停 dev server）
+pnpm verify:rag && pnpm verify:sanitizer && pnpm verify:receipt
 ```
 
-## 2. 指标必须由脚本生成
+## 2. 指标与受控基准声明
 
-**禁止手写任何性能/质量数字**。README 与白皮书中的指标区块由脚本回填：
-
-```bash
-node scripts/sync-docs-metrics.mjs   # 读取 docs/*.json，回填 README 与白皮书
-node scripts/eval-rag.mjs            # RAG 召回评测（自动回填 METRICS）
-pnpm eval:ai-quality                 # AI 质量 20 问（需可用的 OpenAI 兼容网关）
-```
+**禁止手写或杜撰任何未采集的性能/质量数字**。`docs/performance.json`、`docs/rag-eval.json`、`docs/ai-quality.json` 为受控环境下采集的历史只读基准快照：
 
 - 未实测的值写「未验证 / 未配置」，不得用估算值冒充；
-- 两次运行结果不一致（非确定性）时，评测脚本必须失败而不是静默通过。
+- 运行 [`docs/SCRIPTS_INDEX.md`](SCRIPTS_INDEX.md) 中列出的全量静态与单元测试脚本验证当前代码改动（`pnpm verify:quick`、`pnpm verify:rag`、`pnpm verify:sanitizer`、`pnpm verify:receipt`、`pnpm test:demo:fast`、`pnpm test:chat-stream` 等）。
 
-## 3. 视觉改动必须附 A/B
+## 3. 视觉与样式改动门禁
 
-改 3D 场景、发光、材质、布局时：
+改 3D 场景、发光、材质、Tailwind Token 或玻璃态布局时：
 
-1. 用 `node scripts/shot.mjs` 在 **1366×768 与 1920×1080** 各截一张「改动前/改动后」；
-2. 用 `node scripts/visual-diff.mjs` 生成差异图与像素占比；
-3. PR/提交信息里贴出两张图路径与差异占比；未做 A/B 的视觉改动不合并。
+1. 执行 `pnpm build && node scripts/check-style-contract.mjs --require-build` 确保样式令牌零漂移、Tailwind 生产 CSS 类全量生成；
+2. 人工复核 1366×768 与 1920×1080 视口显示与 `node scripts/verify.mjs` 浏览器无黑屏/零 console error 回归。
 
 ## 4. 提交信息模板
 
@@ -69,17 +63,15 @@ pnpm eval:ai-quality                 # AI 质量 20 问（需可用的 OpenAI �
 
 - 新增 API 路由必须同步 `README.md` 的 API 清单；
 - 移动/删除文档时用 `grep -rn` 检查代码与文档引用，避免悬空链接；
-- 根目录只保留 `README.md` / `AGENTS.md` / `CONTRIBUTING.md` / `LICENSE` /
-  `THIRD_PARTY_NOTICES.md`；历史报告归档到 `docs/archive/`。
+- 根目录只保留必要入口文档（`README.md` / `AGENTS.md` / `启动说明.md` / `LICENSE` / `THIRD_PARTY_NOTICES.md`）；工程说明与快照报告统一放在 `docs/` 目录。
 ## 7. 治理脚本（CI 应全绿）
 
 ```bash
-pnpm check:layering       # 分层依赖：utils 不依赖 components；canvas 不依赖 ai；api 不依赖 React
-pnpm check:dead-exports   # 死导出：仅拦截"新增"死代码（基线 docs/dead-exports-baseline.json）
-pnpm audit:deps           # 依赖未使用检查 + 首屏/3D/AI chunk 体积预算（读 .next/ 生产产物）
+pnpm lint:glsl                                      # 自定义 GLSL 着色器校验
+pnpm check:dead-exports                             # 死导出：仅拦截"新增"死代码（基线 docs/dead-exports-baseline.json）
+pnpm build && node scripts/check-style-contract.mjs --require-build  # 样式令牌、Tailwind 动态类拼接与生产 CSS 全量覆盖校验
 ```
 
-- 白名单/预算集中在一处：分层例外在 `scripts/check-layering.mjs` 的 `LAYER_ALLOWLIST`，
-  体积预算在 `scripts/audit-deps.mjs` 的 `BUDGETS`；调整必须在 PR 说明理由。
-- 新增死导出会被 `check:dead-exports` 直接拒绝；确认是存量债才允许 `--update-baseline`。
-- 体积审计需先 `pnpm build`；CI 用 `node scripts/audit-deps.mjs --strict` 让超限真正失败。
+- 活跃脚本完整清单见 [`docs/SCRIPTS_INDEX.md`](SCRIPTS_INDEX.md)；
+- 新增死导出会被 `check:dead-exports` 直接拒绝；确认是存量债才允许 `--update-baseline`；
+- 样式契约与构建体积需配合先 `pnpm build` 校验。

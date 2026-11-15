@@ -165,7 +165,7 @@ interface HighlightSegment {
 function splitHighlight(text: string, mode: 'risk' | 'mask'): HighlightSegment[] {
   /* 脱敏视图：只需匹配占位符 */
   if (mode === 'mask') {
-    const maskRe = /\[(?:REDACTED_[A-Z]+|MASKED_[A-Z]+)\]/g;
+    const maskRe = /\[(?:REDACTED_[A-Z0-9_]+|MASKED_[A-Z0-9_]+)\]/g;
     const segments: HighlightSegment[] = [];
     let last = 0;
     let m = maskRe.exec(text);
@@ -183,8 +183,11 @@ function splitHighlight(text: string, mode: 'risk' | 'mask'): HighlightSegment[]
   const riskPatterns: readonly RegExp[] = [
     /\b([a-z][a-z0-9+.-]*):\/\/[^\s:/@]+:[^\s@/]+@/gi,
     /\b(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{16}\b|\bLTAI[0-9A-Za-z]{12,20}\b|\bAKID[0-9A-Za-z]{32}\b/g,
+    /\bsk-(?:proj-|ant-api\d*-)?[A-Za-z0-9_-]{16,}\b|\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b|\bAIza[0-9A-Za-z_-]{35}\b/g,
     /\b[Bb]earer\s+[A-Za-z0-9\-._~+/]{8,}=*|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+    /(?<![A-Za-z0-9])[A-Za-z0-9_.-]*(?:api[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|refresh[_-]?token)["']?\s*[=:]\s*["']?[A-Za-z0-9_\-./+=]{8,}["']?/gi,
     /(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?::\d{1,5})?(?![\d.])/g,
+    /(?<![0-9a-fA-F:])(?:(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,6}:(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}|::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,6}:)(?:%[0-9a-zA-Z_-]+)?(?::\d{1,5})?(?![0-9a-fA-F:])/g,
     /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
   ];
 
@@ -279,12 +282,15 @@ const SENSITIVE_RULE_META: Readonly<
 > = {
   'bearer-token': { text: 'Bearer JWT', className: 'border-rose-500/50 bg-rose-500/10 text-rose-300' },
   'cloud-access-key': { text: 'AKIA 密钥', className: 'border-rose-500/50 bg-rose-500/10 text-rose-300' },
+  'ai-and-vcs-token': { text: 'API/代码令牌', className: 'border-rose-500/50 bg-rose-500/10 text-rose-300' },
+  'generic-secret-kv': { text: '敏感键值凭证', className: 'border-rose-500/50 bg-rose-500/10 text-rose-300' },
   'url-embedded-credential': {
     text: '连接串凭证',
     className: 'border-rose-500/50 bg-rose-500/10 text-rose-300',
   },
   'password-field': { text: '密码字段', className: 'border-rose-500/50 bg-rose-500/10 text-rose-300' },
   ipv4: { text: '内网 IPv4', className: 'border-amber-500/[0.45] bg-amber-500/10 text-amber-300' },
+  ipv6: { text: 'IPv6 地址', className: 'border-amber-500/[0.45] bg-amber-500/10 text-amber-300' },
   email: { text: '邮箱', className: 'border-amber-500/[0.45] bg-amber-500/10 text-amber-300' },
 };
 
@@ -1123,7 +1129,7 @@ export default function LocalAuditorPanel() {
   const runtimeKind: 'webgpu' | 'wasm' | 'builtin' = classifier.runtime ?? 'builtin';
   const isWebGPU = runtimeKind === 'webgpu';
   const runtimeBadgeLabel =
-    runtimeKind === 'webgpu' ? 'WebGPU' : runtimeKind === 'wasm' ? 'WASM SIMD' : '内置分类器';
+    runtimeKind === 'webgpu' ? 'WebGPU' : runtimeKind === 'wasm' ? 'WASM SIMD' : '内置 (builtin-fallback)';
 
   /* ========================================================================== */
   /* 渲染                                                                       */

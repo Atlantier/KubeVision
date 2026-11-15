@@ -9,6 +9,13 @@
 /** 句向量维度（与服务端校验一致） */
 export const RUNBOOK_EMBEDDING_DIM = 384;
 
+/** M12：预计算向量所属嵌入模型与量化指纹元数据 */
+export const EMBEDDING_MODEL_META = {
+  modelId: 'Xenova/all-MiniLM-L6-v2',
+  dimension: RUNBOOK_EMBEDDING_DIM,
+  storageEncoding: 'float32-le-base64',
+} as const;
+
 /** 一条 runbook 的预计算向量（base64 形态，惰性解码） */
 interface RunbookEmbeddingRecord {
   readonly id: string;

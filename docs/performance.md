@@ -96,4 +96,4 @@ Route (app)                              Size     First Load JS
 
 ---
 
-*本文件由 `scripts/benchmark.mjs` 自动生成，重新运行可刷新数据。*
+> 本文件为 `2026-11-14T11:09:52.166Z` 采集的历史受控基准报告（对应原始数据 [`docs/performance.json`](performance.json)；原采样辅助脚本未保留在当前精简提交仓中，当前代码验收请运行 `node scripts/verify.mjs`）。

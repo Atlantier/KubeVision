@@ -133,6 +133,59 @@ const BASE_RECEIPT = {
       const result = await verifyReceiptDigest(json.result);
       is('5.1 真实服务端回执 → 前端复算通过', result.ok, true);
       console.log(`      回执 ${json.result.executionId} · digest=${json.result.auditDigest}`);
+
+      const invalidScaleRes = await fetch('http://127.0.0.1:3000/api/mcp/execute', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          actionType: 'scale_deployment',
+          targetId: 'pod-payment-gateway-7f8b9-x2k',
+          replicas: 0,
+          clusterMode: 'demo',
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      is('5.2 scale_deployment replicas=0 → 400 拒绝', invalidScaleRes.status, 400);
+
+      const liveBlockedRes = await fetch('http://127.0.0.1:3000/api/mcp/execute', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          actionType: 'restart_pod',
+          targetId: 'pod-payment-gateway-7f8b9-x2k',
+          namespace: 'kv-prod',
+          clusterMode: 'live',
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      is('5.3 clusterMode=live 无确认/实写许可 → 403 阻断', liveBlockedRes.status, 403);
+
+      const reqId = `verify-idem-${Date.now()}`;
+      const firstIdem = await fetch('http://127.0.0.1:3000/api/mcp/execute', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          clientRequestId: reqId,
+          actionType: 'restart_pod',
+          targetId: 'pod-payment-gateway-7f8b9-x2k',
+          namespace: 'kv-prod',
+          clusterMode: 'demo',
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const mismatchIdem = await fetch('http://127.0.0.1:3000/api/mcp/execute', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          clientRequestId: reqId,
+          actionType: 'restart_pod',
+          targetId: 'pod-other-target',
+          namespace: 'kv-prod',
+          clusterMode: 'demo',
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      is('5.4 幂等 key 绑定指纹校验 → 首次 200 且篡改目标返回 409', firstIdem.status === 200 && mismatchIdem.status === 409, true);
     }
   } catch {
     reachable = false;

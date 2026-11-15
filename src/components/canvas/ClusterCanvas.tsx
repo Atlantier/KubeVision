@@ -233,6 +233,7 @@ function DofFocusDriver({
  */
 function ToneMappingSync({ qualityPost }: { readonly qualityPost: boolean }): null {
   useFrame(({ gl }): void => {
+    if (gl.getContext()?.isContextLost?.()) return;
     const desired = qualityPost ? NoToneMapping : NeutralToneMapping;
     if (gl.toneMapping !== desired) {
       gl.toneMapping = desired;
@@ -242,29 +243,21 @@ function ToneMappingSync({ qualityPost }: { readonly qualityPost: boolean }): nu
   return null;
 }
 
-/**
- * FrameCaptureProvider —— R5 第8步：按需视口截图（preserveDrawingBuffer 不常开）。
- *
- * 【为什么必须在渲染之后】toDataURL 只有与渲染处于同一任务内才读得到有效
- * drawing buffer。useFrame 优先级 2 晚于 EffectComposer（优先级 1），
- * 因此读取时后处理已出最终帧。
- *
- * 【为什么兜底路径要自己 render】R3F 的规则是：只要存在优先级 > 0 的
- * useFrame 订阅，就关闭内置的自动渲染（loop 里 `!state.internal.priority`）。
- * 本组件固定优先级 2，所以 Composer 关闭时由这里显式 gl.render 补上主渲染，
- * 输出与 R3F 自动渲染完全一致（同 scene/camera、autoClear 默认开）。
- */
 function FrameCaptureProvider({ composerActive }: { readonly composerActive: boolean }): null {
   const gl = useThree((state): THREE.WebGLRenderer => state.gl);
 
   useFrame((state): void => {
+    if (state.gl.getContext()?.isContextLost?.()) return;
     if (!composerActive) state.gl.render(state.scene, state.camera);
     flushViewportCapture();
   }, 2);
 
   useEffect((): (() => void) => {
     return registerFrameCapture(
-      (options): string | null => gl.domElement.toDataURL(options.mime, options.quality),
+      (options): string | null => {
+        if (gl.getContext()?.isContextLost?.()) return null;
+        return gl.domElement.toDataURL(options.mime, options.quality);
+      },
     );
   }, [gl]);
 
@@ -932,6 +925,8 @@ export default function ClusterCanvas() {
 
   const topologyModeRef = useRef<TopologyViewMode>('3d');
   topologyModeRef.current = topologyMode;
+  /** M18：记录累计 WebGL 上下文恢复次数（<= 3 次时允许从 2D 自动回切 3D） */
+  const contextRestoreCountRef = useRef<number>(0);
 
   useEffect((): void => {
     if (typeof window === 'undefined') return;
@@ -1107,7 +1102,7 @@ export default function ClusterCanvas() {
    * R30：质量档位 → 渲染开关（手动 ?quality= 或治理器自动 + R8 小屏自动降载）。
    * 小屏降载时停用重粒子 Sparkles / 矩阵雨与高成本真反射（保留核心拓扑、故障着色与截图能力）。
    */
-  const qualityPost = postEnabled && effectiveTier > 0;
+  const qualityPost = postEnabled && effectiveTier > 0 && !contextLost;
   const qualityReflector = reflectorEnabled && effectiveTier >= 3;
   /** R5 第5步：当前档位对应的后处理效果组合（单一事实源） */
   const tierEffects: TierEffects = TIER_EFFECT_MATRIX[effectiveTier];
@@ -1436,7 +1431,7 @@ export default function ClusterCanvas() {
          * 彻底停止每帧 draw call——这是最大的省电杠杆。
          * 切回时立即恢复 'always'，用户无感。
          */
-        frameloop={isSceneActive ? 'always' : 'demand'}
+        frameloop={isSceneActive && !contextLost ? 'always' : 'demand'}
         onCreated={(state): void => {
           /*
            * 能力探测：识别软件光栅化并关掉重后处理链。
@@ -1527,8 +1522,13 @@ export default function ClusterCanvas() {
               clearTimeout(contextLostTimerRef.current);
               contextLostTimerRef.current = null;
             }
+            contextRestoreCountRef.current += 1;
             setContextLost(false);
             setContextRestoreFailed(false);
+            if (topologyModeRef.current === '2d' && contextRestoreCountRef.current <= 3) {
+              setTopologyMode('3d');
+              setTopologyFallbackReason(null);
+            }
             useClusterStore.getState().setGlContextLost(false);
             setCanvasRemountKey((prev): number => prev + 1);
             useClusterStore.getState().appendTerminalLog('[GL] context restored');

@@ -4,19 +4,19 @@
 # 运行：docker run --rm -p 3000:3000 --env-file .env.local kubevision:local
 #
 # 说明：
-# - 基础镜像固定 Node 20 LTS（Next 14 官方支持范围）；本机开发为 Node 24，二者均可。
+# - 基础镜像固定 Node 24 LTS（与 .nvmrc / GitHub Actions CI 保持一致）。
 # - .env.local 不进入镜像（.dockerignore 已排除），运行时通过 --env-file/环境变量注入。
 # - 当前宿主机无 Docker daemon，本 Dockerfile 仅完成静态审阅，未在容器内实跑验证。
 
 # ---------- deps：仅安装依赖（利用层缓存） ----------
-FROM node:20-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # ---------- builder：生产构建 ----------
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
 COPY --from=deps /app/node_modules ./node_modules
@@ -25,7 +25,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
 # ---------- runner：最小运行镜像 ----------
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

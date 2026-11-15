@@ -317,6 +317,30 @@ console.log('\n▸ 5. 可配置规则（自定义正则 + ReDoS 防护）');
   const r = engine.sanitize('peer 10.0.0.1 failed');
   is('5.9 内置 IP 规则先执行（自定义规则不再命中）', r.sanitized.includes('[REDACTED_IP]'), true);
 }
+
+console.log('\n▸ 6. M08 扩展密钥/API Token/IPv6 与负向不误杀校验');
+{
+  const aiRes = sanitizeRawLog('OPENAI=sk-proj-abc1234567890XYZ987654 GH=ghp_1234567890abcdefghij1234567890');
+  is('6.1 AI与GitHub Token脱敏', aiRes.sanitized.includes('sk-proj-') || aiRes.sanitized.includes('ghp_'), false);
+  is('6.1b 替换占位符为 [REDACTED_API_TOKEN]', aiRes.sanitized.includes('[REDACTED_API_TOKEN]'), true);
+
+  const patRes = sanitizeRawLog('clone https://github_pat_11AAAAAA00000000000000_abcdefghijklmnopqrstuvwxyz123456@github.com');
+  is('6.2 Fine-grained PAT 脱敏', patRes.sanitized.includes('github_pat_'), false);
+
+  const kvRes = sanitizeRawLog('api_key=kv_custom_secret_token_99887766 auth_token="tok_abcdef123456"');
+  is('6.3 通用凭据键值对脱敏', kvRes.sanitized.includes('kv_custom_secret_token') || kvRes.sanitized.includes('tok_abcdef123456'), false);
+  is('6.3b 保留键名并写入 [REDACTED_SECRET]', kvRes.sanitized.includes('api_key=[REDACTED_SECRET]'), true);
+
+  const v6Res = sanitizeRawLog('upstream [2001:0db8:85a3:0000:0000:8a2e:0370:7334] and fe80::1ff:fe23:4567:890a%eth0 failed');
+  is('6.4 IPv6 全写与压缩格式脱敏', v6Res.maskedByRule.ipv6 >= 2 && v6Res.sanitized.includes('[MASKED_IPV6]'), true);
+
+  const safeLog = '2026-11-15T19:38:00Z INFO pod-payment-gateway-7f8b9-x2k in kv-prod status=Running policy:enabled';
+  const safeRes = sanitizeRawLog(safeLog);
+  is('6.5 负向校验：时间戳/K8s资源名/常规文本零误杀', safeRes.maskedCount === 0 && safeRes.sanitized === safeLog, true);
+
+  const twice = sanitizeRawLog(aiRes.sanitized);
+  is('6.6 扩展规则二次脱敏严格幂等', twice.sanitized === aiRes.sanitized && twice.maskedCount === 0, true);
+}
 rmSync(OUT, { recursive: true, force: true });
 console.log(`\n汇总: 通过 ${pass} · 失败 ${fail}`);
 process.exit(fail === 0 ? 0 : 1);

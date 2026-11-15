@@ -24,6 +24,14 @@ export interface ViewportCaptureOptions {
   readonly quality?: number;
 }
 
+/** 视口截图空间元数据（M13：用于区分多模态截图时间/视口上下文） */
+export interface ViewportCaptureMeta {
+  readonly capturedAtIso: string;
+  readonly viewportWidth: number;
+  readonly viewportHeight: number;
+  readonly mime: 'image/jpeg' | 'image/png';
+}
+
 /** 读取器：在渲染后同帧把当前绘制缓冲导出为 dataURL */
 export type FrameCapture = (options: ViewportCaptureOptions) => string | null;
 
@@ -35,6 +43,14 @@ interface CaptureWaiter {
 
 let frameCapture: FrameCapture | null = null;
 const waiters: CaptureWaiter[] = [];
+let lastCaptureMeta: ViewportCaptureMeta | null = null;
+
+/**
+ * 读取最近一次成功截图的空间/时间元数据（M13）。
+ */
+export function getLastViewportCaptureMeta(): ViewportCaptureMeta | null {
+  return lastCaptureMeta;
+}
 
 /**
  * 注册当前画布的读取器（由 FrameCaptureProvider 调用）。
@@ -84,6 +100,14 @@ export function flushViewportCapture(): void {
       dataUrl = capture(waiter.options);
     } catch {
       dataUrl = null;
+    }
+    if (dataUrl !== null && typeof window !== 'undefined') {
+      lastCaptureMeta = {
+        capturedAtIso: new Date().toISOString(),
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        mime: waiter.options.mime,
+      };
     }
     waiter.resolve(dataUrl);
   }

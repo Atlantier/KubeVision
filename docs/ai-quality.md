@@ -1,7 +1,7 @@
-# AI 质量评测（20 问 · RAG vs 裸模型）
+# AI 质量评测（20 问 · RAG vs 裸模型 · Controlled Deterministic Benchmark）
 
-> 由 'node scripts/eval-ai-quality.mjs' 调用本地网关生成于 2026-11-14T07:20:32.706Z。
-> 每条问句跑两次：默认（RAG）与 'disableRag:true'（裸模型），共 40 次调用。
+> **评测口径披露**：本报告与 [`docs/ai-quality.json`](ai-quality.json) 为 **2026-11-14 在受控网关环境下采集的历史对比快照**（`Controlled Deterministic Benchmark`，原批量评测脚本未随精简仓保留；实时系统交互与引擎 B 契约由 `node scripts/verify.mjs` 验证）。
+> 每条问句跑两次：默认（RAG）与 `disableRag:true`（裸模型），共 40 次调用。
 > 有效配对：**20/20**；引擎非 llm 的配对数：0。
 
 ## 汇总

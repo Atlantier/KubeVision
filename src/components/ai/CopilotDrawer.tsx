@@ -90,8 +90,13 @@ import { isImeComposing } from '@/utils/keyboardTargets';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
 import AgentTracePanel from '@/components/ai/AgentTracePanel';
 import { embedQueryText } from '@/utils/edgeEmbedding';
+import { sanitizeRawLog } from '@/utils/logSanitizer';
 import { computeViewportPixelFeatures } from '@/utils/pixelFeatures';
-import { requestViewportCapture } from '@/utils/viewportCapture';
+import {
+  getLastViewportCaptureMeta,
+  requestViewportCapture,
+  type ViewportCaptureMeta,
+} from '@/utils/viewportCapture';
 import {
   appendReasoning,
   mergeStreamState,
@@ -2551,14 +2556,20 @@ export default function CopilotDrawer() {
         return;
       }
 
-      /* ---- 输入安全校验（发送前拦截，防注入/超长/空内容） ---- */
+      /* ---- 输入安全校验与外发前敏感凭据拦截（M08 Canary Guard） ---- */
       const guard = validatePrompt(text);
       if (!guard.ok) {
         setInputGuardError(guard.reason);
         return;
       }
+      const sanitizedInput = sanitizeRawLog(text);
+      const safePromptText = sanitizedInput.maskedCount > 0 ? sanitizedInput.sanitized : text;
       setInputGuardError(null);
-      setGuardWarning(guard.warning ?? null);
+      setGuardWarning(
+        sanitizedInput.maskedCount > 0
+          ? `检测到 ${sanitizedInput.maskedCount} 处敏感凭据/地址片段，已于浏览器端自动掩码后发送（M08 外发防线）`
+          : (guard.warning ?? null),
+      );
 
       /* ---- 中断上一条未完成的流 ---- */
       abortRef.current?.abort();
@@ -2575,7 +2586,7 @@ export default function CopilotDrawer() {
       const userMessage: CopilotMessage = {
         id: makeId('user'),
         role: 'user',
-        text,
+        text: safePromptText,
         ...(viewportForSend !== null ? { viewportSnapshot: viewportForSend } : {}),
         reasoningSteps: [],
         toolCards: [],
@@ -2701,7 +2712,7 @@ export default function CopilotDrawer() {
           viewportForSend === null ? null : await computeViewportPixelFeatures(viewportForSend);
 
         /* R45：端侧模型就绪时带查询句向量（三路召回）；未就绪/300ms 超时自动两路 */
-        const queryEmbedding = await embedQueryText(text);
+        const queryEmbedding = await embedQueryText(safePromptText);
 
         const response = await fetch('/api/chat', {
           method: 'POST',
@@ -3107,7 +3118,17 @@ export default function CopilotDrawer() {
   const captureViewport = useCallback((): void => {
     void requestViewportCapture({ mime: 'image/jpeg', quality: CAPTURE_QUALITY }).then(
       (dataUrl): void => {
-        if (dataUrl !== null) setCapturedViewport(dataUrl);
+        if (dataUrl !== null) {
+          const meta: ViewportCaptureMeta | null = getLastViewportCaptureMeta();
+          if (meta !== null) {
+            useClusterStore
+              .getState()
+              .appendTerminalLog(
+                `[VIEWPORT] snapshot ${meta.viewportWidth}x${meta.viewportHeight} (${meta.mime})`,
+              );
+          }
+          setCapturedViewport(dataUrl);
+        }
       },
     );
   }, [setCapturedViewport]);

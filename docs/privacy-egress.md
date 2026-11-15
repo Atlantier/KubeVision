@@ -1,6 +1,6 @@
 # 原始凭证零出域证明（Privacy Egress Report）
 
-> 由 `node scripts/verify-privacy.mjs` 自动生成于 2026-11-11T06:46:52.888Z。
+> 本报告记录 `2026-11-11T06:46:52.888Z` 的 CDP 出站金丝雀审计快照（历史一次性抓包脚本未保留在精简提交仓；当前脱敏规则回归请运行 `pnpm verify:sanitizer`）。
 > 目标：http://127.0.0.1:3000。
 
 ## 方法

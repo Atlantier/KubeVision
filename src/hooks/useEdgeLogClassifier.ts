@@ -224,7 +224,7 @@ export function useEdgeLogClassifier(autoInit = true): UseEdgeLogClassifierResul
             window.clearTimeout(initBudgetTimer);
             initBudgetTimer = null;
           }
-          setRuntime(message.runtime);
+          setRuntime(message.fallback ? 'builtin' : message.runtime);
           setRuntimeLabel(message.runtimeLabel);
           setModelName(message.modelName);
           setIsFallback(message.fallback);
