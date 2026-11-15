@@ -1,7 +1,0 @@
-$ C:\Program Files\nodejs\node.exe scripts/check-a11y.mjs
-
---- output ---
-KubeVision AI — 设计系统 / 可访问性检查
-  扫描文件: 122 个 · 命中: 0
-
-  ✓ 0 命中，通过

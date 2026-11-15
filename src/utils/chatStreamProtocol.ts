@@ -268,22 +268,3 @@ export function validateStreamEvents(events: readonly ChatStreamEvent[]): Stream
 
   return violations;
 }
-
-/**
- * 判断两条事件流的"卡片语义"是否一致（用于回落等价性断言）。
- *
- * @param before 前一段事件（引擎 A 已产出）
- * @param after 后一段事件（引擎 B 补发）
- * @returns 合并后是否存在重复卡片（按 toolName 计）
- */
-export function countDuplicateCardNames(events: readonly ChatStreamEvent[]): readonly string[] {
-  const seen = new Set<string>();
-  const duplicates = new Set<string>();
-  for (const event of events) {
-    if (event.type !== 'tool-result') continue;
-    if (event.status === 'error') continue;
-    if (seen.has(event.toolName)) duplicates.add(event.toolName);
-    seen.add(event.toolName);
-  }
-  return [...duplicates];
-}

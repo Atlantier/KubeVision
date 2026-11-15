@@ -45,16 +45,6 @@ export const TYPE_SCALE = {
   h1: 24,
 } as const;
 
-/** 描边 */
-export const STROKE = {
-  /** 默认 hairline */
-  hairline: 'rgba(255, 255, 255, 0.075)',
-  /** 交互激活 */
-  active: 'rgba(255, 255, 255, 0.14)',
-  /** 顶部 1px 内高光 */
-  insetHighlight: 'inset 0 1px 0 rgba(255, 255, 255, 0.08)',
-} as const;
-
 /** 动效令牌 */
 export const MOTION = {
   fast: 140,

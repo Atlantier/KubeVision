@@ -38,7 +38,6 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 | 代码规模 | 145 个 TypeScript/TSX 源文件 · 57,268 行（`src/**/*.{ts,tsx}`，含注释） |
 | 运行要求 | Node.js ≥ 18.17 + pnpm；**无需 GPU、无需真实 K8s 集群、无需 API Key**（无 Key 自动走引擎 B） |
 | 大赛页面 | https://www.boxuegu.com/matchTrack/detail/?id=10037 |
-| 技术白皮书 | [docs/COMPETITION_TECHNICAL_WHITEPAPER.md](docs/COMPETITION_TECHNICAL_WHITEPAPER.md)（[PDF 版 ≤30 页](docs/COMPETITION_TECHNICAL_WHITEPAPER.pdf)） |
 
 ### 1.2 团队成员信息表
 
@@ -155,7 +154,7 @@ KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧�
 ## 三、评委 3 分钟黄金演示路径（唯一版）
 
 > 本表是线下答辩 **3 分钟主链路**的唯一版本；按钮文案来自真实 UI 抓取（headless Edge + CDP，2026-11-10），与代码一致；
-> **官网提交演示视频规范**：大赛官网要求提交 **5–8 分钟完整演示视频**（MP4 ≥1080p，普通话讲解，含项目背景介绍 + 核心功能演示 + AI 技术亮点展示），完整 **6:00 合规版**分镜与逐句讲稿见 [docs/summit/R55-RECORDING-RUNSHEET.md](docs/summit/R55-RECORDING-RUNSHEET.md) 与 [docs/summit/DEMO_DIRECTOR_PLAYBOOK.md](docs/summit/DEMO_DIRECTOR_PLAYBOOK.md)。
+> **官网提交演示视频规范**：大赛官网要求提交 **5–8 分钟完整演示视频**（MP4 ≥1080p，普通话讲解，含项目背景介绍 + 核心功能演示 + AI 技术亮点展示）。
 > 规则：每步点击后停 1.5–2 秒再讲；任一步失败 3 秒内切兜底，不在台上找按钮。
 
 | 时间 | 操作（真实 UI 文案） | 期望画面 | 讲解要点（约字数） | 证明点 |
@@ -443,8 +442,6 @@ src/
 | `/api/mcp/execute` | POST / GET | MCP 工具执行与幂等回执查询（写操作需前端 HITL 二次确认；`GET` 支持按 `clientRequestId` 查询回执账本） |
 | `/api/verify/rag` | POST | RAG 检索契约验证（评测/CI 用） |
 | `/api/verify/sanitize` | POST | 脱敏契约验证（评测/CI 用） |
-| `/api/dev/rag-eval` | GET | 仅开发环境可用的 RAG 评测数据（生产返回 404） |
-| `/api/dev/corpus` | GET | 仅开发环境可用的内置 Runbook 语料导出（供构建向量索引脚本读取，生产返回 404） |
 
 > 流式响应由路由自身返回 `Cache-Control: no-cache, no-transform`、
 > `X-Accel-Buffering: no` 等头；`vercel.json` 不再重复声明，避免配置漂移导致 SSE 被缓冲。
@@ -466,7 +463,7 @@ src/
 
 ### 5 分钟加长版（在 3 分钟主链路上插入 4 段）
 
-> 与 [docs/summit/DEMO_DIRECTOR_PLAYBOOK.md](docs/summit/DEMO_DIRECTOR_PLAYBOOK.md) 的 5 分钟版一致；时间不够按「RAG 详解 → 端侧 → 复盘」顺序压缩回 2:10。
+> 时间不够时按「RAG 详解 → 端侧 → 复盘」顺序压缩回 2:10。
 
 | 插入点 | 时长 | 操作（真实文案） | 讲解要点 | 证据 |
 |---|---|---|---|---|
@@ -479,8 +476,6 @@ src/
 
 | 文档 | 内容 |
 |---|---|
-| [docs/COMPETITION_TECHNICAL_WHITEPAPER.md](docs/COMPETITION_TECHNICAL_WHITEPAPER.md) | **竞赛技术白皮书（8 章完整版，可转 PDF 提交）** |
-| [docs/KubeVision_PITCH.pdf](docs/KubeVision_PITCH.pdf) | **路演 PPT（12 页，PDF ≤10MB）** |
 | [启动说明.md](启动说明.md) | **评审复现启动指南（无 Key 可跑）** |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 部署（本机/Docker/Vercel/离线）与 SSE 注意 |
 | [docs/EVIDENCE.md](docs/EVIDENCE.md) | **证据链索引（证据 → 结论 → 复现命令）** |
@@ -506,7 +501,7 @@ src/
 
 ## 已知局限与数据边界
 
-> 本作品不声称超出以下边界的能力；所有性能/质量数字附采集环境，详见 §六 与白皮书 6.6 节。
+> 本作品不声称超出以下边界的能力；所有性能/质量数字附采集环境，详见 §六。
 
 | # | 局限 | 现状 | 影响 |
 |---|---|---|---|

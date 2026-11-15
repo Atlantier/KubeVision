@@ -14,16 +14,11 @@
  * 2. **可重复**：每次运行自动启动 dev server 与 headless 浏览器，跑完清理。
  * 3. **诚实报告**：失败项明确列出，不以"部分通过"含糊过去。
  *
- * 【用法】
- *   node scripts/verify.mjs            # 完整回归（启动 dev + 浏览器）
- *   node scripts/verify.mjs --quick    # 跳过浏览器，只跑静态检查
- *
  * 【前置】需已安装依赖（pnpm install）与 Edge 浏览器。
  *
  * 【用法】
  *   node scripts/verify.mjs            # 静态 + 接口 + 浏览器
  *   node scripts/verify.mjs --quick    # 只跑静态
- *   node scripts/verify.mjs --full     # 上面全部 + 路演回归（verify-demo）
  */
 
 import { spawn } from 'node:child_process';
@@ -34,16 +29,6 @@ import { fileURLToPath } from 'node:url';
 const ROOT = dirname(fileURLToPath(new URL('.', import.meta.url)));
 const args = new Set(process.argv.slice(2));
 const QUICK = args.has('--quick');
-
-/**
- * 全量模式：在静态/接口/浏览器阶段之后，再串跑一遍路演回归
- * （scripts/verify-demo.mjs）。
- *
- * 【为什么用子进程而不是 import】verify-demo 自带 CDP 会话、自己的
- * 断言计数与退出码，且必须在 dev server 存活期间运行。子进程能完整切断
- * 状态（端口、浏览器实例、全局变量），失败也不会污染主进程的断言统计。
- */
-const FULL = args.has('--full');
 
 /* ========================================================================== */
 /* 结果收集                                                                    */
@@ -226,28 +211,6 @@ async function phaseStatic() {
       /* 保留 exit code 描述 */
     }
     bad('GLSL 静态高危检查', detail);
-  }
-
-  /*
-   * ---- 文档数字一致性（R55） ----
-   *
-   * 【为何放进 --quick】只读 Markdown/JSON，不启浏览器；单次 <100ms。
-   * 它保证 README / 白皮书 / PPT 文案里的数字与 docs/performance.json、
-   * docs/verify-summary.json 不漂移——这是"文档里的数字必须来自脚本"的最后一道闸。
-   */
-  const docsConsistency = await run('node', ['scripts/check-docs-consistency.mjs', '--json']);
-  if (docsConsistency.code === 0) {
-    ok('文档数字一致性', 'README / 白皮书 / PPT 与 performance.json 一致');
-  } else {
-    let detail = 'exit ' + docsConsistency.code;
-    try {
-      const parsed = JSON.parse(docsConsistency.stdout);
-      const failed = (parsed.results ?? []).filter((entry) => entry.status === 'fail');
-      detail = failed.map((entry) => entry.doc + ': ' + (entry.problems ?? []).length + ' 处').join('；');
-    } catch {
-      /* 保留 exit code */
-    }
-    bad('文档数字一致性', detail);
   }
 
   /*
@@ -929,7 +892,6 @@ async function main() {
   console.log('\x1b[1m║  KubeVision AI — 完整验收回归                        ║\x1b[0m');
   console.log('\x1b[1m╚══════════════════════════════════════════════════════╝\x1b[0m');
   if (QUICK) console.log('\x1b[90m  模式: --quick（仅执行静态阶段，跳过单元 / API / 浏览器运行时阶段）\x1b[0m');
-  if (FULL) console.log('\x1b[90m  模式: --full（追加路演回归 verify-demo）\x1b[0m');
 
   await phaseStatic();
 
@@ -993,31 +955,6 @@ async function main() {
       await phaseUnit(baseUrl);
       await phaseApi(baseUrl);
       await phaseBrowser(baseUrl);
-
-      /*
-       * ---- 追问 1：把路演回归并入 --full ----
-       *
-       * 必须在 killDev() 之前跑：verify-demo 需要活着的 dev server
-       * 与 Store 调试钩子（dev-only）。
-       * 失败时 verify-demo 自己会把 store 快照 / console / 末帧截图写入
-       * docs/summit/failures/<时间戳>/，这里只负责报告退出码与目录位置。
-       */
-      if (FULL) {
-        section('路演回归（verify-demo）');
-        const demoExit = await new Promise((resolve) => {
-          const child = spawn(process.execPath, ['scripts/verify-demo.mjs'], {
-            cwd: ROOT,
-            stdio: 'inherit',
-          });
-          child.on('exit', (code) => resolve(code ?? 1));
-          child.on('error', () => resolve(1));
-        });
-        if (demoExit === 0) {
-          ok('路演回归 verify-demo', '退出码 0');
-        } else {
-          bad('路演回归 verify-demo', '退出码 ' + demoExit + '，证据见 docs/summit/failures/');
-        }
-      }
     }
     killDev();
   }

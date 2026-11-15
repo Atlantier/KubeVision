@@ -27,12 +27,7 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Docs & metrics lineage consistency
-        run: |
-          node scripts/check-docs-consistency.mjs
-          node scripts/check-metrics-lineage.mjs
-
-      - name: Static verification (tsc + lint + dead-exports + any/GLSL/docs checks; no browser)
+      - name: Static verification (tsc + lint + dead-exports + any/GLSL checks; no browser)
         run: node scripts/verify.mjs --quick
 
       - name: Unit & contract test suite

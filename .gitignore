@@ -84,3 +84,15 @@ tmp-slots/
 # 内部历史归档与本地调试临时产物（严禁进入竞赛提交仓库）
 /docs/archive/
 /.verify-artifacts/
+
+# ---- 竞赛文档、PDF/PPT/Word 及其生成脚本（不入库）----
+*.pdf
+*.docx
+*.pptx
+*.py
+docs/COMPETITION_TECHNICAL_WHITEPAPER.*
+docs/KubeVision_PITCH*
+docs/pitch/
+docs/summit/
+docs/evidence/
+docs/screenshots/
