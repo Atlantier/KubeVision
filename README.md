@@ -1,6 +1,8 @@
 # KubeVision AI
 
-> **云原生三维空间态势感知与多模态智能自愈副驾系统** · **MIT License** · [在线演示](https://kube-vision-bice.vercel.app)
+> **云原生三维空间态势感知与多模态智能自愈副驾系统** · **MIT License**
+>
+> **🌐 公网免部署在线体验（打开即用，无需 API Key / 无需 GPU / 无需 K8s 集群）**：[https://kube-vision-bice.vercel.app](https://kube-vision-bice.vercel.app)
 
 KubeVision AI 把 **3D 空间态势**、**混合 RAG 知识检索**、**端侧隐私推理** 与 **生成式 UI** 融合成一个云原生运维中控台。左侧是可交互的 3D 集群拓扑，右侧是能自我规划、检索手册、调用 MCP 工具并执行自愈的 AI 副驾驶。
 
