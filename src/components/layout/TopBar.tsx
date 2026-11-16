@@ -784,6 +784,7 @@ function DemoDirectorBar({
   readonly onClearPreflight: () => void;
   readonly onFinish: () => void;
 }): React.ReactElement {
+  const [hintsOpen, setHintsOpen] = useState<boolean>(false);
   const elapsedSec = Math.floor(demo.elapsedMs / 1000);
   const stageTotal = Math.max(1, demo.phases.length);
   const stageCurrent = Math.max(1, demo.phaseIndex + 1);
@@ -1025,17 +1026,36 @@ function DemoDirectorBar({
               </button>
             </>
           )}
+
+          {/* 按需切换快捷键与阶段提示，避免常态下 3 行指引长期遮挡 3D 视口 */}
+          <button
+            type="button"
+            onClick={(): void => setHintsOpen((prev): boolean => !prev)}
+            aria-expanded={hintsOpen || demo.awaitingNarratorAdvance}
+            aria-label={hintsOpen ? '收起路演操作提示' : '展开路演操作提示'}
+            title="路演操作提示与快捷键（Space 暂停 / Esc 关闭 / ? 帮助）"
+            className={cn(
+              'kv-touch-target flex h-6 w-6 items-center justify-center rounded border font-mono text-[10px] font-bold transition-colors',
+              hintsOpen || demo.awaitingNarratorAdvance
+                ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200'
+                : 'border-white/[0.10] bg-white/[0.04] text-slate-400 hover:border-cyan-400/40 hover:text-cyan-200',
+            )}
+          >
+            ?
+          </button>
         </div>
       </div>
-      {/* R34 追问 2：三行下一步提示（讲解版断点时给出按键指令） */}
-      <div className="border-t border-white/[0.06] px-3 py-1.5 font-mono text-[10px] leading-relaxed">
-        <div className="flex items-center gap-2 text-slate-300">
-          <span className="text-cyan-300">下一步</span>
-          <span className="truncate" aria-live="polite">{hintPrimary}</span>
+      {/* R34 追问 2：默认仅在讲解断点待推进或用户主动点开「?」时展示单/双行紧凑提示 */}
+      {demo.awaitingNarratorAdvance || hintsOpen || isPreflightError ? (
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 border-t border-white/[0.06] px-3 py-1 font-mono text-[10px] leading-snug">
+          <div className="flex min-w-0 items-center gap-2 text-slate-300">
+            <span className="shrink-0 text-cyan-300">下一步</span>
+            <span className="truncate" aria-live="polite">{hintPrimary}</span>
+            <span className="hidden truncate text-slate-400 md:inline">· {hintStage}</span>
+          </div>
+          <span className="truncate text-slate-400">{hintKey}</span>
         </div>
-        <div className="truncate text-slate-400">{hintStage}</div>
-        <div className="truncate text-slate-400">{hintKey}</div>
-      </div>
+      ) : null}
     </motion.div>
   );
 }
@@ -1720,7 +1740,7 @@ export default function TopBar() {
                   onClick={togglePresentMode}
                   aria-pressed={presentMode}
                   aria-label={`演示模式 · 当前${presentMode ? '已开启' : '已关闭'}`}
-                  title="演示模式（隐藏终端/极简 HUD/抽屉 34%）"
+                  title="演示模式（隐藏终端 / 极简 HUD / 抽屉 36% 并精简链路调试面板）"
                   className={cn(
                     'flex min-h-[44px] items-center justify-between gap-2 rounded-lg border px-2.5 py-2 font-mono text-[11px] transition-colors md:min-h-0',
                     presentMode

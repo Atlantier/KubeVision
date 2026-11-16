@@ -276,7 +276,7 @@ function RootCauseAlertImpl({
     return extractFeatureTerms(
       ragReferences,
       `${title} ${rootCauseSummary} ${evidenceChain.join(' ')}`,
-      12,
+      4,
     );
   }, [ragReferences, title, rootCauseSummary, evidenceChain]);
 
@@ -332,12 +332,7 @@ function RootCauseAlertImpl({
         </div>
       </div>
 
-      {/* ============ 三路混合检索信号贡献拆解 ============ */}
-      {signalBreakdown.available ? (
-        <RetrievalSignalBar breakdown={signalBreakdown} severity={severity} />
-      ) : null}
-
-      {/* ============ 命中特征词胶囊 ============ */}
+      {/* ============ 命中特征词胶囊（紧凑展示前 4 个核心术语） ============ */}
       {featureTerms.length > 0 ? (
         <div className="px-2.5 pb-2">
           <p className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-slate-400">
@@ -594,7 +589,12 @@ function RootCauseAlertImpl({
               style={{ transformOrigin: 'top center' }}
               className="overflow-hidden"
             >
-              <ul className="space-y-1 px-2.5 pb-2">
+              <div className="space-y-2 pb-2">
+                {/* 三路混合检索信号拆解随 RAG 溯源按需展开，不挤占主结论高度 */}
+                {signalBreakdown.available ? (
+                  <RetrievalSignalBar breakdown={signalBreakdown} severity={severity} />
+                ) : null}
+                <ul className="space-y-1 px-2.5">
                 {ragReferences.length === 0 ? (
                   <li className="font-mono text-[12px] text-slate-400">— 暂未匹配到排障手册 —</li>
                 ) : (
@@ -767,7 +767,8 @@ function RootCauseAlertImpl({
                     );
                   })
                 )}
-              </ul>
+                </ul>
+              </div>
             </motion.div>
           ) : null}
         </AnimatePresence>

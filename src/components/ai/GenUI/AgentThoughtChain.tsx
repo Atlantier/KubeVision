@@ -197,7 +197,10 @@ function AgentThoughtChainImpl({
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-md border border-white/[0.07] bg-slate-900/50',
+        'overflow-hidden rounded-md border transition-colors',
+        isStreaming
+          ? 'border-cyan-400/30 bg-slate-900/60'
+          : 'border-white/[0.06] bg-slate-900/30',
         className,
       )}
       aria-label="AI 思考与规划过程"
@@ -211,21 +214,35 @@ function AgentThoughtChainImpl({
           setExpanded((prev): boolean => !prev);
         }}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-slate-800/40"
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left transition-colors hover:bg-slate-800/40"
       >
         {expanded ? (
-          <ChevronDown className="h-3 w-3 shrink-0 text-cyan-400" aria-hidden />
+          <ChevronDown
+            className={cn('h-3 w-3 shrink-0', isStreaming ? 'text-cyan-400' : 'text-slate-400')}
+            aria-hidden
+          />
         ) : (
-          <ChevronRight className="h-3 w-3 shrink-0 text-cyan-400" aria-hidden />
+          <ChevronRight
+            className={cn('h-3 w-3 shrink-0', isStreaming ? 'text-cyan-400' : 'text-slate-400')}
+            aria-hidden
+          />
         )}
-        <BrainCircuit className="h-3.5 w-3.5 shrink-0 text-cyan-400" aria-hidden />
-        <span className="shrink-0 font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-300">
+        <BrainCircuit
+          className={cn('h-3.5 w-3.5 shrink-0', isStreaming ? 'text-cyan-400' : 'text-slate-400')}
+          aria-hidden
+        />
+        <span
+          className={cn(
+            'shrink-0 font-mono text-[10px] tracking-[0.14em]',
+            isStreaming ? 'font-bold text-cyan-300' : 'font-medium text-slate-300',
+          )}
+        >
           {headerLabel}
         </span>
 
         {/* 摘要徽标：步数 + 总耗时 */}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums text-slate-400">
-          <span className="rounded-full border border-white/[0.07] bg-slate-800/70 px-1.5 py-0.5 text-slate-300">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[10px] tabular-nums text-slate-400">
+          <span className="rounded-full border border-white/[0.06] bg-slate-800/60 px-1.5 py-0.5 text-slate-300">
             {ordered.sorted.length} 步
           </span>
           <span>{ordered.total} ms</span>

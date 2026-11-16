@@ -62,12 +62,12 @@ import {
   Flame,
   Info,
   Mic,
+  MoreHorizontal,
   Network,
   RotateCw,
   ShieldAlert,
   ShieldCheck,
   Square,
-  Crosshair,
   Terminal,
   Volume2,
   VolumeX,
@@ -85,9 +85,11 @@ import RootCauseAlert from '@/components/ai/GenUI/RootCauseAlert';
 import { MOTION } from '@/constants/tokens';
 import { Z_CLASS } from '@/constants/zIndex';
 import { handleRovingTabKeyDown } from '@/hooks/useModalSheetBehavior';
+import { useEscapeLayer } from '@/hooks/useEscapeStack';
 import { cn } from '@/utils/cn';
 import { isImeComposing } from '@/utils/keyboardTargets';
 import { useAgentTraceStore } from '@/store/useAgentTraceStore';
+import { usePresentMode } from '@/store/usePresentMode';
 import AgentTracePanel from '@/components/ai/AgentTracePanel';
 import { embedQueryText } from '@/utils/edgeEmbedding';
 import { sanitizeRawLog } from '@/utils/logSanitizer';
@@ -451,9 +453,11 @@ interface ResolvedContext {
 function ContextPill({
   entityId,
   entityType,
+  onClear,
 }: {
   readonly entityId: string | null;
   readonly entityType: SelectedEntityType | null;
+  readonly onClear?: () => void;
 }) {
   /* ---- 快照订阅：只取查询所需字段，避免高频遥测触发重渲染 ---- */
   const pods = useClusterStore((s): readonly PodEntity[] => s.snapshotSummary.pods);
@@ -535,13 +539,24 @@ function ContextPill({
   return (
     <span
       className={cn(
-        'inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] tracking-wider',
+        'inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[10px] tracking-wider',
         resolved.colorClass,
       )}
       title={resolved.title}
     >
       <span className="shrink-0 font-bold">{resolved.typeLabel}</span>
       <span className="truncate opacity-90">{resolved.displayName}</span>
+      {onClear !== undefined ? (
+        <button
+          type="button"
+          onClick={onClear}
+          aria-label="解除当前实体绑定"
+          title="切回全局集群视角"
+          className="ml-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full opacity-75 transition-opacity hover:bg-white/[0.12] hover:opacity-100"
+        >
+          <X className="h-2.5 w-2.5" aria-hidden />
+        </button>
+      ) : null}
     </span>
   );
 }
@@ -950,11 +965,11 @@ function ProactiveAnomalyBanner({
         btn: 'border-rose-500/60 bg-rose-500/20 text-rose-100 hover:bg-rose-500/30',
       };
 
-  /* 文案：有异常计数就说计数，只有混沌场景则说场景 */
+  /* 紧凑单行提示，避免在正文区上方挤占过多垂直视口 */
   const message =
     faultyCount > 0
-      ? `检测到 ${faultyCount} 个容器实例异常，是否立即启动 SRE 根因分析？`
-      : `检测到混沌演练场景 ${chaosLabel} 正在运行，是否启动根因分析？`;
+      ? `检测到 ${faultyCount} 个异常容器实例`
+      : `演练场景 ${chaosLabel} 运行中`;
 
   return (
     <motion.div
@@ -973,34 +988,32 @@ function ProactiveAnomalyBanner({
       aria-live="polite"
       aria-label="主动异常嗅探提示"
     >
-      <div className={cn('m-1.5 flex items-start gap-1.5 rounded-md border p-1.5 shadow-glow-amber', tone.wrapper)}>
-        <AlertTriangle className={cn('mt-[1px] h-3.5 w-3.5 shrink-0 animate-glow-pulse', tone.icon)} aria-hidden />
-        <div className="min-w-0 flex-1">
-          <p className={cn('text-[10px] font-bold leading-snug', tone.title)}>{message}</p>
-          <div className="mt-1 flex items-center gap-1">
-            <button
-              type="button"
-              onClick={onDiagnose}
-              disabled={isBusy}
-              className={cn(
-                'rounded border px-1.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider transition-colors',
-                isBusy
-                  ? 'cursor-not-allowed border-white/[0.07] bg-slate-800/60 text-slate-500'
-                  : tone.btn,
-              )}
-            >
-              {isBusy ? '诊断中…' : '一键启动诊断'}
-            </button>
-            <button
-              type="button"
-              onClick={onDismiss}
-              aria-label="关闭异常提示"
-              className="kv-touch-target ml-auto rounded px-1.5 py-1 text-slate-400 transition-colors hover:text-slate-200"
-            >
-              <X className="h-3 w-3" aria-hidden />
-            </button>
-          </div>
-        </div>
+      <div className={cn('mx-1.5 mt-1.5 flex items-center gap-2 rounded-md border px-2 py-1', tone.wrapper)}>
+        <AlertTriangle className={cn('h-3 w-3 shrink-0 animate-glow-pulse', tone.icon)} aria-hidden />
+        <p className={cn('min-w-0 flex-1 truncate font-mono text-[10px] font-semibold', tone.title)} title={message}>
+          {message}
+        </p>
+        <button
+          type="button"
+          onClick={onDiagnose}
+          disabled={isBusy}
+          className={cn(
+            'shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold tracking-wider transition-colors',
+            isBusy
+              ? 'cursor-not-allowed border-white/[0.07] bg-slate-800/60 text-slate-500'
+              : tone.btn,
+          )}
+        >
+          {isBusy ? '诊断中…' : '一键诊断'}
+        </button>
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="关闭异常提示"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:text-slate-200"
+        >
+          <X className="h-3 w-3" aria-hidden />
+        </button>
       </div>
     </motion.div>
   );
@@ -1136,90 +1149,80 @@ const MessageBubble = memo(function MessageBubble({
         </div>
       ) : null}
 
-      {/* 工具卡片列表（每张卡独立 ErrorBoundary 隔离） */}
+      {/* 工具卡片列表（全宽堆叠 + 每张卡独立 ErrorBoundary 隔离） */}
       {message.toolCards.length > 0 ? (
-        <div className="flex min-w-0 max-w-full flex-col gap-1.5">
-          {message.toolCards.map((card, cardIndex) => (
-            <div key={card.toolCallId} className="relative flex min-w-0 max-w-full gap-2">
-              {/* ---- 左侧导轨：序号徽标 + 连接线 ---- */}
-              <div className="flex shrink-0 flex-col items-center">
+        <div className="flex min-w-0 max-w-full flex-col gap-2">
+          {message.toolCards.map((card) => (
+            <div key={card.toolCallId} className="min-w-0 max-w-full">
+              {card.synthesized === true ? (
                 <span
-                  className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-cyan-500/50 bg-cyan-500/[0.15] font-mono text-[10px] font-bold text-cyan-300"
-                  aria-hidden
+                  className="mb-1 inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] tracking-wider text-amber-300/90"
+                  title="模型本次未调用该工具，此卡片由服务端依据真实集群数据补全"
                 >
-                  {cardIndex + 1}
+                  <Info className="h-2.5 w-2.5 shrink-0" aria-hidden />
+                  服务端补全 · 真实数据
                 </span>
-                {cardIndex < message.toolCards.length - 1 ? (
-                  <span className="mt-0.5 w-px flex-1 bg-gradient-to-b from-cyan-500/40 to-cyan-500/10" aria-hidden />
-                ) : null}
-              </div>
-              {/* ---- 右侧：卡片本体 + 补全角标 + 独立错误边界 ---- */}
-              <div className="min-w-0 flex-1">
-                {card.synthesized === true ? (
-                  <span
-                    className="mb-1 inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] tracking-wider text-amber-300/90"
-                    title="模型本次未调用该工具，此卡片由服务端依据真实集群数据补全"
-                  >
-                    <Info className="h-2.5 w-2.5 shrink-0" aria-hidden />
-                    服务端补全 · 真实数据
-                  </span>
-                ) : null}
-                <CardErrorBoundary cardLabel={card.toolName}>
-                  <ToolCardSlot card={card} onActionExecuted={onActionExecuted} />
-                </CardErrorBoundary>
-              </div>
+              ) : null}
+              <CardErrorBoundary cardLabel={card.toolName}>
+                <ToolCardSlot card={card} onActionExecuted={onActionExecuted} />
+              </CardErrorBoundary>
             </div>
           ))}
         </div>
       ) : null}
 
-      {/* ---- 单条消息朗读按钮 ---- */}
-      {!message.isStreaming && message.text.trim().length > 0 && onToggleSpeak !== undefined ? (
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={(): void => onToggleSpeak(message)}
-            aria-label={isSpeaking === true ? '停止朗读本条诊断' : '朗读本条诊断'}
-            aria-pressed={isSpeaking === true}
-            title={isSpeaking === true ? '停止朗读' : '朗读诊断'}
-            className={cn(
-              'flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-wide transition-colors',
-              isSpeaking === true
-                ? 'border-cyan-400/50 bg-cyan-400/[0.15] text-cyan-200'
-                : 'border-white/[0.04] bg-slate-800/40 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
-            )}
-          >
-            {isSpeaking === true ? (
-              <>
-                <span className="flex h-2.5 items-end gap-[1.5px]" aria-hidden>
-                  {[0, 1, 2, 3].map((bar): React.ReactElement => (
-                    <span
-                      key={`wave-${bar}`}
-                      className="w-[2px] animate-pulse rounded-sm bg-cyan-300"
-                      style={{
-                        height: `${4 + (bar % 2 === 0 ? 6 : 3)}px`,
-                        animationDelay: `${bar * 120}ms`,
-                      }}
-                    />
-                  ))}
-                </span>
-                停止朗读
-              </>
-            ) : (
-              <>
-                <Volume2 className="h-2.5 w-2.5" aria-hidden />
-                朗读诊断
-              </>
-            )}
-          </button>
-        </div>
-      ) : null}
+      {/* ---- 紧凑底部元数据行：朗读控制（左）+ 推理引擎声明（右） ---- */}
+      {!message.isStreaming &&
+      ((message.text.trim().length > 0 && onToggleSpeak !== undefined) ||
+        message.engine !== undefined) ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+          {message.text.trim().length > 0 && onToggleSpeak !== undefined ? (
+            <button
+              type="button"
+              onClick={(): void => onToggleSpeak(message)}
+              aria-label={isSpeaking === true ? '停止朗读本条诊断' : '朗读本条诊断'}
+              aria-pressed={isSpeaking === true}
+              title={isSpeaking === true ? '停止朗读' : '朗读诊断'}
+              className={cn(
+                'flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-wide transition-colors',
+                isSpeaking === true
+                  ? 'border-cyan-400/50 bg-cyan-400/[0.15] text-cyan-200'
+                  : 'border-white/[0.04] bg-slate-800/40 text-slate-400 hover:border-cyan-400/40 hover:text-cyan-300',
+              )}
+            >
+              {isSpeaking === true ? (
+                <>
+                  <span className="flex h-2.5 items-end gap-[1.5px]" aria-hidden>
+                    {[0, 1, 2, 3].map((bar): React.ReactElement => (
+                      <span
+                        key={`wave-${bar}`}
+                        className="w-[2px] animate-pulse rounded-sm bg-cyan-300"
+                        style={{
+                          height: `${4 + (bar % 2 === 0 ? 6 : 3)}px`,
+                          animationDelay: `${bar * 120}ms`,
+                        }}
+                      />
+                    ))}
+                  </span>
+                  停止朗读
+                </>
+              ) : (
+                <>
+                  <Volume2 className="h-2.5 w-2.5" aria-hidden />
+                  朗读诊断
+                </>
+              )}
+            </button>
+          ) : (
+            <span />
+          )}
 
-      {/* 引擎来源标注（诚实标注，仅在流结束后显示） */}
-      {!message.isStreaming && message.engine !== undefined ? (
-        <p className="font-mono text-[10px] uppercase tracking-wider text-slate-400">
-          推理引擎 · {message.engine === 'llm' ? '云端大模型' : '本地确定性容灾引擎'}
-        </p>
+          {message.engine !== undefined ? (
+            <span className="font-mono text-[10px] tracking-wider text-slate-400">
+              引擎 · {message.engine === 'llm' ? '云端大模型' : '本地确定性引擎'}
+            </span>
+          ) : null}
+        </div>
       ) : null}
 
       {/* ---- 失败降级提示框（带一键重试） ---- */}
@@ -1573,29 +1576,13 @@ export default function CopilotDrawer() {
   const setActiveRightTab = useClusterStore((s): ((tab: RightPanelTab) => void) => s.setActiveRightTab);
   const selectedEntityId = useClusterStore((s): string | null => s.selectedEntityId);
   const selectedEntityType = useClusterStore((s): SelectedEntityType | null => s.selectedEntityType);
+  const selectEntity = useClusterStore(
+    (s): ((entityId: string | null, entityType?: SelectedEntityType | null) => void) => s.selectEntity,
+  );
   const capturedViewportDataUrl = useClusterStore((s): string | null => s.capturedViewportDataUrl);
   const setCapturedViewport = useClusterStore((s): ((dataUrl: string | null) => void) => s.setCapturedViewport);
+  const present = usePresentMode((s): boolean => s.present);
 
-  /**
-   * selectedContextLabel —— 当前选中实体的可读上下文标签。
-   *
-   * 【为何用 getState() 而非再订阅 nodes/pods】
-   * 这两个数组是大对象，订阅它们会让抽屉在每次 1Hz 快照时重渲染。
-   * 这里只在**选中态变化**时读一次最新快照，成本一次性且极低。
-   */
-  const selectedContextLabel = useMemo((): string | null => {
-    if (selectedEntityId === null || selectedEntityType === null) return null;
-    const snapshot = useClusterStore.getState().snapshotSummary;
-    if (selectedEntityType === 'pod') {
-      const pod = snapshot.pods.find((p): boolean => p.id === selectedEntityId);
-      return pod !== undefined ? `${pod.name} · ${pod.namespace}` : selectedEntityId;
-    }
-    if (selectedEntityType === 'node') {
-      const node = snapshot.nodes.find((n): boolean => n.id === selectedEntityId);
-      return node !== undefined ? `${node.name} · rack-${node.rackIndex}` : selectedEntityId;
-    }
-    return '控制平面 · API Server';
-  }, [selectedEntityId, selectedEntityType]);
   const quickPromptQueue = useClusterStore((s): readonly string[] => s.quickPromptQueue);
   const shiftQuickPrompt = useClusterStore((s): (() => void) => s.shiftQuickPrompt);
   /* 主动嗅探数据源：异常 Pod 列表 + 混沌场景（细粒度订阅，仅这两项变化时重渲染） */
@@ -1611,10 +1598,15 @@ export default function CopilotDrawer() {
   const [messages, setMessages] = useState<readonly CopilotMessage[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
-  /** 浏览器是否支持语音识别 */
+  /** 浏览器是否支持语音识别（用于按钮 title 说明） */
   const [speechAsrSupported, setSpeechAsrSupported] = useState<boolean>(true);
-  /** 底部语音说明默认收起为 1 行，点击详情按钮可展开完整提示 */
-  const [speechHintExpanded, setSpeechHintExpanded] = useState<boolean>(false);
+  /** 顶部状态栏「更多操作」收纳菜单开关 */
+  const [isUtilityMenuOpen, setUtilityMenuOpen] = useState<boolean>(false);
+  /** 链路追踪面板手动覆盖显隐（null 时默认随演示模式自动收敛） */
+  const [traceVisibleOverride, setTraceVisibleOverride] = useState<boolean | null>(null);
+  const utilityMenuRef = useRef<HTMLDivElement | null>(null);
+  const utilityBtnRef = useRef<HTMLButtonElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   /** 全局互斥模态框槽位 */
   const activeModal = useClusterStore((s) => s.activeModal);
   const openModal = useClusterStore((s) => s.openModal);
@@ -2147,7 +2139,8 @@ export default function CopilotDrawer() {
     const prevTop = lastScrollTopRef.current;
     lastScrollTopRef.current = el.scrollTop;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    let nearBottom = distance < STICKY_SCROLL_THRESHOLD_PX;
+    const hasScrollableOverflow = el.scrollHeight > el.clientHeight + 140;
+    let nearBottom = !hasScrollableOverflow || distance < STICKY_SCROLL_THRESHOLD_PX;
     if (nearBottom) {
       programmaticJumpUntilRef.current = 0;
     } else if (now < programmaticJumpUntilRef.current) {
@@ -2627,6 +2620,8 @@ export default function CopilotDrawer() {
       setInputValue('');
       setIsStreaming(true);
       setQueuedPromptNotice(null);
+      /* 任意入口发起新诊断后即自动关闭顶部滞留异常横幅，释放正文阅读区 */
+      setBannerDismissed(true);
 
       /* A 项：流开始 → 写入活动状态（事件回调处，非渲染期） */
       setCopilotStreaming(true);
@@ -3311,6 +3306,47 @@ export default function CopilotDrawer() {
   );
 
   const canSend = inputValue.trim().length > 0 && !isStreaming;
+  const effectiveTraceVisible = traceVisibleOverride ?? !present;
+
+  /* 顶部「更多操作」弹出菜单的点击外部关闭与 Esc 退栈 */
+  useEscapeLayer(
+    isUtilityMenuOpen
+      ? {
+          id: 'copilot-utility-menu',
+          priority: 90,
+          label: '副驾更多操作',
+          onEscape: (): void => {
+            setUtilityMenuOpen(false);
+            utilityBtnRef.current?.focus();
+          },
+        }
+      : null,
+  );
+
+  useEffect((): (() => void) | undefined => {
+    if (!isUtilityMenuOpen) return undefined;
+    const handlePointerDown = (event: PointerEvent): void => {
+      const menu = utilityMenuRef.current;
+      const btn = utilityBtnRef.current;
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (menu?.contains(target) || btn?.contains(target)) return;
+      setUtilityMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return (): void => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [isUtilityMenuOpen]);
+
+  /* 输入框单行起跳 + 随内容自适应增高（封顶 96px，发送清空后自动回弹单行） */
+  useLayoutEffect((): void => {
+    const el = composerTextareaRef.current;
+    if (el === null) return;
+    el.style.height = 'auto';
+    const nextHeight = Math.min(96, Math.max(32, el.scrollHeight));
+    el.style.height = `${nextHeight}px`;
+  }, [inputValue]);
 
   return (
     /*
@@ -3412,21 +3448,15 @@ export default function CopilotDrawer() {
           />
 
           {/*
-           * ---- 极简单行状态栏（h-8）----
+           * ---- 极简单行状态与工具收纳栏（h-8）----
            *
-           * 【本轮删掉的两样东西】
-           * 1. TTS 状态文字行（喇叭图标 + 「tts 已开启 / 已关闭」文案）
-           *    整行文字。它把"一个开关的当前状态"用一整行来复述，而开关本身
-           *    就在旁边（图标按钮的选中态已经说明了状态）。这是纯冗余信息，
-           *    却常年占据 32px 高度。**删除，不是折叠。**
-           * 2. 原有的 `flex-col gap-1.5` 双层容器 —— 改成单行 flex。
-           *
-           * 【现状】在线就绪 · ContextPill · TTS 开关 · 清空会话 全部收进
-           * 一条 32px 细栏，border-b 用 white/[0.06] 而非 slate-800，
-           * 与顶栏、页签的分隔线材质统一。
+           * 仅保留三组核心要素，消除 6 枚小控件并排拥挤：
+           * 1. 左：在线脉冲点 + 当前绑定作用域（带一键解绑 ×，替代输入框上方重复上下文行）；
+           * 2. 右主：RAG 知识库 12+ 入口；
+           * 3. 右次：「⋯」收纳菜单（导出复盘报告 / 语音播报开关 / 链路追踪显隐 / 清空会话）。
            */}
-          <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/[0.06] bg-white/[0.015] px-3">
-            {/* 在线状态：微呼吸点 + 小字，不再占用整行 */}
+          <div className="relative flex h-8 shrink-0 items-center gap-1.5 border-b border-white/[0.06] bg-white/[0.015] px-2.5">
+            {/* 在线状态 */}
             <span className="flex shrink-0 items-center gap-1" title="Copilot 在线">
               <span className="relative flex h-1.5 w-1.5">
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-50" />
@@ -3435,22 +3465,16 @@ export default function CopilotDrawer() {
               <span className="font-mono text-[10px] tracking-wide text-emerald-400/[0.85]">在线</span>
             </span>
 
-            {/* 已绑定实体上下文胶囊 */}
+            {/* 单一作用域上下文胶囊（支持直接点击 × 解绑回全集群视角） */}
             <span className="min-w-0 flex-1 truncate">
-              <ContextPill entityId={selectedEntityId} entityType={selectedEntityType} />
+              <ContextPill
+                entityId={selectedEntityId}
+                entityType={selectedEntityType}
+                onClear={selectedEntityId !== null ? (): void => selectEntity(null) : undefined}
+              />
             </span>
 
-            {/*
-             * ---- RAG 知识库入口 ----
-             *
-             * 【为何放在状态栏】它是"知识底座"的入口，与在线状态、上下文同级——
-             * 都在表达"这次对话凭什么可信"：状态说明服务可达，胶囊说明
-             * 当前聚焦哪个实体，而这里说明 AI 依据的是哪套手册。
-             *
-             * 【计数徽章为何是 12+】内置 12 篇恒定，但自定义条目是变量，
-             * 写死 12 会在评委新增后立刻与弹窗内容不符。用 `12+` 表达
-             * "至少 12 篇且可继续扩充"，与弹窗左上角的实时计数互补。
-             */}
+            {/* 主高亮入口：RAG 知识库 12+ */}
             <button
               type="button"
               onClick={(): void => openModal('rag')}
@@ -3459,85 +3483,164 @@ export default function CopilotDrawer() {
               className="flex min-h-[44px] shrink-0 items-center gap-1 rounded border border-cyan-400/25 bg-cyan-400/[0.07] px-2 font-mono text-[10px] font-bold tracking-wide text-cyan-300 transition-colors hover:border-cyan-300/60 hover:bg-cyan-400/[0.15] md:min-h-0 md:px-1.5 md:py-0.5"
             >
               <BookOpen className="h-2.5 w-2.5" aria-hidden />
-              RAG 知识库
+              知识库
               <span className="rounded-sm bg-cyan-400/20 px-1 text-[10px] tabular-nums text-cyan-200">
                 12+
               </span>
             </button>
 
-            {hasReplayableContent ? (
+            {/* 正在语音播报时给一个极轻的直达静音钮，方便随时打断 */}
+            {ttsPlaybackState === 'speaking' ? (
               <button
                 type="button"
-                onClick={handleExportPostMortem}
-                aria-label="导出 SRE 故障复盘报告"
-                title="基于本次会话的时间线、推理链、RAG 引用与自愈动作生成复盘报告"
-                className="flex min-h-[44px] shrink-0 items-center gap-1 rounded border border-emerald-400/25 bg-emerald-400/[0.07] px-2 font-mono text-[10px] font-bold tracking-wide text-emerald-300 transition-colors hover:border-emerald-300/60 hover:bg-emerald-400/[0.15] md:min-h-0 md:px-1.5 md:py-0.5"
+                onClick={stopSpeaking}
+                aria-label="停止语音播报"
+                title="停止当前语音播报"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded border border-cyan-400/30 bg-cyan-400/10 text-cyan-200 transition-colors hover:bg-cyan-400/20 md:h-6 md:w-6"
               >
-                <FileText className="h-2.5 w-2.5" aria-hidden />
-                复盘报告
+                <Volume2 className="h-3 w-3 animate-pulse" aria-hidden />
               </button>
             ) : null}
 
-            {/* TTS 开关（图标按钮自身的选中态即状态，无需额外文字说明） */}
-            <button
-              type="button"
-              onClick={(): void => {
-                setTtsEnabled((prev): boolean => {
-                  const next = !prev;
-                  if (next) {
-                    const latestAssistant = [...messages]
-                      .reverse()
-                      .find(
-                        (msg): boolean =>
-                          msg.role === 'assistant' && msg.text.trim().length > 0,
-                      );
-                    if (latestAssistant !== undefined) {
-                      window.setTimeout((): void => speakMessage(latestAssistant), 0);
-                    }
-                  } else {
-                    stopSpeaking();
-                  }
-                  return next;
-                });
-              }}
-              aria-pressed={ttsEnabled}
-              aria-label="语音播报开关"
-              title={
-                !ttsSupported
-                  ? '当前环境不支持语音合成'
-                  : ttsEnabled
-                    ? `关闭语音播报${voiceInfo.quality === 'natural' ? '（自然音色）' : ''}`
-                    : '开启语音播报'
-              }
-              className={cn(
-                'flex h-11 w-11 shrink-0 items-center justify-center rounded transition-colors md:h-auto md:w-auto md:p-1',
-                ttsEnabled
-                  ? ttsPlaybackState === 'speaking'
-                    ? 'text-cyan-200'
-                    : 'text-cyan-300 hover:text-cyan-200'
-                  : 'text-slate-400 hover:text-slate-300',
-              )}
-            >
-              {ttsEnabled ? (
-                <Volume2
-                  className={cn('h-3.5 w-3.5 md:h-3 md:w-3', ttsPlaybackState === 'speaking' && 'animate-pulse')}
-                  aria-hidden
-                />
-              ) : (
-                <VolumeX className="h-3.5 w-3.5 md:h-3 md:w-3" aria-hidden />
-              )}
-            </button>
+            {/* 二级功能收纳菜单：⋯ */}
+            <div className="relative shrink-0">
+              <button
+                ref={utilityBtnRef}
+                type="button"
+                onClick={(): void => setUtilityMenuOpen((prev): boolean => !prev)}
+                aria-expanded={isUtilityMenuOpen}
+                aria-controls="copilot-utility-menu"
+                aria-label="更多副驾操作"
+                title="导出复盘、语音播报、链路追踪与清空会话"
+                className={cn(
+                  'relative flex h-11 w-11 shrink-0 items-center justify-center rounded border transition-colors md:h-6 md:w-6',
+                  isUtilityMenuOpen || ttsEnabled
+                    ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200'
+                    : 'border-white/[0.06] bg-white/[0.02] text-slate-400 hover:border-white/[0.14] hover:text-slate-200',
+                )}
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" aria-hidden />
+                {ttsEnabled ? (
+                  <span
+                    className="absolute right-0.5 top-0.5 h-1 w-1 rounded-full bg-cyan-400"
+                    aria-hidden
+                  />
+                ) : null}
+              </button>
 
-            {/* 清空会话 */}
-            <button
-              type="button"
-              onClick={clearSession}
-              aria-label="清空会话"
-              title="清空会话"
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:text-rose-300 md:h-auto md:w-auto md:p-1"
-            >
-              <Eraser className="h-3.5 w-3.5 md:h-3 md:w-3" aria-hidden />
-            </button>
+              {isUtilityMenuOpen ? (
+                <div
+                  ref={utilityMenuRef}
+                  id="copilot-utility-menu"
+                  role="menu"
+                  aria-label="副驾操作菜单"
+                  className={cn(
+                    'kv-panel absolute right-0 top-full mt-1.5 w-48 rounded-lg border border-white/[0.12] bg-slate-950/95 p-1 shadow-[0_14px_34px_rgba(2,6,23,0.9)]',
+                    Z_CLASS.CHROME_POPOVER,
+                  )}
+                >
+                  {hasReplayableContent ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={(): void => {
+                        setUtilityMenuOpen(false);
+                        handleExportPostMortem();
+                      }}
+                      aria-label="导出 SRE 故障复盘报告"
+                      className="flex min-h-[44px] w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-[10px] text-emerald-300 transition-colors hover:bg-emerald-500/10 md:min-h-0"
+                    >
+                      <FileText className="h-3 w-3 shrink-0" aria-hidden />
+                      <span className="flex-1 truncate">导出复盘报告</span>
+                    </button>
+                  ) : null}
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={(): void => {
+                      setTtsEnabled((prev): boolean => {
+                        const next = !prev;
+                        if (next) {
+                          const latestAssistant = [...messages]
+                            .reverse()
+                            .find(
+                              (msg): boolean =>
+                                msg.role === 'assistant' && msg.text.trim().length > 0,
+                            );
+                          if (latestAssistant !== undefined) {
+                            window.setTimeout((): void => speakMessage(latestAssistant), 0);
+                          }
+                        } else {
+                          stopSpeaking();
+                        }
+                        return next;
+                      });
+                    }}
+                    aria-label="语音播报开关"
+                    title={
+                      !ttsSupported
+                        ? '当前环境不支持语音合成'
+                        : ttsEnabled && voiceInfo.quality === 'natural'
+                          ? '当前已启用浏览器自然音色播报'
+                          : undefined
+                    }
+                    className="flex min-h-[44px] w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-[10px] text-slate-300 transition-colors hover:bg-white/[0.06] md:min-h-0"
+                  >
+                    {ttsEnabled ? (
+                      <Volume2 className="h-3 w-3 shrink-0 text-cyan-300" aria-hidden />
+                    ) : (
+                      <VolumeX className="h-3 w-3 shrink-0 text-slate-400" aria-hidden />
+                    )}
+                    <span className="flex-1 truncate">自动语音播报</span>
+                    <span className={cn('text-[10px]', ttsEnabled ? 'text-cyan-300' : 'text-slate-500')}>
+                      {!ttsSupported
+                        ? '不支持'
+                        : ttsEnabled
+                          ? voiceInfo.quality === 'natural'
+                            ? '自然音色'
+                            : '已开'
+                          : '已关'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={(): void => {
+                      setTraceVisibleOverride((prev): boolean => !(prev ?? !present));
+                      setUtilityMenuOpen(false);
+                    }}
+                    className="flex min-h-[44px] w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-[10px] text-slate-300 transition-colors hover:bg-white/[0.06] md:min-h-0"
+                  >
+                    <Activity
+                      className={cn('h-3 w-3 shrink-0', effectiveTraceVisible ? 'text-cyan-300' : 'text-slate-400')}
+                      aria-hidden
+                    />
+                    <span className="flex-1 truncate">链路追踪面板</span>
+                    <span className={cn('text-[10px]', effectiveTraceVisible ? 'text-cyan-300' : 'text-slate-500')}>
+                      {effectiveTraceVisible ? '显示' : '隐藏'}
+                    </span>
+                  </button>
+
+                  <div className="my-1 border-t border-white/[0.06]" />
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={(): void => {
+                      setUtilityMenuOpen(false);
+                      clearSession();
+                    }}
+                    aria-label="清空会话"
+                    className="flex min-h-[44px] w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-[10px] text-rose-300 transition-colors hover:bg-rose-500/10 md:min-h-0"
+                  >
+                    <Eraser className="h-3 w-3 shrink-0" aria-hidden />
+                    <span className="flex-1 truncate">清空当前会话</span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
 
           {/* ---- 消息流视口容器（相对定位包住消息区与悬浮胶囊，防止胶囊遮挡输入区） ---- */}
@@ -3709,7 +3812,7 @@ export default function CopilotDrawer() {
                   transition={{ duration: 0.16 }}
                   onClick={jumpToLatest}
                   aria-label="回到最新诊断"
-                  className="pointer-events-auto absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-cyan-500/50 bg-slate-900/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-cyan-300 shadow-glow-cyan kv-blur-panel transition-colors hover:border-cyan-400 hover:bg-slate-800/90 active:scale-95"
+                  className="pointer-events-auto absolute bottom-2.5 right-3 z-20 flex items-center gap-1 rounded-full border border-cyan-500/50 bg-slate-900/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-cyan-300 shadow-glow-cyan kv-blur-panel transition-colors hover:border-cyan-400 hover:bg-slate-800/90 active:scale-95"
                 >
                   <ChevronDown className="h-3 w-3" aria-hidden />
                   回到最新诊断
@@ -3731,52 +3834,14 @@ export default function CopilotDrawer() {
            * 焦点态由容器统一响应（focus-within），输入框本身不再画边框，
            * 视觉上只有一个"输入舱"而不是"输入框 + 一堆按钮"。
            */}
-          {/* R36：请求链路瀑布图（无 trace 时自返回 null，不占位） */}
+          {/* R36：请求链路摘要条（默认单行折叠，演示模式自动隐去，无 trace 时返回 null） */}
           <div className="shrink-0 px-2 pt-1">
-            <AgentTracePanel />
+            <AgentTracePanel visible={effectiveTraceVisible} />
           </div>
 
           <div className="shrink-0 px-2 pb-2 pt-1.5">
-            <div className="rounded-xl border border-white/[0.09] bg-slate-950/80 p-2 shadow-inner transition-colors focus-within:border-cyan-400/50">
-              {/* ---- 顶部：选中上下文胶囊 + 视口快照缩略图 ---- */}
-              <AnimatePresence>
-                {selectedContextLabel !== null ? (
-                  <motion.div
-                    initial={{ opacity: 0, scaleY: 0.92, y: -4 }}
-                    animate={{ opacity: 1, scaleY: 1, y: 0 }}
-                    exit={{
-                      opacity: 0,
-                      scaleY: 0.92,
-                      y: -4,
-                      transition: { duration: MOTION.panelExitSec, ease: MOTION.easeOut },
-                    }}
-                    transition={{ type: 'spring', ...MOTION.spring }}
-                    style={{ transformOrigin: 'top center' }}
-                    className="mb-1.5 overflow-hidden"
-                  >
-                    {/*
-                     * 【为何要自动附带上下文】用户的提问常常是"它为什么挂了"——
-                     * 一个"它"字承载了全部语义。若模型不知道当前选中的是哪个
-                     * 节点/容器，任何诊断都只能是泛泛而谈。这枚胶囊把"隐性上下文"
-                     * 显性化为可见标签：用户能确认模型将看到什么，也能一眼看出
-                     * 自己是否选错了对象。
-                     */}
-                    <div className="flex items-center gap-1.5 rounded-md border border-cyan-400/25 bg-cyan-400/[0.07] px-2 py-1">
-                      <Crosshair className="h-2.5 w-2.5 shrink-0 text-cyan-300/90" aria-hidden />
-                      <span className="font-mono text-[10px] tracking-wider text-cyan-300">
-                        上下文
-                      </span>
-                      <span className="min-w-0 flex-1 truncate font-mono text-[10px] font-semibold tracking-wide text-cyan-100">
-                        {selectedContextLabel}
-                      </span>
-                      <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-cyan-300">
-                        auto
-                      </span>
-                    </div>
-                  </motion.div>
-                ) : null}
-              </AnimatePresence>
-
+            <div className="rounded-xl border border-white/[0.09] bg-slate-950/80 p-1.5 shadow-inner transition-colors focus-within:border-cyan-400/50">
+              {/* ---- 顶部：仅在附带 3D 视口快照时呈现缩略图条（上下文已收归状态栏单一源） ---- */}
               <AnimatePresence>
                 {capturedViewportDataUrl !== null ? (
                   <motion.div
@@ -4021,8 +4086,9 @@ export default function CopilotDrawer() {
                 </p>
               ) : null}
 
-              {/* ---- 中部：无边框 textarea（焦点态由容器统一表达） ---- */}
+              {/* ---- 中部：无边框自适应高度 textarea（默认单行，焦点态由容器统一表达） ---- */}
               <textarea
+                ref={composerTextareaRef}
                 value={inputValue}
                 onChange={(e): void => setInputValue(e.target.value)}
                 onKeyDown={(e): void => {
@@ -4032,42 +4098,13 @@ export default function CopilotDrawer() {
                     void sendMessage(inputValue);
                   }
                 }}
-                rows={2}
+                rows={1}
                 placeholder="描述故障现象，或直接提问…（Enter 发送 / Shift+Enter 换行）"
                 aria-label="对话输入框"
-                className="w-full resize-none bg-transparent px-1 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none"
+                className="min-h-[32px] max-h-24 w-full resize-none bg-transparent px-1 py-1 text-xs leading-5 text-slate-100 placeholder:text-slate-500 focus:outline-none"
               />
 
-              {/* ---- R9-F：精简单行语音说明（默认 1 行 11px，点击 ⓘ 展开完整说明） ---- */}
-              <div className="mt-1 flex items-start justify-between gap-1.5">
-                <p
-                  className={cn(
-                    'min-w-0 flex-1 font-mono text-[11px] leading-snug text-slate-400',
-                    speechHintExpanded ? 'whitespace-normal' : 'truncate',
-                  )}
-                  aria-label="语音能力说明"
-                >
-                  {speechAsrSupported
-                    ? speechHintExpanded
-                      ? '语音输入 / 播报使用浏览器原生 Web Speech / SpeechSynthesis，无需配置任何 URL 或 API Key。'
-                      : '原生 Web Speech 语音输入与播报（无需 API Key）'
-                    : speechHintExpanded
-                      ? '语音播报使用浏览器原生 SpeechSynthesis；当前浏览器不支持语音识别，请改用 Chrome / Edge 或直接键盘输入。'
-                      : '当前浏览器不支持语音识别，请改用 Chrome / Edge 或键盘输入'}
-                </p>
-                <button
-                  type="button"
-                  onClick={(): void => setSpeechHintExpanded((prev): boolean => !prev)}
-                  aria-expanded={speechHintExpanded}
-                  aria-label={speechHintExpanded ? '收起语音能力说明' : '展开语音能力说明'}
-                  title="查看语音能力说明"
-                  className="kv-touch-target flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white/[0.06] hover:text-cyan-300"
-                >
-                  <Info className="h-3 w-3" aria-hidden />
-                </button>
-              </div>
-
-              {/* ---- 底部内嵌工具栏 ---- */}
+              {/* ---- 底部内嵌工具栏（语音能力免密说明已收归按钮 tooltip，不再常驻占行） ---- */}
               <div className="mt-1 flex flex-wrap items-center gap-1">
                 {/* 截取 3D 视口 */}
                 <button
@@ -4087,7 +4124,13 @@ export default function CopilotDrawer() {
                   onClick={toggleListening}
                   aria-label={isListening ? '完成语音输入' : '开始语音输入'}
                   aria-pressed={isListening}
-                  title={isListening ? '点击完成录音' : '语音输入（真实麦克风频谱）'}
+                  title={
+                    isListening
+                      ? '点击完成录音'
+                      : speechAsrSupported
+                        ? '语音输入：使用浏览器原生 Web Speech，无需 API Key（支持实时频谱）'
+                        : '当前浏览器不支持原生语音识别，建议改用 Chrome / Edge 或直接输入'
+                  }
                   className={cn(
                     'relative flex min-h-[44px] min-w-0 shrink items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] tracking-tight transition-colors md:min-h-0 md:px-1.5',
                     isListening

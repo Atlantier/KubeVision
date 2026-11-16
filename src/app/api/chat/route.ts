@@ -162,13 +162,16 @@ const BANNED_OUTPUT_PREFIXES: readonly string[] = [
 ];
 
 /**
- * resolveCharBudget —— 按意图计算回答正文的最大字符预算（R10-F）。
+ * resolveCharBudget —— 按意图计算回答正文的最大字符预算（精简聚焦版）。
+ *
+ * 【设计意图】具体 CPU/MEM 曲线、证据链与自愈动作已由下方三张 GenUI 卡片承载，
+ * 正文只需给出高密度结论与核心因果定位，避免与卡片重复堆叠把回复拉长多屏。
  *
  * @param intent 当前对话意图
- * @returns 深度排障（FAULT_DIAGNOSIS_AND_HEAL）700 字，其余场景 400 字
+ * @returns 深度排障（FAULT_DIAGNOSIS_AND_HEAL）420 字，其余场景 240 字
  */
 function resolveCharBudget(intent: IntentKind): number {
-  return intent === 'FAULT_DIAGNOSIS_AND_HEAL' ? 700 : 400;
+  return intent === 'FAULT_DIAGNOSIS_AND_HEAL' ? 420 : 240;
 }
 
 /**
@@ -1099,7 +1102,7 @@ function buildSystemPrompt(
     '【硬性输出规范（违反将触发系统拦截）】',
     '  1. 语言规范：全程使用简体中文作答，仅保留必要英文技术术语（如 Pod ID、Runbook 编号、OOMKilled、cgroup、kubectl 命令）。',
     '  2. 禁用套话：严禁自称“作为 AI / 人工智能 / 大模型”，严禁输出“仅供参考 / 免责声明”等免责或身份套话，直接给工程判断。',
-    `  3. 篇幅与结构：采用“结论先行 + 精简短列表”，总字数严格不超过 ${maxChars} 字。`,
+    `  3. 篇幅与分工：采用“结论先行 + 2~3 条高密度要点”，总字数严格不超过 ${maxChars} 字；详尽指标、证据链与自愈操作将由下方工具卡片承载，正文勿大段重复。`,
     '  4. 强制收尾：回答最后一行必须以“建议动作：”开头，给出 1 条具体可执行的下一步指令。',
     '  5. 首字优先：必须先直接输出正文首句结论，再按需调用渲染工具；下方已提供的集群态势、节点水位与知识库手册即为最新数据，禁止在输出正文前调用任何工具重复查询。',
     '',
@@ -1181,7 +1184,7 @@ function buildIntentDirective(
         '  2. 引用下面的真实数据给出一句话集群健康摘要：',
         `     当前集群健康度 ${ctx.clusterHealthScore}/100，` +
           `${ctx.nodes.length} 台计算节点（${healthyNodes} 台就绪）与 ${ctx.totalQps.toLocaleString('en-US')} QPS 入口流量均处于稳态。`,
-        '  3. 仅使用简洁短句或短列表，总字数严格控制在 160 字以内（不超过 400 字上限）。',
+        '  3. 仅使用简洁短句，总字数严格控制在 120 字以内（不超过 240 字上限）。',
         '  4. 最后一行必须以“建议动作：”开头，引导点击「故障演练」或提出具体排障问题。',
         '  5. **严禁**调用任何工具，**严禁**输出根因分析或虚构故障。',
       ];
@@ -1194,7 +1197,7 @@ function buildIntentDirective(
         '  本次**仅挂载** `renderPodMetrics` 一个工具，用于展示核心服务的实时健康指标。',
         '',
         '【执行顺序】',
-        '  第 1 步：采用“结论先行 + 精简短列表”输出稳态巡检结论（健康分、节点水位、Pod 分布），总字数严格不超过 400 字。',
+        '  第 1 步：用 2~3 句输出稳态巡检结论（健康分、节点水位、Pod 分布），总字数严格不超过 240 字，详细数值交由指标卡。',
         '  第 2 步：调用 **一次** `renderPodMetrics`，展示被指定目标的实时指标趋势。',
         '  第 3 步：最后一行以“建议动作：”收尾，说明当前稳态无需人工变更及下一步可验证路径。',
         '',
@@ -1215,7 +1218,7 @@ function buildIntentDirective(
         '  用户点名查看某个健康实体的实时指标，本次**仅挂载** `renderPodMetrics`。',
         '',
         '【执行顺序】',
-        '  第 1 步：以“结论先行 + 精简短列表”说明该实体当前水位与趋势判断，总字数严格不超过 400 字，最后一行以“建议动作：”收尾。',
+        '  第 1 步：用 2~3 句说明该实体当前水位与趋势判断（详细走势见下方指标卡），总字数严格不超过 240 字，最后一行以“建议动作：”收尾。',
         '  第 2 步：调用 **一次** `renderPodMetrics` 渲染其指标卡。',
         '',
         '【严禁事项】',
@@ -1235,7 +1238,7 @@ function buildIntentDirective(
         '  · proposeRemediationAction：给出自愈动作建议时调用（不会自动执行，需用户二次确认）。',
         '',
         '【执行顺序（必须完整执行，不可提前结束）】',
-        '  第 1 步：先输出简体中文精炼诊断（结论先行 → 核心证据/机制短列表 → 处置要点），总字数严格控制在 700 字以内，禁用“作为 AI / 仅供参考”套话，最后一行必须以“建议动作：”结尾。',
+        '  第 1 步：先输出简体中文高密度结论摘要（首句点明定性 + 2~3 条核心因果与 Runbook 依据，完整数字/证据链/步骤交由下方三张卡片承载，勿大段重复），总字数严格控制在 420 字以内，禁用“作为 AI / 仅供参考”套话，最后一行必须以“建议动作：”结尾。',
         '  第 2 步：正文写完后，**必须依次调用以下三个工具，一个都不能少**：',
         '          ① renderPodMetrics       （渲染指标卡）',
         '          ② renderRootCauseAnalysis（渲染根因卡）',
@@ -1268,7 +1271,7 @@ function buildIntentDirective(
         '  · 其余一切情况**禁止**使用 `drain_node`。',
         '',
         '【回答要求】',
-        '  1. 全程简体中文，“结论先行 + 短列表”，严格 ≤ 700 字（最后一行以 `建议动作：` 开头）。',
+        '  1. 全程简体中文，“首句结论 + 2~3 条精简因果要点”，严格 ≤ 420 字（最后一行以 `建议动作：` 开头）。',
         '  2. 明确引用命中的 Runbook 编号，不引用裸分数以外的未证实数字。',
         '  3. 不要臆造未在上下文中出现的 Pod 或指标，严禁 AI 自称与免责套话。',
         '  4. 精简包含关键内核/运行时细节（如 `memory.max`、`Exit Code 137`、`oom_score`）。',
@@ -1338,54 +1341,42 @@ function buildSimulatorReport(
   const primaryLabel =
     primary === undefined
       ? '知识库未命中'
-      : `${primary.id} · ${primary.title}（置信度：${((primary.similarityScore ?? 0) * 100).toFixed(1)}%）`;
+      : `${primary.id} · ${primary.title}（${((primary.similarityScore ?? 0) * 100).toFixed(1)}%）`;
 
   const worst = ctx.faultyPods.length > 0 ? ctx.faultyPods[0] : null;
   const chaosLabel =
-    ctx.activeChaos === 'NONE' ? '稳态（无混沌演练）' : ctx.activeChaos;
+    ctx.activeChaos === 'NONE' ? '稳态' : ctx.activeChaos;
 
   const lines: string[] = [];
 
-  lines.push('## 诊断结论');
   if (worst !== null) {
     const sev = ctx.clusterHealthScore < 60 ? 'P0' : ctx.clusterHealthScore < 85 ? 'P1' : 'P2';
     lines.push(
-      `- **${sev} · ${worst.name} 触发 ${worst.status}**（健康分 ${ctx.clusterHealthScore}/100）`,
-    );
-    lines.push(
-      `- 目标 Pod \`${worst.name}\`（\`${worst.namespace}\` · 节点 \`${worst.nodeId}\`）：CPU ${worst.cpuUsage.toFixed(1)}% / 内存 ${worst.memoryUsage.toFixed(1)}%，累计重启 ${worst.restarts} 次。`,
+      `**${sev} · \`${worst.name}\`（\`${worst.nodeId}\`）触发 ${worst.status}** — 健康分 ${ctx.clusterHealthScore}/100，CPU ${worst.cpuUsage.toFixed(1)}% / MEM ${worst.memoryUsage.toFixed(1)}%（重启 ${worst.restarts} 次）。`,
     );
   } else {
     lines.push(
-      `- **集群整体健康**（健康分 ${ctx.clusterHealthScore}/100 · 场景 ${chaosLabel}），未检测到异常 Pod。`,
+      `**集群运行稳态**（健康分 ${ctx.clusterHealthScore}/100 · ${chaosLabel}），未发现异常 Pod。`,
     );
   }
 
-  lines.push('');
-  lines.push('## 根因与处置要点');
   if (primary !== undefined) {
-    lines.push(`- 检索依据：**${primaryLabel}**`);
-    lines.push(`- 机理摘要：${primary.rootCauseMechanism}`);
-    primary.remediationSteps.slice(0, 3).forEach((step, index): void => {
-      lines.push(`${index + 1}. ${step}`);
-    });
+    lines.push(`- 依据 **${primaryLabel}**：${primary.rootCauseMechanism}`);
   } else {
-    lines.push('- 未命中匹配手册，建议优先排查资源配额、节点水位与依赖连通性：');
-    lines.push('1. 核实 Pod 事件（`kubectl describe`）与容器前序日志（`--previous`）');
-    lines.push('2. 检查工作负载 Limit 与依赖服务健康状态');
+    lines.push('- 未命中内置手册，建议检查节点水位与 Pod Events / `--previous` 日志（完整指标见下方卡片）。');
   }
 
   if (hasImage) {
     const rackHint =
       worst !== null ? `\`${worst.nodeId}\` 机架` : '当前聚焦机架';
-    lines.push(`- 视口空间观测：3D 快照中 ${rackHint} 告警状态与遥测时间窗一致。`);
+    lines.push(`- 视口核验：3D 快照内 ${rackHint} 空间告警与秒级遥测一致。`);
   }
 
   lines.push('');
   if (worst !== null) {
-    lines.push(`建议动作：确认下方 \`${worst.name}\` 指标与根因证据后，点击自愈动作卡二次确认恢复。`);
+    lines.push(`建议动作：核对下方 \`${worst.name}\` 根因与证据后，点击自愈卡片确认执行。`);
   } else {
-    lines.push('建议动作：当前稳态无需人工变更，可通过顶栏「故障演练」验证自愈链路。');
+    lines.push('建议动作：保持当前观测，可通过顶栏「故障演练」注入场景验证闭环。');
   }
 
   return lines.join('\n');
@@ -2717,28 +2708,30 @@ function emitMissingCards(params: {
 function renderPixelObservation(features: PixelFeatures): string {
   const regionLabel =
     features.redRegion === 'left'
-      ? '左前（近似 worker-alpha 机架方向）'
+      ? '左前（近 worker-alpha）'
       : features.redRegion === 'right'
-        ? '右前（近似 worker-gamma 机架方向）'
+        ? '右前（近 worker-gamma）'
         : features.redRegion === 'center'
-          ? '中部（近似 worker-beta 机架方向）'
-          : '无红色区域';
+          ? '中部（近 worker-beta）'
+          : '无明显红区';
   const pct = (value: number): string => (value * 100).toFixed(1) + '%';
-  const lines = [
-    '',
-    '',
-    '### 画面空间观察（端侧像素统计，非多模态模型）',
-    '',
-    '- 红色热区：' + features.redClusters + ' 个连通块，质心位于' + regionLabel +
-      '（x=' + features.redCentroidX.toFixed(2) + ', y=' + features.redCentroidY.toFixed(2) + '）',
-    '- 颜色占比：红 ' + pct(features.redRatio) + ' · 琥珀 ' + pct(features.amberRatio) +
-      ' · 绿 ' + pct(features.greenRatio) + ' · 青 ' + pct(features.cyanRatio),
-    '- 中央带占比（机架投影近似）：' + pct(features.redCenterBandRatio),
-    '',
-    '> 以上为端侧 canvas 颜色统计的近似观察，用于无 Key 场景的快速空间定位，不替代多模态模型。',
-    '',
-  ];
-  return lines.join('\n');
+  return (
+    '\n\n> **端侧视口统计（非多模态模型）**：红色热区 ' +
+    features.redClusters +
+    ' 处（' +
+    regionLabel +
+    '，x=' +
+    features.redCentroidX.toFixed(2) +
+    '），色彩占比 红 ' +
+    pct(features.redRatio) +
+    ' / 琥珀 ' +
+    pct(features.amberRatio) +
+    ' / 绿 ' +
+    pct(features.greenRatio) +
+    ' / 青 ' +
+    pct(features.cyanRatio) +
+    '。'
+  );
 }
 
 async function streamWithSimulator(params: {
