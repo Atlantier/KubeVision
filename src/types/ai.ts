@@ -901,6 +901,8 @@ export interface CopilotMessage {
   readonly toolCards: readonly CopilotToolCard[];
   /** 实际生效引擎（仅 AI 消息，来自 stream 的 engine 事件） */
   readonly engine?: 'llm' | 'simulator';
+  /** 实际生效模型标识（仅 engine === 'llm' 时来自服务端 engine.reason 的 model=xxx） */
+  readonly engineModel?: string;
   /** 是否仍在流式接收（true → 显示打字光标与"思考中"指示） */
   readonly isStreaming: boolean;
   /**

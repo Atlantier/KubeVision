@@ -29,6 +29,10 @@ import {
   useState } from 'react';
 import {
   Activity,
+  ArrowDown,
+  ArrowLeft,
+  ChevronDown,
+  ChevronUp,
   Cpu,
   Eye,
   EyeOff,
@@ -47,6 +51,7 @@ import {
 import { cn } from '@/utils/cn';
 import { useClusterStore } from '@/store/useClusterStore';
 import { useEdgeLogClassifier } from '@/hooks/useEdgeLogClassifier';
+import { classifyLogsWithBuiltin } from '@/utils/builtinLogClassifier';
 import { sanitizeRawLog } from '@/utils/logSanitizer';
 import { generateSyntheticLogs } from '@/utils/syntheticEngine';
 import type { EdgeAuditResult, EdgeLogLabel, LogEntry } from '@/types/ai';
@@ -458,10 +463,14 @@ function SensitiveLogProbe({
   onRun,
   busy,
   disabled,
+  expanded,
+  onToggleExpand,
 }: {
   readonly onRun: (rawText: string) => void;
   readonly busy: boolean;
   readonly disabled: boolean;
+  readonly expanded: boolean;
+  readonly onToggleExpand: () => void;
 }): React.ReactElement {
   const [draft, setDraft] = useState<string>(PRESET_SENSITIVE_LOGS[0].text);
 
@@ -477,59 +486,82 @@ function SensitiveLogProbe({
         <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-400">
           全程零出域
         </span>
-      </div>
-
-      {/* 预设样本：一键填入，避免现场手敲 */}
-      <div className="mt-1 flex flex-wrap gap-1">
-        {PRESET_SENSITIVE_LOGS.map((preset): React.ReactElement => (
-          <button
-            key={preset.key}
-            type="button"
-            onClick={(): void => setDraft(preset.text)}
-            aria-label={`填入预设样本：${preset.label}`}
-            className="rounded border border-white/[0.08] bg-white/[0.02] px-1 py-0.5 font-mono text-[10px] tracking-wide text-slate-400 transition-colors hover:border-cyan-400/40 hover:text-cyan-300"
-          >
-            {preset.label}
-          </button>
-        ))}
-      </div>
-
-      <textarea
-        value={draft}
-        onChange={(event: React.ChangeEvent<HTMLTextAreaElement>): void => setDraft(event.target.value)}
-        rows={3}
-        spellCheck={false}
-        aria-label="粘贴待测试的原始日志（含敏感信息）"
-        placeholder="粘贴一行含凭证 / 内网 IP / 报错的原始日志…"
-        className="mt-1 w-full resize-none rounded border border-white/[0.08] bg-slate-950/70 px-1.5 py-1 font-mono text-[10px] leading-relaxed text-slate-200 placeholder:text-slate-500 focus:border-cyan-400/50 focus:outline-none"
-      />
-
-      <div className="mt-1 flex items-center gap-1">
         <button
           type="button"
-          onClick={(): void => onRun(draft)}
-          disabled={!canSubmit}
-          aria-label="在端侧执行脱敏与语义分类推理测试"
-          className={cn(
-            'flex items-center gap-1 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
-            canSubmit
-              ? 'border-cyan-500/50 bg-cyan-500/[0.15] text-cyan-300 hover:border-cyan-400/70 hover:bg-cyan-500/25'
-              : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-500',
-          )}
+          onClick={onToggleExpand}
+          aria-expanded={expanded}
+          aria-label={expanded ? '收起现场测试框' : '展开现场测试框'}
+          className="flex shrink-0 items-center gap-0.5 rounded border border-white/[0.08] bg-white/[0.03] px-1 py-0.5 font-mono text-[10px] text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-300"
         >
-          {busy ? (
-            <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden />
+          {expanded ? (
+            <>
+              <ChevronUp className="h-2.5 w-2.5" aria-hidden />
+              收起
+            </>
           ) : (
-            <Play className="h-2.5 w-2.5" aria-hidden />
+            <>
+              <ChevronDown className="h-2.5 w-2.5" aria-hidden />
+              展开
+            </>
           )}
-          {busy ? '推理中' : '端侧推理测试'}
         </button>
-        {disabled ? (
-          <span className="font-mono text-[10px] uppercase tracking-wider text-amber-500/80">
-            引擎未就绪
-          </span>
-        ) : null}
       </div>
+
+      {expanded ? (
+        <>
+          {/* 预设样本：一键填入，避免现场手敲 */}
+          <div className="mt-1 flex flex-wrap gap-1">
+            {PRESET_SENSITIVE_LOGS.map((preset): React.ReactElement => (
+              <button
+                key={preset.key}
+                type="button"
+                onClick={(): void => setDraft(preset.text)}
+                aria-label={`填入预设样本：${preset.label}`}
+                className="rounded border border-white/[0.08] bg-white/[0.02] px-1 py-0.5 font-mono text-[10px] tracking-wide text-slate-400 transition-colors hover:border-cyan-400/40 hover:text-cyan-300"
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+
+          <textarea
+            value={draft}
+            onChange={(event: React.ChangeEvent<HTMLTextAreaElement>): void => setDraft(event.target.value)}
+            rows={3}
+            spellCheck={false}
+            aria-label="粘贴待测试的原始日志（含敏感信息）"
+            placeholder="粘贴一行含凭证 / 内网 IP / 报错的原始日志…"
+            className="mt-1 w-full resize-none rounded border border-white/[0.08] bg-slate-950/70 px-1.5 py-1 font-mono text-[10px] leading-relaxed text-slate-200 placeholder:text-slate-500 focus:border-cyan-400/50 focus:outline-none"
+          />
+
+          <div className="mt-1 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={(): void => onRun(draft)}
+              disabled={!canSubmit}
+              aria-label="在端侧执行脱敏与语义分类推理测试"
+              className={cn(
+                'flex items-center gap-1 rounded border px-1.5 py-1 font-mono text-[10px] font-bold uppercase tracking-wider transition-colors',
+                canSubmit
+                  ? 'border-cyan-500/50 bg-cyan-500/[0.15] text-cyan-300 hover:border-cyan-400/70 hover:bg-cyan-500/25'
+                  : 'cursor-not-allowed border-white/[0.06] bg-white/[0.02] text-slate-500',
+              )}
+            >
+              {busy ? (
+                <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden />
+              ) : (
+                <Play className="h-2.5 w-2.5" aria-hidden />
+              )}
+              {busy ? '推理中' : '端侧推理测试'}
+            </button>
+            {disabled ? (
+              <span className="font-mono text-[10px] uppercase tracking-wider text-amber-500/80">
+                引擎未就绪
+              </span>
+            ) : null}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -705,12 +737,43 @@ export default function LocalAuditorPanel() {
     readonly maskedCount: number;
     readonly maskedByRule: Readonly<Record<string, number>>;
     readonly result: EdgeAuditResult;
+    /** 端到端链路实测耗时（含本地正则脱敏 + 跨线程 Worker 通信 + 推理，毫秒） */
+    readonly e2eLatencyMs: number;
   }
 
   /** 现场测试框当前结果（null 表示尚未运行过） */
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
   /** 现场测试框是否正在推理 */
   const [probeBusy, setProbeBusy] = useState<boolean>(false);
+  /** 自定义敏感日志现场测试框是否展开（默认展开，可手动收起以留出更多日志列表空间） */
+  const [probeExpanded, setProbeExpanded] = useState<boolean>(true);
+  /** 滚动锚点：现场推理结果卡片与下方审计日志列表 */
+  const probeResultRef = useRef<HTMLDivElement | null>(null);
+  const logsSectionRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * scrollToSection —— 下一帧平滑滚动到目标区块（兼容极简测试 DOM）。
+   */
+  const scrollToSection = useCallback(
+    (el: HTMLElement | null, block: ScrollLogicalPosition = 'nearest'): void => {
+      if (el === null || typeof el.scrollIntoView !== 'function') return;
+      window.requestAnimationFrame((): void => {
+        el.scrollIntoView({ behavior: 'smooth', block });
+      });
+    },
+    [],
+  );
+
+  /**
+   * dismissProbeAndReturnToLogs —— 关闭现场推理结果卡片并回到审计日志列表。
+   *
+   * 【设计意图】点击“端侧推理测试”后结果卡会置顶展开；为用户提供显式“返回日志”
+   * 出口，关闭结果卡并将视口定位到审计日志列表，避免停留在推理结果区域无法回到日志。
+   */
+  const dismissProbeAndReturnToLogs = useCallback((): void => {
+    setProbeResult(null);
+    scrollToSection(logsSectionRef.current, 'start');
+  }, [scrollToSection]);
 
   /**
    * runProbe —— 对评委输入的任意日志执行「脱敏 + 端侧语义推理」。
@@ -729,6 +792,7 @@ export default function LocalAuditorPanel() {
       const trimmed = rawText.trim();
       if (trimmed.length === 0) return;
 
+      const probeStartedAt = performance.now();
       setProbeBusy(true);
       try {
         const { sanitized, maskedCount, maskedByRule } = sanitizeRawLog(trimmed);
@@ -745,10 +809,14 @@ export default function LocalAuditorPanel() {
         };
 
         const results = await classifier.classify([entry]);
-        const result: EdgeAuditResult =
-          results !== null && results.length > 0
-            ? results[0]
-            : { label: 'NORMAL_INFO', confidence: 0.5, inferenceLatencyMs: 0 };
+        /* 若 Worker 当前正被自动流占线拒绝（返回 null），同源内置定时分类兜底，杜绝假性 0.00ms */
+        const resolved =
+          results !== null && results.length > 0 ? results : classifyLogsWithBuiltin([entry]);
+        const result: EdgeAuditResult = resolved[0] ?? classifyLogsWithBuiltin([entry])[0];
+        const e2eLatencyMs = Math.max(
+          0.01,
+          Math.round((performance.now() - probeStartedAt) * 100) / 100,
+        );
 
         setProbeResult({
           raw: trimmed,
@@ -756,18 +824,20 @@ export default function LocalAuditorPanel() {
           maskedCount,
           maskedByRule: maskedByRule ?? {},
           result,
+          e2eLatencyMs,
         });
+        scrollToSection(probeResultRef.current, 'nearest');
 
         appendTerminalLog(
           `[EDGE-WASM] manual probe: ${result.label} ` +
-            `(${(result.confidence * 100).toFixed(1)}%, ${result.inferenceLatencyMs.toFixed(2)}ms, ` +
-            `${maskedCount} secrets masked)`,
+            `(${(result.confidence * 100).toFixed(1)}%, kernel ${result.inferenceLatencyMs.toFixed(2)}ms, ` +
+            `e2e ${e2eLatencyMs.toFixed(2)}ms, ${maskedCount} secrets masked)`,
         );
       } finally {
         setProbeBusy(false);
       }
     },
-    [appendTerminalLog, classifier],
+    [appendTerminalLog, classifier, scrollToSection],
   );
 
   /**
@@ -822,7 +892,7 @@ export default function LocalAuditorPanel() {
           maskedByRule: perEntryMaskedByRule[i] ?? {},
           podName: entry.podName,
           namespace: entry.namespace,
-          result: results[i] ?? { label: 'NORMAL_INFO', confidence: 0.85, inferenceLatencyMs: 0 },
+          result: results[i] ?? classifyLogsWithBuiltin([entry])[0],
         }));
 
         /* 最新的在前，最多保留 24 条（防止无限增长） */
@@ -874,22 +944,32 @@ export default function LocalAuditorPanel() {
    * fetchAndAudit —— 抓取**合成**集群日志并审计（原有离线路径）。
    *
    * 说明：这是离线演示路径，数据来自合成引擎的集群形态。
-   * 真实运行日志请用 fetchLiveLogs。
+   * 用户手动点击抓取时自动收起现场测试结果卡并定位回日志流；
+   * 后台 autoStream 轮询传入 preserveProbe=true，避免打断正在查看现场测试结果的用户。
    */
-  const fetchAndAudit = useCallback(async (): Promise<void> => {
-    if (isFetching) return;
-    setIsFetching(true);
+  const fetchAndAudit = useCallback(
+    async (preserveProbe = false): Promise<void> => {
+      if (isFetching) return;
+      if (!preserveProbe) {
+        setProbeResult(null);
+      }
+      setIsFetching(true);
 
-    try {
-      const snapshot = useClusterStore.getState().snapshotSummary;
-      const rawLogs = generateSyntheticLogs(snapshot).slice(0, MAX_BATCH_SIZE);
-      await runAudit(rawLogs);
-    } catch {
-      /* 抓取/审计失败不应中断面板：静默恢复，用户可重试 */
-    } finally {
-      setIsFetching(false);
-    }
-  }, [isFetching, runAudit]);
+      try {
+        const snapshot = useClusterStore.getState().snapshotSummary;
+        const rawLogs = generateSyntheticLogs(snapshot).slice(0, MAX_BATCH_SIZE);
+        await runAudit(rawLogs);
+        if (!preserveProbe) {
+          scrollToSection(logsSectionRef.current, 'start');
+        }
+      } catch {
+        /* 抓取/审计失败不应中断面板：静默恢复，用户可重试 */
+      } finally {
+        setIsFetching(false);
+      }
+    },
+    [isFetching, runAudit, scrollToSection],
+  );
 
   /**
    * fetchLiveLogs —— 拉取**服务端真实运行日志**并送入同一套端侧审计。
@@ -904,6 +984,7 @@ export default function LocalAuditorPanel() {
    */
   const fetchLiveLogs = useCallback(async (): Promise<void> => {
     if (isFetching) return;
+    setProbeResult(null);
     setIsFetching(true);
 
     try {
@@ -945,32 +1026,33 @@ export default function LocalAuditorPanel() {
       appendTerminalLog(
         `[LIVE-LOG] 真实运行日志已接入 (source=${source})，已送入端侧脱敏与推理管线`,
       );
+      scrollToSection(logsSectionRef.current, 'start');
     } catch {
       appendTerminalLog('[ERR] 实时运行日志拉取异常，请检查服务端网络');
     } finally {
       setIsFetching(false);
     }
-  }, [isFetching, runAudit, appendTerminalLog]);
+  }, [isFetching, runAudit, appendTerminalLog, scrollToSection]);
 
   /* ========================================================================== */
   /* 自动实时流式审计                                                             */
   /* ========================================================================== */
 
+  const autoAuditRef = useRef<(preserveProbe?: boolean) => Promise<void>>(fetchAndAudit);
+  autoAuditRef.current = fetchAndAudit;
+
   useEffect(() => {
     if (!autoStream) return;
-    /* 开启后立刻抓一次，避免用户等待首个间隔 */
-    void fetchAndAudit();
+    /* 开启后立刻抓一次，避免用户等待首个间隔（preserveProbe=true 不打断现场测试框） */
+    void autoAuditRef.current(true);
 
     const timer = window.setInterval((): void => {
-      void fetchAndAudit();
+      void autoAuditRef.current(true);
     }, AUTO_STREAM_INTERVAL_MS);
 
     return (): void => {
       window.clearInterval(timer);
     };
-    /* fetchAndAudit 依赖 isFetching，会频繁变化；此处只在开关变化时重建定时器，
-       通过 ref 读取最新函数，避免定时器被反复销毁重建 */
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStream]);
 
   /* ========================================================================== */
@@ -1136,7 +1218,8 @@ export default function LocalAuditorPanel() {
   /* ========================================================================== */
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-1.5 p-2">
+    /* 使用 min-h-full 由外层 #copilot-drawer-panel-auditor 统一滚动，避免 shrink-0 卡片把日志列表压成 0px */
+    <div className="flex min-h-full flex-col gap-1.5 p-2">
       {/* ==================== 端侧引擎状态监控卡 ==================== *
        * 【黑曜石卡片契约】卡片外壳统一为 border-white/[0.07] + bg-white/[0.02]，
        * 状态语义（就绪 / 加载中）交由内部的徽标、进度条与百分比文字表达，
@@ -1367,7 +1450,8 @@ export default function LocalAuditorPanel() {
        * ---- 自定义敏感日志现场测试框 ----
        *
        * 放在列表之上（而非之下）是刻意的：演示时评委的视线落在中上部，
-       * 现场测试是他要亲手操作的第一个控件，不该需要滚动才能找到。
+       * 现场测试是他要亲手操作的第一个控件，不该需要滚动才能找到；
+       * 同时支持手动收起，以便在需要浏览长日志流时释放纵向空间。
        */}
       <SensitiveLogProbe
         onRun={(rawText): void => {
@@ -1375,17 +1459,20 @@ export default function LocalAuditorPanel() {
         }}
         busy={probeBusy}
         disabled={!classifier.isReady}
+        expanded={probeExpanded}
+        onToggleExpand={(): void => setProbeExpanded((prev): boolean => !prev)}
       />
 
       {/*
        * ---- 置顶：本次现场推理的结果卡 ----
        *
        * 三栏对照（推理耗时 / 脱敏前后 / 语义结论）是"端侧 AI 真的跑了"
-       * 最直接的证据：耗时必须来自真实前向计算，脱敏对比必须能肉眼核对，
-       * 语义结论必须与耗时同源。
+       * 最直接的证据：耗时必须来自真实计算，脱敏对比必须能肉眼核对，
+       * 语义结论必须与耗时同源；顶部提供显式“返回日志”关闭入口，防止遮挡/滞留。
        */}
       {probeResult !== null ? (
         <div
+          ref={probeResultRef}
           className="mt-1 shrink-0 rounded border border-cyan-400/30 bg-cyan-400/[0.05] p-1.5"
           aria-live="polite"
           aria-label="现场推理测试结果"
@@ -1403,12 +1490,35 @@ export default function LocalAuditorPanel() {
             >
               {LABEL_META[probeResult.result.label].text}
             </span>
+            <button
+              type="button"
+              onClick={dismissProbeAndReturnToLogs}
+              aria-label="关闭现场推理结果并返回审计日志"
+              className="flex shrink-0 items-center gap-0.5 rounded border border-cyan-400/50 bg-cyan-500/[0.15] px-1.5 py-0.5 font-mono text-[10px] font-bold leading-none text-cyan-200 transition-colors hover:border-cyan-300 hover:bg-cyan-500/25"
+            >
+              <ArrowLeft className="h-2.5 w-2.5" aria-hidden />
+              返回日志
+            </button>
           </div>
 
-          {/* 三项硬指标：耗时 / 置信度 / 脱敏数 */}
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] uppercase tracking-wider text-slate-400">
-            <span className="tabular-nums text-cyan-400/90">
+          {/* 实测性能与安全指标：核内耗时 / 端到端耗时 / 置信度 / 脱敏数（禁用 uppercase 保持 ms 小写一致） */}
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] tracking-wider text-slate-400">
+            <span
+              className="tabular-nums text-cyan-400/90"
+              title={
+                runtimeKind === 'builtin'
+                  ? '内置确定性规则引擎单条分类实测耗时（亚毫秒微突发校准）'
+                  : '端侧神经网络单条前向推理实测耗时'
+              }
+            >
               推理耗时 {probeResult.result.inferenceLatencyMs.toFixed(2)}ms
+            </span>
+            <span>·</span>
+            <span
+              className="tabular-nums text-slate-300"
+              title="含主线程正则脱敏 + 跨线程 Worker 通信 + 端侧推理的总耗时"
+            >
+              端到端 {probeResult.e2eLatencyMs.toFixed(2)}ms
             </span>
             <span>·</span>
             <span className="tabular-nums text-emerald-400/90">
@@ -1441,13 +1551,30 @@ export default function LocalAuditorPanel() {
               </div>
             </div>
           </div>
+
+          {records.length > 0 ? (
+            <button
+              type="button"
+              onClick={(): void => scrollToSection(logsSectionRef.current, 'start')}
+              aria-label="滚动查看下方集群审计日志列表"
+              className="mt-1.5 flex w-full items-center justify-center gap-1 rounded border border-white/[0.08] bg-white/[0.03] px-1.5 py-1 font-mono text-[10px] font-medium text-slate-300 transition-colors hover:border-cyan-400/40 hover:text-cyan-300"
+            >
+              <ArrowDown className="h-2.5 w-2.5" aria-hidden />
+              下方共有 {records.length} 条审计日志 · 点击跳转查看
+            </button>
+          ) : null}
         </div>
       ) : null}
 
       {/* ==================== 审计结果列表 ==================== */}
-      <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto" aria-live="polite" aria-label="审计结果列表">
+      <div
+        ref={logsSectionRef}
+        className="min-h-[160px] flex-1 scroll-mt-2 space-y-1.5"
+        aria-live="polite"
+        aria-label="审计结果列表"
+      >
         {records.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-1.5 px-4 text-center">
+          <div className="flex h-full min-h-[160px] flex-col items-center justify-center gap-1.5 px-4 text-center">
             <ShieldCheck className="h-6 w-6 text-slate-500" aria-hidden />
             <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-400">等待抓取日志</p>
             <p className="text-[11px] leading-relaxed text-slate-400">
@@ -1458,6 +1585,18 @@ export default function LocalAuditorPanel() {
           </div>
         ) : (
           <>
+            <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-wider text-slate-400">
+              <span>审计日志流（{records.length} 条）</span>
+              {probeResult !== null ? (
+                <button
+                  type="button"
+                  onClick={(): void => setProbeResult(null)}
+                  className="text-cyan-400 transition-colors hover:text-cyan-300"
+                >
+                  收起上方测试结果
+                </button>
+              ) : null}
+            </div>
             {/* 高危计数摘要 */}
             {criticalCount > 0 ? (
               <p className="flex items-center gap-1 rounded border border-rose-500/30 bg-rose-500/[0.08] px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-rose-300">

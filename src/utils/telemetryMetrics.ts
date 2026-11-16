@@ -30,6 +30,57 @@ export const DEFAULT_MAX_SSE_LIFETIME_MS = Math.max(
 );
 
 /**
+ * normalizeEnvValue —— 规范化环境变量字符串（去首尾空白与成对包裹引号，空串转为 undefined）。
+ *
+ * 【设计意图】Vercel 控制台或 `.env.local` 复制粘贴配置时，常见误带首尾空格、换行或
+ * 成对引号（`"https://..."` / `'sk-...'`），直接传给 HTTP Header 或 URL 构造器会触发
+ * 401/URL 解析异常，导致配置的环境变量看似“不生效”。
+ *
+ * @param raw `process.env[key]` 原始值
+ * @returns 规范化后的非空字符串，无效/空串返回 undefined
+ */
+export function normalizeEnvValue(raw: string | undefined): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  let cleaned = raw.trim();
+  if (
+    cleaned.length >= 2 &&
+    ((cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+      (cleaned.startsWith("'") && cleaned.endsWith("'")))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+/**
+ * normalizeBaseUrl —— 规范化 OpenAI 兼容网关基址（去引号/空白与末尾多余斜杠）。
+ */
+function normalizeBaseUrl(raw: string | undefined): string | undefined {
+  const normalized = normalizeEnvValue(raw);
+  if (normalized === undefined) return undefined;
+  const stripped = normalized.replace(/\/+$/, '');
+  return stripped.length > 0 ? stripped : undefined;
+}
+
+/**
+ * parseBoundedEnvNumber —— 安全解析数值型环境变量（空串或 NaN 自动回退默认值并夹紧范围）。
+ */
+function parseBoundedEnvNumber(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  integerOnly = false,
+): number {
+  const normalized = normalizeEnvValue(raw);
+  if (normalized === undefined) return fallback;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return fallback;
+  const clamped = Math.min(max, Math.max(min, parsed));
+  return integerOnly ? Math.trunc(clamped) : clamped;
+}
+
+/**
  * isConfiguredLlmApiKey —— 判断 OPENAI_API_KEY 是否为真实可用凭证。
  *
  * 【设计意图】过滤 `.env.example` 中的常见示例占位符（如 `your-api-key-here`），
@@ -40,12 +91,62 @@ export const DEFAULT_MAX_SSE_LIFETIME_MS = Math.max(
  * @returns 为非空且非示例占位符时返回 true
  */
 export function isConfiguredLlmApiKey(apiKey: string | undefined): apiKey is string {
-  if (typeof apiKey !== 'string') return false;
-  const trimmed = apiKey.trim();
-  if (trimmed.length === 0) return false;
-  return !/^(your-[a-z0-9-]*key-here|sk-your-[a-z0-9-]*key-here|replace-with-your-key)$/i.test(
-    trimmed,
+  const normalized = normalizeEnvValue(apiKey);
+  if (normalized === undefined) return false;
+  return !/^(your-[a-z0-9-]*key-here|sk-your-[a-z0-9-]*key-here|replace-with-your-key|<your-[a-z0-9-]*key>)$/i.test(
+    normalized,
   );
+}
+
+/** 服务端统一解析后的 LLM 环境配置（供 /api/chat 与 /api/health 共用，防止双端口径漂移） */
+export interface LlmEnvConfig {
+  /** 已去空白/去引号的有效密钥（未配置或占位符时为 undefined） */
+  readonly apiKey: string | undefined;
+  /** 是否具备可用 LLM 凭证 */
+  readonly llmConfigured: boolean;
+  /** 已去末尾斜杠与空串兜底的 OpenAI 兼容网关基址（缺省为 undefined，走 SDK 默认值） */
+  readonly baseURL: string | undefined;
+  /** 模型名称（优先级：AI_MODEL_NAME -> OPENAI_MODEL -> 'glm-4-flash'） */
+  readonly modelName: string;
+  /** 采样温度 [0, 2] */
+  readonly temperature: number;
+  /** 最大重试次数 [0, 5] */
+  readonly maxRetries: number;
+  /** 是否对兼容网关自动关闭隐式 thinking（AI_DISABLE_THINKING !== 'false'） */
+  readonly disableThinking: boolean;
+}
+
+/**
+ * resolveLlmEnvConfig —— 单一权威 LLM 环境变量解析器。
+ *
+ * 【设计意图 / 输入输出 / 核心逻辑】
+ * - 统一读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL`（兼容 `OPENAI_API_BASE`）、
+ *   `AI_MODEL_NAME`（兼容 `OPENAI_MODEL`，默认 `'glm-4-flash'`）、`AI_TEMPERATURE`、
+ *   `AI_MAX_RETRIES` 与 `AI_DISABLE_THINKING`；
+ * - 对所有字符串做去首尾空白、去成对引号、去基址尾部斜杠及空串兜底，确保
+ *   `/api/health` 与 `/api/chat` 对同一份 Vercel / `.env.local` 配置得出完全一致的结论。
+ *
+ * @returns 强类型规范化配置对象 LlmEnvConfig
+ */
+export function resolveLlmEnvConfig(): LlmEnvConfig {
+  const rawKey = normalizeEnvValue(process.env.OPENAI_API_KEY);
+  const llmConfigured = isConfiguredLlmApiKey(rawKey);
+  const baseURL = normalizeBaseUrl(process.env.OPENAI_BASE_URL ?? process.env.OPENAI_API_BASE);
+  const modelName =
+    normalizeEnvValue(process.env.AI_MODEL_NAME) ??
+    normalizeEnvValue(process.env.OPENAI_MODEL) ??
+    'glm-4-flash';
+  const disableThinkingRaw = normalizeEnvValue(process.env.AI_DISABLE_THINKING);
+
+  return {
+    apiKey: llmConfigured ? rawKey : undefined,
+    llmConfigured,
+    baseURL,
+    modelName,
+    temperature: parseBoundedEnvNumber(process.env.AI_TEMPERATURE, 0.3, 0, 2, false),
+    maxRetries: parseBoundedEnvNumber(process.env.AI_MAX_RETRIES, 2, 0, 5, true),
+    disableThinking: disableThinkingRaw?.toLowerCase() !== 'false',
+  };
 }
 
 /** 默认 SSE 注释心跳帧发送周期（15 秒，防 Nginx / 负载均衡器空闲断流） */

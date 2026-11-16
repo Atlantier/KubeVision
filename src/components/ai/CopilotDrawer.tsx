@@ -1219,7 +1219,12 @@ const MessageBubble = memo(function MessageBubble({
 
           {message.engine !== undefined ? (
             <span className="font-mono text-[10px] tracking-wider text-slate-400">
-              引擎 · {message.engine === 'llm' ? '云端大模型' : '本地确定性引擎'}
+              引擎 ·{' '}
+              {message.engine === 'llm'
+                ? message.engineModel !== undefined
+                  ? `云端大模型 (${message.engineModel})`
+                  : '云端大模型'
+                : '本地确定性引擎'}
             </span>
           ) : null}
         </div>
@@ -2785,7 +2790,14 @@ export default function CopilotDrawer() {
             }
 
             case 'engine': {
-              patchMessage(assistantId, (m): CopilotMessage => mergeStreamState(m, setEngine(m, event.engine)));
+              const rawReason = event.reason ?? '';
+              const modelName = rawReason.startsWith('model=') ? rawReason.slice(6).trim() : '';
+              patchMessage(assistantId, (m): CopilotMessage =>
+                mergeStreamState(
+                  m,
+                  setEngine(m, event.engine, modelName.length > 0 ? modelName : undefined),
+                ),
+              );
               break;
             }
 

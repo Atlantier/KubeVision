@@ -140,23 +140,89 @@ export function classifyWithBuiltinClassifier(text: string): {
 }
 
 /**
- * classifyLogsWithBuiltin —— 批量内置分类（主线程兜底使用）。
+ * 自适应微突发计时窗口下限（毫秒）。
+ *
+ * 【为何需要窗口校准】
+ * 非 crossOriginIsolated 页面中，浏览器会对 performance.now() 做抗侧信道量化
+ * （Chrome/Edge 约 0.1ms，Firefox 约 1ms）。内置分类器单次执行通常仅需 0.01~0.05ms，
+ * 直接单次相减会高频落入同一时钟滴答而返回 0.00ms。跨过该最小窗口后按次数均摊，
+ * 即可在不注入任何假延迟的前提下测出真实的单次 CPU 耗时。
+ */
+const MIN_CALIBRATION_WINDOW_MS = 0.6;
+/** 单次耗时测量校准循环的硬迭代上限（防止极端环境阻塞主线程或 Worker） */
+const MAX_CALIBRATION_ITERS = 256;
+/** 校准窗口内至少执行的实测次数，保证平均估算具备统计稳定性 */
+const MIN_CALIBRATION_RUNS = 8;
+
+/**
+ * getClockNow —— 安全获取单调高精度时间戳（毫秒）。
+ */
+function getClockNow(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+/**
+ * classifyWithBuiltinTimed —— 执行内置确定性分类并真实测量亚毫秒级推理耗时。
+ *
+ * 【设计意图 / 输入输出 / 核心逻辑】
+ * - 输入：脱敏后的日志文本 `text`。
+ * - 输出：`EdgeAuditResult`（`label`、`confidence`、真实非零 `inferenceLatencyMs`）。
+ * - 核心逻辑：先执行一次真实判别得出结论；若单次 `performance.now()` 差值受浏览器
+ *   时钟量化影响等于 `0`（或为非正值），则对同文本执行有限次真实重算直到跨过
+ *   `MIN_CALIBRATION_WINDOW_MS`（且至少 `MIN_CALIBRATION_RUNS` 次、不超过 `MAX_CALIBRATION_ITERS` 次），
+ *   以 `实际总耗时 / 实际次数` 得到真实单条执行耗时（保留两位小数，下限 `0.01ms` 仅作
+ *   极快 JIT 场景的最小精度下界），彻底消除 `0.00ms` 失真读数且绝不造假耗时。
+ *
+ * @param text 脱敏后的日志文本
+ * @returns 与 Worker 同构的 EdgeAuditResult
+ */
+export function classifyWithBuiltinTimed(text: string): EdgeAuditResult {
+  const startedAt = getClockNow();
+  const { label, confidence } = classifyWithBuiltinClassifier(text);
+  let measuredMs = getClockNow() - startedAt;
+
+  if (measuredMs <= 0) {
+    const burstStart = getClockNow();
+    let runs = 0;
+    let burstElapsed = 0;
+    while (runs < MAX_CALIBRATION_ITERS) {
+      classifyWithBuiltinClassifier(text);
+      runs += 1;
+      burstElapsed = getClockNow() - burstStart;
+      if (burstElapsed >= MIN_CALIBRATION_WINDOW_MS && runs >= MIN_CALIBRATION_RUNS) {
+        break;
+      }
+    }
+    if (runs > 0 && burstElapsed > 0) {
+      measuredMs = burstElapsed / runs;
+    }
+  }
+
+  const rounded = Math.round(measuredMs * 100) / 100;
+  return {
+    label,
+    confidence,
+    inferenceLatencyMs: Math.max(0.01, rounded),
+  };
+}
+
+/**
+ * classifyLogsWithBuiltin —— 批量内置分类（主线程兜底与并发占位回退共用）。
  *
  * @param logs 待分类日志（已脱敏）
- * @param startedAtMs 本批开始时刻，用于计算单条耗时
+ * @param _startedAtMs 保留签名兼容（统一采用每条实测微突发计时）
  * @returns 与 Worker 同构的 EdgeAuditResult[]
  */
 export function classifyLogsWithBuiltin(
   logs: readonly LogEntry[],
-  startedAtMs: number,
+  _startedAtMs?: number,
 ): readonly EdgeAuditResult[] {
-  const perItemMs = logs.length === 0 ? 0 : Math.max(1, Math.round((Date.now() - startedAtMs) / logs.length));
+  void _startedAtMs;
+  if (logs.length === 0) return [];
   return logs.map((log): EdgeAuditResult => {
-    const result = classifyWithBuiltinClassifier(log.sanitizedText);
-    return {
-      label: result.label,
-      confidence: result.confidence,
-      inferenceLatencyMs: perItemMs,
-    };
+    const input = log.sanitizedText.length > 0 ? log.sanitizedText : log.rawText;
+    return classifyWithBuiltinTimed(input);
   });
 }

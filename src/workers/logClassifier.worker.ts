@@ -107,8 +107,11 @@ function runtimeLabel(runtime: WorkerInferenceRuntime): string {
  * 用同一套规则给出结果；两份实现必然漂移，届时同一条日志在 Worker 与
  * 兜底路径上会得到不同标签，审计结论就自相矛盾了。
  */
-import { classifyWithBuiltinClassifier } from '@/utils/builtinLogClassifier';
-import { LABEL_FEATURES } from '@/utils/builtinLogClassifier';
+import {
+  classifyWithBuiltinClassifier,
+  classifyWithBuiltinTimed,
+  LABEL_FEATURES,
+} from '@/utils/builtinLogClassifier';
 
 /* ========================================================================== */
 /* 真实模型管道（WebGPU/WASM）                                                  */
@@ -590,19 +593,12 @@ function postProgress(
  * @returns 分类结果（含推理耗时）
  */
 async function classifyOne(text: string, extractor: FeatureExtractor | null): Promise<EdgeAuditResult> {
-  const start = performance.now();
-
   /* ---- 路径一：内置分类器（降级或未就绪） ---- */
   if (extractor === null) {
-    const { label, confidence } = classifyWithBuiltinClassifier(text);
-    /* 内置分类器耗时极短，仍如实测量（通常 0.01~0.1ms） */
-    const elapsed = performance.now() - start;
-    return {
-      label,
-      confidence,
-      inferenceLatencyMs: Math.round(elapsed * 100) / 100,
-    };
+    return classifyWithBuiltinTimed(text);
   }
+
+  const start = performance.now();
 
   /* ---- 路径二：真实模型语义分类 ---- */
   try {
@@ -629,7 +625,7 @@ async function classifyOne(text: string, extractor: FeatureExtractor | null): Pr
       return {
         label: semantic.label,
         confidence: semantic.confidence,
-        inferenceLatencyMs: Math.round(elapsed * 100) / 100,
+        inferenceLatencyMs: Math.max(0.01, Math.round(elapsed * 100) / 100),
       };
     }
 
@@ -639,16 +635,16 @@ async function classifyOne(text: string, extractor: FeatureExtractor | null): Pr
     return {
       label: builtin.label,
       confidence: builtin.confidence,
-      inferenceLatencyMs: Math.round(elapsed * 100) / 100,
+      inferenceLatencyMs: Math.max(0.01, Math.round(elapsed * 100) / 100),
     };
   } catch {
-    /* 单条推理失败不应中断整批：退回内置分类器 */
-    const { label, confidence } = classifyWithBuiltinClassifier(text);
-    const elapsed = performance.now() - start;
+    /* 单条推理失败不应中断整批：退回内置分类器并确保亚毫秒实测耗时不归零 */
+    const timed = classifyWithBuiltinTimed(text);
+    const totalElapsed = Math.round((performance.now() - start) * 100) / 100;
     return {
-      label,
-      confidence,
-      inferenceLatencyMs: Math.round(elapsed * 100) / 100,
+      label: timed.label,
+      confidence: timed.confidence,
+      inferenceLatencyMs: Math.max(timed.inferenceLatencyMs, totalElapsed),
     };
   }
 }

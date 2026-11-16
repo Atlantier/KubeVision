@@ -150,6 +150,7 @@ export interface StreamMessageState {
   readonly reasoningSteps: readonly AgentReasoningStep[];
   readonly toolCards: readonly CopilotToolCard[];
   readonly engine?: 'llm' | 'simulator';
+  readonly engineModel?: string;
   readonly resetNotice?: string;
 }
 
@@ -172,6 +173,7 @@ export function mergeStreamState<T extends StreamMessageState>(host: T, state: S
     toolCards: state.toolCards,
     resetNotice: state.resetNotice,
     ...(state.engine !== undefined ? { engine: state.engine } : {}),
+    ...(state.engineModel !== undefined ? { engineModel: state.engineModel } : {}),
   };
 }
 
@@ -185,9 +187,17 @@ export function appendText(state: StreamMessageState, content: string): StreamMe
   return { ...state, text: state.text + content };
 }
 
-/** 记录实际引擎 */
-export function setEngine(state: StreamMessageState, engine: 'llm' | 'simulator'): StreamMessageState {
-  return { ...state, engine };
+/** 记录实际引擎与可选模型名 */
+export function setEngine(
+  state: StreamMessageState,
+  engine: 'llm' | 'simulator',
+  engineModel?: string,
+): StreamMessageState {
+  return {
+    ...state,
+    engine,
+    ...(engineModel !== undefined ? { engineModel } : {}),
+  };
 }
 
 /**

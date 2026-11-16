@@ -42,7 +42,7 @@ import { streamText, tool, type CoreMessage } from 'ai';
 import { createTrace, elapsedMs, endSpan, startSpan, type AgentTrace, type EndedSpan } from '@/utils/agentTrace';
 import { annotateUngrounded, clampConfidence } from '@/utils/grounding';
 import { sanitizeRawLog } from '@/utils/logSanitizer';
-import { isConfiguredLlmApiKey, logStructuredEvent } from '@/utils/telemetryMetrics';
+import { logStructuredEvent, resolveLlmEnvConfig } from '@/utils/telemetryMetrics';
 import { z } from 'zod';
 
 import {
@@ -1422,18 +1422,17 @@ const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
  * 【设计意图】部分兼容网关默认在输出首个可见 `text-delta` 前生成长段隐藏
  * `reasoning_content`（实测耗时 2~7s，且 Vercel AI SDK v3 不会将其转发为正文分片）。
  * 当请求发往 `/chat/completions` 且未显式关闭（`AI_DISABLE_THINKING !== 'false'`）时，
- * 注入 `thinking: { type: 'disabled' }`；若上游返回 400/422 且错误信息提及 `thinking`，
- * 立即用原始请求体无感重试一次，保证与所有 OpenAI 兼容服务端零侵入互通。
+ * 注入 `thinking: { type: 'disabled' }`；若上游返回 400/422（无论错误体是否显式提及
+ * `"thinking"` 字段，诸如 `Extra inputs are not permitted` / `Unsupported parameter` 等
+ * 严格校验网关），立即用原始请求体无感重试一次，保证所有 `OPENAI_BASE_URL` / `AI_MODEL_NAME`
+ * 组合都能零侵入稳定生效。
  *
+ * @param disableThinking 是否启用 thinking 自动关闭
  * @returns 符合 `typeof fetch` 契约的请求函数
  */
-function createThinkingOptOutFetch(): typeof fetch {
+function createThinkingOptOutFetch(disableThinking: boolean): typeof fetch {
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    if (
-      process.env.AI_DISABLE_THINKING === 'false' ||
-      init?.body === undefined ||
-      typeof init.body !== 'string'
-    ) {
+    if (!disableThinking || init?.body === undefined || typeof init.body !== 'string') {
       return await fetch(input, init);
     }
 
@@ -1463,14 +1462,9 @@ function createThinkingOptOutFetch(): typeof fetch {
       body: JSON.stringify({ ...parsed, thinking: { type: 'disabled' } }),
     };
     const response = await fetch(input, patchedInit);
+    /* 只要我们主动注入了非标 thinking 字段且上游返回 400/422 参数校验拒绝，立即回退原始请求体重试一次 */
     if ((response.status === 400 || response.status === 422) && !(init.signal?.aborted ?? false)) {
-      const errorText = await response
-        .clone()
-        .text()
-        .catch((): string => '');
-      if (/thinking/i.test(errorText)) {
-        return await fetch(input, init);
-      }
+      return await fetch(input, init);
     }
     return response;
   };
@@ -1480,6 +1474,9 @@ async function streamWithLLM(params: {
   readonly apiKey: string;
   readonly baseURL: string | undefined;
   readonly modelName: string;
+  readonly temperature: number;
+  readonly maxRetries: number;
+  readonly disableThinking: boolean;
   readonly messages: readonly ChatMessage[];
   readonly systemPrompt: string;
   readonly hasImage: boolean;
@@ -1527,7 +1524,7 @@ async function streamWithLLM(params: {
   /** R43：AI SDK usage 回调（tokens 由上游按 env 单价换算成本） */
   readonly onUsage?: (usage: { promptTokens?: number; completionTokens?: number }) => void;
 }): Promise<'ok' | 'aborted' | 'llm-failed' | 'schema-guard'> {
-  const { apiKey, baseURL, modelName, messages, systemPrompt, hasImage, viewportImage, pixelFeatures, runbooks, knownEntities, clusterContext, intent, allowedTools, onFirstToolCall, emit, signal, ledger, trace, onUsage } = params;
+  const { apiKey, baseURL, modelName, temperature, maxRetries, disableThinking, messages, systemPrompt, hasImage, viewportImage, pixelFeatures, runbooks, knownEntities, clusterContext, intent, allowedTools, onFirstToolCall, emit, signal, ledger, trace, onUsage } = params;
 
   if (signal.aborted) return 'aborted';
 
@@ -1553,7 +1550,11 @@ async function streamWithLLM(params: {
   signal.addEventListener('abort', onAbortPendingTools, { once: true });
 
   try {
-    const provider = createOpenAI({ apiKey, baseURL, fetch: createThinkingOptOutFetch() });
+    const provider = createOpenAI({
+      apiKey,
+      ...(baseURL !== undefined ? { baseURL } : {}),
+      fetch: createThinkingOptOutFetch(disableThinking),
+    });
     const model = provider(modelName);
 
     /**
@@ -1733,8 +1734,8 @@ async function streamWithLLM(params: {
       model,
       system: systemPrompt,
       messages: messagesForModel,
-      temperature: Number(process.env.AI_TEMPERATURE ?? '0.3'),
-      maxRetries: Number(process.env.AI_MAX_RETRIES ?? '2'),
+      temperature,
+      maxRetries,
       /* R10-A：只读内联后至多需 2 步（首轮正文+卡片，或首步工具→次步正文） */
       maxSteps: 2,
       onStepFinish: (step): void => {
@@ -1972,13 +1973,12 @@ async function streamWithLLM(params: {
     return signal.aborted ? 'aborted' : 'ok';
   } catch (error) {
     clearPendingToolTimers();
-    if (
-      signal.aborted ||
-      (error instanceof Error && (error.name === 'AbortError' || error.message === 'aborted'))
-    ) {
+    /* 仅当本轮消费信号确实已中止时才视为客户端取消；上游超时/重置抛出的 AbortError 走回落兜底而非静默截断 */
+    if (signal.aborted) {
       return 'aborted';
     }
-    /* 非取消场景的异常（401 / 404 / 网络 / 模型不支持工具调用）→ 记录结构化错误并返回回落信号 */
+    const rawDetail = error instanceof Error ? `${error.name}: ${error.message}` : 'unknown';
+    /* 非取消场景的异常（401 / 404 / 网络 / 上游超时 / 模型不支持工具调用）→ 脱敏记录结构化错误并无缝回落引擎 B */
     logStructuredEvent({
       event: 'error',
       route: '/api/chat',
@@ -1988,6 +1988,7 @@ async function streamWithLLM(params: {
       attrs: {
         reason: 'engine-a-failed',
         errorType: error instanceof Error ? error.name : 'unknown',
+        detail: sanitizeRawLog(rawDetail).sanitized.slice(0, 140),
       },
     });
     return 'llm-failed';
@@ -2781,7 +2782,8 @@ async function streamWithSimulator(params: {
   if (signal.aborted) return;
 
   /* ---- 3. 打字机推文本（按块推送，避免逐字符造成过多帧） ---- */
-  const cps = Math.max(10, Number(process.env.SIM_TYPING_CPS ?? String(DEFAULT_TYPING_CPS)));
+  const rawCps = Number(process.env.SIM_TYPING_CPS?.trim() || String(DEFAULT_TYPING_CPS));
+  const cps = Math.max(10, Number.isFinite(rawCps) ? rawCps : DEFAULT_TYPING_CPS);
   const CHUNK_SIZE = 6;
   const delayPerChunk = Math.max(8, Math.round((CHUNK_SIZE / cps) * 1000));
 
@@ -3321,11 +3323,11 @@ export async function POST(request: Request): Promise<Response> {
     }
   }
 
-  /* ---- 引擎选择 ---- */
-  const apiKey = process.env.OPENAI_API_KEY;
-  const baseURL = process.env.OPENAI_BASE_URL;
-  const modelName = process.env.AI_MODEL_NAME ?? 'glm-4-flash';
-  const useLLM = isConfiguredLlmApiKey(apiKey) && !rateState.llmBudgetExceeded;
+  /* ---- 引擎选择（与 /api/health 共用同一份规范化环境变量解析，杜绝空白/引号/空串导致的隐性失效） ---- */
+  const llmConfig = resolveLlmEnvConfig();
+  const { apiKey, baseURL, modelName, temperature, maxRetries, disableThinking, llmConfigured } =
+    llmConfig;
+  const useLLM = llmConfigured && apiKey !== undefined && !rateState.llmBudgetExceeded;
 
   /* ---- 构造 NDJSON 流 ---- */
   const encoder = new TextEncoder();
@@ -3802,6 +3804,9 @@ export async function POST(request: Request): Promise<Response> {
             apiKey: apiKey as string,
             baseURL,
             modelName,
+            temperature,
+            maxRetries,
+            disableThinking,
             messages,
             systemPrompt,
             hasImage,
@@ -4010,12 +4015,8 @@ export async function POST(request: Request): Promise<Response> {
 
         safeClose();
       } catch (error) {
-        /* R13：客户端取消属正常终止 —— 立即静默关闭，绝不补推错误/fallback/done 帧 */
-        const aborted =
-          isClosed ||
-          signal.aborted ||
-          request.signal.aborted ||
-          (error instanceof Error && (error.name === 'AbortError' || error.message === 'aborted'));
+        /* R13：仅当连接/消费端确实取消时静默关闭；非取消型上游异常仍需收尾报错与 done */
+        const aborted = isClosed || signal.aborted || request.signal.aborted;
         if (aborted) {
           safeClose();
           return;

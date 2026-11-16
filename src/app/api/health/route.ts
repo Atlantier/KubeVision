@@ -12,7 +12,7 @@ import packageJson from '../../../../package.json';
 import { DEGRADATION_MATRIX } from '@/constants/degradationMatrix';
 import type { DegradationTierId, HealthApiResponse } from '@/types/health';
 import { getHostSamplerSubscriberCount } from '@/utils/liveTelemetry';
-import { getTelemetryHealthMetrics, isConfiguredLlmApiKey } from '@/utils/telemetryMetrics';
+import { getTelemetryHealthMetrics, resolveLlmEnvConfig } from '@/utils/telemetryMetrics';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -24,15 +24,7 @@ const PROCESS_STARTED_AT_MS = Date.now();
  * GET —— 返回严格强类型的 `/api/health` 运行态诊断快照（零敏感字段）。
  */
 export function GET(): Response {
-  const apiKey = process.env.OPENAI_API_KEY;
-  const llmConfigured = isConfiguredLlmApiKey(apiKey);
-  const configuredModel =
-    typeof process.env.AI_MODEL_NAME === 'string' && process.env.AI_MODEL_NAME.trim().length > 0
-      ? process.env.AI_MODEL_NAME.trim()
-      : typeof process.env.OPENAI_MODEL === 'string' && process.env.OPENAI_MODEL.trim().length > 0
-        ? process.env.OPENAI_MODEL.trim()
-        : 'glm-4-flash';
-  const modelName = configuredModel;
+  const { llmConfigured, modelName } = resolveLlmEnvConfig();
 
   const sseMetrics = getTelemetryHealthMetrics();
   const hostSamplerSubscribers = getHostSamplerSubscriberCount();
